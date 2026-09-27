@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '1.0.0');
+define('TC_VERSION', '1.1.0');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -90,6 +90,8 @@ $TC_SETTINGS_DEFAULTS = array(
     'contextMessages' => 40,
     'maxContextMessages' => 200,
     'maxOutputTokens' => 12800,
+    // 全局采样温度: null = 不发送该参数(用模型默认);设置后 0-2
+    'temperature' => null,
 );
 $TC_SETTINGS_DEFAULTS['mailTemplates'] = tc_mail_default_templates();
 
@@ -328,6 +330,8 @@ function tc_normalize_settings($raw) {
     $s['contextMessages'] = min($s['maxContextMessages'], max(2, $ctx ?: $TC_SETTINGS_DEFAULTS['contextMessages']));
     $out = isset($s['maxOutputTokens']) ? (int) $s['maxOutputTokens'] : $TC_SETTINGS_DEFAULTS['maxOutputTokens'];
     $s['maxOutputTokens'] = min(128000, max(256, $out ?: $TC_SETTINGS_DEFAULTS['maxOutputTokens']));
+    $temp = isset($s['temperature']) && $s['temperature'] !== '' && $s['temperature'] !== null ? (float) $s['temperature'] : null;
+    $s['temperature'] = $temp === null ? null : min(2, max(0, $temp));
     return $s;
 }
 

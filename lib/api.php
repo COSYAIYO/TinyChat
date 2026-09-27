@@ -140,7 +140,15 @@ function tc_normalize_models($models) {
         if ($id === '' || isset($seen[$id])) continue;
         $seen[$id] = true;
         $name = is_array($m) && !empty($m['name']) ? trim((string) $m['name']) : $id;
-        $out[] = array('id' => $id, 'name' => $name ?: $id);
+        $row = array('id' => $id, 'name' => $name ?: $id);
+        // 模型级最大输出/最大上下文(可选):留空/0 表示跟随全局或不限制
+        if (is_array($m) && isset($m['maxTokens']) && (int) $m['maxTokens'] > 0) {
+            $row['maxTokens'] = min(128000, max(256, (int) $m['maxTokens']));
+        }
+        if (is_array($m) && isset($m['maxContext']) && (int) $m['maxContext'] > 0) {
+            $row['maxContext'] = min(2000000, max(256, (int) $m['maxContext']));
+        }
+        $out[] = $row;
         if (count($out) >= 500) break;
     }
     return $out;

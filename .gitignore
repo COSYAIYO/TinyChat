@@ -1,0 +1,11 @@
+data/
+!data/.htaccess
+!data/.gitkeep
+config.php
+*.log
+.tmp/
+.zcode/
+.zcodeignore
+node_modules/
+gui-test-screenshots/
+nul

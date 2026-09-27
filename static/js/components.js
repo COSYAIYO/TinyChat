@@ -228,6 +228,8 @@
       + '<th class="col-check"></th>'
       + '<th class="col-id">模型 ID</th>'
       + '<th class="col-name">显示名称</th>'
+      + '<th class="col-mtok" title="单次回答最多生成的 token，留空则跟随全局的单次输出上限">max_tokens</th>'
+      + '<th class="col-ctx" title="该模型的上下文窗口（token），留空则不做限制">最大上下文</th>'
       + '</tr></thead><tbody>'
       + rowsHtml
       + '</tbody></table>';
@@ -242,15 +244,33 @@
       + (m.enabled ? '<em>已启用</em>' : '') + '</span>';
   }
 
+  // 通用模型数字列:maxTokens(留空跟随全局)/maxContext(留空不限制)
+  const MODEL_NUM_COLS = [
+    { field: 'maxTokens', cls: 'mtokens', placeholder: '全局', min: 256, max: 128000 },
+    { field: 'maxContext', cls: 'mctx', placeholder: '不限', min: 256, max: 2000000 },
+  ];
+
+  function modelNumCell(m, col, editable) {
+    const v = parseInt(m[col.field], 10) > 0 ? parseInt(m[col.field], 10) : '';
+    if (editable) {
+      return '<input class="' + col.cls + '" type="number" min="' + col.min + '" max="' + col.max + '" step="1" data-mid="'
+        + escapeHtml(m.id) + '" value="' + v + '" placeholder="' + col.placeholder + '" autocomplete="off">';
+    }
+    return '<span class="' + col.cls + '-static">' + (v === '' ? '<i class="muted">' + col.placeholder + '</i>' : v) + '</span>';
+  }
+
   function modelRowHtml(m, opts) {
     opts = opts || {};
     const checked = opts.checked ? ' checked' : '';
     const attr = opts.stale ? 'data-stale' : 'data-mid';
     const cls = 'model-row' + (opts.stale ? ' is-stale' : '');
+    const numCells = MODEL_NUM_COLS.map((col) => '<td class="' + (col.cls === 'mtokens' ? 'col-mtok' : 'col-ctx') + '">'
+      + modelNumCell(m, col, !opts.stale) + '</td>').join('');
     return '<tr class="' + cls + '">'
       + '<td class="col-check"><input type="checkbox" ' + attr + '="' + escapeHtml(m.id) + '"' + checked + '></td>'
       + '<td class="col-id"><span class="mid">' + escapeHtml(m.id) + '</span></td>'
       + '<td class="col-name">' + modelNameCell(m, !opts.stale) + '</td>'
+      + numCells
       + '</tr>';
   }
 
@@ -272,6 +292,7 @@
 
     let catalog = [];
     const selected = new Set();
+    const NUM_FIELDS = MODEL_NUM_COLS.map((c) => c.field);
 
     function upsertCatalog(models, opts) {
       const selectNew = !!(opts && opts.selectNew);
@@ -281,12 +302,22 @@
         const id = String((m && (m.id || m.name)) || '').trim();
         if (!id) return;
         const incoming = String((m && m.name) || '').trim();
+        // 调用方携带数字字段时(已保存的模型/弹窗回传)才更新,上游拉取的原始列表没有这些字段
+        const incomingNums = {};
+        NUM_FIELDS.forEach((f) => {
+          if (m && Object.prototype.hasOwnProperty.call(m, f)) {
+            incomingNums[f] = parseInt(m[f], 10) || 0;
+          }
+        });
         const found = catalog.find((x) => x.id === id);
         if (found) {
           if (updateName && incoming) found.name = incoming;
           else if (incoming && (!found.name || found.name === found.id)) found.name = incoming;
+          Object.keys(incomingNums).forEach((f) => { found[f] = incomingNums[f]; });
         } else {
-          catalog.push({ id, name: incoming || id });
+          const item = { id, name: incoming || id };
+          NUM_FIELDS.forEach((f) => { item[f] = incomingNums[f] !== undefined ? incomingNums[f] : 0; });
+          catalog.push(item);
           if (selectNew) selected.add(id);
         }
         if (syncEnabled) {
@@ -355,13 +386,24 @@
 
     listEl.addEventListener('input', (e) => {
       const nameInp = e.target && e.target.closest ? e.target.closest('input.mname') : null;
-      if (!nameInp) return;
-      const item = catalog.find((x) => x.id === nameInp.dataset.mid);
-      if (item) item.name = nameInp.value.trim() || item.id;
+      if (nameInp) {
+        const item = catalog.find((x) => x.id === nameInp.dataset.mid);
+        if (item) item.name = nameInp.value.trim() || item.id;
+        return;
+      }
+      const numInp = e.target && e.target.closest
+        ? e.target.closest(MODEL_NUM_COLS.map((c) => 'input.' + c.cls).join(','))
+        : null;
+      if (numInp) {
+        const col = MODEL_NUM_COLS.find((c) => numInp.classList.contains(c.cls));
+        const item = catalog.find((x) => x.id === numInp.dataset.mid);
+        if (col && item) item[col.field] = parseInt(numInp.value, 10) || 0;
+      }
     });
 
     listEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && e.target && e.target.classList && e.target.classList.contains('mname')) {
+      const cls = e.target && e.target.classList;
+      if (e.key === 'Enter' && cls && (cls.contains('mname') || cls.contains('mtokens') || cls.contains('mctx'))) {
         e.preventDefault();
         e.target.blur();
       }
@@ -420,16 +462,24 @@
         render();
       },
       getCatalog() {
-        return catalog.map((m) => ({
-          id: m.id,
-          name: m.name || m.id,
-          enabled: selected.has(m.id),
-        }));
+        return catalog.map((m) => {
+          const row = { id: m.id, name: m.name || m.id, enabled: selected.has(m.id) };
+          MODEL_NUM_COLS.forEach((c) => {
+            if (parseInt(m[c.field], 10) > 0) row[c.field] = parseInt(m[c.field], 10);
+          });
+          return row;
+        });
       },
       getEnabled() {
         return catalog
           .filter((m) => selected.has(m.id))
-          .map((m) => ({ id: m.id, name: m.name || m.id }));
+          .map((m) => {
+            const row = { id: m.id, name: m.name || m.id };
+            MODEL_NUM_COLS.forEach((c) => {
+              if (parseInt(m[c.field], 10) > 0) row[c.field] = parseInt(m[c.field], 10);
+            });
+            return row;
+          });
       },
       setEnabledIds(ids) {
         const keep = new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean));
@@ -469,11 +519,15 @@
       if (!id || items.some((x) => x.id === id)) return;
       const prev = existingMap.get(id);
       const upstream = String((m && m.name) || '').trim();
-      items.push({
+      const item = {
         id,
         name: (prev && prev.name) || upstream || id,
         enabled: !!(prev && prev.enabled),
+      };
+      MODEL_NUM_COLS.forEach((c) => {
+        item[c.field] = (prev && parseInt(prev[c.field], 10) > 0) ? parseInt(prev[c.field], 10) : 0;
       });
+      items.push(item);
     });
     items.sort((a, b) => a.id.localeCompare(b.id));
     const liveIds = new Set(items.map((m) => m.id));
@@ -499,7 +553,7 @@
       + (window.OC && window.OC.icon ? window.OC.icon('close', 16) : '×')
       + '</button></div>'
       + '<div class="modal-body">'
-      + '<p class="confirm-message">共获取 ' + items.length + ' 个模型。勾选要启用的，并修改前台显示名称。</p>'
+      + '<p class="confirm-message">共获取 ' + items.length + ' 个模型。勾选要启用的，并修改前台显示名称、max_tokens（留空跟随全局）与最大上下文（留空不限制）。</p>'
       + '<div class="model-fetch-toolbar">'
       + '<label class="model-fetch-search">'
       + (window.OC && window.OC.icon ? window.OC.icon('search', 14) : '')
@@ -604,12 +658,23 @@
     }
     listEl.addEventListener('input', (e) => {
       const nameInp = e.target && e.target.closest ? e.target.closest('input.mname') : null;
-      if (!nameInp) return;
-      const item = itemById(nameInp.dataset.mid);
-      if (item) item.name = nameInp.value;
+      if (nameInp) {
+        const item = itemById(nameInp.dataset.mid);
+        if (item) item.name = nameInp.value;
+        return;
+      }
+      const numInp = e.target && e.target.closest
+        ? e.target.closest(MODEL_NUM_COLS.map((c) => 'input.' + c.cls).join(','))
+        : null;
+      if (numInp) {
+        const col = MODEL_NUM_COLS.find((c) => numInp.classList.contains(c.cls));
+        const item = itemById(numInp.dataset.mid);
+        if (col && item) item[col.field] = parseInt(numInp.value, 10) || 0;
+      }
     });
     listEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && e.target && e.target.classList && e.target.classList.contains('mname')) {
+      const cls = e.target && e.target.classList;
+      if (e.key === 'Enter' && cls && (cls.contains('mname') || cls.contains('mtokens') || cls.contains('mctx'))) {
         e.preventDefault();
         e.target.blur();
       }
@@ -636,11 +701,14 @@
     const close = (apply) => {
       if (apply && typeof opts.onApply === 'function') {
         opts.onApply(
-          items.map((m) => ({
-            id: m.id,
-            name: String(m.name || '').trim() || m.id,
-            enabled: !!m.enabled,
-          })),
+          // 始终携带数字字段(可为 0),保证弹窗里清空后能覆盖旧值
+          items.map((m) => {
+            const row = { id: m.id, name: String(m.name || '').trim() || m.id, enabled: !!m.enabled };
+            MODEL_NUM_COLS.forEach((c) => {
+              row[c.field] = parseInt(m[c.field], 10) > 0 ? parseInt(m[c.field], 10) : 0;
+            });
+            return row;
+          }),
           stale.filter((m) => m.remove).map((m) => m.id)
         );
       }
