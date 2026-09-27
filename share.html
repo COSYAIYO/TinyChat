@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#ffffff">
+<title>对话分享 · TinyChat</title>
+<meta name="description" content="TinyChat 对话分享页：公开的 AI 对话快照，支持 Markdown、代码高亮、公式与图表渲染。TinyChat 是纯 PHP 的自托管多模型 AI 对话应用。">
+<meta name="robots" content="index,follow">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="TinyChat">
+<meta property="og:title" content="对话分享 · TinyChat">
+<meta property="og:description" content="公开的 AI 对话快照，由 TinyChat 生成。">
+<meta name="twitter:card" content="summary">
+<link rel="stylesheet" href="/static/css/style.css?v=20260926.25">
+<link rel="stylesheet" href="/vendor/highlight/github.min.css" id="hljs-theme">
+<link rel="stylesheet" href="/vendor/katex/katex.min.css">
+<link rel="stylesheet" href="/static/css/enhanced.css?v=20260926.25">
+<link rel="stylesheet" href="/static/css/refine.css?v=20260926.25">
+<link rel="stylesheet" href="/static/css/redesign.css?v=20260926.25">
+<link rel="stylesheet" href="/static/css/polish.css?v=20260926.33">
+<link rel="stylesheet" href="/static/css/markdown.css?v=20260926.25">
+<link rel="stylesheet" href="/static/css/chrome.css?v=20260927.11">
+<script defer src="/vendor/markdown-it/markdown-it.min.js"></script>
+<script defer src="/vendor/markdown-it/markdown-it-footnote.min.js"></script>
+<script defer src="/vendor/markdown-it/markdown-it-emoji.min.js"></script>
+<script defer src="/vendor/katex/katex.min.js"></script>
+<script defer src="/vendor/katex/auto-render.min.js"></script>
+<script defer src="/vendor/highlight/highlight.min.js"></script>
+<script defer src="/vendor/mermaid/mermaid.min.js?v=11.17.2"></script>
+</head>
+<body class="share-page">
+  <header class="share-top">
+    <a class="share-brand" href="/">
+      <img src="/logo.svg" class="brand-logo-light" alt="TinyChat">
+      <img src="/logo-dark.svg" class="brand-logo-dark" alt="TinyChat">
+    </a>
+    <a class="btn small" href="/">打开应用</a>
+  </header>
+  <main class="share-main" id="share-root">
+    <p class="muted">正在加载分享…</p>
+  </main>
+  <script src="/static/js/config.js?v=20260926.25"></script>
+  <script src="/static/js/icons.js?v=20260926.25"></script>
+  <script src="/static/js/renderer.js?v=20260926.27"></script>
+  <script src="/static/js/office-formula-copy.js?v=20260926.25"></script>
+  <script>
+    (function () {
+      const saved = localStorage.getItem('oc_theme');
+      const theme = saved === 'dark' || saved === 'light'
+        ? saved
+        : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', theme);
+
+      const LOGO = '<img src="/logo.svg" class="brand-logo-light avatar-logo-img" alt="">'
+        + '<img src="/logo-dark.svg" class="brand-logo-dark avatar-logo-img" alt="">';
+      const root = document.getElementById('share-root');
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      }
+      function showError(title, detail) {
+        document.title = title;
+        const icon = '<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">'
+          + '<path d="M9.5 14.5l5-5" stroke-linecap="round"/>'
+          + '<path d="M13.6 6.4l1.8-1.8a3.5 3.5 0 015 5l-2.3 2.3M10.4 17.6l-1.8 1.8a3.5 3.5 0 01-5-5l2.3-2.3" stroke-linecap="round"/>'
+          + '<path d="M4 4l16 16" stroke-linecap="round"/></svg>';
+        root.innerHTML = '<div class="share-error"><div class="share-error-icon">' + icon + '</div>'
+          + '<h1>' + escapeHtml(title) + '</h1><p>' + escapeHtml(detail || '') + '</p>'
+          + '<a class="btn small" href="/">返回应用</a></div>';
+      }
+      function fmtTime(ts) {
+        const d = new Date(Number(ts) || Date.now());
+        if (Number.isNaN(d.getTime())) return '';
+        const p = (n) => String(n).padStart(2, '0');
+        return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+      }
+
+      const id = (location.pathname.match(/^\/s\/([A-Za-z0-9]+)/) || [])[1];
+      if (!id) return showError('分享不存在', '链接无效。');
+
+      function whenReady(fn) {
+        if (window.OCRenderer || document.readyState === 'complete') return fn();
+        window.addEventListener('load', fn, { once: true });
+      }
+      function start() {
+      fetch((window.apiUrl ? window.apiUrl('/api/shares/' + id) : '/api/shares/' + id))
+        .then(async (r) => {
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error((data.error && data.error.message) || '分享不存在或已失效');
+          return data.share;
+        })
+        .then((share) => whenReady(() => {
+          const msgs = Array.isArray(share.messages) ? share.messages : [];
+          document.title = (share.title || '对话分享') + ' · TinyChat';
+          const ogTitle = document.querySelector('meta[property="og:title"]');
+          if (ogTitle) ogTitle.setAttribute('content', document.title);
+          const ogDesc = document.querySelector('meta[property="og:description"]');
+          if (ogDesc) {
+            const first = msgs.find((msg) => msg && String(msg.content || '').trim());
+            ogDesc.setAttribute('content', first
+              ? String(first.content).replace(/\s+/g, ' ').slice(0, 120)
+              : '公开的 AI 对话快照，由 TinyChat 生成。');
+          }
+          if (!msgs.length) {
+            root.innerHTML = '<div class="share-empty">这份分享没有消息。</div>';
+            return;
+          }
+          root.innerHTML = '<h1 class="share-title">' + escapeHtml(share.title || '未命名对话') + '</h1>'
+            + '<p class="share-meta">公开快照 · ' + escapeHtml(fmtTime(share.updatedAt || share.createdAt)) + ' · ' + msgs.length + ' 条消息</p>'
+            + '<div class="messages" id="share-msgs"></div>';
+          const box = document.getElementById('share-msgs');
+          msgs.forEach((m) => {
+            const role = m.role === 'user' ? 'user' : 'assistant';
+            const div = document.createElement('div');
+            div.className = 'msg ' + role;
+            div.innerHTML = '<div class="msg-avatar avatar-logo">' + LOGO + '</div>';
+            const content = document.createElement('div');
+            content.className = 'msg-content';
+            div.appendChild(content);
+            box.appendChild(div);
+            if (window.OCRenderer) window.OCRenderer.renderInto(content, m.content || '');
+            else content.textContent = m.content || '';
+          });
+        }))
+        .catch((e) => showError('无法打开分享', e.message || '分享不存在或已失效'));
+      }
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+      else start();
+    })();
+  </script>
+</body>
+</html>

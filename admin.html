@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#ffffff">
+<title>管理后台 · TinyChat</title>
+<meta name="robots" content="noindex,nofollow">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ctext x='12' y='17' text-anchor='middle' font-family='Inter,Segoe UI,Arial,sans-serif' font-size='15' font-weight='800' fill='%23232936'%3ET%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="./static/css/style.css?v=20260926.31">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20260926.31">
+<link rel="stylesheet" href="./static/css/refine.css?v=20260926.31">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20260926.31">
+<link rel="stylesheet" href="./static/css/polish.css?v=20260926.33">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20260927.17">
+<script>
+(function () {
+  try {
+    var p = JSON.parse(localStorage.getItem('oc_prefs') || '{}');
+    var hex = String(p.accent || '').trim();
+    var m = hex.match(/^#([0-9a-fA-F]{3,8})$/);
+    if (!m) return;
+    var h = m[1];
+    if (h.length === 3 || h.length === 4) h = h.split('').map(function (c) { return c + c; }).join('');
+    if (h.length !== 6 && h.length !== 8) return;
+    var r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+    var dark = (p.theme === 'dark') || (p.theme !== 'light' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    var t = dark ? 0.28 : 0.18;
+    var mix = function (c, d) { return Math.max(0, Math.min(255, Math.round(c + (d - c) * t))); };
+    var pad = function (n) { return n.toString(16).padStart(2, '0'); };
+    var acc = '#' + pad(r) + pad(g) + pad(b);
+    var hover = '#' + pad(mix(r, dark ? 255 : 0)) + pad(mix(g, dark ? 255 : 0)) + pad(mix(b, dark ? 255 : 0));
+    var rgba = function (a) { return 'rgba(' + r + ', ' + g + ', ' + b + ', ' + a + ')'; };
+    var root = document.documentElement;
+    root.style.setProperty('--accent', acc);
+    root.style.setProperty('--accent-hover', hover);
+    root.style.setProperty('--brand', acc);
+    root.style.setProperty('--brand-hover', hover);
+    root.style.setProperty('--brand-soft', rgba(dark ? 0.12 : 0.08));
+    root.style.setProperty('--brand-soft-strong', rgba(dark ? 0.2 : 0.14));
+    root.style.setProperty('--ring-brand', rgba(dark ? 0.3 : 0.2));
+    root.style.setProperty('--primary', acc);
+    root.style.setProperty('--primary-hover', hover);
+    root.style.setProperty('--active-text', dark ? hover : acc);
+    root.style.setProperty('--active-bar', acc);
+    root.style.setProperty('--bg-selected', rgba(dark ? 0.14 : 0.07));
+  } catch (e) {}
+})();
+</script>
+</head>
+<body class="admin-body">
+<form id="admin-fields" autocomplete="off" style="display:contents">
+<div class="admin-container">
+  <div class="admin-header">
+    <h1>管理后台</h1>
+    <div>
+      <button class="btn" id="back-chat" type="button">← 返回聊天</button>
+      <button class="btn danger" id="logout-btn" type="button">退出</button>
+    </div>
+  </div>
+
+<!-- 页签导航 -->
+  <div class="admin-tabs" id="admin-tabs" role="tablist">
+    <div class="admin-group-tabs" role="tablist" aria-label="后台功能分组">
+      <button class="admin-group-tab active" type="button" data-group="overview">概览</button>
+      <button class="admin-group-tab" type="button" data-group="platform">平台配置</button>
+      <button class="admin-group-tab" type="button" data-group="users">用户与权限</button>
+      <button class="admin-group-tab" type="button" data-group="billing">计费与额度</button>
+      <button class="admin-group-tab" type="button" data-group="content">内容</button>
+    </div>
+    <div class="admin-subnav" id="admin-subnav" role="tablist" aria-label="后台二级导航"></div>
+  </div>
+
+  <!-- 概览 -->
+  <div class="admin-panel active" id="panel-overview">
+    <div class="admin-card">
+      <h2>概览</h2>
+      <div class="admin-grid" id="stats-grid"></div>
+
+      <div class="overview-note muted small">核心状态概览。详细趋势、用量和排行请进入“用量分析”。</div>
+    </div>
+  </div>
+
+  <div class="admin-panel" id="panel-usage">
+    <div class="admin-card">
+      <div class="admin-panel-head"><div><h2>用量分析</h2><p class="muted small">近 14 天调用趋势、用户用量、模型评价与额度排行。</p></div></div>
+      <div class="section-title">近 14 天调用趋势</div><div class="trend-chart" id="trend-chart"></div>
+      <div class="meta-row" id="meta-row"></div>
+      <div class="section-title">近 14 天用量</div><div class="usage-ledger admin-long-list" id="usage-ledger"></div>
+      <div class="section-title">模型评价</div><div class="model-votes admin-long-list" id="model-votes"></div>
+      <div class="section-title">额度最高的用户 Top 5</div><div class="mini-users admin-long-list" id="top-users"></div>
+    </div>
+  </div>
+
+  <!-- 对话设置 -->
+  <div class="admin-panel" id="panel-chat">
+    <div class="admin-card">
+      <h2>对话</h2>
+      <p class="muted small">上下文条数 = 每次发给模型的最近消息数（系统提示词不计入）；输出上限 = 单次回答最多生成的 token。用户可在自己的设置里调低，不能超过这里的上限。</p>
+      <label class="field"><span>默认上下文条数</span>
+        <div class="stepper stepper-field">
+          <button type="button" class="seg-btn" data-step="-1" data-target="chat-context" aria-label="减少默认上下文条数">−</button>
+          <input type="text" inputmode="numeric" id="chat-context" value="40" aria-label="默认上下文条数" autocomplete="off">
+          <button type="button" class="seg-btn" data-step="1" data-target="chat-context" aria-label="增加默认上下文条数">+</button>
+        </div>
+      </label>
+      <label class="field"><span>上下文条数上限</span>
+        <div class="stepper stepper-field">
+          <button type="button" class="seg-btn" data-step="-1" data-target="chat-context-max" aria-label="减少上下文条数上限">−</button>
+          <input type="text" inputmode="numeric" id="chat-context-max" value="200" aria-label="上下文条数上限" autocomplete="off">
+          <button type="button" class="seg-btn" data-step="1" data-target="chat-context-max" aria-label="增加上下文条数上限">+</button>
+        </div>
+      </label>
+      <label class="field"><span>单次输出上限（token）</span>
+          <input id="chat-output" type="number" min="256" max="128000" step="256" value="12800">
+      </label>
+      <button class="btn primary" id="chat-limits-save" type="button">保存对话设置</button>
+    </div>
+  </div>
+
+  <!-- 用户管理 -->
+  <div class="admin-panel" id="panel-thinking">
+    <div class="admin-card">
+      <h2>AI 思考策略</h2>
+      <p class="muted small">统一管理各模型的推理强度。规则按顺序匹配模型 ID(包含匹配),<b>第一个命中生效</b>;无命中时用全局默认。「自动学习」在上游报错时记录可用档位并生成规则,确保后续请求可用。</p>
+      <div class="thinking-global">
+        <label class="field"><span>默认思考强度(未命中规则且禁止用户自选时生效)</span>
+          <select id="th-default">
+            <option value="off">关闭思考</option>
+            <option value="low">低</option>
+            <option value="medium">中</option>
+            <option value="high">高</option>
+          </select>
+        </label>
+        <label class="user-form-admin"><span class="switch"><input type="checkbox" id="th-override"><span class="slider"></span></span><span>允许用户自行调整思考强度</span></label>
+        <label class="user-form-admin"><span class="switch"><input type="checkbox" id="th-learn"><span class="slider"></span></span><span>自动学习:上游拒绝推理参数时记录可用档位并生成规则</span></label>
+      </div>
+      <div class="section-title">模型规则 <span class="muted small" id="th-rule-count"></span></div>
+      <div id="thinking-rules" class="pkg-cards"></div>
+      <div class="section-title" style="margin-top:18px" id="th-form-title">添加规则</div>
+      <div class="pkg-form-grid">
+        <label class="field"><span>匹配关键词(模型 ID 包含即可,如 kimi-k3)</span><input id="th-match" placeholder="kimi-k3"></label>
+        <label class="field"><span>模式</span>
+          <select id="th-mode">
+            <option value="map">自动映射:档位不在支持列表内就近修正</option>
+            <option value="force">强制:一律使用固定档位</option>
+            <option value="off">禁用思考:移除全部推理参数</option>
+          </select>
+        </label>
+        <label class="field" id="th-levels-wrap"><span>支持档位(逗号分隔,如 low,high,max)</span><input id="th-levels" placeholder="low,high,max"></label>
+        <label class="field" id="th-force-wrap" hidden><span>强制档位</span>
+          <select id="th-force">
+            <option value="low">低</option>
+            <option value="medium">中</option>
+            <option value="high">高</option>
+            <option value="max">最大</option>
+          </select>
+        </label>
+      </div>
+      <div class="row-between" style="gap:8px">
+        <button class="btn primary" id="th-add" type="button">添加规则</button>
+        <button class="btn" id="th-cancel" type="button" hidden>取消编辑</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="admin-panel" id="panel-users">
+    <div class="admin-card users-card">
+      <div class="users-head">
+        <div>
+          <h2>用户</h2>
+          <p class="users-count" id="users-count">—</p>
+        </div>
+        <button class="btn primary" id="user-create-btn" type="button">创建用户</button>
+      </div>
+      <div class="admin-toolbar users-toolbar">
+        <label class="users-search">
+          <svg class="oc-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.25"/><path d="M16.2 16.2L20 20"/></svg>
+          <input type="search" class="search-input" id="user-search" placeholder="搜索用户名" autocomplete="off" spellcheck="false">
+        </label>
+        <button class="btn small" id="search-clear" type="button" hidden>清除</button>
+        <div class="users-filters" id="users-filters" role="tablist">
+          <button class="log-filter-btn active" type="button" data-filter="all">全部</button>
+          <button class="log-filter-btn" type="button" data-filter="admin">管理员</button>
+          <button class="log-filter-btn" type="button" data-filter="member">成员</button>
+        </div>
+      </div>
+      <div class="users-table-wrap">
+        <table class="admin-table users-table">
+          <thead>
+            <tr>
+              <th>用户</th>
+              <th>额度</th>
+              <th>用户组</th>
+              <th>对话</th>
+              <th>注册</th>
+              <th>最后访问</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="users-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- 用户组管理 -->
+  <div class="admin-panel" id="panel-groups">
+    <div class="admin-card">
+      <h2>用户组管理</h2>
+      <p class="small muted" style="margin-top:-6px">系统自带「默认用户组」，初始授权全部全局模型。新用户注册时加入下方所选的注册默认组；管理员仍可在「模型授权」里收窄某个组能用的模型。未分组用户开放全部全局供应商。</p>
+      <div class="group-default-row">
+        <label class="field" style="margin-bottom:0;min-width:220px;flex:1"><span>新用户注册默认组</span>
+          <div class="select-box" id="g-default" data-value="" role="button" tabindex="0">
+            <span class="sb-label">默认用户组</span>
+            <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
+          </div>
+        </label>
+        <button class="btn primary" id="g-default-save" type="button">保存</button>
+      </div>
+      <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; align-items:flex-end">
+        <label class="field" style="margin-bottom:0"><span>组名</span><input id="g-name" placeholder="如:VIP / 基础组"></label>
+        <button class="btn primary" id="g-add" type="button">创建用户组</button>
+      </div>
+      <div id="groups-list"></div>
+    </div>
+  </div>
+
+  <!-- 模型授权配置 -->
+  <div class="admin-panel" id="panel-access">
+    <div class="admin-card">
+      <h2>模型授权(组 → 供应商/模型)</h2>
+      <p class="small muted" style="margin-top:-6px">选择用户组和全局供应商,勾选开放给该组的模型。未勾选的模型该组成员无法使用。成员自己添加的供应商不受限制。</p>
+      <div id="access-box" style="display:flex; flex-direction:column; gap:10px"></div>
+    </div>
+  </div>
+
+  <!-- 供应商配置 -->
+  <div class="admin-panel" id="panel-providers">
+    <div class="admin-card">
+      <h2>供应商配置(默认模型给所有用户使用)</h2>
+      <div id="admin-providers"></div>
+      <details class="add-provider" style="margin-top:14px">
+        <summary>+ 添加全局供应商</summary>
+        <div class="add-provider-form">
+          <label class="field"><span>名称</span><input id="ap-name" placeholder="默认供应商"></label>
+          <label class="field"><span>Base URL *</span><input id="ap-baseurl" placeholder="https://api.openai.com/v1"></label>
+          <label class="field"><span>API Key *</span>
+            <div class="pw-wrap">
+              <input id="ap-key" type="password" placeholder="sk-..." autocomplete="off">
+              <button class="pw-toggle" id="ap-key-toggle" type="button" title="显示 Key" aria-label="显示 Key"><span>◉</span></button>
+            </div>
+            <label class="key-keep-option" title="Key 加密保存在服务器。默认勾选，保存后管理员可随时点小眼睛查看"><input id="ap-key-keep" type="checkbox" checked> 保存后保持显示</label>
+          </label>
+          <label class="field"><span>API 格式</span>
+            <div class="select-box" id="ap-format" data-value="chat" role="button" tabindex="0">
+              <span class="sb-label">OpenAI chat/completions</span>
+              <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
+            </div>
+          </label>
+          <div class="field">
+            <span>模型列表 *</span>
+            <div class="model-check">
+              <div class="model-check-toolbar">
+                <input id="ap-model-q" type="search" placeholder="搜索，或输入模型 ID 后添加" autocomplete="off">
+                <button class="btn small" id="ap-model-add" type="button">添加</button>
+                <button class="btn small" id="ap-fetch-models" type="button" title="根据 Base URL 和 Key 自动获取">获取列表</button>
+              </div>
+              <div class="model-check-meta">
+                <label class="model-check-all"><input type="checkbox" id="ap-models-all"> 全选当前列表</label>
+                <span class="muted small" id="ap-models-count">未获取模型</span>
+              </div>
+              <div class="model-check-list" id="ap-models-list"></div>
+            </div>
+          </div>
+          <label class="field"><span>每次调用扣费次数</span><input id="ap-cost" type="number" min="1" value="1"></label>
+          <div class="probe-box">
+            <label class="field"><span>测试模型</span>
+              <div class="select-box" id="ap-test-model" data-value="" role="button" tabindex="0">
+                <span class="sb-label"><span class="muted">先获取或勾选模型</span></span>
+                <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
+              </div>
+            </label>
+            <label class="field"><span>测试问题</span>
+              <input id="ap-test-prompt" placeholder="回复一个字：好" autocomplete="off" spellcheck="false">
+            </label>
+            <label class="field"><span>批量间隔（秒）</span>
+              <input id="ap-test-gap" type="number" min="0" max="60" step="0.5" value="1">
+            </label>
+            <div class="probe-actions">
+              <button class="btn" id="ap-test" type="button">测试当前模型</button>
+              <button class="btn" id="ap-test-all" type="button">批量测试已勾选</button>
+              <button class="btn hidden" id="ap-keep-passed" type="button">仅保留通过模型</button>
+              <button class="btn hidden" id="ap-test-stop" type="button">停止</button>
+              <span class="muted small" id="ap-test-status"></span>
+            </div>
+            <div class="probe-result hidden" id="ap-test-result"></div>
+          </div>
+          <button class="btn primary" id="ap-save" type="button">保存供应商</button>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <div class="admin-panel" id="panel-verify">
+    <div class="admin-card">
+      <h2>用户验证与 SMTP</h2>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="verify-email-enabled"><span class="slider"></span></span><span>开启邮箱验证</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="verify-reset-enabled"><span class="slider"></span></span><span>开启找回密码</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="verify-quota-unlimited"><span class="slider"></span></span><span>新注册用户默认无限额度</span></label>
+      <label class="field"><span>新注册用户默认额度</span><input id="verify-free-quota" type="number" min="0" value="100"></label>
+      <h3>SMTP</h3>
+      <label class="field"><span>服务器</span><input id="smtp-host" placeholder="smtp.example.com"></label>
+      <label class="field"><span>端口</span><input id="smtp-port" type="number" value="587"></label>
+      <label class="field"><span>用户名</span><input id="smtp-user"></label>
+      <label class="field"><span>密码</span><input id="smtp-pass" type="password"></label>
+      <label class="field"><span>加密</span><select id="smtp-encryption"><option value="tls">TLS</option><option value="ssl">SSL</option><option value="none">无</option></select></label>
+      <label class="field"><span>发件人名称</span><input id="smtp-from-name" value="TinyChat"></label>
+      <label class="field"><span>发件人地址</span><input id="smtp-from-email"></label>
+      <div class="row-between" style="gap:8px;flex-wrap:wrap">
+        <button class="btn primary" id="verify-save" type="button">保存验证设置</button>
+        <span class="row-between" style="gap:8px;flex-wrap:nowrap">
+          <input id="smtp-test-to" type="email" placeholder="测试收件邮箱，留空发给自己" style="max-width:240px">
+          <button class="btn" id="smtp-test-btn" type="button" style="white-space:nowrap;flex-shrink:0">发送测试邮件</button>
+        </span>
+      </div>
+      <p class="muted small" style="margin-top:6px">发送测试会使用当前保存的 SMTP 配置与「注册验证邮件」模板真实投递一封样例邮件，便于确认效果。</p>
+      <h3>邮件模板</h3>
+      <div class="seg-group" id="mtpl-tabs" style="margin:0 0 12px">
+        <button class="seg-btn active" data-mtpl="verify" type="button">注册验证邮件</button>
+        <button class="seg-btn" data-mtpl="reset" type="button">找回密码邮件</button>
+      </div>
+      <label class="field"><span>邮件主题</span><input id="mtpl-subject"></label>
+      <label class="field"><span>邮件正文（HTML）· 可用变量：{siteName} 站点名 · {name} 用户名 · {link} 链接 · {expires} 有效期</span><textarea id="mtpl-html" rows="14" spellcheck="false" style="font-family:ui-monospace,SFMono-Regular,Consolas,'Courier New',monospace;font-size:12.5px;line-height:1.6"></textarea></label>
+      <div class="row-between" style="gap:8px">
+        <button class="btn" id="mtpl-defaults" type="button">恢复默认模板</button>
+        <span class="muted small">左侧编辑实时更新右侧预览，点「保存验证设置」后生效</span>
+      </div>
+      <label class="field"><span>邮件预览</span><iframe id="mtpl-preview" title="邮件预览" style="width:100%;height:460px;border:1px solid var(--hairline);border-radius:12px;background:#eef1f6"></iframe></label>
+    </div>
+  </div>
+  <div class="admin-panel" id="panel-packages">
+    <div class="admin-card">
+      <h2>额度套餐</h2>
+      <p class="muted small">一个套餐一张卡片，用户端展示同样内容。<b>价格填 0</b> 时可被用户直接领取（每人限领一次）；付费套餐用购买链接或兑换码。</p>
+      <div class="pkg-form-grid">
+        <label class="field"><span>套餐名称</span><input id="pkg-name" placeholder="专业版 1000 次"></label>
+        <label class="field"><span>有效对话次数（-1 为无限）</span><input id="pkg-quota" type="number" value="1000"></label>
+        <label class="field"><span>有效时间（天，0 = 永久）</span><input id="pkg-validity" type="number" value="0"></label>
+        <label class="field"><span>每人可领取次数（-1 不限，0 不可领取，仅 0 元套餐）</span><input id="pkg-limit" type="number" value="1"></label>
+        <label class="field"><span>价格（元，0 = 免费领取）</span><input id="pkg-price" type="number" step="0.01" min="0" value="0"></label>
+        <label class="field"><span>购买链接（付费套餐选填）</span><input id="pkg-url" type="url" placeholder="https://..."></label>
+        <label class="field"><span>套餐说明（选填）</span><textarea id="pkg-desc" rows="2"></textarea></label>
+      </div>
+      <div class="row-between" style="gap:8px">
+        <button class="btn primary" id="pkg-save" type="button">保存套餐</button>
+        <button class="btn" id="pkg-cancel-edit" type="button" hidden>取消编辑</button>
+      </div>
+      <div id="pkg-list" class="pkg-cards"></div>
+    </div>
+  </div>
+  <div class="admin-panel" id="panel-codes">
+    <div class="admin-card">
+      <h2>已生成兑换码及使用情况</h2>
+      <p class="muted small">新生成的兑换码会同时保存明文，用于按套餐导出；此前生成的旧码只有哈希，无法导出明文。固定兑换码的码面直接显示在列表中。</p>
+      <div class="row-between" style="margin:10px 0">
+        <span class="muted small" id="codes-summary"></span>
+        <span class="row-between" style="gap:8px">
+          <input id="codes-search" placeholder="按套餐 / 状态 / 码前缀筛选" autocomplete="off" style="max-width:220px">
+          <button class="btn small danger" id="codes-prune" type="button">清理已使用</button>
+        </span>
+      </div>
+      <div id="codes-list" class="admin-list"></div>
+      <div class="row-between hidden" id="codes-pager" style="margin-top:6px">
+        <button class="btn small" id="codes-prev" type="button">上一页</button>
+        <span class="muted small" id="codes-page-label"></span>
+        <button class="btn small" id="codes-next" type="button">下一页</button>
+      </div>
+      <div class="section-title">兑换码管理 · 生成兑换码</div>
+      <label class="field"><span>选择套餐</span><select id="pkg-code-package"></select></label>
+      <label class="field"><span>数量</span><input id="pkg-code-count" type="number" min="1" max="500" value="10"></label>
+      <button class="btn" id="pkg-generate" type="button">生成兑换码</button>
+      <textarea id="pkg-generated-codes" rows="6" readonly placeholder="生成后仅此处显示明文兑换码"></textarea>
+      <div class="section-title">兑换码管理 · 按套餐批量操作</div>
+      <label class="field"><span>选择套餐</span><select id="codes-bulk-package"></select></label>
+      <div class="row-between" style="gap:8px">
+        <button class="btn" id="codes-export-unused" type="button">导出未使用</button>
+        <button class="btn danger" id="codes-clear-unused" type="button">清除未使用</button>
+      </div>
+      <p class="muted small">导出所选套餐全部未使用兑换码的明文（一行一个，.txt 文件）；清除则删除所选套餐全部未使用的兑换码，已使用的不受影响。</p>
+      <div class="section-title">兑换码管理 · 添加固定兑换码</div>
+      <label class="field"><span>兑换码（4-64 位字母或数字）</span><input id="fixed-code-value" placeholder="WELCOME2026" autocomplete="off"></label>
+      <label class="field"><span>可兑换次数（总共可被兑换多少次）</span><input id="fixed-code-max" type="number" min="1" value="1"></label>
+      <label class="field"><span>每次兑换获得的可用次数（-1 为无限）</span><input id="fixed-code-quota" type="number" min="-1" value="100"></label>
+      <label class="field"><span>有效期至（留空则长期有效）</span><input id="fixed-code-expiry" type="datetime-local"></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="fixed-code-peruser" checked><span class="slider"></span></span><span>每个用户限兑一次</span></label>
+      <button class="btn" id="fixed-code-add" type="button">添加固定兑换码</button>
+    </div>
+  </div>
+
+  <!-- 联网搜索 -->
+  <div class="admin-panel" id="panel-search">
+    <div class="admin-card">
+      <h2>联网搜索</h2>
+      <p class="muted small">开启后，对话会先检索网页再作答，回复底部附来源链接。</p>
+      <label class="user-form-admin" style="margin:14px 0 8px">
+        <span class="switch"><input type="checkbox" id="ws-enabled"><span class="slider"></span></span>
+        <span>启用联网搜索</span>
+      </label>
+      <label class="user-form-admin" style="margin:0 0 18px">
+        <span class="switch"><input type="checkbox" id="ws-allow-user"><span class="slider"></span></span>
+        <span>允许用户改用自己的检索配置</span>
+      </label>
+      <label class="user-form-admin" style="margin:0 0 8px">
+        <span class="switch"><input type="checkbox" id="ws-url-read"><span class="slider"></span></span>
+        <span>链接读取：用户消息里的网址自动抓取正文作为材料</span>
+      </label>
+      <label class="field" style="margin:0 0 18px"><span>每条消息最多读取链接数(1-5)</span>
+        <input id="ws-url-read-max" type="number" min="1" max="5" value="3">
+      </label>
+      <label class="field"><span>检索后端</span>
+        <div class="select-box" id="ws-provider" data-value="tavily" role="button" tabindex="0">
+          <span class="sb-label">Tavily</span>
+          <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
+        </div>
+      </label>
+      <label class="field" id="ws-tavily-row"><span>Tavily API Key</span>
+        <input id="ws-tavily-key" type="password" placeholder="tvly-..." autocomplete="off">
+      </label>
+      <label class="field hidden" id="ws-searx-row"><span>SearXNG 地址</span>
+        <textarea id="ws-searx-url" rows="4" placeholder="每行一个，例如&#10;https://sx.xo.st&#10;https://search.example.com" autocomplete="off" spellcheck="false"></textarea>
+      </label>
+      <label class="field"><span>每次最多条数</span>
+        <input id="ws-max" type="number" min="1" max="8" value="5">
+      </label>
+      <label class="field"><span>测试关键词</span>
+        <input id="ws-query" placeholder="openai" autocomplete="off" spellcheck="false">
+      </label>
+      <div class="probe-actions">
+        <button class="btn" id="ws-test" type="button">测试当前接口</button>
+        <button class="btn" id="ws-scan" type="button">探测公共 SearXNG</button>
+        <span class="muted small" id="ws-test-status"></span>
+      </div>
+      <div class="probe-result hidden" id="ws-test-result"></div>
+      <p class="muted small" id="ws-hint">Tavily 需在 tavily.com 申请 Key。SearXNG 每行一个实例根地址，需开启 JSON 格式（format=json）；对话检索按顺序尝试，当前实例失败或没有结果时自动换下一个。探测会拉取 searx.space 使用的官方公共目录（约 80 个 HTTPS 实例）并分批测试，可用的排在前面，点「填入」会追加到列表。</p>
+      <button class="btn primary" id="ws-save" type="button">保存联网设置</button>
+    </div>
+  </div>
+
+
+  <!-- 文档解析 -->
+  <div class="admin-panel" id="panel-docs">
+    <div class="admin-card">
+      <h2>文档解析</h2>
+      <p class="muted small">支持 PDF、图片、Word、PPT、Excel、HTML。Token 留空走 MinerU 轻量解析；填入后改用精准解析。解析不扣对话次数。</p>
+      <label class="user-form-admin" style="margin:14px 0 18px">
+        <span class="switch"><input type="checkbox" id="mineru-allow-user"><span class="slider"></span></span>
+        <span>允许用户改用自己的 MinerU Token</span>
+      </label>
+      <label class="field"><span>MinerU Token（可选）</span>
+        <input id="mineru-token" type="password" placeholder="留空则使用免登录轻量解析" autocomplete="off">
+      </label>
+      <p class="muted small" id="mineru-mode">当前：轻量解析。单文件不超过 10MB、20 页，同一 IP 每分钟有次数限制。用户上传后直接解析，只有超限或失败时才会看到限制。</p>
+      <button class="btn primary" id="mineru-save" type="button">保存解析设置</button>
+    </div>
+  </div>
+
+  <!-- 版本更新 -->
+  <div class="admin-panel" id="panel-update">
+    <div class="admin-card">
+      <h2>版本更新</h2>
+      <p class="muted small">从 GitHub Releases 检查新版本并在线升级。更新只覆盖程序文件，<b>data/</b> 数据目录与 <b>config.php</b> 不会被改动；升级前的程序会自动备份到 <b>data/update/backup/</b>。需要主机可访问更新源（config.php 可配镜像）且 PHP 启用 zip 或 phar 扩展。</p>
+      <div class="row-between" style="gap:8px;flex-wrap:wrap;margin-top:6px">
+        <span class="small">当前版本 <b id="upd-current">—</b> <span class="muted small" id="upd-cached"></span></span>
+        <span class="row-between" style="gap:8px;flex-wrap:nowrap">
+          <button class="btn" id="upd-check" type="button">检查更新</button>
+          <button class="btn primary hidden" id="upd-apply" type="button">一键更新</button>
+        </span>
+      </div>
+      <p class="muted small" id="upd-status" style="margin:8px 0 0">正在加载…</p>
+      <div id="upd-result" class="hidden" style="margin-top:12px">
+        <div class="section-title">最新版本 <span id="upd-latest"></span> <span class="muted small" id="upd-published"></span></div>
+        <pre id="upd-notes" style="white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto;background:rgba(127,127,127,.08);border:1px solid var(--hairline);border-radius:10px;padding:10px 12px;font-family:ui-monospace,SFMono-Regular,Consolas,'Courier New',monospace;font-size:12.5px;line-height:1.6"></pre>
+        <a id="upd-link" href="#" target="_blank" rel="noopener" class="small">在 GitHub 查看该版本 ↗</a>
+      </div>
+      <p class="muted small" id="upd-last" style="margin:10px 0 0"></p>
+    </div>
+  </div>
+
+  <!-- 助手库 -->
+  <div class="admin-panel" id="panel-assistants">
+    <div class="admin-card users-card">
+      <div class="users-head">
+        <div>
+          <h2>助手库</h2>
+          <p class="users-count" id="asst-count">面向所有用户的公共分类和助手</p>
+        </div>
+        <div class="assistant-lib-actions">
+          <button class="btn" id="asst-add-cat" type="button">添加分类</button>
+          <button class="btn primary" id="asst-add" type="button">添加助手</button>
+        </div>
+      </div>
+      <div class="assistant-lib-split admin-asst-split">
+        <nav class="assistant-lib-cats" id="asst-cats" role="tablist" aria-label="助手分类"></nav>
+        <div id="asst-body" class="assistant-lib-body admin-asst-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 运行日志 -->
+  <div class="admin-panel" id="panel-logs">
+    <div class="admin-card">
+      <h2>运行日志</h2>
+      <div class="log-filters" id="log-filters">
+        <button class="log-filter-btn active" data-kind="" type="button">全部</button>
+        <button class="log-filter-btn" data-kind="chat" type="button">对话</button>
+        <button class="log-filter-btn" data-kind="auth" type="button">认证</button>
+        <button class="log-filter-btn" data-kind="parse" type="button">解析</button>
+        <button class="log-filter-btn" data-kind="err" type="button">错误</button>
+        <button class="btn small" id="log-refresh" type="button" style="margin-left:auto">↻ 刷新</button>
+        <button class="btn small danger" id="log-clear" type="button">清空</button>
+      </div>
+      <div class="users-table-wrap">
+      <table class="admin-table log-table">
+        <thead><tr><th>时间</th><th>用户</th><th>类型</th><th>供应商</th><th>模型</th><th>状态</th><th>耗时</th><th>扣费</th><th>信息</th></tr></thead>
+        <tbody id="logs-tbody"></tbody>
+      </table>
+      </div>
+      <p class="muted small" id="logs-empty" style="text-align:center;padding:20px 0">暂无日志</p>
+    </div>
+  </div>
+</div>
+<!-- 创建 / 编辑用户 -->
+<div class="modal-mask hidden" id="user-form-modal" role="dialog" aria-modal="true" aria-labelledby="user-form-title">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h3 id="user-form-title">创建用户</h3>
+      <button class="icon-btn" id="user-form-close" type="button" aria-label="关闭">
+        <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <label class="field"><span>用户名</span><input id="uf-name" autocomplete="off" spellcheck="false"></label>
+      <label class="field"><span id="uf-pass-label">密码</span><input id="uf-pass" type="password" autocomplete="new-password"></label>
+      <div class="user-form-grid">
+        <label class="field"><span>额度</span><input id="uf-quota" type="number" min="0" value="100"></label>
+        <label class="field"><span>用户组</span>
+          <div class="select-box" id="uf-group" data-value="" role="button" tabindex="0">
+            <span class="sb-label">未分组</span>
+            <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
+          </div>
+        </label>
+      </div>
+      <label class="user-form-admin">
+        <span class="switch"><input type="checkbox" id="uf-admin"><span class="slider"></span></span>
+        <span>设为管理员</span>
+      </label>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" id="user-form-cancel" type="button">取消</button>
+      <button class="btn primary" id="user-form-save" type="button">创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- 创建 / 编辑公共助手 -->
+<div class="modal-mask hidden" id="asst-form-modal" role="dialog" aria-modal="true" aria-labelledby="asst-form-title">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h3 id="asst-form-title">添加助手</h3>
+      <button class="icon-btn" id="asst-form-close" type="button" aria-label="关闭">
+        <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <label class="field"><span>名称</span><input id="asf-name" maxlength="40" autocomplete="off" spellcheck="false"></label>
+      <label class="field"><span>简介</span><input id="asf-desc" maxlength="160" placeholder="一句话说明这个助手做什么" autocomplete="off"></label>
+      <label class="field"><span>头像 emoji</span><input id="asf-icon" maxlength="8" placeholder="例如 📚" autocomplete="off" spellcheck="false"></label>
+      <label class="field"><span>分类</span>
+        <div class="select-box" id="asf-cat" data-value="" role="button" tabindex="0">
+          <span class="sb-label">选择分类</span>
+          <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
+        </div>
+      </label>
+      <label class="field"><span>系统提示词</span><textarea id="asf-prompt" rows="6" placeholder="这个助手的角色、语气和任务边界"></textarea></label>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" id="asst-form-cancel" type="button">取消</button>
+      <button class="btn primary" id="asst-form-save" type="button">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-mask hidden" id="asst-cat-modal" role="dialog" aria-modal="true" aria-labelledby="asst-cat-title">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h3 id="asst-cat-title">添加分类</h3>
+      <button class="icon-btn" id="asst-cat-close" type="button" aria-label="关闭">
+        <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <label class="field"><span>分类名称</span><input id="asc-name" maxlength="40" autocomplete="off" spellcheck="false"></label>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" id="asst-cat-cancel" type="button">取消</button>
+      <button class="btn primary" id="asst-cat-save" type="button">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 用户对话历史查看弹窗 -->
+<div class="modal-mask hidden" id="user-chats-modal" role="dialog" aria-modal="true" aria-labelledby="user-chats-title">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3 id="user-chats-title">用户对话历史</h3>
+      <button class="icon-btn" id="user-chats-close" type="button" aria-label="关闭">
+        <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="admin-toolbar" style="margin-bottom:12px">
+        <select id="user-chats-select" class="search-input" style="flex:1;min-width:140px;cursor:pointer">
+          <option value="">选择用户(可输入筛选)</option>
+        </select>
+        <button class="btn small" id="user-chats-reload" type="button">↻ 加载</button>
+      </div>
+      <div id="user-chats-content"></div>
+    </div>
+  </div>
+</div>
+</form>
+<script src="./static/js/config.js?v=20260926.31"></script>
+<script src="./static/js/icons.js?v=20260926.31"></script>
+<script src="./static/js/ui.js?v=20260926.31"></script>
+<script src="./static/js/components.js?v=20260926.31"></script>
+<script src="./static/js/admin.js?v=20260927.23"></script>
+</body>
+</html>

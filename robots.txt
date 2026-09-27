@@ -1,0 +1,6 @@
+# TinyChat robots.txt
+# 部署在子目录时请自行调整路径
+User-agent: *
+Disallow: /api/
+Disallow: /admin
+Disallow: /admin.html

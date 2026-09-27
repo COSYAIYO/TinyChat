@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#ffffff">
+<title>TinyChat - 自托管多模型 AI 对话应用（PHP，无需数据库）</title>
+<meta name="description" content="TinyChat 是开源的自托管（私有部署）AI 对话应用：纯 PHP、无需数据库，上传虚拟主机即可运行。支持 OpenAI、Anthropic 及各类兼容接口的多模型切换，内置用户注册登录、额度计费、兑换码、助手库、联网搜索、文件解析与在线更新，适合个人和团队搭建自己的 AI 站点。">
+<meta name="keywords" content="TinyChat,AI对话应用,自托管AI,私有部署,ChatGPT界面,PHP聊天程序,OpenAI,Anthropic,多模型,大模型前端,用户系统,兑换码计费,无需数据库">
+<meta name="robots" content="index,follow">
+<link rel="canonical" href="{{SITE_URL}}/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="TinyChat">
+<meta property="og:title" content="TinyChat - 自托管多模型 AI 对话应用">
+<meta property="og:description" content="纯 PHP 自托管的 AI 对话应用，无需数据库，虚拟主机即可部署。多模型切换、用户与额度管理、助手库、联网搜索，开箱即用。">
+<meta property="og:url" content="{{SITE_URL}}/">
+<meta property="og:image" content="{{SITE_URL}}/logo.svg">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="TinyChat - 自托管多模型 AI 对话应用">
+<meta name="twitter:description" content="纯 PHP 自托管的 AI 对话应用，无需数据库，虚拟主机即可部署。">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebApplication","name":"TinyChat","url":"{{SITE_URL}}/","applicationCategory":"CommunicationApplication","operatingSystem":"Web","inLanguage":"zh-CN","description":"自托管多模型 AI 对话应用：纯 PHP、无需数据库，支持 OpenAI、Anthropic 及兼容接口，内置用户系统与额度计费。","offers":{"@type":"Offer","price":"0","priceCurrency":"CNY"},"featureList":["多供应商多模型对话","流式输出与 Markdown 渲染","用户注册登录与邮箱验证","额度计费与兑换码","用户组与模型授权","助手库","联网搜索","文档解析","对话云同步与分享","在线更新"]}
+</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ctext x='12' y='17' text-anchor='middle' font-family='Inter,Segoe UI,Arial,sans-serif' font-size='15' font-weight='800' fill='%23232936'%3ET%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="./static/css/style.css?v=20260926.32">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20260926.31">
+<link rel="stylesheet" href="./static/css/refine.css?v=20260926.31">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20260926.31">
+<link rel="stylesheet" href="./static/css/polish.css?v=20260926.33">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20260926.31">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20260927.17">
+<script>
+/* 在样式表之后立刻刷主题色,避免首屏主按钮仍是默认蓝 */
+(function () {
+  try {
+    var p = JSON.parse(localStorage.getItem('oc_prefs') || '{}');
+    var hex = String(p.accent || '').trim();
+    var m = hex.match(/^#([0-9a-fA-F]{3,8})$/);
+    if (!m) return;
+    var h = m[1];
+    if (h.length === 3 || h.length === 4) h = h.split('').map(function (c) { return c + c; }).join('');
+    if (h.length !== 6 && h.length !== 8) return;
+    var r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+    var dark = (p.theme === 'dark') || (p.theme !== 'light' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    var t = dark ? 0.28 : 0.18;
+    var mix = function (c, d) { return Math.max(0, Math.min(255, Math.round(c + (d - c) * t))); };
+    var pad = function (n) { return n.toString(16).padStart(2, '0'); };
+    var acc = '#' + pad(r) + pad(g) + pad(b);
+    var hover = '#' + pad(mix(r, dark ? 255 : 0)) + pad(mix(g, dark ? 255 : 0)) + pad(mix(b, dark ? 255 : 0));
+    var aSoft = dark ? 0.12 : 0.08, aStrong = dark ? 0.2 : 0.14, aRing = dark ? 0.3 : 0.2, aSel = dark ? 0.14 : 0.07;
+    var rgba = function (a) { return 'rgba(' + r + ', ' + g + ', ' + b + ', ' + a + ')'; };
+    var root = document.documentElement;
+    root.style.setProperty('--accent', acc);
+    root.style.setProperty('--accent-hover', hover);
+    root.style.setProperty('--brand', acc);
+    root.style.setProperty('--brand-hover', hover);
+    root.style.setProperty('--brand-soft', rgba(aSoft));
+    root.style.setProperty('--brand-soft-strong', rgba(aStrong));
+    root.style.setProperty('--ring-brand', rgba(aRing));
+    root.style.setProperty('--primary', acc);
+    root.style.setProperty('--primary-hover', hover);
+    root.style.setProperty('--active-text', dark ? hover : acc);
+    root.style.setProperty('--active-bar', acc);
+    root.style.setProperty('--bg-selected', rgba(aSel));
+  } catch (e) {}
+})();
+</script>
+<!-- 渲染引擎依赖:markdown-it / KaTeX / highlight.js / mermaid(顺序敏感) -->
+<script defer src="./vendor/markdown-it/markdown-it.min.js"></script>
+<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js"></script>
+<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js"></script>
+<script defer src="./vendor/katex/katex.min.js"></script>
+<script defer src="./vendor/katex/auto-render.min.js"></script>
+<script defer src="./vendor/highlight/highlight.min.js"></script>
+<script defer src="./vendor/mermaid/mermaid.min.js?v=11.17.2"></script>
+</head>
+<body>
+  <!-- 移动端侧边栏遮罩 -->
+  <div class="sidebar-mask hidden" id="sidebar-mask"></div>
+
+  <!-- 侧边栏 -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <button class="icon-btn sidebar-collapse-btn" id="toggle-sidebar" title="收起侧边栏" aria-label="收起侧边栏">
+        <svg class="oc-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <img src="./logo.svg" class="brand-logo brand-logo-light" alt="TinyChat">
+      <img src="./logo-dark.svg" class="brand-logo brand-logo-dark" alt="TinyChat">
+      <button class="icon-btn theme-toggle-btn" id="theme-toggle" title="切换主题" aria-label="切换主题">
+        <svg class="sun-icon oc-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="12" cy="12" r="3.4"/><path d="M12 3.4v1.8M12 18.8v1.8M3.4 12h1.8M18.8 12h1.8M6 6l1.3 1.3M16.7 16.7L18 18M6 18l1.3-1.3M16.7 7.3L18 6" stroke-linecap="round"/></svg>
+        <svg class="moon-icon oc-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M20 14.2A7.6 7.6 0 1110 4.2 6.2 6.2 0 0020 14.2z" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+    <div class="sidebar-header">
+      <button class="new-chat-btn" id="new-chat-btn">
+        <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
+        新建对话
+      </button>
+    </div>
+    <div class="sidebar-model-wrap">
+      <button class="assistant-lib-btn" id="assistant-lib-btn" type="button" aria-haspopup="dialog">
+        <span class="model-icon">
+          <svg class="oc-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><rect x="5.4" y="6.4" width="13.2" height="11.4" rx="3"/><path d="M9.2 4.2v2.2M14.8 4.2v2.2M4 10.2h1.4M4 14.2h1.4M18.6 10.2H20M18.6 14.2H20" stroke-linecap="round"/><circle cx="10" cy="12" r="1"/><circle cx="14" cy="12" r="1"/></svg>
+        </span>
+        <span class="model-name" id="assistant-lib-label">助手库</span>
+        <span class="chevron"><svg class="oc-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </button>
+      <div class="model-picker" id="model-picker" title="选择供应商与模型" role="button" tabindex="0" aria-haspopup="listbox">
+        <span class="model-icon">
+          <svg class="oc-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M12 3.6L3.8 8 12 12.4 20.2 8 12 3.6z" stroke-linejoin="round"/><path d="M3.8 12.4L12 16.8l8.2-4.4M3.8 16.8L12 21.2l8.2-4.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <span class="model-name" id="model-name">选择模型</span>
+        <span class="model-health hidden" id="model-health" title="最近 4 小时无人调用" aria-hidden="true"></span>
+        <span class="model-pin-mark hidden" id="model-pin-mark" title="已置顶，新建对话使用此模型" aria-hidden="true">
+          <svg class="oc-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22V7m-7 7l7-7l7 7M3 2h18"/></svg>
+        </span>
+        <span class="provider-chip hidden" id="provider-chip"></span>
+        <span class="chevron"><svg class="oc-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </div>
+    </div>
+    <nav class="chat-list" id="chat-list" aria-label="对话列表"></nav>
+    <div class="sidebar-footer">
+      <button class="account-chip" id="account-chip" type="button" title="账户与设置" aria-haspopup="menu" aria-expanded="false">
+        <div class="avatar" id="user-avatar">U</div>
+        <div class="user-meta">
+          <span class="user-name" id="user-name">用户</span>
+          <span class="quota" id="user-quota">剩余次数: --</span>
+        </div>
+        <span class="account-chevron"><svg class="oc-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </button>
+      <div class="user-menu hidden" id="user-menu" role="menu">
+        <button class="user-menu-item" id="user-menu-settings" role="menuitem">
+          <svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="12" cy="12" r="2.6"/><path d="M19.2 13.4a1.4 1.4 0 00.3 1.5l.1.1a1.7 1.7 0 11-2.4 2.4l-.1-.1a1.4 1.4 0 00-1.5-.3 1.4 1.4 0 00-.9 1.3V19a1.7 1.7 0 11-3.4 0v-.1a1.4 1.4 0 00-.9-1.3 1.4 1.4 0 00-1.5.3l-.1.1a1.7 1.7 0 11-2.4-2.4l.1-.1a1.4 1.4 0 00.3-1.5 1.4 1.4 0 00-1.3-.9H5a1.7 1.7 0 110-3.4h.1a1.4 1.4 0 001.3-.9 1.4 1.4 0 00-.3-1.5l-.1-.1a1.7 1.7 0 112.4-2.4l.1.1a1.4 1.4 0 001.5.3h.1A1.4 1.4 0 0011 5.1V5a1.7 1.7 0 113.4 0v.1a1.4 1.4 0 00.9 1.3h.1a1.4 1.4 0 001.5-.3l.1-.1a1.7 1.7 0 112.4 2.4l-.1.1a1.4 1.4 0 00-.3 1.5v.1a1.4 1.4 0 001.3.9H19a1.7 1.7 0 110 3.4h-.1a1.4 1.4 0 00-1.3.9z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          设置
+        </button>
+        <a class="user-menu-item" id="user-menu-github" role="menuitem" href="https://github.com/HCARX/TinyChat" target="_blank" rel="noopener noreferrer">
+          <svg class="oc-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+          开源地址
+        </a>
+        <button class="user-menu-item hidden" id="admin-link" role="menuitem" hidden>
+          <svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4 20.5h16M6.5 20.5V7.2L12 4.2l5.5 3v13.3M10 20.5v-5h4v5M9.5 10h.01M14.5 10h.01" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          管理后台
+        </button>
+        <div class="user-menu-sep"></div>
+        <button class="user-menu-item danger" id="logout-btn" role="menuitem">
+          <svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M9.5 20.5H6.2A2.2 2.2 0 014 18.3V5.7A2.2 2.2 0 016.2 3.5h3.3M16 16.5L20.5 12 16 7.5M20.5 12H9.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          退出登录
+        </button>
+      </div>
+    </div>
+    <div class="sidebar-resizer" id="sidebar-resizer" title="拖动调整宽度" aria-label="拖动调整侧边栏宽度"></div>
+  </aside>
+
+  <!-- 主区域 -->
+  <main class="main">
+    <button class="icon-btn hamburger-btn" id="mobile-menu-btn" title="菜单" aria-label="打开菜单">
+      <svg class="oc-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4.5 7h15M4.5 12h15M4.5 17h15" stroke-linecap="round"/></svg>
+    </button>
+    <button class="sidebar-float-btn hidden" id="sidebar-float-btn" title="展开侧边栏" aria-label="展开侧边栏">
+      <svg class="oc-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4.5 7h15M4.5 12h15M4.5 17h15" stroke-linecap="round"/></svg>
+    </button>
+
+    <section class="chat-area" id="chat-area">
+      <div class="empty-state" id="empty-state">
+        <div class="empty-logo">
+          <img src="./logo.svg" class="brand-logo-light empty-logo-img" alt="TinyChat">
+          <img src="./logo-dark.svg" class="brand-logo-dark empty-logo-img" alt="TinyChat">
+        </div>
+        <h2 id="empty-title">开始一段新对话</h2>
+        <p class="muted empty-lead">选择模型后输入问题，或点下面一个任务直接开始</p>
+        <div class="empty-suggests" id="empty-suggests">
+          <button class="empty-suggest" data-q="把下面这段文字改写得更清楚、更专业，保留原意，并标出你改动的重点：&#10;" title="把已有文字改得更清楚">
+            <span class="es-icon"><svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M14.2 3.5H7.2A2.2 2.2 0 005 5.7v12.6A2.2 2.2 0 007.2 20.5h9.6a2.2 2.2 0 002.2-2.2V8.3z" stroke-linejoin="round"/><path d="M14.2 3.5V8.3h4.8M8.5 12.5h7M8.5 16h7M8.5 9h2.2" stroke-linecap="round"/></svg></span>
+            <span class="es-text"><span class="es-title">润色改写</span></span>
+          </button>
+          <button class="empty-suggest" data-q="把下面内容翻译成自然的中文，专有名词保留原文，并在不确定处注明：&#10;" title="译成自然中文并保留专名">
+            <span class="es-icon"><svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4.5 6.5h8M8.5 6.5c0 6-3.2 9.4-6 11M6.2 11.2c1.2 1.6 2.8 2.9 5.3 3.6" stroke-linecap="round"/><path d="M13.5 19.5l2.2-5.6 2.2 5.6M14.4 17.6h2.6M19.8 8.2h-5.2M17.2 8.2l3.4 8.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            <span class="es-text"><span class="es-title">中英翻译</span></span>
+          </button>
+          <button class="empty-suggest" data-q="阅读下面材料，用 5 条以内的要点总结，并单独列出需要我确认的事实：&#10;" title="提炼要点并标出待确认事实">
+            <span class="es-icon"><svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M8 6.5h11M8 12h11M8 17.5h11" stroke-linecap="round"/><circle cx="4.8" cy="6.5" r="1"/><circle cx="4.8" cy="12" r="1"/><circle cx="4.8" cy="17.5" r="1"/></svg></span>
+            <span class="es-text"><span class="es-title">总结要点</span></span>
+          </button>
+          <button class="empty-suggest" data-q="看下面这段报错或代码，说明最可能的原因，给出最小修改，并告诉我如何验证：&#10;" title="定位报错并给出可验证的修改">
+            <span class="es-icon"><svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M8.5 7.5L4 12l4.5 4.5M15.5 7.5L20 12l-4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            <span class="es-text"><span class="es-title">排查报错</span></span>
+          </button>
+          <button class="empty-suggest" data-q="把下面几项做成对比表，列包括适用场景、优点、缺点和选择建议：&#10;" title="按场景、优缺点和建议做表">
+            <span class="es-icon"><svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><rect x="4" y="4.5" width="16" height="15" rx="2"/><path d="M4 9.5h16M4 14.5h16M9.5 4.5v15" stroke-linecap="round"/></svg></span>
+            <span class="es-text"><span class="es-title">对比成表</span></span>
+          </button>
+          <button class="empty-suggest" data-q="把下面这段话整理成思维导图，用 mindmap 代码块输出，层级不超过 3 层：&#10;" title="整理成三层以内的思维导图">
+            <span class="es-icon"><svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="7" cy="12" r="2.2"/><circle cx="17" cy="6.2" r="2"/><circle cx="17" cy="12" r="2"/><circle cx="17" cy="17.8" r="2"/><path d="M9.2 12H15M9.1 11.1l6.1-3.9M9.1 12.9l6.1 3.9" stroke-linecap="round"/></svg></span>
+            <span class="es-text"><span class="es-title">整理导图</span></span>
+          </button>
+          <button class="empty-suggest" data-q="根据下面要点写一封可以直接发送的邮件，语气礼貌、简洁，并给出主题行：&#10;" title="写成可直接发送的邮件">
+            <span class="es-icon"><svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><rect x="3.5" y="5.5" width="17" height="13" rx="2"/><path d="M4 7l8 6 8-6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            <span class="es-text"><span class="es-title">撰写邮件</span></span>
+          </button>
+          <button class="empty-suggest" data-q="从下面会议记录里提取待办，表格列出事项、负责人、截止时间和还缺的信息：&#10;" title="从记录里抽出待办">
+            <span class="es-icon"><svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M8.5 9.2l1.3 1.3 2.4-2.6M8.5 15.2l1.3 1.3 2.4-2.6M14 9.5h2.2M14 15.5h2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            <span class="es-text"><span class="es-title">提取待办</span></span>
+          </button>
+          <button class="empty-suggest" data-q="用一个具体例子解释下面这个概念，先给一句定义，再说常见误区：&#10;" title="用例子解释概念并指出误区">
+            <span class="es-icon"><svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M9.6 9.4a2.4 2.4 0 114.2 1.6c-.7.7-1.8 1.1-1.8 2.2M12 17.2h.01" stroke-linecap="round"/></svg></span>
+            <span class="es-text"><span class="es-title">解释概念</span></span>
+          </button>
+        </div>
+        <div class="empty-hint" id="empty-hint"></div>
+      </div>
+      <div class="messages" id="messages" aria-live="polite"></div>
+      <button class="scroll-bottom-btn" id="scroll-bottom-btn" title="回到底部" aria-label="回到底部">
+        <svg class="oc-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M12 5v14M7.5 14.5L12 19l4.5-4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </section>
+
+    <nav class="chat-toc hidden" id="chat-toc" aria-label="本轮对话目录"></nav>
+    <div class="chat-resizer chat-resizer-left" id="chat-resizer-left" title="拖动调整对话宽度" aria-label="拖动调整对话宽度" role="separator" aria-orientation="vertical" tabindex="0"></div>
+    <div class="chat-resizer chat-resizer-right" id="chat-resizer-right" title="拖动调整对话宽度" aria-label="拖动调整对话宽度" role="separator" aria-orientation="vertical" tabindex="0"></div>
+
+    <footer class="composer-area">
+      <div class="attach-previews" id="attach-previews"></div>
+      <div class="composer-wrap">
+        <div class="mention-pop hidden" id="mention-pop" role="listbox" aria-label="选择助手"></div>
+        <div class="composer">
+          <div class="composer-left">
+            <button type="button" class="composer-more" id="composer-more" title="文件、联网和思考" aria-label="文件、联网和思考" aria-expanded="false" aria-controls="composer-tools">
+              <svg class="oc-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 8.5h14M5 12h14M5 15.5h14" stroke-linecap="round"/></svg>
+            </button>
+            <div class="composer-tools hidden" id="composer-tools">
+              <button type="button" class="composer-tool" id="composer-tool-file">
+                <span class="composer-tool-name">文件</span>
+                <span class="composer-tool-val" id="composer-tool-file-val">上传</span>
+              </button>
+              <div class="composer-tool-group" id="composer-tool-search">
+                <span class="composer-tool-name">联网</span>
+                <div class="composer-tool-choices" role="group" aria-label="联网">
+                  <button type="button" data-websearch="auto">智能</button>
+                  <button type="button" data-websearch="on">始终</button>
+                  <button type="button" data-websearch="off">关闭</button>
+                </div>
+              </div>
+              <div class="composer-tool-group" id="composer-tool-effort">
+                <span class="composer-tool-name">思考</span>
+                <div class="composer-tool-choices" role="group" aria-label="思考强度">
+                  <button type="button" data-effort="off">关</button>
+                  <button type="button" data-effort="low">低</button>
+                  <button type="button" data-effort="medium">中</button>
+                  <button type="button" data-effort="high">高</button>
+                </div>
+              </div>
+            </div>
+            <div class="attach-btn" id="attach-btn" title="上传图片或文件" role="button" tabindex="0" aria-label="上传图片或文件"></div>
+          </div>
+          <button type="button" class="composer-at hidden" id="composer-assistant" data-tip="当前助手" aria-label="当前助手"></button>
+          <textarea id="input" rows="1" placeholder="输入消息，Enter 发送；输入 @ 选择助手" data-placeholder-desktop="输入消息，Enter 发送；输入 @ 选择助手" data-placeholder-mobile="输入消息" aria-label="消息输入框" autocomplete="off" spellcheck="true"></textarea>
+          <div class="composer-right">
+            <div class="websearch-wrap">
+              <button type="button" class="websearch-btn" id="composer-websearch" title="联网：智能" aria-label="联网：智能" aria-haspopup="listbox" aria-expanded="false">
+                <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="8.1"/><path d="M3.9 12h16.2M12 3.9c2.4 2.6 3.6 5.4 3.6 8.1s-1.2 5.5-3.6 8.1M12 3.9C9.6 6.5 8.4 9.3 8.4 12s1.2 5.5 3.6 8.1"/></svg>
+              </button>
+              <div class="effort-pop websearch-pop hidden" id="websearch-pop" role="listbox" aria-label="联网方式">
+                <button type="button" class="effort-opt" data-websearch="auto" role="option">智能联网<span class="effort-sub">需要时才搜索</span></button>
+                <button type="button" class="effort-opt" data-websearch="on" role="option">始终联网<span class="effort-sub">每次提问都搜索</span></button>
+                <button type="button" class="effort-opt" data-websearch="off" role="option">关闭<span class="effort-sub">不检索网页</span></button>
+              </div>
+            </div>
+            <div class="effort-wrap">
+              <button type="button" class="effort-btn" id="composer-effort" title="思考强度：中" aria-label="思考强度：中" aria-haspopup="listbox" aria-expanded="false">
+                <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M9.8 17.4h4.4"/><path d="M12 4.2v1.4M18.4 6.4l-.8.8M20.4 12h-1.4M4.8 12H3.4M6.4 6.4l.8.8"/><circle cx="12" cy="12" r="4.4"/></svg>
+                <span id="composer-effort-label">中</span>
+              </button>
+              <div class="effort-pop hidden" id="effort-pop" role="listbox" aria-label="思考强度">
+                <button type="button" class="effort-opt" data-effort="off" role="option">关闭</button>
+                <button type="button" class="effort-opt" data-effort="low" role="option">低</button>
+                <button type="button" class="effort-opt active" data-effort="medium" role="option">中</button>
+                <button type="button" class="effort-opt" data-effort="high" role="option">高</button>
+              </div>
+            </div>
+            <button class="stop-btn hidden" id="stop-btn" title="停止生成" aria-label="停止生成">
+              <svg class="oc-icon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
+            </button>
+            <button class="send-btn muted" id="send-btn" title="发送" aria-label="发送" disabled>
+              <svg class="oc-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M20.6 3.6L4.4 10.2l7.2 1.8 1.8 7.2 6.6-16.2z" stroke-linejoin="round"/><path d="M11.6 12l3.6-3.6" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+        </div>
+        <p class="composer-hint muted"><span id="composer-hint-text">内容由 AI 生成,请甄别使用</span><span class="composer-hint-keys">&ensp;Enter 发送&ensp;Shift+Enter 换行</span></p>
+      </div>
+    </footer>
+  </main>
+
+  <!-- 设置弹窗 -->
+  <div class="modal-mask hidden" id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h3 id="settings-title">设置</h3>
+        <button class="icon-btn" id="settings-close" aria-label="关闭设置">
+          <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="settings-shell">
+      <div class="settings-tabs" id="settings-tabs" role="tablist">
+        <button class="settings-tab active" data-tab="providers" role="tab">供应商</button>
+        <button class="settings-tab" data-tab="plan" role="tab">套餐</button>
+        <button class="settings-tab" data-tab="usage2" role="tab">用量</button>
+        <button class="settings-tab" data-tab="account" role="tab">账户</button>
+        <button class="settings-tab" data-tab="data" role="tab">数据</button>
+        <button class="settings-tab" data-tab="chat" role="tab">对话</button>
+        <button class="settings-tab" data-tab="look" role="tab">外观</button>
+        <button class="settings-tab" data-tab="tools" role="tab">工具</button>
+      </div>
+      <div class="modal-body">
+        <!-- 供应商 -->
+        <section class="settings-panel active" id="sp-providers">
+          <p class="muted small">添加自己的 API(OpenAI / DeepSeek / 中转站等)，仅供自己使用；Key 加密存储，任何人不可查看。</p>
+
+          <div class="section-title">我的供应商 <span class="muted small" id="my-provider-count"></span></div>
+          <div id="provider-list" class="provider-list"></div>
+
+          <details class="add-provider" id="provider-form-wrap">
+            <summary id="provider-form-summary">+ 添加自定义供应商</summary>
+            <div class="add-provider-form">
+              <label class="field"><span>名称(可选)</span><input id="p-name" placeholder="例如:我的 DeepSeek" maxlength="60"></label>
+              <label class="field"><span>Base URL *</span><input id="p-baseurl" placeholder="https://api.openai.com/v1"></label>
+              <label class="field"><span>API Key *</span>
+                <div class="pw-wrap">
+                  <input id="p-key" placeholder="sk-..." type="password" autocomplete="off">
+                  <button class="pw-toggle" id="p-key-toggle" type="button" title="显示 Key" aria-label="显示 Key">
+                    <span class="p-key-eye">◉</span>
+                  </button>
+                </div>
+                <label class="key-keep-option" title="Key 加密保存在服务器。勾选后可随时点小眼睛查看；不勾选则保存后任何人都无法再查看"><input id="p-key-keep" type="checkbox" checked> 保存后保持显示</label>
+              </label>
+              <label class="field">
+                <span>API 格式</span>
+                <div class="select-box" id="p-format" data-value="chat" role="button" tabindex="0">
+                  <span class="sb-label">OpenAI chat/completions</span>
+                  <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                </div>
+              </label>
+              <div class="field">
+                <span>模型列表 *</span>
+                <div class="model-check">
+                  <div class="model-check-toolbar">
+                    <input id="p-model-q" type="search" placeholder="搜索，或输入模型 ID 后添加" autocomplete="off">
+                    <button class="btn small" id="p-model-add" type="button">添加</button>
+                    <button class="btn small" id="p-fetch-models" type="button" title="根据 Base URL 和 Key 自动获取">获取列表</button>
+                  </div>
+                  <div class="model-check-meta">
+                    <label class="model-check-all"><input type="checkbox" id="p-models-all"> 全选当前列表</label>
+                    <span class="muted small" id="p-models-count">未获取模型</span>
+                  </div>
+                  <div class="model-check-list" id="p-models-list"></div>
+                </div>
+              </div>
+              <label class="field"><span>每次调用扣费次数</span><input id="p-cost" type="number" min="0" value="1"></label>
+              <div class="form-actions">
+                <button class="btn primary" id="p-save">保存供应商</button>
+                <button class="btn hidden" id="p-cancel">取消编辑</button>
+                <span class="muted small" id="p-hint"></span>
+              </div>
+            </div>
+          </details>
+
+          <div class="section-title" style="margin-top:18px">全局供应商(管理员配置)</div>
+          <div id="global-provider-list" class="provider-list"></div>
+          <p class="muted small" id="file-mode-tip" hidden>提示:以 file:// 直接打开时,请先执行 <code>localStorage.setItem('oc_api_base','http://你的地址:3000')</code> 再刷新页面。</p>
+        </section>
+
+        <!-- 套餐 -->
+        <section class="settings-panel" id="sp-plan">
+          <div class="section-title">额度套餐</div>
+          <p class="muted small">标有「限时免费」的套餐点击直接到账；付费套餐购买后用兑换码兑换。</p>
+          <div id="plan-packages" class="plan-packages-box"></div>
+          <div class="section-title" style="margin-top:18px">兑换码兑换</div>
+          <div class="row-between" style="margin:10px 0">
+            <input id="plan-redeem-code" class="font-family-input" placeholder="输入兑换码" autocomplete="off">
+            <button class="btn small primary" id="plan-redeem-btn" type="button">兑换</button>
+          </div>
+        </section>
+
+        <!-- 用量 -->
+        <section class="settings-panel" id="sp-usage2">
+          <div class="section-title">消耗总结</div>
+          <p class="muted small" id="usage2-head-note">统计来自你的全部对话记录。</p>
+          <div id="usage2-summary" class="usage-summary-box"></div>
+          <div class="section-title" style="margin-top:18px">使用日志</div>
+          <div id="usage2-log" class="admin-list"></div>
+          <div class="row-between" style="margin-top:6px">
+            <span class="muted small" id="usage2-log-note"></span>
+            <button class="btn small hidden" id="usage2-more" type="button">加载更多</button>
+          </div>
+        </section>
+
+        <!-- 账户 -->
+        <section class="settings-panel" id="sp-account">
+          <div class="acc-head">
+            <div class="avatar avatar-lg" id="acc-avatar">U</div>
+            <div class="acc-head-meta">
+              <div class="acc-name" id="acc-name">-</div>
+              <div class="muted small" id="acc-extra">-</div>
+            </div>
+            <div class="acc-quota-badge" id="acc-quota">-</div>
+          </div>
+          <div class="usage-ledger" id="acc-usage"></div>
+          <div class="row-between" style="margin:10px 0">
+            <div><div>需要充值额度？</div><div class="muted small">前往套餐页购买或使用兑换码</div></div>
+            <button class="btn small" id="acc-go-plan" type="button">去购买</button>
+          </div>
+
+          <div class="section-title">修改密码</div>
+          <div class="add-provider-form">
+            <label class="field"><span>当前密码</span><input id="acc-old-pwd" type="password" autocomplete="current-password"></label>
+            <label class="field"><span>新密码(至少 4 位)</span><input id="acc-new-pwd" type="password" autocomplete="new-password"></label>
+            <label class="field"><span>确认新密码</span><input id="acc-new-pwd2" type="password" autocomplete="new-password"></label>
+            <div class="form-actions">
+              <button class="btn primary" id="acc-save-pwd">更新密码</button>
+              <span class="muted small">修改后其它设备上的登录会失效</span>
+            </div>
+          </div>
+
+        </section>
+
+        <section class="settings-panel" id="sp-data">
+          <div class="section-title">当前对话</div>
+          <div class="row-between">
+            <div><div>导出当前对话</div><div class="muted small">只导出正在看的这一段，Markdown</div></div>
+            <button class="btn small" id="chat-export-md" type="button">导出</button>
+          </div>
+          <div class="row-between">
+            <div><div>挑选消息，换模型重答</div><div class="muted small">勾选要带上的消息，用另一个模型重新回答</div></div>
+            <button class="btn small" id="chat-reask" type="button">挑选</button>
+          </div>
+          <div class="section-title">数据管理</div>
+          <div class="row-between">
+            <div><div>导出全部对话(Markdown)</div><div class="muted small">按会话分节,便于归档与分享</div></div>
+            <button class="btn small" id="acc-export-md">导出</button>
+          </div>
+          <div class="row-between">
+            <div><div>导出全部对话(JSON 备份)</div><div class="muted small">完整字段,可用于迁移</div></div>
+            <button class="btn small" id="acc-export-json">导出</button>
+          </div>
+          <div class="row-between">
+            <div><div>导入对话(JSON 备份)</div><div class="muted small">合并到现有记录,不会覆盖原对话</div></div>
+            <button class="btn small" id="acc-import-json">导入</button>
+          </div>
+          <div class="row-between">
+            <div><div>清空云端聊天记录</div><div class="muted small">删除服务器端保存的聊天数据</div></div>
+            <button class="btn small danger" id="acc-clear-chats">清空</button>
+          </div>
+          <div class="row-between">
+            <div><div>退出登录</div><div class="muted small">清除本机登录状态</div></div>
+            <button class="btn small" id="acc-logout">退出</button>
+          </div>
+          <p class="muted small" id="acc-tip"></p>
+        </section>
+
+        <section class="settings-panel" id="sp-tools">
+          <div class="section-title">工具来源</div>
+          <p class="muted small hidden" id="pref-tools-locked">管理员还没有开放自备配置，当前使用平台提供的联网搜索和文档解析。</p>
+          <div class="pref-row" id="pref-search-source-row">
+            <div class="pref-info">
+              <div class="pref-name">联网搜索</div>
+              <div class="pref-desc" id="pref-search-source-desc">使用平台配置，或改用自己的 Tavily / SearXNG</div>
+            </div>
+            <div class="theme-seg" id="pref-search-source" role="radiogroup" aria-label="联网搜索来源">
+              <button type="button" class="seg-btn active" data-source="platform">平台</button>
+              <button type="button" class="seg-btn" data-source="own">自己的</button>
+            </div>
+          </div>
+          <div class="own-tool hidden" id="pref-search-own">
+            <label class="field"><span>检索后端</span>
+              <div class="select-box" id="pref-search-provider" data-value="tavily" role="button" tabindex="0">
+                <span class="sb-label">Tavily</span>
+                <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              </div>
+            </label>
+            <label class="field" id="pref-search-key-row"><span>Tavily API Key</span>
+              <input id="pref-search-key" type="password" placeholder="留空保持已保存的密钥" autocomplete="off">
+            </label>
+            <label class="field hidden" id="pref-search-url-row"><span>SearXNG 地址</span>
+              <textarea id="pref-search-url" rows="3" placeholder="每行一个实例地址" spellcheck="false"></textarea>
+            </label>
+            <p class="muted small">Key 加密存储，只显示掩码。</p>
+          </div>
+          <div class="pref-row" id="pref-parse-source-row">
+            <div class="pref-info">
+              <div class="pref-name">文档解析</div>
+              <div class="pref-desc" id="pref-parse-source-desc">使用平台解析，或改用自己的 MinerU Token</div>
+            </div>
+            <div class="theme-seg" id="pref-parse-source" role="radiogroup" aria-label="文档解析来源">
+              <button type="button" class="seg-btn active" data-source="platform">平台</button>
+              <button type="button" class="seg-btn" data-source="own">自己的</button>
+            </div>
+          </div>
+          <div class="own-tool hidden" id="pref-parse-own">
+            <label class="field"><span>MinerU Token</span>
+              <input id="pref-parse-token" type="password" placeholder="留空使用轻量解析，或保持已保存的 Token" autocomplete="off">
+            </label>
+            <p class="muted small">留空走免登录轻量解析。填入后只用你自己的 Token 做精准解析。</p>
+          </div>
+          <div class="form-actions" id="pref-tools-actions">
+            <button class="btn primary" id="pref-tools-save" type="button">保存工具来源</button>
+            <span class="muted small" id="pref-tools-tip"></span>
+          </div>
+
+        </section>
+
+        <section class="settings-panel" id="sp-chat">
+          <div class="section-title">对话</div>
+          <label class="pref-row" for="pref-stream">
+            <div class="pref-info">
+              <div class="pref-name">流式输出</div>
+              <div class="pref-desc">打字机效果实时显示 AI 回复,关闭则等待完整回复</div>
+            </div>
+            <div class="switch"><input type="checkbox" id="pref-stream" checked><span class="slider"></span></div>
+          </label>
+          <label class="pref-row" for="pref-followups">
+            <div class="pref-info">
+              <div class="pref-name">AI 跟进建议</div>
+              <div class="pref-desc">回复完成后用 AI 生成追问建议(会额外消耗一次额度)</div>
+            </div>
+            <div class="switch"><input type="checkbox" id="pref-followups"><span class="slider"></span></div>
+          </label>
+          <label class="pref-row" for="pref-autotitle">
+            <div class="pref-info">
+              <div class="pref-name">自动生成会话标题</div>
+              <div class="pref-desc">新对话根据首条消息自动命名</div>
+            </div>
+            <div class="switch"><input type="checkbox" id="pref-autotitle" checked><span class="slider"></span></div>
+          </label>
+          <div class="pref-row" id="pref-context-row">
+            <div class="pref-info">
+              <div class="pref-name">AI 上下文条数</div>
+              <div class="pref-desc" id="pref-context-desc">每次请求带上最近的对话消息，不含系统提示词</div>
+            </div>
+            <div class="stepper" id="pref-context-step">
+              <button type="button" class="seg-btn" id="pref-context-minus" aria-label="减少上下文条数">−</button>
+              <input type="text" inputmode="numeric" id="pref-context" value="40" aria-label="AI 上下文条数" autocomplete="off">
+              <button type="button" class="seg-btn" id="pref-context-plus" aria-label="增加上下文条数">+</button>
+            </div>
+          </div>
+          <label class="pref-row" for="pref-elapsed">
+            <div class="pref-info">
+              <div class="pref-name">显示生成耗时</div>
+              <div class="pref-desc">回复下方展示生成所用时间</div>
+            </div>
+            <div class="switch"><input type="checkbox" id="pref-elapsed" checked><span class="slider"></span></div>
+          </label>
+          <label class="pref-row" for="pref-reasoning">
+            <div class="pref-info">
+              <div class="pref-name">思维链</div>
+              <div class="pref-desc">请求模型的思考过程，并在回复上方折叠展示</div>
+            </div>
+            <div class="switch"><input type="checkbox" id="pref-reasoning" checked><span class="slider"></span></div>
+          </label>
+          <div class="pref-row" id="pref-reasoning-effort-row">
+            <div class="pref-info">
+              <div class="pref-name">思考强度</div>
+              <div class="pref-desc">越高越仔细，通常更慢、消耗更多额度</div>
+            </div>
+            <div class="theme-seg" id="pref-reasoning-effort" role="radiogroup" aria-label="思考强度">
+              <button type="button" class="seg-btn" data-effort="low">低</button>
+              <button type="button" class="seg-btn active" data-effort="medium">中</button>
+              <button type="button" class="seg-btn" data-effort="high">高</button>
+            </div>
+          </div>
+
+          <p class="muted small" style="margin-top:14px">对话选项保存在本机浏览器。</p>
+        </section>
+
+        <section class="settings-panel" id="sp-look">
+          <div class="section-title">外观</div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-name">主题</div>
+              <div class="pref-desc">跟随系统 / 浅色 / 深色</div>
+            </div>
+            <div class="theme-seg" id="pref-theme" role="radiogroup" aria-label="主题">
+              <button class="seg-btn" data-theme-val="system">系统</button>
+              <button class="seg-btn" data-theme-val="light">浅色</button>
+              <button class="seg-btn" data-theme-val="dark">深色</button>
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-name">字体大小</div>
+              <div class="pref-desc">整页缩放，界面统一 14px（11 ~ 22）</div>
+              <div class="font-size-value" id="pref-fontsize-val">14px</div>
+            </div>
+            <div class="font-size-control">
+              <button class="seg-btn" id="pref-fontsize-minus" aria-label="减小字号">A−</button>
+              <input type="range" id="pref-fontsize" min="11" max="22" step="1" value="14" aria-label="字体大小">
+              <button class="seg-btn" id="pref-fontsize-plus" aria-label="增大字号">A+</button>
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-name">中文字体</div>
+            </div>
+            <div class="font-family-control">
+              <button class="btn small font-choice font-select-trigger" id="pref-font-cjk-select" type="button" aria-haspopup="listbox" aria-label="选择中文字体"><span class="font-select-label">思源宋体</span><span class="font-select-chevron" aria-hidden="true"><svg class="oc-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M7 9.5L12 14.5 17 9.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
+              <input class="font-family-input" id="pref-font-cjk" type="text" placeholder="自定义中文字体名" maxlength="80" autocomplete="off">
+              <button class="btn small" id="pref-font-cjk-browse" type="button">选择本机字体</button>
+            </div>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
+              <div class="pref-name">英文 / 希腊字母字体</div>
+            </div>
+            <div class="font-family-control">
+              <button class="btn small font-choice font-select-trigger" id="pref-font-latin-select" type="button" aria-haspopup="listbox" aria-label="选择英文和希腊字母字体"><span class="font-select-label">Times New Roman</span><span class="font-select-chevron" aria-hidden="true"><svg class="oc-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M7 9.5L12 14.5 17 9.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
+              <input class="font-family-input" id="pref-font-latin" type="text" placeholder="自定义英文字体名" maxlength="80" autocomplete="off">
+              <button class="btn small" id="pref-font-latin-browse" type="button">选择本机字体</button>
+            </div>
+          </div>
+          <div class="pref-row pref-row-accent">
+            <div class="pref-info">
+              <div class="pref-name">主题色</div>
+              <div class="pref-desc">拖动色相与明暗，即时应用到按钮和高亮</div>
+            </div>
+            <div class="accent-picker" id="accent-picker">
+              <div class="accent-preview" id="accent-preview" title="当前主题色"></div>
+              <div class="accent-bars">
+                <div class="accent-track accent-hue" id="accent-hue" tabindex="0" role="slider" aria-label="色相" aria-valuemin="0" aria-valuemax="360">
+                  <span class="accent-thumb" id="accent-hue-thumb"></span>
+                </div>
+                <div class="accent-track accent-light" id="accent-light" tabindex="0" role="slider" aria-label="明暗" aria-valuemin="0" aria-valuemax="100">
+                  <span class="accent-thumb" id="accent-light-thumb"></span>
+                </div>
+              </div>
+              <div class="accent-meta">
+                <input type="text" class="accent-hex" id="pref-accent-hex" maxlength="7" spellcheck="false" aria-label="主题色色值">
+                <button class="btn small" id="pref-accent-reset" type="button">重置</button>
+              </div>
+            </div>
+          </div>
+          <p class="muted small" id="prefs-tip" style="margin-top:14px">外观保存在本机浏览器，不会上传。</p>
+        </section>
+      </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask hidden" id="assistant-lib-modal" role="dialog" aria-modal="true" aria-labelledby="assistant-lib-title">
+    <div class="modal modal-lg assistant-lib-modal">
+      <div class="modal-header assistant-lib-head">
+        <div class="assistant-lib-heading">
+          <h3 id="assistant-lib-title">助手库</h3>
+          <p class="assistant-lib-kicker">选用可选。输入 @ 点选，连按两下 Backspace 取消</p>
+        </div>
+        <button class="icon-btn" id="assistant-lib-close" type="button" aria-label="关闭">
+          <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="assistant-lib-toolbar">
+        <label class="al-search" for="al-search">
+          <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.25"/><path d="M16.2 16.2L20 20"/></svg>
+          <input type="search" id="al-search" placeholder="搜索名称、简介或场景" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="assistant-lib-actions">
+          <button class="btn small" id="al-add-cat" type="button">添加分类</button>
+          <button class="btn small primary" id="al-add-asst" type="button">添加助手</button>
+        </div>
+      </div>
+      <div class="assistant-lib-split">
+        <nav class="assistant-lib-cats" id="al-cats" role="tablist" aria-label="助手分类"></nav>
+        <div class="modal-body assistant-lib-body" id="al-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask hidden" id="assistant-form-modal" role="dialog" aria-modal="true" aria-labelledby="assistant-form-title">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h3 id="assistant-form-title">添加助手</h3>
+        <button class="icon-btn" id="assistant-form-close" type="button" aria-label="关闭">
+          <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <label class="field"><span>名称</span><input id="af-name" maxlength="40" autocomplete="off" spellcheck="false"></label>
+        <label class="field"><span>简介</span><input id="af-desc" maxlength="160" placeholder="一句话说明这个助手做什么" autocomplete="off"></label>
+        <label class="field"><span>头像 emoji</span><input id="af-icon" maxlength="8" placeholder="例如 📚" autocomplete="off" spellcheck="false"></label>
+        <label class="field"><span>分类</span>
+          <div class="select-box" id="af-cat" data-value="" role="button" tabindex="0">
+            <span class="sb-label">选择分类</span>
+            <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </div>
+        </label>
+        <label class="field"><span>系统提示词</span><textarea id="af-prompt" rows="6" placeholder="这个助手的角色、语气和任务边界"></textarea></label>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="assistant-form-cancel" type="button">取消</button>
+        <button class="btn primary" id="assistant-form-save" type="button">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask hidden" id="provider-test-modal" role="dialog" aria-modal="true" aria-labelledby="provider-test-title">
+    <div class="modal modal-sm provider-test-modal">
+      <div class="modal-header">
+        <h3 id="provider-test-title">测试个人供应商</h3>
+        <button class="icon-btn" id="provider-test-close" type="button" aria-label="关闭测试">
+          <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="provider-test-target" id="provider-test-target"></div>
+        <label class="field"><span>模型</span>
+          <div class="select-box" id="provider-test-model" data-value="" role="button" tabindex="0" aria-haspopup="listbox">
+            <span class="sb-label">选择模型</span>
+            <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </div>
+        </label>
+        <label class="field"><span>测试提示词</span><textarea id="provider-test-prompt" rows="4" maxlength="400" placeholder="回复一个字：好"></textarea></label>
+        <div class="provider-test-status muted small" id="provider-test-status" aria-live="polite"></div>
+        <div class="provider-test-result hidden" id="provider-test-result" aria-live="polite"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="provider-test-cancel" type="button">关闭</button>
+        <button class="btn" id="provider-test-stop" type="button" hidden>停止</button>
+        <button class="btn danger hidden" id="provider-test-remove-bad" type="button">移除不可用模型</button>
+        <button class="btn hidden" id="provider-test-use" type="button">用于对话</button>
+        <button class="btn primary" id="provider-test-run" type="button">开始测试</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask hidden" id="assistant-cat-modal" role="dialog" aria-modal="true" aria-labelledby="assistant-cat-title">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h3 id="assistant-cat-title">添加分类</h3>
+        <button class="icon-btn" id="assistant-cat-close" type="button" aria-label="关闭">
+          <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <label class="field"><span>分类名称</span><input id="ac-name" maxlength="40" autocomplete="off" spellcheck="false"></label>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="assistant-cat-cancel" type="button">取消</button>
+        <button class="btn primary" id="assistant-cat-save" type="button">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./static/js/config.js?v=20260926.31"></script>
+  <script src="./static/js/icons.js?v=20260926.31"></script>
+  <script src="./static/js/logos.js?v=20260926.32"></script>
+  <script src="./static/js/components.js?v=20260926.36"></script>
+  <script src="./static/js/ui.js?v=20260926.31"></script>
+  <script src="./static/js/assistants.js?v=20260926.31"></script>
+  <script src="./static/js/conversations.js?v=20260926.34"></script>
+  <script src="./static/js/renderer.js?v=20260926.33"></script>
+  <script src="./static/js/reasoning.js?v=20260926.31"></script>
+  <script src="./static/js/office-formula-copy.js?v=20260926.31"></script>
+  <script src="./static/js/citations.js?v=20260926.31"></script>
+  <script src="./static/js/messages.js?v=20260927.22"></script>
+  <script src="./static/js/multimodal.js?v=20260927.1"></script>
+  <script src="./static/js/app.js?v=20260927.22"></script>
+</body>
+</html>

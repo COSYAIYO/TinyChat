@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="4 4 448 146" width="448" height="146" role="img" aria-labelledby="t">
+  <title id="t">TinyChat logo</title>
+  <defs>
+    <linearGradient id="gt">
+      <stop offset="0" stop-color="#6A5CFF"/>
+      <stop offset="1" stop-color="#2EC5FF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- wordmark -->
+  <text x="8" y="120" font-family="Inter,'Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="104" font-weight="800" letter-spacing="-2">
+    <tspan fill="url(#gt)">Tiny</tspan><tspan fill="#232936">Chat</tspan>
+  </text>
+</svg>
