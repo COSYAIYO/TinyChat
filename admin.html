@@ -91,7 +91,7 @@
 
   <div class="admin-panel" id="panel-usage">
     <div class="admin-card">
-      <div class="admin-panel-head"><div><h2>用量分析</h2><p class="muted small">近 14 天调用趋势、用户用量、模型评价与额度排行。</p></div></div>
+      <div class="admin-panel-head"><div><h2>用量分析</h2><p class="muted small">近 14 天调用趋势、用户用量、模型评价与额度排行。</p></div><button class="btn small" id="usage-export" type="button">导出明细 CSV</button></div>
       <div class="section-title">近 14 天调用趋势</div><div class="trend-chart" id="trend-chart"></div>
       <div class="meta-row" id="meta-row"></div>
       <div class="section-title">近 14 天用量</div><div class="usage-ledger admin-long-list" id="usage-ledger"></div>
@@ -290,6 +290,13 @@
             </div>
           </div>
           <label class="field"><span>每次调用扣费次数</span><input id="ap-cost" type="number" min="1" value="1"></label>
+          <div class="field"><span>计费模式</span>
+            <div class="select-box" id="ap-billing" data-value="call" role="button" tabindex="0">
+              <span class="sb-label">按次（扣费次数）</span>
+              <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
+            </div>
+          </div>
+          <label class="field hidden" id="ap-price-row"><span>每 1K token 价格（额度，含输入+输出）</span><input id="ap-price" type="number" min="0" max="1000" step="0.0001" value="0"></label>
           <div class="probe-box">
             <label class="field"><span>测试模型</span>
               <div class="select-box" id="ap-test-model" data-value="" role="button" tabindex="0">
@@ -326,6 +333,21 @@
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="verify-quota-unlimited"><span class="slider"></span></span><span>新注册用户默认无限额度</span></label>
       <label class="field"><span>新注册用户默认额度</span><input id="verify-free-quota" type="number" min="0" value="100"></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="apikeys-enabled" checked><span class="slider"></span></span><span>允许用户生成 API 密钥（OpenAI 兼容出口 /v1，计费与网页端一致）</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="invite-required"><span class="slider"></span></span><span>注册需要邀请码</span></label>
+      <div class="row-between" style="gap:10px;flex-wrap:wrap;margin:6px 0">
+        <span class="row-between" style="gap:8px;flex-wrap:nowrap">
+          <input id="invite-count" type="number" min="1" max="50" value="5" style="width:70px">
+          <button class="btn small" id="invite-generate" type="button">生成邀请码</button>
+        </span>
+        <span class="muted small" id="invite-count-info"></span>
+      </div>
+      <div class="users-table-wrap" style="max-height:220px;overflow:auto">
+        <table class="admin-table">
+          <thead><tr><th>邀请码</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
+          <tbody id="invite-tbody"></tbody>
+        </table>
+      </div>
+      <p class="muted small" id="invite-empty" style="text-align:center;padding:10px 0">暂无邀请码</p>
       <div class="row-between" style="gap:10px;flex-wrap:wrap;margin-top:6px">
         <label class="field" style="margin:0;flex-direction:row;align-items:center;gap:8px"><span style="white-space:nowrap">会话有效期（天）</span><input id="session-days" type="number" min="1" max="30" value="7" style="width:80px"></label>
         <button class="btn danger" id="session-invalidate" type="button">强制全站下线</button>

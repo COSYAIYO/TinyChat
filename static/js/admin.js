@@ -594,7 +594,7 @@ async function loadProviders() {
           ${isDefault ? '<span class="badge default">默认</span>' : ''}
           ${disabled ? '<span class="badge disabled">已停用</span>' : ''}
         </div>
-        <div class="pc-url">${escapeHtml(p.baseUrl)} · ${escapeHtml(p.apiFormat)} · 模型: ${escapeHtml(p.models.map((m) => m.id).join(', '))} · 扣 ${p.costPerCall} 次</div>
+        <div class="pc-url">${escapeHtml(p.baseUrl)} · ${escapeHtml(p.apiFormat)} · 模型: ${escapeHtml(p.models.map((m) => m.id).join(', '))} · ${p.billingMode === 'token' ? ('按 token ' + (p.pricePer1k || 0) + '/1K') : ('扣 ' + p.costPerCall + ' 次')}</div>
         ${keyHtml}
       </div>
       <div class="provider-card-actions" style="display:flex;gap:6px;flex-shrink:0">
@@ -680,6 +680,8 @@ async function loadProviders() {
       if (window.__setApFormat) window.__setApFormat(target.apiFormat);
       if (apModelList) apModelList.setEnabled(target.models || []);
       $('ap-cost').value = target.costPerCall;
+      if (window.__setApBilling) window.__setApBilling(target.billingMode || 'call');
+      if ($('ap-price')) $('ap-price').value = target.pricePer1k != null ? target.pricePer1k : 0;
       $('ap-save').dataset.editId = target.id;
       $('ap-save').textContent = '保存修改';
     };
@@ -1001,7 +1003,30 @@ function fillMineruSettings(s) {
   });
 })();
 
-// 自动获取模型列表,勾选后才启用
+// 计费模式自定义选择:按次 / 按 token
+(function initBillingSelect() {
+  const box = $('ap-billing');
+  if (!box) return;
+  const MODES = [
+    { value: 'call', label: '按次（扣费次数）', sub: '每次调用扣固定次数' },
+    { value: 'token', label: '按 token', sub: '按实际用量（输入+输出）/1K 计费' },
+  ];
+  const setLabel = (v) => {
+    const m = MODES.find((x) => x.value === (v || 'call'));
+    box.querySelector('.sb-label').textContent = m ? m.label : v;
+  };
+  const togglePrice = (v) => { const row = $('ap-price-row'); if (row) row.classList.toggle('hidden', v !== 'token'); };
+  window.__setApBilling = (v) => { box.setAttribute('data-value', v === 'token' ? 'token' : 'call'); setLabel(v); togglePrice(v); };
+  box.addEventListener('click', () => {
+    OC.openSelect(box, MODES, {
+      selected: box.getAttribute('data-value') || 'call',
+      onSelect: (val) => { box.setAttribute('data-value', val); setLabel(val); togglePrice(val); },
+    });
+  });
+  box.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); box.click(); }
+  });
+})();
 $('ap-fetch-models').addEventListener('click', async () => {
   const baseUrl = $('ap-baseurl').value.trim();
   const apiKey = $('ap-key').value.trim();
@@ -1245,7 +1270,7 @@ $('ap-save').addEventListener('click', async () => {
 
   const editId = $('ap-save').dataset.editId;
   const url = editId ? '/api/admin/providers/' + editId : '/api/providers';
-  const payload = { name, baseUrl, apiFormat, models, costPerCall: cost, scope: 'global', keyRevealable: !!($('ap-key-keep') && $('ap-key-keep').checked) };
+  const payload = { name, baseUrl, apiFormat, models, costPerCall: cost, billingMode: ($('ap-billing') && $('ap-billing').getAttribute('data-value')) || 'call', pricePer1k: Math.min(1000, Math.max(0, parseFloat($('ap-price') && $('ap-price').value) || 0)), scope: 'global', keyRevealable: !!($('ap-key-keep') && $('ap-key-keep').checked) };
   // 编辑时留空或仍是掩码，表示不改密钥；服务端会保留原值。
   if (!(editId && (!apiKey || apiKey.includes('••')))) payload.apiKey = apiKey;
   const r = await api(url, {
@@ -1787,6 +1812,7 @@ async function loadVerifySettings() {
   set('verify-free-quota', s.freeQuota); const smtp=s.smtp||{}; set('smtp-host',smtp.host); set('smtp-port',smtp.port||587); set('smtp-user',smtp.username); set('smtp-pass',smtp.password); set('smtp-encryption',smtp.encryption||'tls'); set('smtp-from-name',smtp.fromName||'TinyChat'); set('smtp-from-email',smtp.fromEmail);
   set('session-days', s.sessionDays || 7);
   if ($('apikeys-enabled')) $('apikeys-enabled').checked = s.apiKeysEnabled !== false;
+  if ($('invite-required')) $('invite-required').checked = !!s.registerInviteRequired;
   const tpl = s.mailTemplates || {};
   MAIL_TPL.siteName = s.siteName || 'TinyChat';
   MAIL_TPL.tpl.verify = { subject: tpl.verifySubject || '', html: tpl.verifyHtml || '' };
@@ -1794,7 +1820,58 @@ async function loadVerifySettings() {
   MAIL_TPL.loaded = true;
   mailTplBind();
   mailTplSyncInputs();
+  loadInvites();
 }
+async function loadInvites() {
+  try {
+    const r = await api('/api/admin/invites');
+    const d = await r.json();
+    if (!r.ok) return;
+    if ($('invite-required')) $('invite-required').checked = !!d.required;
+    const codes = d.codes || [];
+    const unused = codes.filter((c) => !c.usedBy).length;
+    if ($('invite-count-info')) $('invite-count-info').textContent = '未使用 ' + unused + ' / 共 ' + codes.length;
+    const tb = $('invite-tbody');
+    if (!tb) return;
+    tb.innerHTML = codes.map((c) => {
+      const status = c.usedBy
+        ? '<span class="muted">已使用 · ' + escapeHtml(c.usedByName || c.usedBy) + '</span>'
+        : '<b>未使用</b>';
+      return '<tr><td><code>' + escapeHtml(c.code) + '</code></td><td>' + status + '</td>'
+        + '<td style="text-align:right">' + (c.usedBy ? '' : '<button class="btn small danger" data-del-invite="' + escapeHtml(c.code) + '" type="button">删除</button>') + '</td></tr>';
+    }).join('');
+    if ($('invite-empty')) $('invite-empty').style.display = codes.length ? 'none' : 'block';
+    tb.querySelectorAll('[data-del-invite]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const r = await api('/api/admin/invites/' + encodeURIComponent(btn.dataset.delInvite), { method: 'DELETE' });
+        const d = await r.json();
+        if (!r.ok) return toast((d.error && d.error.message) || '删除失败', true);
+        loadInvites();
+      });
+    });
+  } catch (e) { toast('邀请码加载失败: ' + e.message, true); }
+}
+(function initInvites() {
+  const gen = $('invite-generate');
+  if (!gen) return;
+  gen.addEventListener('click', async () => {
+    gen.disabled = true;
+    try {
+      const count = Math.min(50, Math.max(1, parseInt($('invite-count') && $('invite-count').value, 10) || 5));
+      const r = await api('/api/admin/invites', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count }),
+      });
+      const d = await r.json();
+      if (!r.ok) return toast((d.error && d.error.message) || '生成失败', true);
+      toast('已生成 ' + (d.created || []).length + ' 个邀请码');
+      loadInvites();
+    } catch (e) {
+      toast('生成失败: ' + e.message, true);
+    } finally { gen.disabled = false; }
+  });
+})();
 let CODES_CACHE = [];
 const CODES_PAGE_SIZE = 20;
 let CODES_PAGE = 1;
@@ -2010,7 +2087,7 @@ async function loadPackages() {
   });
 })();
 (function initVerifyAndPackages(){
-  const save=$('verify-save'); if(save) save.addEventListener('click',async()=>{ const tplPayload=MAIL_TPL.loaded?{mailTemplates:{tplVersion:2,verifySubject:MAIL_TPL.tpl.verify.subject,verifyHtml:MAIL_TPL.tpl.verify.html,resetSubject:MAIL_TPL.tpl.reset.subject,resetHtml:MAIL_TPL.tpl.reset.html}}:{}; const payload=Object.assign({emailVerificationEnabled:!!$('verify-email-enabled').checked,passwordResetEnabled:!!$('verify-reset-enabled').checked,freeQuotaUnlimited:!!$('verify-quota-unlimited').checked,freeQuota:parseInt($('verify-free-quota').value,10)||0,sessionDays:Math.min(30,Math.max(1,parseInt($('session-days')&&$('session-days').value,10)||7)),apiKeysEnabled:!!($('apikeys-enabled')&&$('apikeys-enabled').checked),smtp:{host:$('smtp-host').value.trim(),port:parseInt($('smtp-port').value,10)||587,username:$('smtp-user').value.trim(),password:$('smtp-pass').value,encryption:$('smtp-encryption').value,fromName:$('smtp-from-name').value.trim(),fromEmail:$('smtp-from-email').value.trim()}},tplPayload); const r=await api('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'保存失败',true); toast('验证设置已保存'); });
+  const save=$('verify-save'); if(save) save.addEventListener('click',async()=>{ const tplPayload=MAIL_TPL.loaded?{mailTemplates:{tplVersion:2,verifySubject:MAIL_TPL.tpl.verify.subject,verifyHtml:MAIL_TPL.tpl.verify.html,resetSubject:MAIL_TPL.tpl.reset.subject,resetHtml:MAIL_TPL.tpl.reset.html}}:{}; const payload=Object.assign({emailVerificationEnabled:!!$('verify-email-enabled').checked,passwordResetEnabled:!!$('verify-reset-enabled').checked,freeQuotaUnlimited:!!$('verify-quota-unlimited').checked,freeQuota:parseInt($('verify-free-quota').value,10)||0,sessionDays:Math.min(30,Math.max(1,parseInt($('session-days')&&$('session-days').value,10)||7)),apiKeysEnabled:!!($('apikeys-enabled')&&$('apikeys-enabled').checked),registerInviteRequired:!!($('invite-required')&&$('invite-required').checked),smtp:{host:$('smtp-host').value.trim(),port:parseInt($('smtp-port').value,10)||587,username:$('smtp-user').value.trim(),password:$('smtp-pass').value,encryption:$('smtp-encryption').value,fromName:$('smtp-from-name').value.trim(),fromEmail:$('smtp-from-email').value.trim()}},tplPayload); const r=await api('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'保存失败',true); toast('验证设置已保存'); });
   const invalidate=$('session-invalidate'); if(invalidate) invalidate.addEventListener('click',async()=>{
     const ok=window.OCUI&&OCUI.confirm?await OCUI.confirm({title:'强制全站下线',message:'所有人的现有登录态会立即失效（包括你自己），需要重新登录。确认执行？',danger:true,confirmText:'执行'}):confirm('所有人的现有登录态会立即失效（包括你自己），确认执行？');
     if(!ok) return;
@@ -2448,6 +2525,24 @@ async function loadAnnouncement() {
     } finally { save.disabled = false; }
   });
 })();
+
+// ============ 用量导出 ============
+$('usage-export')?.addEventListener('click', async () => {
+  const btn = $('usage-export');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/admin/usage/export');
+    if (!r.ok) return toast('导出失败', true);
+    const blob = await r.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'tinychat-usage-' + new Date().toISOString().slice(0, 10) + '.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  } catch (e) {
+    toast('导出失败: ' + e.message, true);
+  } finally { btn.disabled = false; }
+});
 
 const ADMIN_GROUPS = {
   overview: [{ id: 'overview', label: '概览' }, { id: 'usage', label: '用量分析' }, { id: 'logs', label: '运行日志' }],
