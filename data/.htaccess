@@ -1,0 +1,2 @@
+# 敏感数据目录:禁止任何 Web 访问(Apache)
+Require all denied
