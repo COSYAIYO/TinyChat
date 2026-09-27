@@ -746,6 +746,10 @@ function fillChatLimits(s) {
   if ($('chat-context-max')) $('chat-context-max').value = maxCtx;
   if ($('chat-context')) $('chat-context').value = ctx;
   if ($('chat-output')) $('chat-output').value = output;
+  if ($('chat-temperature')) {
+    const t = parseFloat(src.temperature);
+    $('chat-temperature').value = Number.isFinite(t) ? t : '';
+  }
 }
 (function initChatLimits() {
   document.querySelectorAll('#panel-chat .stepper [data-step]').forEach((btn) => {
@@ -763,16 +767,18 @@ function fillChatLimits(s) {
     const maxCtx = Math.min(500, Math.max(2, parseInt($('chat-context-max') && $('chat-context-max').value, 10) || 200));
     const ctx = Math.min(maxCtx, Math.max(2, parseInt($('chat-context') && $('chat-context').value, 10) || 40));
     const output = Math.min(128000, Math.max(256, parseInt($('chat-output') && $('chat-output').value, 10) || 12800));
+    const tempRaw = parseFloat(($('chat-temperature') && $('chat-temperature').value) || '');
+    const temperature = Number.isFinite(tempRaw) ? Math.min(2, Math.max(0, tempRaw)) : null;
     save.disabled = true;
     try {
       const r = await api('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output }),
+        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature }),
       });
       const data = await r.json();
       if (!r.ok) return toast((data.error && data.error.message) || '保存失败', true);
-      fillChatLimits(data.settings || { contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output });
+      fillChatLimits(data.settings || { contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature });
       toast('对话设置已保存');
     } catch (e) {
       toast('保存失败: ' + e.message, true);

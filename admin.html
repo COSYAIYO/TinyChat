@@ -97,7 +97,7 @@
   <div class="admin-panel" id="panel-chat">
     <div class="admin-card">
       <h2>对话</h2>
-      <p class="muted small">上下文条数 = 每次发给模型的最近消息数（系统提示词不计入）；输出上限 = 单次回答最多生成的 token。用户可在自己的设置里调低，不能超过这里的上限。</p>
+      <p class="muted small">上下文条数 = 每次发给模型的最近消息数（系统提示词不计入）；输出上限 = 单次回答最多生成的 token（用户可在自己的设置里调低，不能超过这里的上限）。模型列表里可为单个模型设置 max_tokens 与最大上下文：max_tokens 留空跟随此处，最大上下文填该模型的窗口大小（token），发送时按「窗口 − 预估输入」自动压缩输出、并裁剪过长的历史消息。温度留空则不发送该参数；推理型模型（如 o 系列、DeepSeek R1）可能不接受 temperature，被拒时会自动去参重试。</p>
       <label class="field"><span>默认上下文条数</span>
         <div class="stepper stepper-field">
           <button type="button" class="seg-btn" data-step="-1" data-target="chat-context" aria-label="减少默认上下文条数">−</button>
@@ -112,8 +112,11 @@
           <button type="button" class="seg-btn" data-step="1" data-target="chat-context-max" aria-label="增加上下文条数上限">+</button>
         </div>
       </label>
-      <label class="field"><span>单次输出上限（token）</span>
+      <label class="field"><span>单次输出上限（token，即 max_tokens）</span>
           <input id="chat-output" type="number" min="256" max="128000" step="256" value="12800">
+      </label>
+      <label class="field"><span>温度 temperature（0–2，留空使用模型默认）</span>
+          <input id="chat-temperature" type="number" min="0" max="2" step="0.1" placeholder="留空则不发送该参数">
       </label>
       <button class="btn primary" id="chat-limits-save" type="button">保存对话设置</button>
     </div>

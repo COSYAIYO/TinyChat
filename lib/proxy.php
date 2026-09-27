@@ -256,7 +256,7 @@ function tc_prepare_upstream_body($b, $provider, $format) {
 function tc_unsupported_param_names($raw) {
     $text = strtolower((string) $raw);
     if ($text === '') return array();
-    $known = array('enable_thinking', 'reasoning_effort', 'thinking_effort', 'thinking', 'reasoning');
+    $known = array('enable_thinking', 'reasoning_effort', 'thinking_effort', 'thinking', 'reasoning', 'temperature');
     $found = array();
     if (preg_match_all('/[`\'"]([a-z0-9_.]+)[`\'"]/i', (string) $raw, $m)) {
         foreach ($m[1] as $name) {
@@ -265,9 +265,9 @@ function tc_unsupported_param_names($raw) {
         }
     }
     // 上游对"不支持某参数"的表述五花八门(如 Kimi:"Unsupported Kimi K3 thinking_effort=...; supported values are ..."),
-    // 只要错误文本表达了"不支持"且点名了已知推理参数,就纳入去参重试的范围
+    // 只要错误文本表达了"不支持"且点名了已知参数,就纳入去参重试的范围
     if (strpos($text, 'unsupported') !== false || strpos($text, 'not supported') !== false || strpos($text, 'supported values') !== false) {
-        if (preg_match_all('/\b(enable_thinking|reasoning_effort|thinking_effort|thinking|reasoning)\b/', $text, $m2)) {
+        if (preg_match_all('/\b(enable_thinking|reasoning_effort|thinking_effort|thinking|reasoning|temperature)\b/', $text, $m2)) {
             foreach ($m2[0] as $name) if (!in_array($name, $found, true)) $found[] = $name;
         }
     }
@@ -372,6 +372,9 @@ function tc_strip_reasoning_params(&$body, $names) {
         if ($name === 'enable_thinking' && array_key_exists('enable_thinking', $body)) {
             unset($body['enable_thinking']);
             $changed = true;
+        } elseif ($name === 'temperature' && array_key_exists('temperature', $body)) {
+            unset($body['temperature']);
+            $changed = true;
         } elseif ($name === 'reasoning_effort' && array_key_exists('reasoning_effort', $body)) {
             unset($body['reasoning_effort']);
             $changed = true;
@@ -389,13 +392,14 @@ function tc_strip_reasoning_params(&$body, $names) {
     return $changed;
 }
 
-function tc_clamp_output_tokens(&$body, $format, $cap) {
+// $force=true 时无条件写入(模型级 max_tokens 覆盖),否则只在缺失或超上限时压回
+function tc_clamp_output_tokens(&$body, $format, $cap, $force = false) {
     $cap = (int) $cap;
     if ($cap < 256) return;
     if ($format === 'anthropic') {
         $want = isset($body['max_tokens']) ? (int) $body['max_tokens'] : 1024;
         if ($want <= 0) $want = 1024;
-        $body['max_tokens'] = min($cap, max(256, $want));
+        $body['max_tokens'] = $force ? $cap : min($cap, max(256, $want));
         if (!empty($body['thinking']['budget_tokens'])) {
             $budget = (int) $body['thinking']['budget_tokens'];
             if ($budget >= $body['max_tokens']) {
@@ -407,13 +411,50 @@ function tc_clamp_output_tokens(&$body, $format, $cap) {
     }
     if ($format === 'responses') {
         $current = isset($body['max_output_tokens']) ? (int) $body['max_output_tokens'] : 0;
-        if ($current <= 0 || $current > $cap) $body['max_output_tokens'] = $cap;
+        if ($force || $current <= 0 || $current > $cap) $body['max_output_tokens'] = $cap;
         return;
     }
     if ($format === 'chat' || $format === 'completions') {
         $current = isset($body['max_tokens']) ? (int) $body['max_tokens'] : 0;
-        if ($current <= 0 || $current > $cap) $body['max_tokens'] = $cap;
+        if ($force || $current <= 0 || $current > $cap) $body['max_tokens'] = $cap;
     }
+}
+
+// 全局温度:管理员未设置(null)时不发送,避免影响不接受该参数的推理型模型
+function tc_apply_temperature(&$body, $format, $temperature) {
+    if ($temperature === null || $temperature === '') return;
+    $t = (float) $temperature;
+    if ($t < 0) $t = 0;
+    // Anthropic 的温度取值范围是 0-1
+    if ($format === 'anthropic') $t = min(1, $t);
+    $body['temperature'] = $t;
+}
+
+// 粗略 token 估算:中日韩字符按 1 token/字,其余按 4 字符/token(宁可略高估,保证输出预算留足)
+function tc_estimate_text_tokens($s) {
+    if ($s === '' || !is_string($s)) return 0;
+    $len = mb_strlen($s, 'UTF-8');
+    if ($len === 0) return 0;
+    $cjk = @preg_match_all('/[\x{3000}-\x{30ff}\x{3400}-\x{4dbf}\x{4e00}-\x{9fff}\x{ac00}-\x{d7a3}\x{f900}-\x{faf6}\x{ff00}-\x{ffef}]/u', $s);
+    $cjk = $cjk === false ? 0 : (int) $cjk;
+    return (int) round($cjk + ($len - $cjk) / 4);
+}
+
+// 递归估算请求体 token:图片/文件等多模态部分按固定 1024 计,base64 数据不计(避免把图片体积当文本)
+function tc_estimate_body_tokens($v) {
+    if (is_string($v)) {
+        $v = preg_replace('#data:[a-z]+/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+#', '', (string) $v);
+        $v = preg_replace('#\b[A-Za-z0-9+/=]{512,}\b#', '', (string) $v);
+        return tc_estimate_text_tokens($v);
+    }
+    if (is_array($v)) {
+        $type = isset($v['type']) && is_string($v['type']) ? $v['type'] : '';
+        if (in_array($type, array('image_url', 'input_image', 'image', 'file', 'input_file', 'document'), true)) return 1024;
+        $sum = 0;
+        foreach ($v as $val) $sum += tc_estimate_body_tokens($val);
+        return $sum;
+    }
+    return 0;
 }
 
 function tc_disable_buffers() {
@@ -1508,6 +1549,7 @@ function tc_api_proxy($format) {
             'wantSearch' => (!empty($b['webSearch']) && $b['webSearch'] !== 'off' && $b['webSearch'] !== false) ? (string) $b['webSearch'] : '',
             'settings' => tc_user_search_settings($user, $db['settings']),
             'maxOutputTokens' => isset($db['settings']['maxOutputTokens']) ? (int) $db['settings']['maxOutputTokens'] : 12800,
+            'temperature' => isset($db['settings']['temperature']) ? $db['settings']['temperature'] : null,
             'thinking' => tc_normalize_thinking(isset($db['settings']['thinking']) ? $db['settings']['thinking'] : null),
         );
     });
@@ -1563,7 +1605,24 @@ function tc_api_proxy($format) {
             }
         }
     }
-    tc_clamp_output_tokens($body, $format, isset($ctx['maxOutputTokens']) ? $ctx['maxOutputTokens'] : 12800);
+    // 模型级 max_tokens / 最大上下文优先于全局输出上限;未配置时沿用全局钳制。
+    // 配置了最大上下文时,先粗估输入 token,输出上限压到「窗口 − 预估输入」内,避免总量超窗
+    $modelMaxTokens = 0;
+    $modelMaxContext = 0;
+    $reqModel = isset($body['model']) ? (string) $body['model'] : '';
+    foreach ((isset($provider['models']) ? $provider['models'] : array()) as $m) {
+        if (!is_array($m) || !isset($m['id']) || (string) $m['id'] !== $reqModel) continue;
+        if (!empty($m['maxTokens'])) $modelMaxTokens = (int) $m['maxTokens'];
+        if (!empty($m['maxContext'])) $modelMaxContext = (int) $m['maxContext'];
+        break;
+    }
+    $outCap = $modelMaxTokens > 0 ? $modelMaxTokens : (isset($ctx['maxOutputTokens']) ? (int) $ctx['maxOutputTokens'] : 12800);
+    if ($modelMaxContext > 0) {
+        $promptEst = tc_estimate_body_tokens($body);
+        $outCap = min($outCap, max(256, $modelMaxContext - $promptEst));
+    }
+    tc_clamp_output_tokens($body, $format, $outCap, $modelMaxTokens > 0 || $modelMaxContext > 0);
+    tc_apply_temperature($body, $format, isset($ctx['temperature']) ? $ctx['temperature'] : null);
     tc_apply_thinking_rules($body, isset($ctx['thinking']) ? $ctx['thinking'] : null);
     $url = tc_upstream_path(rtrim((string) $provider['baseUrl'], '/'), $format);
     $isStream = !empty($body['stream']);

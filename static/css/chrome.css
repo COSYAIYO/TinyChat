@@ -1846,7 +1846,7 @@ body.share-page {
   background: var(--bg-hover);
 }
 
-/* 模型列表表格：勾选 | 模型 ID | 显示名称 */
+/* 模型列表表格：勾选 | 模型 ID | 显示名称 | max_tokens | 最大上下文 */
 .model-table {
   width: 100%;
   border-collapse: separate;
@@ -1875,10 +1875,16 @@ body.share-page {
   padding-right: 4px;
 }
 .model-table .col-id {
-  width: 46%;
+  width: 32%;
 }
 .model-table .col-name {
   width: auto;
+}
+.model-table .col-mtok {
+  width: 96px;
+}
+.model-table .col-ctx {
+  width: 112px;
 }
 .model-table tbody td {
   padding: 6px 10px;
@@ -1916,6 +1922,38 @@ body.share-page {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.model-table .mtokens,
+.model-table .mctx {
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+  background: var(--bg-surface);
+  color: var(--text);
+  font-size: 12.5px;
+  box-shadow: none;
+  text-align: right;
+}
+.model-table .mtokens:focus,
+.model-table .mctx:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--brand) 45%, var(--hairline));
+}
+.model-table .mtokens-static,
+.model-table .mctx-static {
+  display: block;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.model-table .mtokens-static i,
+.model-table .mctx-static i {
+  font-style: normal;
+  color: var(--text-tertiary);
 }
 .model-table .mname-static em {
   margin-left: 6px;

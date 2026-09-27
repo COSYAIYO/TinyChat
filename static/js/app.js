@@ -1609,10 +1609,44 @@ function contextLimitNow() {
   const chosen = Number(uiPref('contextMessages', fallback));
   return Math.min(cap, Math.max(2, isFinite(chosen) ? chosen : fallback));
 }
+// 粗略 token 估算:中日韩按 1 token/字,其余按 4 字符/token(与服务端同一口径,宁高勿低)
+function estimateTextTokens(s) {
+  const str = String(s || '');
+  if (!str) return 0;
+  const cjk = (str.match(/[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7a3\uf900-\ufaf6\uff00-\uffef]/g) || []).length;
+  return Math.round(cjk + (str.length - cjk) / 4);
+}
+function estimateMessageTokens(m) {
+  let n = estimateTextTokens(flattenApiContent(messageApiContent(m, 'chat')));
+  // 图片/文件附件按固定开销计,避免按文本低估
+  if (m && Array.isArray(m.attachments)) n += m.attachments.length * 1024;
+  return n;
+}
+function currentModelSpec() {
+  if (!state.currentModel) return null;
+  return (state.models || []).find((x) => x && x.id === state.currentModel) || null;
+}
 function outgoingMessages(chatMessages, chat) {
   const msgs = (chatMessages || []).filter((m) => m && m.role !== 'system');
   const limit = contextLimitNow();
-  const kept = msgs.length > limit ? msgs.slice(-limit) : msgs;
+  let kept = msgs.length > limit ? msgs.slice(-limit) : msgs;
+  // 模型配置了最大上下文时,再做一轮 token 预算裁剪:输入 + 预留输出不超过窗口
+  const spec = currentModelSpec();
+  const maxCtx = spec && parseInt(spec.maxContext, 10) > 0 ? parseInt(spec.maxContext, 10) : 0;
+  if (maxCtx > 0 && kept.length) {
+    const outCap = spec && parseInt(spec.maxTokens, 10) > 0 ? parseInt(spec.maxTokens, 10) : (Number((state.chatLimits || {}).maxOutputTokens) || 12800);
+    const reserve = Math.min(outCap, Math.max(256, Math.floor(maxCtx / 2)));
+    const budget = maxCtx - reserve;
+    const sysTokens = estimateTextTokens(chatSystemPrompt(chat));
+    const costs = kept.map((m) => estimateMessageTokens(m));
+    let total = sysTokens + costs.reduce((a, b) => a + b, 0);
+    let drop = 0;
+    while (total > budget && drop < kept.length - 1) {
+      total -= costs[drop];
+      drop++;
+    }
+    if (drop > 0) kept = kept.slice(drop);
+  }
   const prompt = chatSystemPrompt(chat);
   const out = prompt ? [{ role: 'system', content: prompt }].concat(kept) : kept;
   out.contextCount = kept.length;
