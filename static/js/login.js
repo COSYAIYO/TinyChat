@@ -1,0 +1,154 @@
+'use strict';
+const $ = (id) => document.getElementById(id);
+
+const cacheKey = 'oc_token';
+
+if (window.OCUI && typeof window.OCUI.initTheme === 'function') {
+  window.OCUI.initTheme();
+}
+
+function showError(msg) {
+  const el = $('auth-error');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  el.style.animation = 'none';
+  void el.offsetWidth;
+  el.style.animation = '';
+}
+function clearError() {
+  $('auth-error').classList.add('hidden');
+}
+
+function setBusy(btn, busy, label) {
+  btn.disabled = busy;
+  btn.classList.toggle('is-loading', busy);
+  btn.textContent = busy ? '请稍候…' : label;
+}
+
+async function submitAuth(api, name, password, btn, label, email) {
+  clearError();
+  setBusy(btn, true, label);
+  try {
+    const r = await fetch(apiUrl(api), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(email ? { name, password, email } : { name, password }),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      showError((data.error && data.error.message) || '请求失败');
+      return;
+    }
+    if (data.pendingVerification) {
+      showError('注册成功，请查收验证邮件并完成邮箱验证后登录');
+      return;
+    }
+    localStorage.setItem(cacheKey, data.token);
+    localStorage.setItem('oc_user', JSON.stringify(data.user));
+    location.href = apiUrl('/');
+  } catch (e) {
+    showError('网络错误: ' + e.message + (location.protocol === 'file:' ? '（file:// 打开时请先设置 localStorage.setItem(\'oc_api_base\', \'http://你的地址:3000\')）' : ''));
+  } finally {
+    setBusy(btn, false, label);
+  }
+}
+
+function switchAuthForm(showId, hideId, focusId) {
+  ['forgot-form', 'reset-form'].forEach((id) => { const e=$(id); if(e) e.classList.add('hidden'); });
+  const show = $(showId);
+  const hide = $(hideId);
+  if (!show || !hide) return;
+  hide.classList.add('hidden');
+  show.classList.remove('hidden');
+  show.classList.remove('auth-form-switching');
+  void show.offsetWidth;
+  show.classList.add('auth-form-switching');
+  const switchEl = $('login-switch');
+  if (switchEl) switchEl.classList.toggle('hidden', showId === 'register-form');
+  clearError();
+  const focus = $(focusId);
+  if (focus) setTimeout(() => focus.focus(), 40);
+}
+
+function bindPasswordToggles() {
+  document.querySelectorAll('.pw-toggle').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const input = $(btn.dataset.for);
+      if (!input) return;
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      btn.setAttribute('aria-label', show ? '隐藏密码' : '显示密码');
+      btn.title = show ? '隐藏密码' : '显示密码';
+      const off = btn.querySelector('.eye-off');
+      const on = btn.querySelector('.eye-on');
+      if (off) off.classList.toggle('hidden', show);
+      if (on) on.classList.toggle('hidden', !show);
+    });
+  });
+}
+
+const verifyToken = new URLSearchParams(location.search).get('verify');
+const resetToken = new URLSearchParams(location.search).get('reset');
+if (!verifyToken && !resetToken && localStorage.getItem(cacheKey)) {
+  fetch(apiUrl('/api/auth/me'), { headers: { Authorization: 'Bearer ' + localStorage.getItem(cacheKey) } })
+    .then((r) => r.ok ? (location.href = apiUrl('/')) : localStorage.removeItem(cacheKey))
+    .catch(() => {});
+}
+
+fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
+  // 找回密码依赖邮件功能:开关关闭或未配置 SMTP 时,前台不展示"忘记密码"入口
+  if (cfg && (cfg.passwordResetEnabled === false || cfg.mailReady === false)) {
+    const forgotLink = $('show-forgot');
+    const wrap = forgotLink ? forgotLink.closest('.auth-switch') : null;
+    if (wrap) wrap.classList.add('hidden');
+  }
+  if (!cfg || !cfg.needsSetup) return;
+  const setup = $('setup-form');
+  const login = $('login-form');
+  const reg = $('register-form');
+  const sw = $('login-switch');
+  if (setup) setup.classList.remove('hidden');
+  if (login) login.classList.add('hidden');
+  if (reg) reg.classList.add('hidden');
+  if (sw) sw.classList.add('hidden');
+  const name = $('setup-name');
+  if (name) setTimeout(() => name.focus(), 40);
+}).catch(() => {});
+
+bindPasswordToggles();
+const forgotForm = $('forgot-form');
+const resetForm = $('reset-form');
+const showForgot = $('show-forgot');
+if (showForgot) showForgot.addEventListener('click', (e) => { e.preventDefault(); $('login-form').classList.add('hidden'); $('register-form').classList.add('hidden'); forgotForm.classList.remove('hidden'); clearError(); });
+if ($('forgot-back')) $('forgot-back').addEventListener('click', (e) => { e.preventDefault(); forgotForm.classList.add('hidden'); $('login-form').classList.remove('hidden'); });
+if (forgotForm) forgotForm.addEventListener('submit', async (e) => { e.preventDefault(); const r=await fetch(apiUrl('/api/auth/forgot-password'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('forgot-email').value.trim()})}); const d=await r.json(); if(!r.ok)return showError((d.error&&d.error.message)||'发送失败'); showError('如果邮箱存在，重置链接已发送。'); });
+if (resetToken) { $('login-form').classList.add('hidden'); $('register-form').classList.add('hidden'); resetForm.classList.remove('hidden'); }
+if ($('reset-back')) $('reset-back').addEventListener('click', (e) => { e.preventDefault(); resetForm.classList.add('hidden'); $('login-form').classList.remove('hidden'); });
+if (resetForm) resetForm.addEventListener('submit', async (e) => { e.preventDefault(); if($('reset-password').value !== $('reset-password2').value)return showError('两次密码不一致'); const r=await fetch(apiUrl('/api/auth/reset-password'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:resetToken,password:$('reset-password').value})}); const d=await r.json(); if(!r.ok)return showError((d.error&&d.error.message)||'重置失败'); showError('密码已重置，请返回登录。'); resetForm.classList.add('hidden'); $('login-form').classList.remove('hidden'); });
+if (verifyToken) fetch(apiUrl('/api/auth/verify-email'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: verifyToken }) }).then((r) => r.json().then((d) => r.ok ? showError('邮箱验证成功，请登录') : showError((d.error && d.error.message) || '验证失败'))).catch(() => showError('验证请求失败'));
+
+$('login-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  submitAuth('/api/auth/login', $('login-name').value.trim(), $('login-password').value, $('login-btn'), '登录');
+});
+
+if ($('setup-form')) {
+  $('setup-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    submitAuth('/api/setup', $('setup-name').value.trim(), $('setup-password').value, $('setup-btn'), '创建管理员');
+  });
+}
+
+$('register-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  submitAuth('/api/auth/register', $('reg-name').value.trim(), $('reg-password').value, $('register-btn'), '注册并登录', $('reg-email') ? $('reg-email').value.trim() : '');
+});
+
+$('show-register').addEventListener('click', (e) => {
+  e.preventDefault();
+  switchAuthForm('register-form', 'login-form', 'reg-name');
+});
+$('show-login').addEventListener('click', (e) => {
+  e.preventDefault();
+  switchAuthForm('login-form', 'register-form', 'login-name');
+});

@@ -1,0 +1,378 @@
+/* ============================================================
+   Markdown — AI 回复排版层(最终加载)
+   选择器一律带 .msg.assistant .md-prose,压过 style/enhanced/refine/redesign
+   中散落的 .msg.assistant p / table / th / td 等旧规则。
+   界面 chrome 不动。
+   ……………………………………………………………………………………
+   设计:
+   · 表格:无竖线的编辑风网格,表头 hairline 压底,斑马纹极淡
+   · 标题:阶梯字号 + 顶部分离,文字即层级
+   · 代码:等宽自成体系,不受「界面字体」偏好污染
+   · 列表:圆点用品牌蓝,行距 1.78
+   ============================================================ */
+
+/* ---------- 0. 正文基础 ---------- */
+.msg.assistant .md-prose,
+.msg.user .md-prose {
+  overflow-wrap: break-word;
+}
+.msg.assistant .md-prose > *:first-child,
+.msg.user .md-prose > *:first-child { margin-top: 0 !important; }
+.msg.assistant .md-prose > *:last-child,
+.msg.user .md-prose > *:last-child { margin-bottom: 0 !important; }
+
+.msg.assistant .md-prose p {
+  margin: 0.72em 0;
+  line-height: 1.78;
+}
+
+/* ---------- 1. 标题 ---------- */
+.msg.assistant .md-prose h1,
+.msg.assistant .md-prose h2,
+.msg.assistant .md-prose h3,
+.msg.assistant .md-prose h4,
+.msg.assistant .md-prose h5,
+.msg.assistant .md-prose h6 {
+  margin: 1.35em 0 0.55em;
+  font-weight: 650;
+  line-height: 1.32;
+  letter-spacing: -0.018em;
+  color: var(--text);
+}
+.msg.assistant .md-prose h1 { font-size: 1.15em; margin-top: 0.85em; }
+.msg.assistant .md-prose h2 { font-size: 1.08em; }
+.msg.assistant .md-prose h3,
+.msg.assistant .md-prose h4,
+.msg.assistant .md-prose h5,
+.msg.assistant .md-prose h6 { font-size: 1em; }
+
+/* ---------- 2. 列表 ---------- */
+.msg.assistant .md-prose ul:not(.mm-root):not(.mm-children),
+.msg.assistant .md-prose ol {
+  margin: 0.72em 0;
+  padding-left: 1.45em;
+}
+.msg.assistant .md-prose li:not(.mm-node) {
+  margin: 0.28em 0;
+  line-height: 1.78;
+}
+.msg.assistant .md-prose li:not(.mm-node) > ul,
+.msg.assistant .md-prose li:not(.mm-node) > ol { margin: 0.25em 0; }
+.msg.assistant .md-prose ul:not(.mm-root):not(.mm-children) > li::marker { color: var(--brand, var(--accent)); }
+.msg.assistant .md-prose ol > li::marker {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  font-weight: 550;
+}
+.msg.assistant .md-prose li.task-item {
+  list-style: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-left: -1.2em;
+}
+.msg.assistant .md-prose li.task-item > input[type="checkbox"] {
+  flex-shrink: 0;
+  margin: 0.38em 0 0;
+}
+
+/* ---------- 3. 行内 / 块级代码 ---------- */
+.msg.assistant .md-prose :not(pre) > code {
+  font-family: "SF Mono", "JetBrains Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+  font-size: 0.92em;
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-code));
+  border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--hairline));
+  padding: 0.08em 0.34em;
+  border-radius: 4px;
+  white-space: break-spaces;
+}
+.msg.assistant .md-prose .code-block,
+.msg.assistant .md-prose pre {
+  font-family: "SF Mono", "JetBrains Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+}
+.msg.assistant .md-prose .code-block pre,
+.msg.assistant .md-prose pre {
+  font-size: 0.92em;
+  line-height: 1.62;
+}
+.msg.assistant .md-prose .code-block pre {
+  margin: 0 !important;
+  padding: 11px 14px !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  overflow-x: auto;
+}
+.msg.assistant .md-prose > pre {
+  background: var(--bg-code);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  padding: 12px 14px;
+  overflow-x: auto;
+}
+
+/* ---------- 4. 表格:编辑风网格 ---------- */
+.msg.assistant .md-prose .table-wrap {
+  margin: 1.05em 0;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  overflow-x: auto;
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xs);
+}
+.msg.assistant .md-prose .table-wrap table,
+.msg.assistant .md-prose table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin: 0;
+  font-size: 1em;
+  line-height: 1.55;
+}
+/* 表头:细线压底 + 微底色,无竖线 */
+.msg.assistant .md-prose .table-wrap th,
+.msg.assistant .md-prose th {
+  background: var(--bg-surface-2);
+  font-weight: 600;
+  text-align: left;
+  padding: 9px 14px;
+  border: none;
+  border-bottom: 1px solid var(--hairline-strong);
+  white-space: nowrap;
+  color: var(--text);
+}
+/* 单元格:只留水平节奏线 */
+.msg.assistant .md-prose .table-wrap td,
+.msg.assistant .md-prose td {
+  padding: 9px 14px;
+  border: none;
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: top;
+  color: var(--text);
+}
+.msg.assistant .md-prose .table-wrap tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--text) 2.4%, var(--bg-surface));
+}
+[data-theme="dark"] .msg.assistant .md-prose .table-wrap tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, #ffffff 6%, var(--bg-surface));
+  color: var(--text) !important;
+}
+[data-theme="dark"] .msg.assistant .md-prose table th,
+[data-theme="dark"] .msg.assistant .md-prose table td {
+  background: var(--bg-surface) !important;
+  color: var(--text) !important;
+  border-color: var(--hairline-strong) !important;
+}
+[data-theme="dark"] .msg.assistant .md-prose table thead th,
+[data-theme="dark"] .msg.assistant .md-prose table th {
+  background: var(--bg-surface-2) !important;
+}
+[data-theme="dark"] .msg.assistant .md-prose table tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, #ffffff 6%, var(--bg-surface)) !important;
+}
+[data-theme="light"] .msg.assistant .md-prose table th,
+[data-theme="light"] .msg.assistant .md-prose table td {
+  color: var(--text) !important;
+  border-color: var(--hairline-strong) !important;
+}
+.msg.assistant .md-prose .table-wrap tbody tr:last-child td {
+  border-bottom: none;
+}
+/* 排序:用几何箭头替代字符箭头,避免字体错位 */
+.msg.assistant .md-prose .table-wrap th.sortable {
+  cursor: pointer;
+  user-select: none;
+  padding-right: 22px;
+  position: relative;
+}
+.msg.assistant .md-prose .table-wrap th.sortable::after {
+  content: "";
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -4px;
+  opacity: 0.3;
+  border-left: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  background: none;
+  font-size: 0;
+}
+.msg.assistant .md-prose .table-wrap th.sort-asc::after,
+.msg.assistant .md-prose .table-wrap th.sort-desc::after {
+  opacity: 1;
+  color: var(--brand, var(--accent));
+}
+.msg.assistant .md-prose .table-wrap th.sort-desc::after {
+  transform: rotate(135deg);
+  margin-top: -2px;
+}
+.msg.assistant .md-prose .table-wrap th.sortable:hover {
+  background: var(--bg-hover);
+}
+
+/* ---------- 5. 引用 / 分割线 / 链接 / 强调 ---------- */
+.msg.assistant .md-prose blockquote {
+  margin: 1em 0;
+  padding: 0.15em 0 0.15em 1em;
+  border-left: 3px solid color-mix(in srgb, var(--brand, var(--accent)) 42%, transparent);
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 0;
+}
+.msg.assistant .md-prose blockquote > *:first-child { margin-top: 0; }
+.msg.assistant .md-prose blockquote > *:last-child { margin-bottom: 0; }
+.msg.assistant .md-prose hr {
+  border: none;
+  height: 1px;
+  background: var(--hairline);
+  margin: 1.55em 0;
+}
+.msg.assistant .md-prose a {
+  color: var(--brand, var(--accent));
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--brand, var(--accent)) 32%, transparent);
+}
+.msg.assistant .md-prose a:hover {
+  color: var(--brand-hover, var(--accent-hover, var(--accent)));
+  border-bottom-color: currentColor;
+}
+.msg.assistant .md-prose strong { font-weight: 640; color: var(--text); }
+.msg.assistant .md-prose del { color: var(--text-tertiary); }
+.msg.assistant .md-prose mark {
+  background: color-mix(in srgb, #ffd60a 38%, transparent);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+/* ---------- 6. 公式 / 脚注 / 图片 ---------- */
+.msg.assistant .md-prose .katex {
+  font-size: 1em;
+  line-height: 1.25;
+}
+.msg.assistant .md-prose .katex:not(.katex-display .katex) {
+  white-space: nowrap;
+}
+.msg.assistant .md-prose .katex-display {
+  position: relative;
+  display: block;
+  margin: 1.2em 0;
+  padding: 4px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+}
+.msg.assistant .md-prose .katex-display > .katex {
+  display: inline-block;
+  min-width: min-content;
+  text-align: left;
+}
+.msg.assistant .md-prose .footnotes {
+  font-size: 1em;
+  color: var(--text-secondary);
+  margin-top: 1.4em;
+}
+.msg.assistant .md-prose .footnotes hr { display: none; }
+.msg.assistant .md-prose figure.md-image { margin: 1.05em 0; }
+
+/* ---------- 6.5 最终收口：轻量表格与代码 ---------- */
+.msg.assistant .md-prose .code-block {
+  margin: 0.8em 0 !important;
+  border: 1px solid var(--hairline) !important;
+  border-radius: 8px !important;
+  background: var(--bg-code) !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04) !important;
+  overflow: hidden !important;
+}
+.msg.assistant .md-prose .code-block .code-header {
+  min-height: 24px;
+  padding: 1px 10px !important;
+  border: 0 !important;
+  border-bottom: 0 !important;
+  border-radius: 0 !important;
+  background: inherit !important;
+}
+.msg.assistant .md-prose .code-block pre,
+.msg.assistant .md-prose .code-block pre code {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+}
+.msg.assistant .md-prose .code-block pre {
+  padding: 6px 10px !important;
+}
+.msg.assistant .md-prose .code-block .code-copy {
+  min-width: 44px;
+  min-height: 24px;
+  padding: 3px 9px !important;
+  border: 1px solid color-mix(in srgb, var(--text-tertiary) 28%, transparent) !important;
+  border-radius: 6px !important;
+  background: color-mix(in srgb, var(--bg-surface) 72%, transparent) !important;
+  line-height: 1.2;
+}
+.msg.assistant .md-prose .code-block .code-copy:hover {
+  border-color: var(--hairline-strong) !important;
+  background: var(--bg-hover) !important;
+}
+
+.msg.assistant .md-prose .table-wrap,
+.msg.assistant .md-prose > table {
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+}
+.msg.assistant .md-prose .table-wrap table,
+.msg.assistant .md-prose > table {
+  border-collapse: collapse !important;
+}
+.msg.assistant .md-prose .table-wrap th,
+.msg.assistant .md-prose .table-wrap td,
+.msg.assistant .md-prose > table th,
+.msg.assistant .md-prose > table td {
+  padding: 10px 12px !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--hairline) !important;
+  background: transparent !important;
+  color: var(--text) !important;
+  text-align: left;
+}
+.msg.assistant .md-prose .table-wrap th,
+.msg.assistant .md-prose > table th {
+  padding-top: 8px !important;
+  padding-bottom: 8px !important;
+  border-bottom: 2px solid var(--hairline-strong) !important;
+  background: var(--bg-surface-2) !important;
+  font-weight: 650;
+}
+.msg.assistant .md-prose .table-wrap tbody tr:last-child td,
+.msg.assistant .md-prose > table tbody tr:last-child td {
+  border-bottom: 0 !important;
+}
+.msg.assistant .md-prose .table-wrap tbody tr:nth-child(even) td,
+.msg.assistant .md-prose > table tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--text) 3%, transparent) !important;
+}
+
+/* 分享页中的原始 HTML 表格也统一使用主题文字，覆盖内容自带的浅色内联样式 */
+[data-theme="dark"] .share-main table th,
+[data-theme="dark"] .share-main table td {
+  background: var(--bg-surface) !important;
+  color: var(--text) !important;
+  border-color: var(--hairline-strong) !important;
+}
+[data-theme="dark"] .share-main table th {
+  background: var(--bg-surface-2) !important;
+}
+[data-theme="dark"] .share-main table tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, #ffffff 6%, var(--bg-surface)) !important;
+}
+
+/* ---------- 7. 打印 ---------- */
+@media print {
+  .msg.assistant .md-prose .table-wrap { box-shadow: none; }
+  .msg.assistant .md-prose a { border-bottom: none; }
+}

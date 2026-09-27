@@ -1,0 +1,356 @@
+'use strict';
+/**
+ * multimodal.js — 多模态与高级能力
+ *  - 图片上传 + 预览
+ *  - 文件上传（PDF/TXT/CSV/MD）+ 文件卡片 + 提取信息
+ *  - Artifacts 面板（类 Claude：代码/网页预览独立面板）
+ *  - Follow-up 建议问题
+ *  - 语音输入接口（预留）
+ */
+
+(function () {
+  const M = {};
+
+  // ============ 文件类型与图标(线性 SVG) ============
+  const FILE_META = {
+    image: { svg: window.OC.icon('image', 16), color: '#8b5cf6', label: '图片' },
+    pdf: { svg: window.OC.icon('pdf', 16), color: '#ef4444', label: 'PDF' },
+    doc: { svg: window.OC.icon('paper', 16), color: '#2563eb', label: '文档' },
+    sheet: { svg: window.OC.icon('table', 16), color: '#10b981', label: '表格' },
+    slides: { svg: window.OC.icon('file', 16), color: '#f97316', label: '演示' },
+    txt: { svg: window.OC.icon('paper', 16), color: '#64748b', label: '文本' },
+    csv: { svg: window.OC.icon('table', 16), color: '#10b981', label: '表格' },
+    md: { svg: window.OC.icon('markdown', 16), color: '#3b82f6', label: 'Markdown' },
+    json: { svg: window.OC.icon('json', 16), color: '#f59e0b', label: 'JSON' },
+    code: { svg: window.OC.icon('code', 16), color: '#6366f1', label: '代码' },
+    other: { svg: window.OC.icon('file', 16), color: '#94a3b8', label: '文件' },
+  };
+
+  function fileTypeInfo(file) {
+    const name = file.name || '';
+    const ext = name.split('.').pop().toLowerCase();
+    if (/png|jpe?g|gif|webp|svg|bmp|avif|jp2/.test(ext)) return { ...FILE_META.image, ext };
+    if (ext === 'pdf') return { ...FILE_META.pdf, ext };
+    if (/docx?|html?/.test(ext)) return { ...FILE_META.doc, ext };
+    if (/xlsx?/.test(ext)) return { ...FILE_META.sheet, ext };
+    if (/pptx?/.test(ext)) return { ...FILE_META.slides, ext };
+    if (ext === 'txt') return { ...FILE_META.txt, ext };
+    if (ext === 'csv') return { ...FILE_META.csv, ext };
+    if (ext === 'md' || ext === 'markdown') return { ...FILE_META.md, ext };
+    if (ext === 'json') return { ...FILE_META.json, ext };
+    if (/js|ts|py|java|c|cpp|go|rs|html|css|php|rb|sh|sql/.test(ext)) return { ...FILE_META.code, ext };
+    return { ...FILE_META.other, ext };
+  }
+
+
+  const PARSE_EXT = /^(pdf|png|jpe?g|jp2|webp|gif|bmp|docx?|pptx?|xlsx?|html?)$/;
+  function mineruMode() {
+    const tools = window.OCState && window.OCState.tools;
+    const parse = tools && tools.parse;
+    if (parse && parse.source === 'own' && parse.allowOwn) return parse.hasToken ? 'precise' : 'lite';
+    const m = (window.OCState && window.OCState.mineru) || {};
+    return m.mode === 'precise' ? 'precise' : 'lite';
+  }
+  function needsMineru(file) {
+    const ext = ((file && file.name) || '').split('.').pop().toLowerCase();
+    return PARSE_EXT.test(ext);
+  }
+  function mineruLimitText() {
+    if (mineruMode() === 'precise') return '精准解析单文件不超过 200MB、200 页。';
+    const own = window.OCState && window.OCState.tools && window.OCState.tools.parse && window.OCState.tools.parse.source === 'own';
+    return own
+      ? '当前使用你自己的轻量解析：单文件不超过 10MB、20 页。超出时请拆分文件，或填入自己的 MinerU Token。'
+      : '当前使用平台轻量解析：单文件不超过 10MB、20 页，同一 IP 每分钟有次数限制。超出时请拆分文件。';
+  }
+  function mineruTooBig(file) {
+    const max = mineruMode() === 'precise' ? 200 * 1024 * 1024 : 10 * 1024 * 1024;
+    return file && file.size > max;
+  }
+
+  function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  /**
+   * 读取文件并返回结构化内容（供消息上下文使用）
+   * @returns {Promise<{type, name, size, content, dataUrl?}>}
+   */
+  async function readFile(file) {
+    const meta = fileTypeInfo(file);
+    const isImage = meta.ext && /png|jpe?g|gif|webp|svg|bmp|avif/.test(meta.ext);
+    if (isImage) {
+      const dataUrl = await new Promise((res, rej) => {
+        const fr = new FileReader();
+        fr.onload = () => res(fr.result);
+        fr.onerror = rej;
+        fr.readAsDataURL(file);
+      });
+      return { type: 'image', name: file.name, size: file.size, dataUrl, mediaType: file.type || '', meta };
+    }
+    // 文本类文件提取内容; PDF / 过大文件只保留文件名
+    let content = '';
+    const isTextish = meta.ext && /^(txt|csv|md|markdown|json|js|ts|py|java|c|cpp|go|rs|html|css|php|rb|sh|sql)$/.test(meta.ext);
+    if (isTextish && file.size < 4 * 1024 * 1024) {
+      try {
+        content = await new Promise((res, rej) => {
+          const fr = new FileReader();
+          fr.onload = () => res(String(fr.result));
+          fr.onerror = rej;
+          fr.readAsText(file);
+        });
+      } catch (e) { content = ''; }
+    }
+    return { type: 'file', name: file.name, size: file.size, content, meta };
+  }
+
+  /**
+   * 构建上传文件的 Markdown 片段（附加到用户消息）
+   */
+  function toMarkdown(attach) {
+    if (attach.type === 'image') {
+      return `![${attach.name}](${attach.dataUrl})`;
+    }
+    const ext = (attach.meta && attach.meta.ext) || '';
+    return `**[附件] ${attach.name}**(大小 ${formatSize(attach.size)})\n\n\`\`\`${ext}\n${(attach.content || '').slice(0, 20000)}\n\`\`\``;
+  }
+
+  function imageMediaType(attach) {
+    if (attach.mediaType && /^image\//i.test(attach.mediaType)) return attach.mediaType;
+    const ext = ((attach.meta && attach.meta.ext) || '').toLowerCase();
+    if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+    if (ext === 'png') return 'image/png';
+    if (ext === 'gif') return 'image/gif';
+    if (ext === 'webp') return 'image/webp';
+    if (ext === 'bmp') return 'image/bmp';
+    if (ext === 'svg') return 'image/svg+xml';
+    if (ext === 'avif') return 'image/avif';
+    const m = String(attach.dataUrl || '').match(/^data:([^;]+);/);
+    return (m && m[1]) || 'image/png';
+  }
+
+  function fileExcerpt(attach) {
+    const ext = (attach.meta && attach.meta.ext) || '';
+    return '【附件 ' + (attach.name || 'file') + '，大小 ' + formatSize(attach.size || 0) + '】\n```' + ext + '\n' + String(attach.content || '').slice(0, 20000) + '\n```';
+  }
+
+  /**
+   * 把文本 + 附件转成上游 API 的 content。
+   * 有图片时走多模态数组；只有文本/文件时仍返回字符串。
+   */
+  function toApiContent(text, attachments, format) {
+    const atts = Array.isArray(attachments) ? attachments : [];
+    // imageAsText:图片已经过 MinerU 提取文字(当前模型不支持图片输入),按文本附件发送
+    const images = atts.filter((a) => a && a.type === 'image' && a.dataUrl && !a.imageAsText);
+    const files = atts.filter((a) => a && (a.type !== 'image' || a.imageAsText));
+    const fileText = files.map(fileExcerpt).join('\n\n');
+    const prompt = [String(text || '').trim(), fileText].filter(Boolean).join('\n\n');
+    if (!images.length) return prompt || '请查看附件';
+
+    if (format === 'completions') {
+      const names = images.map((img) => '[图片 ' + (img.name || 'image') + ']').join('\n');
+      return [prompt, names].filter(Boolean).join('\n\n');
+    }
+
+    if (format === 'anthropic') {
+      const parts = [];
+      if (prompt) parts.push({ type: 'text', text: prompt });
+      images.forEach((img) => {
+        const raw = String(img.dataUrl).replace(/^data:[^;]+;base64,/, '');
+        parts.push({
+          type: 'image',
+          source: { type: 'base64', media_type: imageMediaType(img), data: raw },
+        });
+      });
+      return parts;
+    }
+
+    if (format === 'responses') {
+      const parts = [];
+      if (prompt) parts.push({ type: 'input_text', text: prompt });
+      images.forEach((img) => {
+        parts.push({ type: 'input_image', image_url: img.dataUrl });
+      });
+      return parts;
+    }
+
+    const parts = [];
+    if (prompt) parts.push({ type: 'text', text: prompt });
+    images.forEach((img) => {
+      parts.push({
+        type: 'image_url',
+        image_url: { url: img.dataUrl },
+      });
+    });
+    return parts;
+  }
+
+  // ============ 上传按钮界面 ============
+  function createUploadButton(onAttach) {
+    const btn = document.createElement('div');
+    btn.className = 'attach-btn' + (navigator.maxTouchPoints ? '' : '');
+    btn.title = '上传图片或文件';
+    btn.innerHTML = window.OC.icon('paperclip', 22);
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*,.pdf,.txt,.csv,.md,.json,.js,.ts,.py,.html,.css,.sql,.doc,.docx,.ppt,.pptx,.xls,.xlsx';
+    input.multiple = true;
+    input.style.display = 'none';
+    btn.appendChild(input);
+
+    input.addEventListener('change', async () => {
+      const files = Array.from(input.files || []);
+      input.value = '';
+      for (const f of files) {
+        try {
+          const attach = await readFile(f);
+          if (onAttach) await onAttach(attach, f);
+        } catch (e) {
+          console.error('读取文件失败', e);
+          if (window.toast) window.toast('读取文件失败: ' + f.name, true);
+        }
+      }
+    });
+    return { btn, input };
+  }
+
+  // ============ Artifacts 面板 ============
+  /**
+   * 打开 Artifacts 面板（类 Claude Canvas）
+   * @param {{type:'html'|'code'|'svg'|'text', title, content}} artifact
+   */
+  function openArtifact(artifact) {
+    let panel = document.querySelector('.artifact-panel');
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.className = 'artifact-panel';
+      document.body.appendChild(panel);
+    }
+    const type = artifact.type || 'html';
+    let body = '';
+    if (type === 'html') {
+      body = '<iframe class="artifact-frame" sandbox="allow-scripts" srcdoc="' + escapeAttr(artifact.content || '') + '"></iframe>';
+    } else if (type === 'svg') {
+      body = '<div class="artifact-svg">' + (artifact.content || '') + '</div>';
+    } else if (type === 'code') {
+      body = '<pre class="artifact-code">' + escapeHtml(artifact.content || '') + '</pre>';
+    } else {
+      body = '<div class="artifact-text">' + escapeHtml(artifact.content || '') + '</div>';
+    }
+    panel.innerHTML = '<div class="artifact-header"><span class="artifact-title">' + escapeHtml(artifact.title || 'Artifact')
+      + '</span><div class="artifact-actions">'
+      + '<button class="artifact-btn" data-copy>复制</button>'
+      + '<button class="artifact-btn" data-download>下载</button>'
+      + '<button class="artifact-btn" data-close>关闭</button></div></div>'
+      + '<div class="artifact-body">' + body + '</div>';
+    panel.classList.add('show');
+
+    panel.querySelector('[data-close]').addEventListener('click', () => panel.classList.remove('show'));
+    panel.querySelector('[data-copy]').addEventListener('click', async () => {
+      const text = artifact.content || '';
+      try { await navigator.clipboard.writeText(text); if (window.toast) window.toast('已复制'); }
+      catch (e) { window.toast('复制失败', true); }
+    });
+    panel.querySelector('[data-download]').addEventListener('click', () => {
+      const blob = new Blob([artifact.content || ''], { type: 'text/plain' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = (artifact.title || 'artifact').replace(/[^\w.\-]+/g, '_') + '.' + (type === 'html' ? 'html' : 'txt');
+      a.click();
+      URL.revokeObjectURL(a.href);
+    });
+
+    // 渲染内部组件
+    if (type !== 'html') {
+      const bodyEl = panel.querySelector('.artifact-body');
+      if (window.OCRenderer) OCRenderer.enhance(bodyEl);
+    }
+  }
+
+  // ============ Artifact 检测与快捷打开 ============
+  /**
+   * 扫描消息容器中的代码块，为 HTML/SVG 代码附加「在 Artifacts 中打开」按钮
+   * @param {HTMLElement} container
+   */
+  function enhanceArtifactButtons(container) {
+    if (!container) return;
+    container.querySelectorAll('.code-block').forEach((block) => {
+      const lang = block.getAttribute('data-lang') || '';
+      if (lang !== 'html' && lang !== 'svg') return;
+      if (block.querySelector('.artifact-open-btn')) return;
+      const pre = block.querySelector('pre');
+      if (!pre) return;
+      const btn = document.createElement('button');
+      btn.className = 'artifact-open-btn';
+      btn.textContent = lang === 'html' ? '在 Artifacts 中预览' : '在 Artifacts 中查看';
+      btn.addEventListener('click', () => {
+        openArtifact({
+          type: lang === 'html' ? 'html' : 'svg',
+          title: lang.toUpperCase() + ' Artifact',
+          content: pre.textContent,
+        });
+      });
+      const header = block.querySelector('.code-header');
+      if (header) header.appendChild(btn);
+    });
+  }
+
+  // ============ Follow-up 建议问题 ============
+  function renderFollowUps(container, suggestions, onPick) {
+    if (!suggestions || !suggestions.length) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'follow-ups';
+    const label = document.createElement('div');
+    label.className = 'follow-ups-label';
+    label.textContent = '相关追问';
+    wrap.appendChild(label);
+    suggestions.forEach((s) => {
+      const btn = document.createElement('button');
+      btn.className = 'follow-up-btn';
+      btn.textContent = s;
+      btn.addEventListener('click', () => { if (onPick) onPick(s); });
+      wrap.appendChild(btn);
+    });
+    container.appendChild(wrap);
+  }
+
+  // ============ 语音输入（预留接口） ============
+  const VoiceInput = {
+    supported: typeof window.SpeechRecognition !== 'undefined' || typeof window.webkitSpeechRecognition !== 'undefined',
+    _recognition: null,
+    _onResult: null,
+    start(onResult) {
+      if (!this.supported) { if (window.toast) window.toast('当前浏览器不支持语音输入', true); return; }
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      this._recognition = new SR();
+      this._recognition.lang = 'zh-CN';
+      this._recognition.continuous = false;
+      this._recognition.interimResults = false;
+      this._onResult = onResult;
+      this._recognition.onresult = (e) => {
+        const text = e.results[0][0].transcript;
+        if (this._onResult) this._onResult(text);
+      };
+      this._recognition.onerror = () => { if (window.toast) window.toast('语音识别失败', true); };
+      try { this._recognition.start(); } catch (e) {}
+    },
+    stop() {
+      if (this._recognition) { try { this._recognition.stop(); } catch (e) {} }
+    },
+  };
+
+  // ============ 暴露 ============
+  window.OCMultimodal = {
+    readFile, toMarkdown, toApiContent, formatSize, fileTypeInfo, createUploadButton,
+    needsMineru, mineruLimitText, mineruTooBig, mineruMode,
+    openArtifact, enhanceArtifactButtons, renderFollowUps, VoiceInput,
+  };
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+  function escapeAttr(s) {
+    return escapeHtml(s).replace(/"/g, '&quot;');
+  }
+})();

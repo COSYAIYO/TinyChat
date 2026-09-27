@@ -1,0 +1,307 @@
+'use strict';
+/**
+ * conversations.js — 会话管理增强
+ *  - 侧边栏搜索 / 置顶 / 重命名 / 删除
+ *  - 对话分支（Branch）
+ *  - 键盘快捷键
+ *  - 对话历史持久化
+ */
+
+(function () {
+  const C = {};
+
+  // ============ 统一线标(见 icons.js) ============
+  const ic = window.OC ? window.OC.icon : function (n) { return ''; };
+  const I = {
+    chat: ic('chat', 15),
+    pin: ic('pin', 15),
+    pinOff: ic('pinOff', 15),
+    rename: ic('edit', 15),
+    branch: ic('branch', 15),
+    del: ic('trash', 15),
+    group: {
+      '今天': ic('clock', 14),
+      '昨天': ic('sun', 14),
+      '本周': ic('calendar', 14),
+      '更早': ic('refresh', 14),
+    },
+  };
+  const ITEM_HTML = (c, activeCls) => {
+    // 对话图标优先显示该对话所用模型的 logo(未命中/无模型信息时为站点 logo),OC 缺失时回退置顶/普通图标
+    const logo = window.OC && OC.chatLogo && OC.logoImg ? OC.logoImg(OC.chatLogo(c), 'chat-logo') : (c.pinned ? I.pin : I.chat);
+    return '<span class="chat-icon">' + logo + '</span>'
+      + '<span class="chat-title">' + escapeHtml(c.title || '新对话') + '</span>';
+  };
+  const MENU_HTML = '<button class="menu-btn more-btn" data-act="more" data-tip="更多操作" aria-label="更多操作">' + ic('more', 16) + '</button>';
+
+  // 点击「更多」按钮弹出操作菜单(复用全局下拉组件,支持外点/Esc/滚动关闭)
+  function openItemMenu(trigger, c, item, opts) {
+    const items = [
+      { value: 'pin', label: c.pinned ? '取消置顶' : '置顶', sub: c.pinned ? '已置顶' : '' },
+      { value: 'rename', label: '重命名' },
+      { value: 'share', label: '分享对话', sub: '生成公开链接' },
+      { value: 'branch', label: '创建分支', sub: '复制全部消息' },
+      { value: 'del', label: '删除', sub: '不可恢复' },
+    ];
+    if (!window.OC || !window.OC.openSelect) return;
+    window.OC.openSelect(trigger, items, {
+      selected: null,
+      onSelect: (value) => {
+        if (value === 'pin' && opts.onTogglePin) opts.onTogglePin(c);
+        else if (value === 'rename' && opts.onRename) opts.onRename(c, item);
+        else if (value === 'share' && opts.onShare) opts.onShare(c);
+        else if (value === 'branch' && opts.onBranch) opts.onBranch(c);
+        else if (value === 'del' && opts.onDelete) opts.onDelete(c);
+      },
+    });
+  }
+
+  C.normalize = function (chats) {
+    return (chats || []).map((c) => ({
+      pinned: false,
+      branchOf: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ...c,
+    }));
+  };
+
+  // ============ 侧边栏渲染（含搜索/置顶/重命名） ============
+  /**
+   * @param {HTMLElement} listEl #chat-list
+   * @param {Array} chats
+   * @param {object} opts {currentId, onSelect, onDelete, onRename, onTogglePin, onShare, onBranch}
+   */
+  C.renderList = function (listEl, chats, opts = {}) {
+    const sorted = [...chats].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.updatedAt || 0) - (a.updatedAt || 0));
+    const prevInput = document.getElementById('chat-search-input');
+    const prevKeyword = prevInput ? prevInput.value : (C._searchKeyword || '');
+    const keepFocus = !!(prevInput && document.activeElement === prevInput);
+    const keepSelStart = keepFocus ? prevInput.selectionStart : null;
+    const keepSelEnd = keepFocus ? prevInput.selectionEnd : null;
+
+    listEl.innerHTML = '';
+
+    const filterInput = document.createElement('div');
+    filterInput.className = 'chat-search';
+    filterInput.innerHTML = (window.OC ? window.OC.icon('search', 13) : '')
+      + '<input type="search" id="chat-search-input" placeholder="搜索对话…" value="" autocomplete="off" spellcheck="false">';
+    listEl.appendChild(filterInput);
+
+    const searchInput = filterInput.querySelector('input');
+    let keyword = prevKeyword;
+    C._searchKeyword = keyword;
+    searchInput.value = keyword;
+    if (keepFocus) {
+      requestAnimationFrame(() => {
+        searchInput.focus();
+        if (keepSelStart != null) {
+          try { searchInput.setSelectionRange(keepSelStart, keepSelEnd); } catch (e) { /* ignore */ }
+        }
+      });
+    }
+
+    const renderItems = () => {
+      // 移除旧列表(保留搜索框)
+      listEl.querySelectorAll('.chat-item-wrap, .chat-group, .chat-group-section').forEach((el) => el.remove());
+      const kw = keyword.trim().toLowerCase();
+      const filtered = sorted.filter((c) => !kw || (c.title || '').toLowerCase().includes(kw) || (c.messages || []).some((m) => (m.content || '').toLowerCase().includes(kw)));
+      if (!filtered.length) {
+        const empty = document.createElement('div');
+        empty.className = 'chat-list-empty';
+        empty.textContent = kw ? '无匹配对话' : '暂无对话,点击上方「新建对话」开始';
+        listEl.appendChild(empty);
+        return;
+      }
+      // 搜索模式下按更新时间倒序平铺;非搜索模式按时间分块
+      if (kw) {
+        filtered.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).forEach((c) => {
+          const wrap = document.createElement('div');
+          wrap.className = 'chat-item-wrap';
+          const item = document.createElement('div');
+          item.className = 'chat-item' + (c.id === opts.currentId ? ' active' : '');
+          item.innerHTML = ITEM_HTML(c);
+          const menu = document.createElement('div');
+          menu.className = 'chat-item-menu';
+          menu.innerHTML = MENU_HTML;
+          item.appendChild(menu);
+          wrap.appendChild(item);
+          listEl.appendChild(wrap);
+          item.addEventListener('click', (e) => {
+            if (e.target.closest('.chat-item-menu')) return;
+            if (opts.onSelect) opts.onSelect(c);
+          });
+          menu.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (!e.target.closest('.more-btn')) return;
+            openItemMenu(menu, c, item, opts);
+          });
+        });
+        return;
+      }
+      // ---- 时间分块:今天 / 昨天 / 本周 / 更早 ----
+      const timeGroupOf = function (ts) {
+        const t = Number(ts) || Date.now();
+        const now = new Date();
+        const d = new Date(t);
+        const startOfDay = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+        const todayStart = startOfDay(now);
+        const yesterdayStart = todayStart - 86400000;
+        const day = (now.getDay() + 6) % 7;
+        const weekStart = todayStart - day * 86400000;
+        if (t >= todayStart) return '今天';
+        if (t >= yesterdayStart) return '昨天';
+        if (t >= weekStart) return '本周';
+        return '更早';
+      };
+      const GROUP_ORDER = ['今天', '昨天', '本周', '更早'];
+      const p2 = (n) => String(n).padStart(2, '0');
+      const groups = {};
+      filtered.forEach((c) => {
+        const g = timeGroupOf(c.updatedAt || c.createdAt);
+        (groups[g] = groups[g] || []).push(c);
+      });
+      GROUP_ORDER.forEach((g) => {
+        const list = groups[g] || [];
+        if (!list.length) return;
+        // 分组折叠:今天默认展开,昨天及更早默认折叠(状态记忆在 localStorage)
+        const COLLAPSE_KEY = 'oc_chat_group_collapsed';
+        let collapsedMap = {};
+        try { collapsedMap = JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '{}'); } catch (e) { collapsedMap = {}; }
+        const isCollapsed = collapsedMap[g] !== undefined ? collapsedMap[g] : (g !== '今天');
+        const section = document.createElement('div');
+        section.className = 'chat-group-section' + (isCollapsed ? ' collapsed' : '');
+        const title = document.createElement('div');
+        title.className = 'chat-group' + (g === '今天' ? ' is-today' : '');
+        title.setAttribute('role', 'button');
+        title.setAttribute('tabindex', '0');
+        title.setAttribute('aria-expanded', String(!isCollapsed));
+        title.setAttribute('data-tip', (isCollapsed ? '展开' : '收起') + g + '对话');
+        title.innerHTML = '<span class="chat-group-chev">' + ic('chevronDown', 11) + '</span>'
+          + '<span class="chat-group-label">' + g + '</span>'
+          + '<span class="chat-group-count">' + list.length + '</span>';
+        const toggle = () => {
+          const cur = section.classList.contains('collapsed');
+          section.classList.toggle('collapsed', !cur);
+          title.setAttribute('aria-expanded', String(cur));
+          title.setAttribute('data-tip', (cur ? '收起' : '展开') + g + '对话');
+          collapsedMap[g] = !cur;
+          try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsedMap)); } catch (e) {}
+        };
+        title.addEventListener('click', toggle);
+        title.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+        section.appendChild(title);
+        listEl.appendChild(section);
+        list.forEach((c) => {
+          const wrap = document.createElement('div');
+          wrap.className = 'chat-item-wrap';
+          const item = document.createElement('div');
+          item.className = 'chat-item' + (c.id === opts.currentId ? ' active' : '');
+          item.innerHTML = ITEM_HTML(c);
+          const menu = document.createElement('div');
+          menu.className = 'chat-item-menu';
+          menu.innerHTML = MENU_HTML;
+          item.appendChild(menu);
+          wrap.appendChild(item);
+          section.appendChild(wrap);
+          item.addEventListener('click', (e) => {
+            if (e.target.closest('.chat-item-menu')) return;
+            if (opts.onSelect) opts.onSelect(c);
+          });
+          menu.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (!e.target.closest('.more-btn')) return;
+            openItemMenu(menu, c, item, opts);
+          });
+        });
+      });
+    };
+    renderItems();
+    searchInput.addEventListener('input', () => {
+      keyword = searchInput.value;
+      C._searchKeyword = keyword;
+      renderItems();
+    });
+  };
+
+  // 内联重命名
+  C.renameInline = function (chatItem, currentTitle, onDone) {
+    const titleEl = chatItem.querySelector('.chat-title');
+    const input = document.createElement('input');
+    input.className = 'rename-input';
+    input.type = 'text';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.value = currentTitle || '';
+    input.maxLength = 60;
+    titleEl.replaceWith(input);
+    input.focus();
+    input.select();
+    const commit = () => { onDone(input.value.trim() || currentTitle); };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') commit();
+      if (e.key === 'Escape') onDone(currentTitle);
+    });
+    input.addEventListener('blur', commit);
+  };
+
+  // ============ 对话分支 ============
+  /**
+   * 从指定消息处创建分支
+   * @param {object} chat 原对话
+   * @param {number} msgIndex 分支起点（该消息之后的将被替换）
+   */
+  C.createBranch = function (chat, msgIndex) {
+    const branch = {
+      id: 'c' + Date.now() + Math.random().toString(36).slice(2, 6),
+      title: chat.title ? chat.title + ' (分支)' : '新对话',
+      messages: (chat.messages || []).slice(0, msgIndex + 1),
+      pinned: false,
+      branchOf: chat.id,
+      assistantId: chat.assistantId || null,
+      assistantName: chat.assistantName || '',
+      systemPrompt: chat.systemPrompt || '',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    return branch;
+  };
+
+  // ============ 键盘快捷键 ============
+  C.initShortcuts = function (handlers) {
+    document.addEventListener('keydown', (e) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      const k = e.key.toLowerCase();
+      // 避免输入框内快捷键冲突（保留必要项）
+      const target = e.target;
+      const inInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+
+      if (k === 'k' && !inInput) {
+        e.preventDefault();
+        if (handlers.onNewChat) handlers.onNewChat();
+      } else if (k === 'l') {
+        e.preventDefault();
+        if (handlers.onFocusInput) handlers.onFocusInput();
+      } else if (k === 'p' && !inInput) {
+        e.preventDefault();
+        if (handlers.onToggleSidebar) handlers.onToggleSidebar();
+      } else if (k === 'enter' && inInput) {
+        // Cmd/Ctrl+Enter 发送（输入框内）
+        if (handlers.onSend) handlers.onSend();
+      }
+    });
+  };
+
+  // ============ 标题自动生成 ============
+  C.autoTitle = function (text) {
+    const clean = (text || '').replace(/[#*`>|~]/g, '').trim();
+    return clean.length > 20 ? clean.slice(0, 20) + '…' : (clean || '新对话');
+  };
+
+  window.OCConversations = C;
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+})();
