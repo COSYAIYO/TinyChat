@@ -80,6 +80,13 @@
 
       <div class="overview-note muted small">核心状态概览。详细趋势、用量和排行请进入“用量分析”。</div>
     </div>
+    <div class="admin-card" style="margin-top:16px">
+      <h2>全站公告</h2>
+      <p class="muted small">启用后所有登录用户在顶部看到公告条；用户关闭后，内容更新（重新保存）才会再次显示。纯文本，最多 2000 字。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="announce-enabled"><span class="slider"></span></span><span>启用公告</span></label>
+      <label class="field"><span>公告内容</span><textarea id="announce-text" rows="3" placeholder="例如：系统将于周日晚 22:00–24:00 升级维护" style="resize:vertical"></textarea></label>
+      <button class="btn primary" id="announce-save" type="button">保存公告</button>
+    </div>
   </div>
 
   <div class="admin-panel" id="panel-usage">
@@ -318,6 +325,7 @@
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="verify-reset-enabled"><span class="slider"></span></span><span>开启找回密码</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="verify-quota-unlimited"><span class="slider"></span></span><span>新注册用户默认无限额度</span></label>
       <label class="field"><span>新注册用户默认额度</span><input id="verify-free-quota" type="number" min="0" value="100"></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="apikeys-enabled" checked><span class="slider"></span></span><span>允许用户生成 API 密钥（OpenAI 兼容出口 /v1，计费与网页端一致）</span></label>
       <div class="row-between" style="gap:10px;flex-wrap:wrap;margin-top:6px">
         <label class="field" style="margin:0;flex-direction:row;align-items:center;gap:8px"><span style="white-space:nowrap">会话有效期（天）</span><input id="session-days" type="number" min="1" max="30" value="7" style="width:80px"></label>
         <button class="btn danger" id="session-invalidate" type="button">强制全站下线</button>

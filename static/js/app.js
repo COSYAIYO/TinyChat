@@ -4334,6 +4334,97 @@ if (composerAt) {
 $('logout-btn').addEventListener('click', logout);
 $('admin-link').addEventListener('click', () => location.href = apiUrl('/admin'));
 
+// ============ 全站公告 ============
+(function initAnnouncement() {
+  // PWA:注册 service worker(静态资源离线缓存,"添加到主屏幕")
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register(apiUrl('sw.js')).catch(() => {});
+    });
+  }
+  const bar = $('announce-bar');
+  if (!bar) return;
+  fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
+    const ann = cfg && cfg.announcement;
+    if (!ann || !ann.enabled || !ann.text) return;
+    const seen = Number(localStorage.getItem('oc_announcement_seen')) || 0;
+    if (ann.updatedAt && ann.updatedAt <= seen) return;
+    const txt = $('announce-text');
+    if (txt) txt.textContent = ann.text;
+    bar.classList.remove('hidden');
+    const close = $('announce-close');
+    if (close) close.addEventListener('click', () => {
+      bar.classList.add('hidden');
+      localStorage.setItem('oc_announcement_seen', String(ann.updatedAt || Date.now()));
+    });
+  }).catch(() => {});
+})();
+
+// ============ API 密钥(OpenAI 兼容出口) ============
+function renderApiKeys(keys) {
+  const box = $('apikey-list');
+  if (!box) return;
+  if (!keys.length) { box.innerHTML = '<p class="muted small" style="margin:8px 0 0">还没有 API 密钥</p>'; return; }
+  box.innerHTML = keys.map((k) => {
+    const last = k.lastUsed ? new Date(k.lastUsed).toLocaleString('zh-CN') : '从未使用';
+    return '<div class="row-between" style="padding:6px 0;border-bottom:1px solid var(--hairline)">'
+      + '<div style="min-width:0"><div>' + escapeHtml(k.name) + ' <code class="muted small">' + escapeHtml(k.prefix) + '••••</code></div>'
+      + '<div class="muted small">创建于 ' + new Date(k.createdAt).toLocaleDateString('zh-CN') + ' · 最后使用 ' + last + '</div></div>'
+      + '<button class="btn small danger" data-del-key="' + escapeHtml(k.id) + '" type="button">删除</button></div>';
+  }).join('');
+  box.querySelectorAll('[data-del-key]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const ok = window.OCUI && OCUI.confirm
+        ? await OCUI.confirm({ title: '删除 API 密钥', message: '使用该密钥的客户端将立即无法调用。确认删除？', danger: true, confirmText: '删除' })
+        : confirm('确认删除该 API 密钥？');
+      if (!ok) return;
+      try {
+        const r = await api('/api/me/apikeys/' + encodeURIComponent(btn.dataset.delKey), { method: 'DELETE' });
+        const d = await r.json();
+        if (!r.ok) return toast((d.error && d.error.message) || '删除失败', true);
+        toast('已删除'); loadApiKeys();
+      } catch (e) { toast('删除失败: ' + e.message, true); }
+    });
+  });
+}
+function loadApiKeys() {
+  const box = $('apikey-list');
+  if (!box) return;
+  api('/api/me/apikeys').then((r) => r.json()).then((d) => {
+    renderApiKeys(d.keys || []);
+    if ($('acc-api-base')) $('acc-api-base').textContent = location.origin + '/v1';
+  }).catch(() => {});
+}
+(function initApiKeysUI() {
+  const create = $('apikey-create');
+  if (!create) return;
+  create.addEventListener('click', async () => {
+    create.disabled = true;
+    try {
+      const r = await api('/api/me/apikeys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: ($('apikey-name') && $('apikey-name').value.trim()) || '' }),
+      });
+      const d = await r.json();
+      if (!r.ok) return toast((d.error && d.error.message) || '创建失败', true);
+      const box = $('apikey-new-box');
+      const val = $('apikey-new-value');
+      if (box && val) { val.textContent = d.secret; box.classList.remove('hidden'); }
+      const input = $('apikey-name');
+      if (input) input.value = '';
+      loadApiKeys();
+      toast('密钥已生成，请立即复制保存');
+    } catch (e) {
+      toast('创建失败: ' + e.message, true);
+    } finally { create.disabled = false; }
+  });
+  if ($('sp-account') && window.MutationObserver) {
+    new MutationObserver(() => { if ($('sp-account').classList.contains('active')) loadApiKeys(); })
+      .observe($('sp-account'), { attributes: true, attributeFilter: ['class'] });
+  }
+})();
+
 // ============ 空状态建议 ============
 (function initEmptySuggests() {
   const wrap = $('empty-suggests');

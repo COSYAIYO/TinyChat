@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#ffffff">
+<link rel="manifest" href="./manifest.json">
 <title>TinyChat - 自托管多模型 AI 对话应用（PHP，无需数据库）</title>
 <meta name="description" content="TinyChat 是开源的自托管（私有部署）AI 对话应用：纯 PHP、无需数据库，上传虚拟主机即可运行。支持 OpenAI、Anthropic 及各类兼容接口的多模型切换，内置用户注册登录、额度计费、兑换码、助手库、联网搜索、文件解析与在线更新，适合个人和团队搭建自己的 AI 站点。">
 <meta name="keywords" content="TinyChat,AI对话应用,自托管AI,私有部署,ChatGPT界面,PHP聊天程序,OpenAI,Anthropic,多模型,大模型前端,用户系统,兑换码计费,无需数据库">
@@ -156,6 +157,12 @@
 
   <!-- 主区域 -->
   <main class="main">
+    <div class="announce-bar hidden" id="announce-bar">
+      <span class="announce-text" id="announce-text"></span>
+      <button class="icon-btn announce-close" id="announce-close" type="button" aria-label="关闭公告">
+        <svg class="oc-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>
+      </button>
+    </div>
     <button class="icon-btn hamburger-btn" id="mobile-menu-btn" title="菜单" aria-label="打开菜单">
       <svg class="oc-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4.5 7h15M4.5 12h15M4.5 17h15" stroke-linecap="round"/></svg>
     </button>
@@ -410,6 +417,20 @@
           <div class="row-between" style="margin:10px 0">
             <div><div>需要充值额度？</div><div class="muted small">前往套餐页购买或使用兑换码</div></div>
             <button class="btn small" id="acc-go-plan" type="button">去购买</button>
+          </div>
+
+          <div class="section-title">API 密钥</div>
+          <p class="muted small" style="margin:0 0 8px">生成 <code>sk-tc-</code> 密钥后，可在任何 OpenAI 兼容客户端里把 Base URL 设为 <code id="acc-api-base">本站地址</code> 直接调用，计费与网页端一致。密钥仅创建时完整显示一次。</p>
+          <div class="add-provider-form">
+            <label class="field"><span>备注名称</span><input id="apikey-name" placeholder="例如：我的脚本" maxlength="40" autocomplete="off"></label>
+            <div class="form-actions">
+              <button class="btn primary small" id="apikey-create" type="button">生成密钥</button>
+            </div>
+            <div id="apikey-list" class="apikey-list"></div>
+            <div class="hidden" id="apikey-new-box" style="background:color-mix(in srgb,var(--brand) 8%,transparent);border:1px solid var(--hairline);border-radius:10px;padding:10px 12px;margin-top:8px">
+              <div class="muted small">请立即复制保存（仅显示一次）：</div>
+              <code id="apikey-new-value" style="word-break:break-all;font-size:12.5px"></code>
+            </div>
           </div>
 
           <div class="section-title">修改密码</div>
