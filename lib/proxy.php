@@ -597,6 +597,52 @@ function tc_web_search_query_from_body($body, $format) {
     return $text;
 }
 
+// 提取最后一条用户消息的纯文本(用于内容审核,不做截断压缩)
+function tc_last_user_text($body, $format) {
+    $text = '';
+    if ($format === 'responses' && isset($body['input'])) {
+        if (is_string($body['input'])) $text = $body['input'];
+        elseif (is_array($body['input'])) {
+            for ($i = count($body['input']) - 1; $i >= 0; $i--) {
+                $m = $body['input'][$i];
+                if (!is_array($m)) continue;
+                $role = isset($m['role']) ? $m['role'] : '';
+                if ($role && $role !== 'user') continue;
+                $c = isset($m['content']) ? $m['content'] : '';
+                if (is_string($c)) { $text = $c; break; }
+                if (is_array($c)) {
+                    $parts = array();
+                    foreach ($c as $p) {
+                        if (is_string($p)) $parts[] = $p;
+                        elseif (is_array($p) && isset($p['text'])) $parts[] = $p['text'];
+                    }
+                    $text = implode("\n", $parts);
+                    if (trim($text) !== '') break;
+                }
+            }
+        }
+    } elseif ($format === 'completions' && isset($body['prompt'])) {
+        $text = (string) $body['prompt'];
+    } elseif (isset($body['messages']) && is_array($body['messages'])) {
+        for ($i = count($body['messages']) - 1; $i >= 0; $i--) {
+            $m = $body['messages'][$i];
+            if (!is_array($m) || (isset($m['role']) && $m['role'] !== 'user')) continue;
+            $c = isset($m['content']) ? $m['content'] : '';
+            if (is_string($c)) { $text = $c; break; }
+            if (is_array($c)) {
+                $parts = array();
+                foreach ($c as $p) {
+                    if (is_string($p)) $parts[] = $p;
+                    elseif (is_array($p) && isset($p['text'])) $parts[] = $p['text'];
+                }
+                $text = implode("\n", $parts);
+                if (trim($text) !== '') break;
+            }
+        }
+    }
+    return tc_plain_text($text, 20000);
+}
+
 function tc_normalize_search_hits($rows, $max) {
     $out = array();
     $seen = array();
@@ -1523,11 +1569,24 @@ function tc_api_proxy($format) {
     $started = tc_now();
     $ctx = tc_with_db(false, function ($db) use ($format) {
         $user = tc_require_auth($db);
+        $rateLimit = isset($db['settings']['rateLimitPerMin']) ? (int) $db['settings']['rateLimitPerMin'] : 30;
+        if (!tc_rate_limit_check('u:' . $user['id'], $rateLimit)) {
+            tc_fail(429, '请求太频繁了，请稍后再试（当前上限 ' . $rateLimit . ' 次/分钟）');
+        }
         $b = tc_read_json_body(20 * 1024 * 1024);
         $resolved = tc_resolve_provider($db, $user, $b);
         if (!empty($resolved['error'])) tc_fail(400, $resolved['error']);
         $provider = $resolved['provider'];
+        // 熔断:该模型近期持续全失败时快速失败,给出清晰提示(管理员豁免,便于现场排查)
+        if (empty($user['admin'])) {
+            $circuitModel = isset($b['model']) ? (string) $b['model'] : (isset($provider['models'][0]['id']) ? (string) $provider['models'][0]['id'] : '');
+            $circuitMsg = tc_model_circuit_message($db, isset($provider['id']) ? $provider['id'] : '', $circuitModel);
+            if ($circuitMsg !== '') tc_fail(503, $circuitMsg);
+        }
         $cost = tc_provider_cost($provider);
+        // 内容审核:开启敏感词过滤时,先检查最后一条用户消息
+        $modHit = tc_moderation_hit(isset($db['settings']['moderation']) && is_array($db['settings']['moderation']) ? $db['settings']['moderation'] : array(), tc_last_user_text($b, $format));
+        if ($modHit !== '') tc_fail(400, '消息包含被禁止的内容，请修改后重试');
         // 用户自备供应商(自己的 Key):不扣站点次数,也不设额度门槛
         if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
         if (!tc_is_unlimited_quota($user) && (isset($user['quota']) ? (float) $user['quota'] : 0) < $cost) {
@@ -1715,6 +1774,7 @@ function tc_api_proxy($format) {
         }
         if (!empty($res['status']) && $res['status'] >= 400) {
             $errBody = isset($res['body']) ? $res['body'] : '';
+            tc_context_learn($provider, $body, $errBody);
             $unsupported = tc_unsupported_param_names($errBody);
             $learnLevels = null;
             $effortRemapped = false;
@@ -1844,6 +1904,7 @@ function tc_api_proxy($format) {
     $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], false);
     if (!empty($res['ok']) && !empty($res['status']) && $res['status'] >= 400) {
         $errBody = isset($res['body']) ? $res['body'] : '';
+        tc_context_learn($provider, $body, $errBody);
         $unsupported = tc_unsupported_param_names($errBody);
         $learnLevels = null;
         $effortRemapped = tc_effort_remap_from_error($body, $errBody, $learnLevels);
@@ -1926,6 +1987,57 @@ function tc_note_model_health($provider, $body, $ok) {
     try {
         tc_with_db(true, function (&$db) use ($pid, $model, $ok) {
             tc_record_model_health($db, $pid, $model, $ok);
+        });
+    } catch (Throwable $e) {
+    }
+}
+
+// 熔断判定:近 4 小时内该模型调用 ≥5 次且全部失败 → 视为持续不可用。
+// 熔断期间快速失败,不再打上游,因此不会再产生失败事件,事件随 4 小时窗口老化后自动恢复
+function tc_model_circuit_message($db, $providerId, $model) {
+    if ($providerId === '' || $model === '') return '';
+    $summary = tc_model_health_summary($db, $providerId);
+    $row = isset($summary[$model]) ? $summary[$model] : null;
+    if (!$row || (int) $row['calls'] < 5 || (int) $row['ok'] > 0) return '';
+    return '模型 ' . $model . ' 当前持续不可用（近 4 小时连续 ' . $row['calls'] . ' 次调用全部失败），请换一个模型或稍后再试';
+}
+
+// 从上游报错中提取模型上下文窗口上限
+function tc_context_limit_from_error($raw) {
+    $text = (string) $raw;
+    if ($text === '') return 0;
+    $candidates = array();
+    // OpenAI: "This model's maximum context length is 8192 tokens"
+    if (preg_match('/maximum context length is (\d+)/i', $text, $m)) $candidates[] = (int) $m[1];
+    // Anthropic: "... 205063 tokens > 200000 maximum"
+    if (preg_match('/(\d{3,})\s*tokens?\s*>\s*(\d{3,})\s*maximum/i', $text, $m)) $candidates[] = (int) $m[2];
+    // 通用: context length/window/size 后跟数字(≥4 位,降低误报)
+    if (preg_match('/(?:context[_ ](?:length|window|size)|max(?:imum)?[_ ](?:context|tokens?))[^\d]{0,40}(\d{4,})/i', $text, $m)) $candidates[] = (int) $m[1];
+    if (!$candidates) return 0;
+    $limit = max($candidates);
+    if ($limit < 256) return 0;
+    return min(2000000, $limit);
+}
+
+// 自动学习上下文窗口:仅当管理员开启且该模型尚未配置 maxContext 时回填,不覆盖手动设置
+function tc_context_learn($provider, $body, $errBody) {
+    $model = isset($body['model']) ? (string) $body['model'] : '';
+    $pid = isset($provider['id']) ? $provider['id'] : '';
+    if ($model === '' || $pid === '' || (string) $errBody === '') return;
+    $limit = tc_context_limit_from_error($errBody);
+    if ($limit <= 0) return;
+    try {
+        tc_with_db(true, function (&$db) use ($pid, $model, $limit) {
+            if (empty($db['settings']['contextAutoLearn'])) return;
+            foreach ($db['providers'] as $pi => $p) {
+                if (!isset($p['id']) || $p['id'] !== $pid || empty($p['models']) || !is_array($p['models'])) continue;
+                foreach ($p['models'] as $mi => $m) {
+                    if (!is_array($m) || !isset($m['id']) || (string) $m['id'] !== $model) continue;
+                    if (empty($m['maxContext'])) $db['providers'][$pi]['models'][$mi]['maxContext'] = $limit;
+                    return;
+                }
+                return;
+            }
         });
     } catch (Throwable $e) {
     }

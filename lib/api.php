@@ -616,7 +616,7 @@ function tc_api_setup() {
         );
         tc_set_password($user, $password);
         $db['users'][] = $user;
-        tc_json(200, array('token' => tc_issue_token($user), 'user' => tc_sanitize_user($user)));
+        tc_json(200, array('token' => tc_issue_token($user, $db['settings']), 'user' => tc_sanitize_user($user)));
     });
 }
 
@@ -628,6 +628,7 @@ function tc_api_register() {
     tc_with_db(true, function (&$db) {
         $b = tc_read_json_body();
         if (empty($db['settings']['allowRegister'])) tc_fail(403, '站点已关闭注册，请联系管理员开通账号');
+        if (!empty($db['settings']['agreementEnabled']) && empty($b['agreementAccepted'])) tc_fail(400, '请先阅读并同意用户协议');
         $name = trim((string) (isset($b['name']) ? $b['name'] : ''));
         $password = (string) (isset($b['password']) ? $b['password'] : '');
         $email = strtolower(trim((string) ($b['email'] ?? '')));
@@ -650,7 +651,7 @@ function tc_api_register() {
         $db['users'][] = $user;
         tc_add_quota($db, $user, !empty($db['settings']['freeQuotaUnlimited']) ? -1 : $db['settings']['freeQuota']);
         if (!empty($db['settings']['emailVerificationEnabled'])) { $link = tc_public_base_url() . '/login?verify=' . rawurlencode($token); [$subject,$html] = tc_render_mail_template($db['settings'], 'verify', $name, $link, '24 小时'); if (!tc_mail_send($db['settings'], $email, $subject, $html)) tc_fail(503, '验证邮件发送失败，请联系管理员'); tc_json(200, array('ok'=>true,'pendingVerification'=>true,'user'=>tc_sanitize_user($user))); }
-        tc_json(200, array('token' => tc_issue_token($user), 'user' => tc_sanitize_user($user)));
+        tc_json(200, array('token' => tc_issue_token($user, $db['settings']), 'user' => tc_sanitize_user($user)));
     });
 }
 
@@ -683,7 +684,7 @@ function tc_api_login() {
             if ($u['id'] === $seenId) { $user = $u; break; }
         }
     });
-    tc_json(200, array('token' => tc_issue_token($user), 'user' => tc_sanitize_user($user)));
+    tc_json(200, array('token' => tc_issue_token($user, $db['settings']), 'user' => tc_sanitize_user($user)));
 }
 
 function tc_api_verify_email() {
@@ -778,7 +779,7 @@ function tc_api_change_password() {
         if ($newPwd === $oldPwd) tc_fail(400, '新密码不能与原密码相同');
         tc_set_password($user, $newPwd);
         tc_replace_user($db, $user);
-        tc_json(200, array('ok' => true, 'token' => tc_issue_token($user)));
+        tc_json(200, array('ok' => true, 'token' => tc_issue_token($user, $db['settings'])));
     });
 }
 
@@ -925,6 +926,11 @@ function tc_api_sync_save_chats() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
         $b = tc_read_json_body(50 * 1024 * 1024);
+        // 隐私模式:服务器不保存对话记录,客户端仅本地留存
+        if (isset($db['settings']['persistChats']) && !$db['settings']['persistChats']) {
+            tc_db_skip_write();
+            tc_json(200, array('ok' => true, 'count' => 0, 'revision' => tc_chat_revision_of($db, $user['id']), 'persistChats' => false));
+        }
         $current = tc_chat_revision_of($db, $user['id']);
         $base = isset($b['baseRevision']) ? (int) $b['baseRevision'] : $current;
         if ($base !== $current) {
@@ -985,6 +991,7 @@ function tc_api_get_share($id) {
 function tc_api_admin_stats() {
     tc_with_db(false, function ($db) {
         tc_require_admin($db);
+        tc_backup_maybe($db['settings']);
         $days = tc_last_n_days(14);
         $byDay = tc_assoc($db['stats']['callsByDay']);
         $trend = array();
@@ -1318,8 +1325,44 @@ function tc_api_redeem_package() {
 function tc_api_admin_get_settings() {
     tc_with_db(false, function ($db) {
         tc_require_admin($db);
+        tc_backup_maybe($db['settings']);
         tc_json(200, array('settings' => tc_admin_settings_public($db['settings'])));
     });
+}
+
+// 强制全站下线:会话纪元 +1,所有已签发的令牌立即失效
+function tc_api_admin_invalidate_sessions() {
+    tc_with_db(true, function (&$db) {
+        tc_require_admin($db);
+        $db['settings']['authEpoch'] = (int) (isset($db['settings']['authEpoch']) ? $db['settings']['authEpoch'] : 1) + 1;
+        tc_json(200, array('ok' => true, 'authEpoch' => (int) $db['settings']['authEpoch']));
+    });
+}
+
+// 用户协议页(/agreement):展示后台保存的 HTML 正文,未启用时 404
+function tc_api_agreement_page() {
+    $settings = tc_with_db(false, function ($db) {
+        return $db['settings'];
+    });
+    if (empty($settings['agreementEnabled']) || trim((string) $settings['agreementHtml']) === '') {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '站点未启用用户协议';
+        exit;
+    }
+    $site = htmlspecialchars((string) (isset($settings['siteName']) ? $settings['siteName'] : 'TinyChat'), ENT_QUOTES, 'UTF-8');
+    header('Content-Type: text/html; charset=utf-8');
+    header('Cache-Control: no-cache');
+    echo '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+        . '<title>用户协议 · ' . $site . '</title><meta name="robots" content="noindex,nofollow"></head>'
+        . '<body style="margin:0;background:#eef1f6;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',\'PingFang SC\',\'Microsoft YaHei\',sans-serif;">'
+        . '<div style="max-width:720px;margin:0 auto;padding:36px 16px;">'
+        . '<div style="background:#fff;border-radius:16px;padding:32px 28px;box-shadow:0 1px 3px rgba(15,23,42,.06);">'
+        . '<h1 style="margin:0 0 20px;font-size:22px;color:#0f172a;">' . $site . ' 用户协议</h1>'
+        . '<div style="font-size:14px;line-height:1.9;color:#334155;word-break:break-word;">' . $settings['agreementHtml'] . '</div>'
+        . '<p style="margin:28px 0 0;font-size:12px;color:#94a3b8;text-align:center;">以上内容由 ' . $site . ' 管理员配置</p>'
+        . '</div></div></body></html>';
+    exit;
 }
 
 function tc_api_admin_save_settings() {
@@ -1399,6 +1442,61 @@ function tc_api_admin_delete_logs() {
         tc_require_admin($db);
         tc_clear_logs();
         tc_json(200, array('ok' => true));
+    });
+}
+
+// ---- 数据备份 ----
+function tc_api_admin_backup_list() {
+    tc_with_db(false, function ($db) {
+        tc_require_admin($db);
+        tc_backup_maybe($db['settings']);
+        tc_json(200, array(
+            'backups' => tc_backup_list(),
+            'backupEnabled' => !empty($db['settings']['backupEnabled']),
+            'backupKeep' => (int) $db['settings']['backupKeep'],
+        ));
+    });
+}
+
+function tc_api_admin_backup_create() {
+    tc_with_db(true, function (&$db) {
+        tc_require_admin($db);
+        $name = tc_backup_create();
+        if ($name === null) tc_fail(500, '备份创建失败，请检查 data/backup 目录写权限');
+        tc_backup_prune($db['settings']);
+        tc_db_skip_write();
+        tc_json(200, array('ok' => true, 'created' => $name, 'backups' => tc_backup_list()));
+    });
+}
+
+function tc_api_admin_backup_download() {
+    tc_with_db(false, function ($db) {
+        tc_require_admin($db);
+        $q = tc_query();
+        $full = tc_backup_path(isset($q['id']) ? $q['id'] : '');
+        if ($full === '') tc_fail(404, '备份不存在');
+        tc_db_commit();
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="' . basename($full) . '"');
+        header('Content-Length: ' . (string) filesize($full));
+        header('Cache-Control: no-store');
+        readfile($full);
+        exit;
+    });
+}
+
+function tc_api_admin_backup_restore() {
+    tc_with_db(true, function (&$db) {
+        tc_require_admin($db);
+        $b = tc_read_json_body();
+        $full = tc_backup_path(isset($b['id']) ? $b['id'] : '');
+        if ($full === '') tc_fail(404, '备份不存在');
+        $raw = @file_get_contents($full);
+        $data = json_decode((string) $raw, true);
+        if (!is_array($data) || empty($data['users'])) tc_fail(400, '备份文件损坏或不是有效的数据库备份');
+        // 用备份内容整体替换当前数据库,走统一的迁移与提交流程
+        $db = tc_migrate_db($data);
+        tc_json(200, array('ok' => true, 'restoredAt' => tc_now(), 'users' => count($db['users'])));
     });
 }
 

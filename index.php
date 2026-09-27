@@ -72,6 +72,10 @@ if ($method === 'GET' || $method === 'HEAD') {
         tc_send_page('share.html');
         exit;
     }
+    if ($path === '/agreement') {
+        tc_api_agreement_page();
+        exit;
+    }
 }
 
 http_response_code(404);
@@ -136,6 +140,7 @@ function tc_dispatch($method, $path) {
         array('GET', '#^/api/admin/stats$#', 'tc_api_admin_stats'),
         array('GET', '#^/api/admin/settings$#', 'tc_api_admin_get_settings'),
         array('POST', '#^/api/admin/settings$#', 'tc_api_admin_save_settings'),
+        array('POST', '#^/api/admin/session/invalidate$#', 'tc_api_admin_invalidate_sessions'),
         array('GET', '#^/api/admin/thinking$#', 'tc_api_admin_get_thinking'),
         array('POST', '#^/api/admin/thinking$#', 'tc_api_admin_save_thinking'),
         array('GET', '#^/api/packages$#', 'tc_api_list_packages'),
@@ -156,6 +161,10 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/admin/search/test$#', 'tc_api_admin_test_search'),
         array('GET', '#^/api/admin/logs$#', 'tc_api_admin_logs'),
         array('DELETE', '#^/api/admin/logs$#', 'tc_api_admin_delete_logs'),
+        array('GET', '#^/api/admin/backup$#', 'tc_api_admin_backup_list'),
+        array('POST', '#^/api/admin/backup$#', 'tc_api_admin_backup_create'),
+        array('GET', '#^/api/admin/backup/download$#', 'tc_api_admin_backup_download'),
+        array('POST', '#^/api/admin/backup/restore$#', 'tc_api_admin_backup_restore'),
         array('GET', '#^/api/admin/users$#', 'tc_api_admin_users'),
         array('GET', '#^/api/admin/users/chats$#', 'tc_api_admin_user_chats'),
         array('POST', '#^/api/admin/users$#', 'tc_api_admin_create_user'),

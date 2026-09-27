@@ -750,6 +750,9 @@ function fillChatLimits(s) {
     const t = parseFloat(src.temperature);
     $('chat-temperature').value = Number.isFinite(t) ? t : '';
   }
+  if ($('chat-ratelimit')) $('chat-ratelimit').value = Math.min(600, Math.max(0, parseInt(src.rateLimitPerMin, 10) || 0));
+  if ($('chat-context-learn')) $('chat-context-learn').checked = src.contextAutoLearn !== false;
+  if ($('chat-persist-chats')) $('chat-persist-chats').checked = src.persistChats !== false;
 }
 (function initChatLimits() {
   document.querySelectorAll('#panel-chat .stepper [data-step]').forEach((btn) => {
@@ -769,12 +772,15 @@ function fillChatLimits(s) {
     const output = Math.min(128000, Math.max(256, parseInt($('chat-output') && $('chat-output').value, 10) || 12800));
     const tempRaw = parseFloat(($('chat-temperature') && $('chat-temperature').value) || '');
     const temperature = Number.isFinite(tempRaw) ? Math.min(2, Math.max(0, tempRaw)) : null;
+    const rateLimit = Math.min(600, Math.max(0, parseInt($('chat-ratelimit') && $('chat-ratelimit').value, 10) || 0));
+    const contextLearn = !!($('chat-context-learn') && $('chat-context-learn').checked);
+    const persistChats = !!($('chat-persist-chats') && $('chat-persist-chats').checked);
     save.disabled = true;
     try {
       const r = await api('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature }),
+        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature, rateLimitPerMin: rateLimit, contextAutoLearn: contextLearn, persistChats }),
       });
       const data = await r.json();
       if (!r.ok) return toast((data.error && data.error.message) || '保存失败', true);
@@ -1779,6 +1785,7 @@ async function loadVerifySettings() {
   const s = d.settings || {}; const set = (id, v) => { const e = $(id); if (e) e.value = v == null ? '' : v; };
   ['verify-email-enabled','verify-reset-enabled','verify-quota-unlimited'].forEach((id, i) => { const e=$(id); if(e) e.checked=!![s.emailVerificationEnabled,s.passwordResetEnabled,s.freeQuotaUnlimited][i]; });
   set('verify-free-quota', s.freeQuota); const smtp=s.smtp||{}; set('smtp-host',smtp.host); set('smtp-port',smtp.port||587); set('smtp-user',smtp.username); set('smtp-pass',smtp.password); set('smtp-encryption',smtp.encryption||'tls'); set('smtp-from-name',smtp.fromName||'TinyChat'); set('smtp-from-email',smtp.fromEmail);
+  set('session-days', s.sessionDays || 7);
   const tpl = s.mailTemplates || {};
   MAIL_TPL.siteName = s.siteName || 'TinyChat';
   MAIL_TPL.tpl.verify = { subject: tpl.verifySubject || '', html: tpl.verifyHtml || '' };
@@ -2002,7 +2009,12 @@ async function loadPackages() {
   });
 })();
 (function initVerifyAndPackages(){
-  const save=$('verify-save'); if(save) save.addEventListener('click',async()=>{ const tplPayload=MAIL_TPL.loaded?{mailTemplates:{tplVersion:2,verifySubject:MAIL_TPL.tpl.verify.subject,verifyHtml:MAIL_TPL.tpl.verify.html,resetSubject:MAIL_TPL.tpl.reset.subject,resetHtml:MAIL_TPL.tpl.reset.html}}:{}; const payload=Object.assign({emailVerificationEnabled:!!$('verify-email-enabled').checked,passwordResetEnabled:!!$('verify-reset-enabled').checked,freeQuotaUnlimited:!!$('verify-quota-unlimited').checked,freeQuota:parseInt($('verify-free-quota').value,10)||0,smtp:{host:$('smtp-host').value.trim(),port:parseInt($('smtp-port').value,10)||587,username:$('smtp-user').value.trim(),password:$('smtp-pass').value,encryption:$('smtp-encryption').value,fromName:$('smtp-from-name').value.trim(),fromEmail:$('smtp-from-email').value.trim()}},tplPayload); const r=await api('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'保存失败',true); toast('验证设置已保存'); });
+  const save=$('verify-save'); if(save) save.addEventListener('click',async()=>{ const tplPayload=MAIL_TPL.loaded?{mailTemplates:{tplVersion:2,verifySubject:MAIL_TPL.tpl.verify.subject,verifyHtml:MAIL_TPL.tpl.verify.html,resetSubject:MAIL_TPL.tpl.reset.subject,resetHtml:MAIL_TPL.tpl.reset.html}}:{}; const payload=Object.assign({emailVerificationEnabled:!!$('verify-email-enabled').checked,passwordResetEnabled:!!$('verify-reset-enabled').checked,freeQuotaUnlimited:!!$('verify-quota-unlimited').checked,freeQuota:parseInt($('verify-free-quota').value,10)||0,sessionDays:Math.min(30,Math.max(1,parseInt($('session-days')&&$('session-days').value,10)||7)),smtp:{host:$('smtp-host').value.trim(),port:parseInt($('smtp-port').value,10)||587,username:$('smtp-user').value.trim(),password:$('smtp-pass').value,encryption:$('smtp-encryption').value,fromName:$('smtp-from-name').value.trim(),fromEmail:$('smtp-from-email').value.trim()}},tplPayload); const r=await api('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'保存失败',true); toast('验证设置已保存'); });
+  const invalidate=$('session-invalidate'); if(invalidate) invalidate.addEventListener('click',async()=>{
+    const ok=window.OCUI&&OCUI.confirm?await OCUI.confirm({title:'强制全站下线',message:'所有人的现有登录态会立即失效（包括你自己），需要重新登录。确认执行？',danger:true,confirmText:'执行'}):confirm('所有人的现有登录态会立即失效（包括你自己），确认执行？');
+    if(!ok) return;
+    try { const r=await api('/api/admin/session/invalidate',{method:'POST'}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'操作失败',true); toast('已强制全站下线，即将重新登录'); setTimeout(()=>{ localStorage.removeItem('oc_token'); localStorage.removeItem('oc_user'); location.href=apiUrl('/login'); },1200); } catch(e) { toast('操作失败: '+e.message,true); }
+  });
   const ps=$('pkg-save'); if(ps) ps.addEventListener('click',async()=>{
     const priceRaw=$('pkg-price').value.trim();
     const price=(priceRaw===''?'':parseFloat(priceRaw));
@@ -2248,6 +2260,91 @@ async function loadUpdatePanel() {
 
 // ============ 页签切换(懒加载) ============
 const tabLoaded = {};
+// ============ 数据备份 ============
+function fmtBytes(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(2) + ' MB';
+}
+async function loadBackups() {
+  try {
+    const r = await api('/api/admin/backup');
+    const d = await r.json();
+    if ($('backup-enabled')) $('backup-enabled').checked = !!d.backupEnabled;
+    if ($('backup-keep')) $('backup-keep').value = d.backupKeep || 7;
+    const tb = $('backup-tbody');
+    if (!tb) return;
+    const list = d.backups || [];
+    tb.innerHTML = list.map((b) => {
+      const time = b.time ? new Date(b.time).toLocaleString('zh-CN') : '—';
+      return '<tr><td>' + escapeHtml(b.name) + '</td><td>' + fmtBytes(b.size) + '</td><td>' + time + '</td>'
+        + '<td style="text-align:right;white-space:nowrap">'
+        + '<a class="btn small" href="' + apiUrl('/api/admin/backup/download?id=' + encodeURIComponent(b.name)) + '">下载</a> '
+        + '<button class="btn small danger" data-restore="' + escapeHtml(b.name) + '" type="button">恢复</button></td></tr>';
+    }).join('');
+    if ($('backup-empty')) $('backup-empty').style.display = list.length ? 'none' : 'block';
+    tb.querySelectorAll('[data-restore]').forEach((btn) => {
+      btn.addEventListener('click', () => restoreBackup(btn.dataset.restore));
+    });
+  } catch (e) {
+    toast('备份列表加载失败: ' + e.message, true);
+  }
+}
+async function restoreBackup(name) {
+  const message = '确认用 ' + name + ' 整体替换当前数据库？恢复点之后的全部数据变更会丢失。';
+  const ok = window.OCUI && OCUI.confirm
+    ? await OCUI.confirm({ title: '恢复备份', message, danger: true, confirmText: '恢复' })
+    : confirm(message);
+  if (!ok) return;
+  try {
+    const r = await api('/api/admin/backup/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: name }),
+    });
+    const d = await r.json();
+    if (!r.ok) return toast((d.error && d.error.message) || '恢复失败', true);
+    toast('已恢复（' + d.users + ' 个用户），即将刷新页面');
+    setTimeout(() => location.reload(), 1200);
+  } catch (e) {
+    toast('恢复失败: ' + e.message, true);
+  }
+}
+(function initBackupUI() {
+  const save = $('backup-save');
+  if (save) save.addEventListener('click', async () => {
+    const payload = {
+      backupEnabled: !!($('backup-enabled') && $('backup-enabled').checked),
+      backupKeep: Math.min(30, Math.max(1, parseInt($('backup-keep') && $('backup-keep').value, 10) || 7)),
+    };
+    try {
+      const r = await api('/api/admin/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (!r.ok) return toast((d.error && d.error.message) || '保存失败', true);
+      toast('备份设置已保存');
+      loadBackups();
+    } catch (e) { toast('保存失败: ' + e.message, true); }
+  });
+  const nowBtn = $('backup-now');
+  if (nowBtn) nowBtn.addEventListener('click', async () => {
+    nowBtn.disabled = true;
+    try {
+      const r = await api('/api/admin/backup', { method: 'POST' });
+      const d = await r.json();
+      if (!r.ok) return toast((d.error && d.error.message) || '备份失败', true);
+      toast('已创建备份 ' + d.created);
+      loadBackups();
+    } catch (e) {
+      toast('备份失败: ' + e.message, true);
+    } finally { nowBtn.disabled = false; }
+  });
+})();
+
 const TAB_LOADERS = {
   overview: () => loadStats(),
   usage: () => loadStats(),
@@ -2266,14 +2363,59 @@ const TAB_LOADERS = {
   assistants: () => loadAssistants(),
   logs: () => loadLogs(),
   thinking: () => loadThinking(),
-  update: () => loadUpdatePanel(),
+  update: async () => {
+    loadUpdatePanel();
+    await loadBackups();
+  },
+  moderation: () => loadModeration(),
 };
+
+// ============ 内容安全 ============
+async function loadModeration() {
+  const r = await api('/api/admin/settings');
+  const d = await r.json();
+  if (!r.ok) return toast((d.error && d.error.message) || '加载失败', true);
+  const s = d.settings || {};
+  const mod = s.moderation || {};
+  if ($('mod-enabled')) $('mod-enabled').checked = !!mod.enabled;
+  if ($('mod-words')) $('mod-words').value = mod.words || '';
+  if ($('agreement-enabled')) $('agreement-enabled').checked = !!s.agreementEnabled;
+  if ($('agreement-html')) $('agreement-html').value = s.agreementHtml || '';
+}
+(function initModeration() {
+  const save = $('moderation-save');
+  if (!save) return;
+  save.addEventListener('click', async () => {
+    const payload = {
+      moderation: {
+        enabled: !!($('mod-enabled') && $('mod-enabled').checked),
+        words: ($('mod-words') && $('mod-words').value) || '',
+      },
+      agreementEnabled: !!($('agreement-enabled') && $('agreement-enabled').checked),
+      agreementHtml: ($('agreement-html') && $('agreement-html').value) || '',
+    };
+    save.disabled = true;
+    try {
+      const r = await api('/api/admin/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (!r.ok) return toast((d.error && d.error.message) || '保存失败', true);
+      toast('内容安全设置已保存');
+      loadModeration();
+    } catch (e) {
+      toast('保存失败: ' + e.message, true);
+    } finally { save.disabled = false; }
+  });
+})();
 
 const ADMIN_GROUPS = {
   overview: [{ id: 'overview', label: '概览' }, { id: 'usage', label: '用量分析' }, { id: 'logs', label: '运行日志' }],
   users: [{ id: 'users', label: '用户' }, { id: 'groups', label: '用户组' }, { id: 'access', label: '模型授权' }, { id: 'verify', label: '用户验证' }],
   billing: [{ id: 'packages', label: '额度套餐' }, { id: 'codes', label: '兑换码' }],
-  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'update', label: '版本更新' }],
+  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'update', label: '版本更新' }],
   thinking: [{ id: 'thinking', label: '思考策略' }],
   content: [{ id: 'assistants', label: '助手库' }],
 };
