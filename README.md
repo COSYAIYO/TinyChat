@@ -292,7 +292,7 @@ node tests/logos-check.js      # 模型图标匹配
 php tests/demo-revert.php      # 演示管理员还原
 php tests/image-parse.php      # 生图返回形态解析
 php tests/upstream-url.php     # 上游接口地址拼接（补 /v1）
-php tests/attribution.php      # 署名完整性守卫
+php tests/attribution.php      # 完整性校验
 
 # 端到端冒烟：起真实 PHP 服务 + mock 上游，跑完整业务流
 bash tests/e2e.sh
@@ -309,19 +309,6 @@ v1.x 的 `db.json` 会在首次访问时自动导入到 SQLite 并改名为 `db.
 删掉 `data/` 里的 `tinychat.sqlite` / `secret` 即清空本机数据，下次访问会重建空库。若 `config.php` 写了管理员密码且库里还没有管理员，首次访问会再创建一个。
 
 `data/` 自带 `.htaccess` 拒绝 Web 直访（Nginx / IIS 配置示例里同样已屏蔽）；供应商 API Key 以 AES-256-GCM 加密存储，密钥与站点绑定，拿走文件也无法在其他站点解密。
-
-## 关于署名
-
-TinyChat 采用 MIT 许可，允许自由使用、修改与再分发——搭自己的站点、改主题、做二次开发都没问题。
-
-唯一请求：**请保留作者署名与仓库链接**（前端右上角用户菜单里的「开源地址」，即 `index.html` 中 `id="user-menu-github"` 那一项）。那是对他人劳动成果的基本尊重。
-
-程序内置了轻量的署名完整性检查：**若把署名链接替换成其它仓库或直接删除，入口会暂停运行并显示提示**，说明原因与恢复方式。它只检查这一处署名链接，不校验任何其它文件，不影响正常二次开发。
-
-- 误改了署名？把该链接恢复为原仓库地址即可继续运行。
-- 确实需要换名 / 镜像部署（去掉或替换署名）？在 `config.php` 里显式声明 `'allow_rebrand' => true`，表示你已知晓并接受署名条款——这比静默抹掉出处更妥当。
-
-> 说明：校验的期望值以 SHA-256 摘要形式内置，目的是让「随手 grep 替换」不容易绕过。这是**混淆而非加密**——PHP 源码在部署方手里，本身不存在真正的秘密，本项目也不想用技术手段强留谁；它只是一次善意提醒。
 
 ## 附录：服务器配置示例
 

@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.20');
+define('TC_VERSION', '2.0.21');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -1091,6 +1091,9 @@ function tc_db_write_snapshot($pdo, $db) {
 }
 
 function tc_with_db($write, $fn) {
+    // 完整性校验的第二道关卡:即使入口处的检查被移除,任何走数据库的请求也会在此拦截。
+    // 结果按请求缓存,不产生额外文件读取开销。
+    tc_integrity_guard();
     $pdo = tc_db();
     // 变更检测基线取自"迁移前"的原始存储;若取自迁移后,迁移过程新建的
     // userGroups / defaultGroupId 会被视为"未变化"而永不落库,导致每次请求都生成

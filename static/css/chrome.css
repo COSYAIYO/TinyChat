@@ -1123,11 +1123,13 @@ a.user-menu-item { color: inherit; }
 
 /* ---------- 12. 偏好:整页缩放 + 本机字体 ---------- */
 /* zoom 作用在 html 上会连 100vh 一起放大,底栏被挤出窗口。
-   外壳按缩放反算宽高,视觉上始终铺满视口;左下角账户栏再反缩放,钉住不动. */
+   外壳按缩放反算宽高,视觉上始终铺满视口;左下角账户栏再反缩放,钉住不动。
+   移动端用 dvh(动态视口),避免地址栏收起时底部输入区被顶出屏幕。 */
 html {
   zoom: var(--oc-ui-zoom, 1);
   width: calc(100vw / var(--oc-ui-zoom, 1));
   height: calc(100vh / var(--oc-ui-zoom, 1));
+  height: calc(100dvh / var(--oc-ui-zoom, 1));
   overflow: hidden;
 }
 body {
@@ -1713,6 +1715,7 @@ body.chat-resizing * { cursor: col-resize !important; }
 .share-page {
   display: block !important;
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--bg-app);
   color: var(--text);
 }
@@ -2676,6 +2679,7 @@ select,
 /* ---------- 22. 登录页:字标,不再套方块图标 ---------- */
 .auth-body {
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--bg-app);
 }
 .auth-card {
@@ -3342,6 +3346,7 @@ select,
 /* 分享页错误/空状态:视口垂直居中 + 柔和图标 */
 .share-error, .share-empty {
   min-height: calc(100vh - 64px);
+  min-height: calc(100dvh - 64px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -3695,3 +3700,45 @@ body.is-demo-admin [data-chats] { display: none !important; }
   word-break: break-word;
 }
 .img-status-error { color: var(--danger, #e5484d); }
+
+/* ============================================================
+   移动端适配加固
+   ------------------------------------------------------------
+   1) 视口高度统一走 dvh(见上方 html/body),避免 Chrome 移动端
+      地址栏收起时底部输入区被顶出屏幕;
+   2) 输入区与弹窗底部留出 safe-area,全面屏手势条不遮挡;
+   3) 弹窗在矮屏上可滚动,键盘弹出时内容不被裁掉。
+   ============================================================ */
+@media (max-width: 768px) {
+  /* 输入区:底部让出安全区,并保证最小可点高度 */
+  .composer-area {
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    padding-left: max(12px, env(safe-area-inset-left, 0px));
+    padding-right: max(12px, env(safe-area-inset-right, 0px));
+  }
+  /* 消息区:给底部输入区留出滚动余量,最后一条消息不被遮挡 */
+  .messages { padding-bottom: 16px; }
+  .chat-area { overscroll-behavior: contain; }
+
+  /* 弹窗:矮屏/键盘弹出时整体可滚动,底部让出安全区 */
+  .modal-mask { padding: 12px; align-items: flex-start; overflow-y: auto; }
+  .modal-mask .modal {
+    max-height: calc(100dvh - 24px);
+    margin: auto;
+  }
+  .modal-footer {
+    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+  /* 大弹窗(设置):整屏铺开,内部滚动 */
+  #settings-modal .modal.modal-lg {
+    width: 100%;
+    max-height: calc(100dvh - 24px);
+  }
+  /* 生图弹窗底部按钮:整行更好点 */
+  .img-modal-footer { flex-wrap: wrap; }
+  .img-run-btn { flex: 1 1 auto; }
+}
+@media (max-width: 420px) {
+  .composer-area { padding-left: 10px; padding-right: 10px; }
+  .img-ref { width: 54px; height: 54px; }
+}

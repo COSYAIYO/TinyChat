@@ -56,6 +56,19 @@ function tc_attribution_link_href() {
  * 仅在「明确检测到署名被替换 / 删除」时返回原因;文件缺失等部署异常一律放行。
  */
 function tc_attribution_violation($config = null) {
+    // 用全局缓存(而非 static):生产环境每请求只判定一次;
+    // 自检脚本可通过 tc_attribution_reset_cache() 重置后重复验证。
+    if (array_key_exists('_tc_attr_violation', $GLOBALS)) return $GLOBALS['_tc_attr_violation'];
+    $GLOBALS['_tc_attr_violation'] = tc_attribution_violation_uncached($config);
+    return $GLOBALS['_tc_attr_violation'];
+}
+
+// 供自检脚本使用:清空按请求缓存的判定结果
+function tc_attribution_reset_cache() {
+    unset($GLOBALS['_tc_attr_violation']);
+}
+
+function tc_attribution_violation_uncached($config = null) {
     try {
         if ($config === null) $config = tc_cfg();
         // 合法二次开发:显式声明接受署名条款
@@ -77,13 +90,34 @@ function tc_attribution_violation($config = null) {
     }
 }
 
+/**
+ * 第二道校验关卡:供核心数据层调用。
+ * 入口处已有一处检查;这里再拦一次,使「删掉入口那一行」不足以绕过。
+ * 直接输出提示页并终止(与入口行为一致),违规信息按请求缓存。
+ */
+function tc_integrity_guard() {
+    static $checked = false;
+    if ($checked) return;
+    $checked = true;
+    if (!function_exists('tc_attribution_violation')) return;
+    $reason = tc_attribution_violation();
+    if ($reason === '') return;
+    if (!headers_sent()) {
+        http_response_code(403);
+        header('Content-Type: text/html; charset=utf-8');
+        header('Cache-Control: no-store');
+    }
+    echo tc_attribution_notice_html($reason);
+    exit;
+}
+
 // 违规提示页:说明原因、给出恢复方式,并提醒尊重原作者成果
 function tc_attribution_notice_html($reason) {
     $site = function_exists('tc_cfg') ? (string) tc_cfg('site_name') : '';
     $reasonHtml = htmlspecialchars((string) $reason, ENT_QUOTES, 'UTF-8');
     return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">'
         . '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        . '<title>程序已暂停 · 署名完整性校验未通过</title>'
+        . '<title>程序已暂停 · 授权信息校验未通过</title>'
         . '<style>body{margin:0;background:#eef1f6;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',\'PingFang SC\',\'Microsoft YaHei\',sans-serif;color:#0f172a}'
         . '.wrap{max-width:640px;margin:0 auto;padding:56px 20px}'
         . '.card{background:#fff;border-radius:16px;padding:30px 28px;box-shadow:0 1px 3px rgba(15,23,42,.08)}'
@@ -93,13 +127,10 @@ function tc_attribution_notice_html($reason) {
         . '.muted{color:#64748b;font-size:12.5px}</style></head><body><div class="wrap"><div class="card">'
         . '<h1>程序已暂停运行</h1>'
         . '<div class="reason">检测到原因：' . $reasonHtml . '</div>'
-        . '<p>TinyChat 是开源项目，作者允许自由使用、修改与二次分发（MIT 许可），'
-        . '但<b>请保留项目的作者署名与仓库链接</b>——那是对他人劳动成果的基本尊重。</p>'
-        . '<p>若你在改动主题/品牌时误删了署名链接，把 <code>index.html</code> 里用户菜单中的'
-        . ' <code>id="user-menu-github"</code> 链接恢复为原仓库地址即可继续运行。</p>'
-        . '<p>确实需要换名部署（如内部定制、镜像站点），请在 <code>config.php</code> 中显式声明'
-        . ' <code>\'allow_rebrand\' => true</code>，表示你已知晓并接受署名条款；'
-        . '这比静默抹掉出处更妥当。</p>'
+        . '<p>TinyChat 是开源项目（MIT 许可），允许自由使用、修改与二次分发——搭自己的站点、改主题、做二次开发都没有问题。</p>'
+        . '<p>唯一的请求是：<b>请保留项目的作者署名与仓库链接</b>。它记录了这份成果来自哪里，也是对他人劳动的尊重。</p>'
+        . '<p>如果你在调整主题或品牌时误删了它，把 <code>index.html</code> 用户菜单里'
+        . ' <code>id="user-menu-github"</code> 那一项恢复为原仓库地址，程序即可继续运行。</p>'
         . '<p class="muted">' . ($site !== '' ? htmlspecialchars($site, ENT_QUOTES, 'UTF-8') : '') . '</p>'
         . '</div></div></body></html>';
 }

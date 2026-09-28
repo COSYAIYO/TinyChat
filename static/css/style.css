@@ -114,7 +114,10 @@ body {
   font-size: var(--fs, 14px);
   line-height: 1.6;
   display: flex;
+  /* 移动端(尤其 Chrome/Android)地址栏会收起展开:100vh 取「最大视口」,
+     会把底部输入区顶出屏幕。优先用 dvh(动态视口),不支持时才退回 vh。 */
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;

@@ -35,16 +35,9 @@ if ($path === '/favicon.ico') {
     exit;
 }
 
-// 署名完整性校验:署名链接被替换/删除时暂停程序并提示尊重原作者成果。
-// 合法二次开发可在 config.php 里声明 'allow_rebrand' => true 明确接受署名条款。
-$tc_attribution = tc_attribution_violation();
-if ($tc_attribution !== '') {
-    http_response_code(403);
-    header('Content-Type: text/html; charset=utf-8');
-    header('Cache-Control: no-store');
-    echo tc_attribution_notice_html($tc_attribution);
-    exit;
-}
+// 完整性校验(第一处):链接被替换/删除时暂停程序并给出提示。
+// 另一处在 lib/core.php 的数据层入口,两处独立生效。
+tc_integrity_guard();
 
 try {
     tc_with_db(true, function (&$db) {
