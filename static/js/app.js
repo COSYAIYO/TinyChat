@@ -1674,6 +1674,21 @@ function renderModelPicker() {
     mark.classList.toggle('hidden', !pinned);
     mark.classList.toggle('solo', !state.currentModel);
   }
+  syncComposerTools();
+}
+// 后台是否有任何可用的生图 / 生视频模型:决定「≡」菜单里的「绘画」「生视频」入口是否显示。
+// 一个都没有时(纯对话站)不显示对应入口,避免点开才发现没有模型。
+function hasAnyImageModel() {
+  return (state.providers || []).some((p) => (p.models || []).some((m) => m && m.id && modelIsImage(m.id)));
+}
+function hasAnyVideoModel() {
+  return (state.providers || []).some((p) => (p.models || []).some((m) => m && m.id && modelIsVideo(m.id)));
+}
+function syncComposerTools() {
+  const imgTool = $('composer-tool-image');
+  const vidTool = $('composer-tool-video');
+  if (imgTool) imgTool.classList.toggle('hidden', !hasAnyImageModel());
+  if (vidTool) vidTool.classList.toggle('hidden', !hasAnyVideoModel());
 }
 function renderProviderLabel() {
   const p = state.providers.find((x) => x.id === state.currentProviderId);
