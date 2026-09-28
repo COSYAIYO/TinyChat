@@ -6,33 +6,33 @@
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#ffffff">
 <link rel="manifest" href="./manifest.json">
-<title>TinyChat - 自托管多模型 AI 对话应用（PHP，无需数据库）</title>
-<meta name="description" content="TinyChat 是开源的自托管（私有部署）AI 对话应用：纯 PHP、无需数据库，上传虚拟主机即可运行。支持 OpenAI、Anthropic 及各类兼容接口的多模型切换，内置用户注册登录、额度计费、兑换码、助手库、联网搜索、文件解析与在线更新，适合个人和团队搭建自己的 AI 站点。">
-<meta name="keywords" content="TinyChat,AI对话应用,自托管AI,私有部署,ChatGPT界面,PHP聊天程序,OpenAI,Anthropic,多模型,大模型前端,用户系统,兑换码计费,无需数据库">
+<title>TinyChat — 自托管 AI 对话与生图站点系统（纯 PHP / SQLite，免独立数据库）</title>
+<meta name="description" content="TinyChat 是开源的自托管 AI 站点系统：纯 PHP + SQLite，无需 MySQL、Composer 或常驻进程，上传虚拟主机即可运行。一站式提供多模型对话（OpenAI / Anthropic 及各类兼容接口）、AI 文生图与图生图、流式输出与 Markdown 渲染、用户注册登录、用户组与模型授权、额度计费与兑换码、助手库、联网搜索、文档解析、游客免登录体验、全站公告、OpenAI 兼容 API 与在线更新，数据全部留在自己的服务器。">
+<meta name="keywords" content="TinyChat,自托管AI,AI对话站点,私有部署AI,AI生图,文生图,图生图,OpenAI兼容,PHP聊天程序,ChatGPT风格,多模型,大模型前端,SQLite,用户系统,额度计费,兑换码,免数据库">
 <meta name="robots" content="index,follow">
 <link rel="canonical" href="{{SITE_URL}}/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="TinyChat">
-<meta property="og:title" content="TinyChat - 自托管多模型 AI 对话应用">
-<meta property="og:description" content="纯 PHP 自托管的 AI 对话应用，无需数据库，虚拟主机即可部署。多模型切换、用户与额度管理、助手库、联网搜索，开箱即用。">
+<meta property="og:title" content="TinyChat — 自托管 AI 对话与生图站点系统（纯 PHP / SQLite）">
+<meta property="og:description" content="纯 PHP + SQLite 的自托管 AI 站点：多模型对话、AI 生图与改图、用户与额度计费、助手库、联网搜索、OpenAI 兼容 API，上传虚拟主机即可运行。">
 <meta property="og:url" content="{{SITE_URL}}/">
 <meta property="og:image" content="{{SITE_URL}}/logo.svg">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="TinyChat - 自托管多模型 AI 对话应用">
-<meta name="twitter:description" content="纯 PHP 自托管的 AI 对话应用，无需数据库，虚拟主机即可部署。">
+<meta name="twitter:title" content="TinyChat — 自托管 AI 对话与生图站点系统（纯 PHP / SQLite）">
+<meta name="twitter:description" content="纯 PHP + SQLite 的自托管 AI 站点：多模型对话、AI 生图与改图、用户与额度计费、OpenAI 兼容 API，虚拟主机即可部署。">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"WebApplication","name":"TinyChat","url":"{{SITE_URL}}/","applicationCategory":"CommunicationApplication","operatingSystem":"Web","inLanguage":"zh-CN","description":"自托管多模型 AI 对话应用：纯 PHP、无需数据库，支持 OpenAI、Anthropic 及兼容接口，内置用户系统与额度计费。","offers":{"@type":"Offer","price":"0","priceCurrency":"CNY"},"featureList":["多供应商多模型对话","流式输出与 Markdown 渲染","用户注册登录与邮箱验证","额度计费与兑换码","用户组与模型授权","助手库","联网搜索","文档解析","对话云同步与分享","在线更新"]}
+{"@context":"https://schema.org","@type":"WebApplication","name":"TinyChat","url":"{{SITE_URL}}/","applicationCategory":"CommunicationApplication","operatingSystem":"Web","inLanguage":"zh-CN","description":"纯 PHP + SQLite 的自托管 AI 站点系统：多供应商多模型对话、AI 文生图与图生图、用户注册登录与用户组授权、额度计费与兑换码、助手库、联网搜索、文档解析、游客体验、OpenAI 兼容 API 与在线更新，无需独立数据库。","offers":{"@type":"Offer","price":"0","priceCurrency":"CNY"},"featureList":["多供应商多模型对话","流式输出与 Markdown/公式/图表渲染","AI 文生图与图生图","用户注册登录与邮箱验证","用户组与模型授权","额度计费与兑换码","注册邀请码","助手库","联网搜索","文档解析","游客免登录体验","全站公告","对话云同步与分享","OpenAI 兼容 API","数据备份与在线更新"]}
 </script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ctext x='12' y='17' text-anchor='middle' font-family='Inter,Segoe UI,Arial,sans-serif' font-size='15' font-weight='800' fill='%23232936'%3ET%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="./static/css/style.css?v=20260928.17">
+<link rel="stylesheet" href="./static/css/style.css?v=20260929.1">
 <link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
 <link rel="stylesheet" href="./vendor/katex/katex.min.css">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20260928.17">
-<link rel="stylesheet" href="./static/css/refine.css?v=20260928.17">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20260928.17">
-<link rel="stylesheet" href="./static/css/polish.css?v=20260928.17">
-<link rel="stylesheet" href="./static/css/markdown.css?v=20260928.17">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20260928.17">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20260929.1">
+<link rel="stylesheet" href="./static/css/refine.css?v=20260929.1">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20260929.1">
+<link rel="stylesheet" href="./static/css/polish.css?v=20260929.1">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20260929.1">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20260929.1">
 <script>
 /* 在样式表之后立刻刷主题色,避免首屏主按钮仍是默认蓝 */
 (function () {
@@ -821,19 +821,19 @@
     <button class="btn small primary" id="guest-bar-login" type="button">登录 / 注册</button>
   </div>
 
-  <script src="./static/js/config.js?v=20260928.17"></script>
-  <script src="./static/js/icons.js?v=20260928.17"></script>
-  <script src="./static/js/logos.js?v=20260928.17"></script>
-  <script src="./static/js/components.js?v=20260928.17"></script>
-  <script src="./static/js/ui.js?v=20260928.17"></script>
-  <script src="./static/js/assistants.js?v=20260928.17"></script>
-  <script src="./static/js/conversations.js?v=20260928.17"></script>
-  <script src="./static/js/renderer.js?v=20260928.17"></script>
-  <script src="./static/js/reasoning.js?v=20260928.17"></script>
-  <script src="./static/js/office-formula-copy.js?v=20260928.17"></script>
-  <script src="./static/js/citations.js?v=20260928.17"></script>
-  <script src="./static/js/messages.js?v=20260927.22"></script>
-  <script src="./static/js/multimodal.js?v=20260927.1"></script>
-  <script src="./static/js/app.js?v=20260928.17"></script>
+  <script src="./static/js/config.js?v=20260929.1"></script>
+  <script src="./static/js/icons.js?v=20260929.1"></script>
+  <script src="./static/js/logos.js?v=20260929.1"></script>
+  <script src="./static/js/components.js?v=20260929.1"></script>
+  <script src="./static/js/ui.js?v=20260929.1"></script>
+  <script src="./static/js/assistants.js?v=20260929.1"></script>
+  <script src="./static/js/conversations.js?v=20260929.1"></script>
+  <script src="./static/js/renderer.js?v=20260929.1"></script>
+  <script src="./static/js/reasoning.js?v=20260929.1"></script>
+  <script src="./static/js/office-formula-copy.js?v=20260929.1"></script>
+  <script src="./static/js/citations.js?v=20260929.1"></script>
+  <script src="./static/js/messages.js?v=20260929.1"></script>
+  <script src="./static/js/multimodal.js?v=20260929.1"></script>
+  <script src="./static/js/app.js?v=20260929.1"></script>
 </body>
 </html>
