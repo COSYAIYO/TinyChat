@@ -466,7 +466,79 @@ function tc_disable_buffers() {
     header('X-Accel-Buffering: no');
 }
 
-function tc_http_request($url, $method, $headers, $body, $timeoutMs, $stream = false, $onChunk = null, $sendExpect = true) {
+// 把 curl 失败翻译成带诊断信息的结果:区分「连不上」与「响应慢」,便于用户定位
+function tc_curl_failure($ch, $errno, $err, $status, $url, $connectSec, $timeoutSec) {
+    $connectTime = (float) curl_getinfo($ch, CURLINFO_CONNECT_TIME);
+    $totalTime = (float) curl_getinfo($ch, CURLINFO_TOTAL_TIME);
+    $host = parse_url((string) $url, PHP_URL_HOST);
+    $port = parse_url((string) $url, PHP_URL_PORT);
+    $hostLabel = $host ? ($host . ($port ? ':' . $port : '')) : (string) $url;
+    // curl 常量在不同 PHP/curl 构建里未必齐全,统一用 defined() 兜底成标准数值
+    $c = function ($name, $fallback) { return defined($name) ? constant($name) : $fallback; };
+    $errResolveHost = $c('CURLE_COULDNT_RESOLVE_HOST', 6);
+    $errResolveProxy = $c('CURLE_COULDNT_RESOLVE_PROXY', 5);
+    $errConnect = $c('CURLE_COULDNT_CONNECT', 7);
+    $errTimeout = $c('CURLE_OPERATION_TIMEDOUT', 28);
+    $tlsErrs = array(
+        $c('CURLE_SSL_CONNECT_ERROR', 35),
+        $c('CURLE_SSL_CERTPROBLEM', 58),
+        $c('CURLE_SSL_CIPHER', 59),
+        $c('CURLE_PEER_FAILED_VERIFICATION', 60),
+        $c('CURLE_SSL_CACERT', 60),
+        $c('CURLE_SSL_CACERT_BADFILE', 77),
+    );
+    $kind = 'other';
+    $code = 502;
+    if ($errno === $errResolveHost || $errno === $errResolveProxy) {
+        $kind = 'dns';
+    } elseif ($errno === $errConnect) {
+        $kind = 'connect';
+    } elseif (in_array($errno, $tlsErrs, true)) {
+        $kind = 'tls';
+    } elseif ($errno === $errTimeout) {
+        // 连接从未建立(connectTime 为 0)= 连不上/DNS 卡住;已建立则是在等响应
+        $kind = $connectTime <= 0 ? 'connect_timeout' : 'read_timeout';
+        $code = 504;
+    }
+    return array(
+        'ok' => false,
+        'error' => $err ?: '无法连接上游 API',
+        'code' => $code,
+        'status' => (int) $status,
+        'kind' => $kind,
+        'host' => $hostLabel,
+        'connect_timeout' => $connectSec,
+        'timeout' => $timeoutSec,
+        'connect_time' => round($connectTime, 2),
+        'elapsed' => round($totalTime, 2),
+    );
+}
+
+// 把上游连接失败结果翻译成可操作的中文提示(带主机名与秒数,指明该查什么)
+function tc_upstream_fail_message($res, $providerName = '') {
+    $label = ($providerName !== '' ? '「' . $providerName . '」' : '');
+    $host = (isset($res['host']) && $res['host'] !== '') ? $res['host'] : '上游地址';
+    $kind = isset($res['kind']) ? $res['kind'] : 'other';
+    $ct = isset($res['connect_timeout']) ? (int) $res['connect_timeout'] : 0;
+    $tt = isset($res['timeout']) ? (int) $res['timeout'] : 0;
+    $detail = isset($res['error']) ? (string) $res['error'] : '';
+    switch ($kind) {
+        case 'connect_timeout':
+            return $label . '连接上游超时：' . $ct . ' 秒内无法与 ' . $host . ' 建立连接。请确认该地址与端口正确、服务已启动，且服务器能访问外网（境外平台常被防火墙/网络出口拦截）。';
+        case 'read_timeout':
+            return $label . '上游响应超时：已连接 ' . $host . '，但超过 ' . $tt . ' 秒未返回内容。可在「对话设置 → 请求超时」调大该值，或改用响应更快的模型。';
+        case 'dns':
+            return $label . '无法解析上游域名 ' . $host . '。请检查 Base URL 拼写与服务器 DNS。';
+        case 'connect':
+            return $label . '无法连接上游 ' . $host . '（' . $detail . '）。请确认服务已启动、端口开放且地址可访问。';
+        case 'tls':
+            return $label . '与上游建立 HTTPS 连接失败：' . $detail . '。请检查证书链是否完整，或改用 http。';
+        default:
+            return $label . '无法连接上游 API（' . $host . '）：' . ($detail !== '' ? $detail : '未知错误');
+    }
+}
+
+function tc_http_request($url, $method, $headers, $body, $timeoutMs, $stream = false, $onChunk = null, $sendExpect = true, $connectTimeoutMs = null) {
     if (!function_exists('curl_init')) {
         return array('ok' => false, 'error' => '服务器未启用 curl 扩展，无法请求上游 API', 'code' => 0);
     }
@@ -474,13 +546,15 @@ function tc_http_request($url, $method, $headers, $body, $timeoutMs, $stream = f
     $hdrs = array();
     foreach ($headers as $k => $v) $hdrs[] = $k . ': ' . $v;
     $timeoutSec = max(5, (int) ceil($timeoutMs / 1000));
+    // 连接超时:默认 20 秒;显式传入时以传入为准(不超过总超时)
+    $connectSec = $connectTimeoutMs === null ? 20 : max(3, (int) ceil($connectTimeoutMs / 1000));
     $opts = array(
         CURLOPT_CUSTOMREQUEST => $method,
         CURLOPT_HTTPHEADER => $hdrs,
         CURLOPT_RETURNTRANSFER => !$stream,
         CURLOPT_FOLLOWLOCATION => true,
         CURLOPT_MAXREDIRS => 3,
-        CURLOPT_CONNECTTIMEOUT => 20,
+        CURLOPT_CONNECTTIMEOUT => $connectSec,
         CURLOPT_TIMEOUT => $stream ? 0 : $timeoutSec,
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_SSL_VERIFYHOST => 2,
@@ -508,11 +582,9 @@ function tc_http_request($url, $method, $headers, $body, $timeoutMs, $stream = f
         $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err = curl_error($ch);
         $errno = curl_errno($ch);
+        $fail = $ok === false ? tc_curl_failure($ch, $errno, $err, $status, $url, $connectSec, 0) : null;
         curl_close($ch);
-        if ($ok === false) {
-            $code = ($errno === CURLE_OPERATION_TIMEDOUT) ? 504 : 502;
-            return array('ok' => false, 'error' => $err ?: '无法连接上游 API', 'code' => $code, 'status' => $status);
-        }
+        if ($fail !== null) return $fail;
         return array('ok' => true, 'status' => $status, 'body' => $errBody, 'ctype' => '');
     }
     $raw = curl_exec($ch);
@@ -520,11 +592,9 @@ function tc_http_request($url, $method, $headers, $body, $timeoutMs, $stream = f
     $ctype = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
     $err = curl_error($ch);
     $errno = curl_errno($ch);
+    $fail = $raw === false ? tc_curl_failure($ch, $errno, $err, $status, $url, $connectSec, $timeoutSec) : null;
     curl_close($ch);
-    if ($raw === false) {
-        $code = ($errno === CURLE_OPERATION_TIMEDOUT) ? 504 : 502;
-        return array('ok' => false, 'error' => $err ?: '无法连接上游 API', 'code' => $code, 'status' => $status);
-    }
+    if ($fail !== null) return $fail;
     return array('ok' => true, 'status' => $status, 'body' => $raw, 'ctype' => $ctype);
 }
 
@@ -1376,7 +1446,7 @@ function tc_api_admin_test_model() {
             'ok' => false,
             'model' => $ctx['model'],
             'ms' => $ms,
-            'error' => $res['code'] === 504 ? '请求上游超时' : ('无法连接上游 API: ' . $res['error']),
+            'error' => tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : ''),
         )));
     }
     if ($res['status'] >= 400) {
@@ -1485,7 +1555,7 @@ function tc_api_user_test_model() {
         'cost' => 0,
     );
     if (!$res['ok']) {
-        $msg = $res['code'] === 504 ? '请求上游超时' : ('无法连接上游 API: ' . $res['error']);
+        $msg = tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : '');
         $safeMsg = tc_model_test_safe_error($msg, $ctx['apiKey']);
         $baseLog['status'] = 0;
         $baseLog['ok'] = false;
@@ -1547,8 +1617,7 @@ function tc_api_fetch_models() {
         'Accept' => 'application/json',
     ), null, 20000, false);
     if (!$res['ok']) {
-        if ($res['code'] === 504) tc_fail(504, '请求上游超时');
-        tc_fail(502, '无法连接上游 API: ' . $res['error']);
+        tc_fail($res['code'] === 504 ? 504 : 502, tc_upstream_fail_message($res));
     }
     if ($res['status'] >= 400) tc_fail(400, tc_upstream_error_message($res['body'], $res['status']));
     $j = json_decode($res['body'], true);
@@ -1849,7 +1918,7 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             tc_task_finish($taskId, 'failed', $res['error'] ?? 'upstream_error');
             $ms = tc_now() - $started;
             $code = $res['code'] ?: 502;
-            $msg = (isset($provider['name']) && $provider['name'] !== '' ? '「' . $provider['name'] . '」' : '') . ($code === 504 ? '上游 API 响应超时' : ('无法连接上游 API: ' . $res['error']));
+            $msg = tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : '');
             tc_push_log(array(
                 'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
                 'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
@@ -2015,7 +2084,7 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
     $ms = tc_now() - $started;
     if (!$res['ok']) {
         $code = $res['code'] ?: 502;
-        $msg = (isset($provider['name']) && $provider['name'] !== '' ? '「' . $provider['name'] . '」' : '') . ($code === 504 ? '上游 API 响应超时' : ('无法连接上游 API: ' . $res['error']));
+        $msg = tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : '');
         tc_push_log(array(
             'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
             'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
@@ -2266,7 +2335,7 @@ function tc_generate_images($apiKeyOwner = null) {
     }
     $res = tc_http_request($url, 'POST', $headers, tc_json_encode($body), $ctx['timeout'], false);
     if (empty($res['ok'])) {
-        tc_fail(502, '无法连接上游 API: ' . (isset($res['error']) ? $res['error'] : '未知错误'));
+        tc_fail(isset($res['code']) && $res['code'] ? $res['code'] : 502, tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : ''));
     }
     $status = (int) (isset($res['status']) ? $res['status'] : 0);
     if ($status >= 400) {

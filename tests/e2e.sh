@@ -285,6 +285,29 @@ assert_contains "游客组可见全局模型" "$(curl -s "$BASE/api/providers" -
 # 后台用户列表展示游客标记与 IP
 assert_contains "用户列表含 IP 字段" "$(curl -s "$BASE/api/admin/users" -H "$AUTH")" '"lastIp":'
 
+# ---------- 无限额度(-1) ----------
+say "== 无限额度 =="
+# 管理员创建 quota=-1 的固定兑换码,用户兑换后应变为无限额度
+curl -s -X POST "$BASE/api/admin/codes/fixed" -H "$AUTH" -H "Content-Type: application/json" \
+  -d '{"code":"UNLIMITED2026","quota":-1,"maxRedemptions":1,"perUserLimit":true}' > /dev/null
+redeem=$(curl -s -X POST "$BASE/api/packages/redeem" -H "$UAUTH" -H "Content-Type: application/json" -d '{"code":"UNLIMITED2026"}')
+assert_contains "固定兑换码可发放无限额度" "$redeem" '"quota":-1'
+# 无限额度用户不受额度拦截,可继续调用
+assert_contains "无限额度用户可继续对话" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/chat1.json")" 'MOCK-REPLY'
+assert_contains "无限额度在 me 中保持 -1" "$(curl -s "$BASE/api/auth/me" -H "$UAUTH")" '"quota":-1'
+
+# ---------- 上游连接失败提示 ----------
+say "== 上游连接失败提示 =="
+# 指向无法解析的域名:应返回可定位的中文提示,而不是笼统的 504
+cat > "$TMP/badprov.json" <<'EOF'
+{"name":"BadHost","baseUrl":"http://no-such-host-xyz123.invalid/v1","apiKey":"sk-bad-123456","apiFormat":"chat","scope":"global","models":[{"id":"bad-model"}]}
+EOF
+curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/badprov.json" > /dev/null
+BADPROV=$(curl -s "$BASE/api/providers" -H "$AUTH" | grep -o '"id":"[a-f0-9]*","name":"BadHost"' | cut -d'"' -f4)
+[ -n "$BADPROV" ] && ok "创建不可达供应商" || bad "创建不可达供应商"
+badmsg=$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d "{\"providerId\":\"$BADPROV\",\"model\":\"bad-model\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
+assert_contains "连接失败给出可定位提示" "$badmsg" '无法解析上游域名'
+
 say ""
 say "结果: $PASS 通过, $FAIL 失败"
 [ "$FAIL" -eq 0 ]

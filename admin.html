@@ -8,12 +8,12 @@
 <title>管理后台 · TinyChat</title>
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ctext x='12' y='17' text-anchor='middle' font-family='Inter,Segoe UI,Arial,sans-serif' font-size='15' font-weight='800' fill='%23232936'%3ET%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="./static/css/style.css?v=20260928.10">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20260928.10">
-<link rel="stylesheet" href="./static/css/refine.css?v=20260928.10">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20260928.10">
-<link rel="stylesheet" href="./static/css/polish.css?v=20260928.10">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20260928.10">
+<link rel="stylesheet" href="./static/css/style.css?v=20260928.11">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20260928.11">
+<link rel="stylesheet" href="./static/css/refine.css?v=20260928.11">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20260928.11">
+<link rel="stylesheet" href="./static/css/polish.css?v=20260928.11">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20260928.11">
 <script>
 (function () {
   try {
@@ -132,6 +132,10 @@
       <label class="field"><span>接口限流（每用户每分钟请求数，0 = 不限制）</span>
           <input id="chat-ratelimit" type="number" min="0" max="600" step="1" value="30">
       </label>
+      <label class="field"><span>请求上游超时（秒，5–600）</span>
+          <input id="chat-timeout" type="number" min="5" max="600" step="5" value="120">
+      </label>
+      <p class="muted small" style="margin:-6px 0 10px">调用上游 AI 接口的最长等待时间。生成长文或使用较慢的模型/平台时适当调大。<b>若上游根本连不上</b>（地址错误、网络不通），会更快返回明确提示，不受此值影响。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-context-learn" checked><span class="slider"></span></span><span>自动学习上下文窗口（从上游 context length 报错回填模型的最大上下文，不覆盖手动设置）</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-persist-chats" checked><span class="slider"></span></span><span>服务器保存对话记录（关闭后对话仅存用户浏览器本地，服务器不留存）</span></label>
       <button class="btn primary" id="chat-limits-save" type="button">保存对话设置</button>
@@ -778,10 +782,10 @@
   </div>
 </div>
 </form>
-<script src="./static/js/config.js?v=20260928.10"></script>
-<script src="./static/js/icons.js?v=20260928.10"></script>
-<script src="./static/js/ui.js?v=20260928.10"></script>
-<script src="./static/js/components.js?v=20260928.10"></script>
-<script src="./static/js/admin.js?v=20260928.10"></script>
+<script src="./static/js/config.js?v=20260928.11"></script>
+<script src="./static/js/icons.js?v=20260928.11"></script>
+<script src="./static/js/ui.js?v=20260928.11"></script>
+<script src="./static/js/components.js?v=20260928.11"></script>
+<script src="./static/js/admin.js?v=20260928.11"></script>
 </body>
 </html>
