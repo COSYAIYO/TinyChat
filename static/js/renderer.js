@@ -381,16 +381,29 @@
   }
 
   const mermaidWaiters = [];
+  let mermaidScriptInjected = false;
+  // mermaid 体积大(3.5MB):页面默认不加载,出现图表代码块时才注入脚本。
+  // 分享页挂在 /s/ 路径下,沿用该页其他资源的绝对路径约定
+  function loadMermaidScript() {
+    if (mermaidScriptInjected) return;
+    mermaidScriptInjected = true;
+    const base = location.pathname.indexOf('/s/') === 0 ? '/vendor/mermaid/mermaid.min.js' : './vendor/mermaid/mermaid.min.js';
+    const s = document.createElement('script');
+    s.src = base + '?v=11.17.2';
+    s.async = true;
+    document.head.appendChild(s);
+  }
   function whenMermaidReady(run) {
     if (typeof mermaid !== 'undefined') {
       run();
       return;
     }
+    loadMermaidScript();
     mermaidWaiters.push(run);
     if (mermaidWaiters.length > 1) return;
     const started = Date.now();
     const timer = setInterval(() => {
-      if (typeof mermaid === 'undefined' && Date.now() - started < 8000) return;
+      if (typeof mermaid === 'undefined' && Date.now() - started < 15000) return;
       clearInterval(timer);
       const queued = mermaidWaiters.splice(0);
       queued.forEach((fn) => {
