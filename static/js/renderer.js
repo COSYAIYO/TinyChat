@@ -603,6 +603,15 @@
   const HTML_BLOCKED_TAGS = /^(script|style|iframe|object|embed|link|meta|base|form|input|textarea|select|button|svg|math|html|head|body|frame|frameset)$/i;
   const HTML_EVENT_ATTR = /^on/i;
   const HTML_BAD_URL = /^(javascript|vbscript|data):/i;
+  // 内联图片(data:image/png|jpeg|gif|webp;base64)是合法的:生图结果常以 b64_json 返回,
+  // 用户消息里的参考图也是 data URL。放行这几种位图,仍然拦掉 svg+xml(可执行脚本)与 text/html 等。
+  const HTML_SAFE_IMG_DATA = /^data:image\/(png|jpe?g|gif|webp|avif|bmp);base64,[a-z0-9+/=\s]+$/i;
+  function urlAllowedForAttr(name, val) {
+    const v = String(val || '').trim();
+    if (!HTML_BAD_URL.test(v)) return true;
+    if ((name === 'src' || name === 'xlink:href') && HTML_SAFE_IMG_DATA.test(v)) return true;
+    return false;
+  }
 
   function sanitizeStyleValue(value) {
     const v = String(value || '');
@@ -632,7 +641,7 @@
             child.removeAttribute(name);
             return;
           }
-          if ((name === 'href' || name === 'src' || name === 'xlink:href') && HTML_BAD_URL.test(val.trim())) {
+          if ((name === 'href' || name === 'src' || name === 'xlink:href') && !urlAllowedForAttr(name, val)) {
             child.removeAttribute(name);
             return;
           }

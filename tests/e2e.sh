@@ -214,6 +214,10 @@ cat > "$TMP/img-b64.json" <<EOF
 {"providerId":"$PROV","model":"mock-image","prompt":"x","n":1,"response_format":"b64_json"}
 EOF
 assert_contains "图像生成支持 b64_json" "$(curl -s -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/img-b64.json")" 'b64_json'
+# 自定义图片规格:宽高比(只给 ratio、不给 size)、档位(4K)、竖版精确像素都要能出图
+assert_contains "图片规格:只给宽高比可用" "$(curl -s -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$PROV"'","model":"mock-image","prompt":"x","ratio":"16:9"}')" 'example.com/mock.png'
+assert_contains "图片规格:4K 档位可用" "$(curl -s -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$PROV"'","model":"mock-image","prompt":"x","size":"4K"}')" 'example.com/mock.png'
+assert_contains "图片规格:竖版精确像素可用" "$(curl -s -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$PROV"'","model":"mock-image","prompt":"x","size":"1024x1792"}')" 'example.com/mock.png'
 # 生图模型标记持久化(供应商保存 image:true 后能读回)
 assert_has "供应商模型生图标记可保存" "$(curl -s "$BASE/api/providers" -H "$AUTH")" '"id":"mock-image","name":"Mock Image","image":true'
 # 开放接口 /v1/images/generations

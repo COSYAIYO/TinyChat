@@ -2326,13 +2326,17 @@ function tc_generate_images($apiKeyOwner = null) {
         }
         // 尺寸:接受「1024x1024」这类精确值,也接受「1K/2K/3K/4K」这类档位(部分平台推荐用档位)
         $size = '1024x1024';
+        $sizeExplicit = false;
         if (isset($b['size']) && is_string($b['size'])) {
             $s = trim($b['size']);
-            if (preg_match('/^\d{3,4}x\d{3,4}$/i', $s) || preg_match('/^[1-4]K$/i', $s)) $size = $s;
+            if (preg_match('/^\d{3,4}x\d{3,4}$/i', $s) || preg_match('/^[1-4]K$/i', $s)) { $size = $s; $sizeExplicit = true; }
         }
         // 宽高比(部分平台如 Agnes 用 ratio 而非 size 表达构图)
         $ratio = '';
         if (isset($b['ratio']) && is_string($b['ratio']) && preg_match('#^\d{1,2}:\d{1,2}$#', trim($b['ratio']))) $ratio = trim($b['ratio']);
+        // 用户只给了宽高比、没给尺寸时,首轮只发 ratio(两者同发部分平台会冲突);
+        // 降级阶梯里仍会用默认尺寸兜底,兼容只认 size 的平台。
+        if ($ratio !== '' && !$sizeExplicit) $size = '';
         // 图生图/修改图:允许用户上传 1~4 张待修改图片(data URL 或公网 URL)
         $editImages = tc_edit_image_refs(isset($b['images']) ? $b['images'] : null);
         return array(
@@ -2359,8 +2363,8 @@ function tc_generate_images($apiKeyOwner = null) {
         'model' => $ctx['model'],
         'prompt' => $ctx['prompt'],
         'n' => $ctx['n'],
-        'size' => $ctx['size'],
     );
+    if ($ctx['size'] !== '') $body['size'] = $ctx['size'];
     if (!empty($ctx['ratio'])) $body['ratio'] = $ctx['ratio'];
     // 图生图/修改图:部分平台(如 Agnes)用 image 数组接收待修改图片
     if (!empty($ctx['images'])) $body['image'] = array_values($ctx['images']);
@@ -2386,6 +2390,13 @@ function tc_generate_images($apiKeyOwner = null) {
         foreach ($keys as $k) unset($out[$k]);
         return $out;
     };
+    // 只给宽高比、没给尺寸时:补一个「只认 size 的平台」能接受的默认尺寸版本,
+    // 避免降级到去掉 ratio 后既没有 ratio 也没有 size。
+    if (empty($body['size']) && !empty($body['ratio'])) {
+        $withSize = $body;
+        $withSize['size'] = '1024x1024';
+        $attempts[] = $withSize;
+    }
     $optional = array('quality', 'style', 'background', 'response_format', 'extra_body', 'ratio');
     $attempts[] = $strip($body, $optional);                                  // 2. 去可选参数,保留 size/n
     $attempts[] = $strip($body, array_merge($optional, array('n')));         // 3. 再去 n,保留 size
@@ -2433,11 +2444,15 @@ function tc_generate_images($apiKeyOwner = null) {
         }
     }
     if (!$items) {
-        // 无论前一步是路径不可用还是响应里没找到图,都尝试对话接口
+        // 无论前一步是路径不可用还是响应里没找到图,都尝试对话接口。
+        // 对话式出图没有 size/ratio 参数,把规格拼进提示词,让模型按构图要求出图。
+        $chatPrompt = $ctx['prompt'];
+        if (!empty($ctx['ratio'])) $chatPrompt .= '（图片宽高比 ' . $ctx['ratio'] . '）';
+        elseif (!empty($ctx['size'])) $chatPrompt .= '（图片尺寸 ' . $ctx['size'] . '）';
         $chatBody = array(
             'model' => $ctx['model'],
             'stream' => false,
-            'messages' => array(array('role' => 'user', 'content' => tc_image_edit_message_content($ctx['prompt'], $ctx['images']))),
+            'messages' => array(array('role' => 'user', 'content' => tc_image_edit_message_content($chatPrompt, $ctx['images']))),
         );
         $chatRes = tc_http_request(tc_api_url($provider['baseUrl'], '/chat/completions'), 'POST', $headers, tc_json_encode($chatBody), $ctx['timeout'], false, null, true, 30000);
         if (!empty($chatRes['ok']) && (int) $chatRes['status'] < 400) {
