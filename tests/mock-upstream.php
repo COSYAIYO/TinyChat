@@ -6,11 +6,34 @@
 $uri = isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '';
 $body = json_decode((string) file_get_contents('php://input'), true);
 header('Content-Type: application/json');
+// 对话式出图平台:没有 images/generations 路径,图片在 chat 回复里(复现 apilio 等平台)
+if (is_array($body) && isset($body['model']) && $body['model'] === 'mock-chat-image'
+    && strpos($uri, 'chat/completions') !== false) {
+    echo json_encode(array(
+        'id' => 'chatcmpl-mock', 'object' => 'chat.completion', 'created' => time(),
+        'choices' => array(array('index' => 0, 'message' => array(
+            'role' => 'assistant',
+            'content' => "Here you go: \n![image](https://example.com/mock-chat.png)",
+        ), 'finish_reason' => 'stop')),
+        'usage' => array('prompt_tokens' => 1, 'completion_tokens' => 1),
+    ));
+    return;
+}
 if (strpos($uri, 'images/generations') !== false) {
+    // 该模型只支持对话出图:生图路径返回「不支持此路径」(复现 503)
+    if (is_array($body) && isset($body['model']) && $body['model'] === 'mock-chat-image') {
+        http_response_code(503);
+        echo json_encode(array('error' => array('message' => '所有分组对于模型 ' . $body['model'] . ' 不支持此 API 路径 [/v1/images/generations]，请更换请求路径')));
+        return;
+    }
     // b64_json 也覆盖到:按 response_format 返回,顺带验证参数透传
     $d = array(array('url' => 'https://example.com/mock.png'));
     if (is_array($body) && isset($body['response_format']) && $body['response_format'] === 'b64_json') {
         $d = array(array('b64_json' => base64_encode('PNGDATA')));
+    }
+    // 图生图:带 image 数组时返回 i2i 结果,便于验证改图链路
+    if (is_array($body) && !empty($body['image'])) {
+        $d = array(array('url' => 'https://example.com/mock-edited.png'));
     }
     echo json_encode(array('created' => time(), 'data' => $d));
     return;

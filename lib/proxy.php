@@ -556,20 +556,23 @@ function tc_http_request($url, $method, $headers, $body, $timeoutMs, $stream = f
     if (!function_exists('curl_init')) {
         return array('ok' => false, 'error' => '服务器未启用 curl 扩展，无法请求上游 API', 'code' => 0);
     }
+    // PHP 默认 max_execution_time 为 30 秒,而生图/长文等上游调用常需 30~90 秒。
+    // 不抬高这个上限,请求会被 PHP 半路掐断并返回空响应(前端表现为「点了没反应」)。
+    // 这里按本次 curl 预算给足 PHP 执行时间,每次调用都重置计时器。
+    $curlSec = $stream ? 600 : max(5, (int) ceil($timeoutMs / 1000));
+    $connSec = $connectTimeoutMs === null ? 20 : max(3, (int) ceil($connectTimeoutMs / 1000));
+    @set_time_limit(min(1200, $curlSec + $connSec + 20));
     $ch = curl_init($url);
     $hdrs = array();
     foreach ($headers as $k => $v) $hdrs[] = $k . ': ' . $v;
-    $timeoutSec = max(5, (int) ceil($timeoutMs / 1000));
-    // 连接超时:默认 20 秒;显式传入时以传入为准(不超过总超时)
-    $connectSec = $connectTimeoutMs === null ? 20 : max(3, (int) ceil($connectTimeoutMs / 1000));
     $opts = array(
         CURLOPT_CUSTOMREQUEST => $method,
         CURLOPT_HTTPHEADER => $hdrs,
         CURLOPT_RETURNTRANSFER => !$stream,
         CURLOPT_FOLLOWLOCATION => true,
         CURLOPT_MAXREDIRS => 3,
-        CURLOPT_CONNECTTIMEOUT => $connectSec,
-        CURLOPT_TIMEOUT => $stream ? 0 : $timeoutSec,
+        CURLOPT_CONNECTTIMEOUT => $connSec,
+        CURLOPT_TIMEOUT => $stream ? 0 : $curlSec,
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_SSL_VERIFYHOST => 2,
         CURLOPT_HEADER => false,
@@ -596,7 +599,7 @@ function tc_http_request($url, $method, $headers, $body, $timeoutMs, $stream = f
         $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err = curl_error($ch);
         $errno = curl_errno($ch);
-        $fail = $ok === false ? tc_curl_failure($ch, $errno, $err, $status, $url, $connectSec, 0) : null;
+        $fail = $ok === false ? tc_curl_failure($ch, $errno, $err, $status, $url, $connSec, 0) : null;
         curl_close($ch);
         if ($fail !== null) return $fail;
         return array('ok' => true, 'status' => $status, 'body' => $errBody, 'ctype' => '');
@@ -606,7 +609,7 @@ function tc_http_request($url, $method, $headers, $body, $timeoutMs, $stream = f
     $ctype = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
     $err = curl_error($ch);
     $errno = curl_errno($ch);
-    $fail = $raw === false ? tc_curl_failure($ch, $errno, $err, $status, $url, $connectSec, $timeoutSec) : null;
+    $fail = $raw === false ? tc_curl_failure($ch, $errno, $err, $status, $url, $connSec, $curlSec) : null;
     curl_close($ch);
     if ($fail !== null) return $fail;
     return array('ok' => true, 'status' => $status, 'body' => $raw, 'ctype' => $ctype);
@@ -2288,7 +2291,8 @@ function tc_generate_images($apiKeyOwner = null) {
         if (!tc_rate_limit_check('u:' . $user['id'], $rateLimit)) {
             tc_fail(429, '请求太频繁了，请稍后再试（当前上限 ' . $rateLimit . ' 次/分钟）');
         }
-        $b = tc_read_json_body(1024 * 1024);
+        // 图生图/改图需要携带参考图(data URL),给足请求体上限(约 4 张 8MB 图)
+        $b = tc_read_json_body(48 * 1024 * 1024);
         // 支持两种入参:原生 {prompt} 与 OpenAI 对话格式 {messages/input}(生图模型自动路由时会用到)
         $promptText = isset($b['prompt']) ? (string) $b['prompt'] : '';
         if (trim($promptText) === '' && (isset($b['messages']) || isset($b['input']))) {
@@ -2329,6 +2333,8 @@ function tc_generate_images($apiKeyOwner = null) {
         // 宽高比(部分平台如 Agnes 用 ratio 而非 size 表达构图)
         $ratio = '';
         if (isset($b['ratio']) && is_string($b['ratio']) && preg_match('#^\d{1,2}:\d{1,2}$#', trim($b['ratio']))) $ratio = trim($b['ratio']);
+        // 图生图/修改图:允许用户上传 1~4 张待修改图片(data URL 或公网 URL)
+        $editImages = tc_edit_image_refs(isset($b['images']) ? $b['images'] : null);
         return array(
             'user' => $user,
             'provider' => $provider,
@@ -2339,6 +2345,7 @@ function tc_generate_images($apiKeyOwner = null) {
             'ratio' => $ratio,
             'n' => min(4, max(1, (int) (isset($b['n']) ? $b['n'] : 1) ?: 1)),
             'extra' => $extra,
+            'images' => $editImages,
             'timeout' => $db['settings']['proxyTimeoutMs'],
         );
     });
@@ -2355,6 +2362,8 @@ function tc_generate_images($apiKeyOwner = null) {
         'size' => $ctx['size'],
     );
     if (!empty($ctx['ratio'])) $body['ratio'] = $ctx['ratio'];
+    // 图生图/修改图:部分平台(如 Agnes)用 image 数组接收待修改图片
+    if (!empty($ctx['images'])) $body['image'] = array_values($ctx['images']);
     // 透传常见可选参数(如 quality / style / response_format);仅收录白名单键,避免污染上游请求
     foreach (array('quality', 'style', 'response_format', 'background') as $k) {
         if (isset($ctx['extra'][$k])) $body[$k] = $ctx['extra'][$k];
@@ -2399,17 +2408,57 @@ function tc_generate_images($apiKeyOwner = null) {
         $status = (int) (isset($res['status']) ? $res['status'] : 0);
         if ($status < 400) break;
         $lastMsg = tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', $status);
-        // 仅 400/422(参数不被接受)降级重试;401/403/404/429 等直接返回,重试无意义
-        if ($status !== 400 && $status !== 422) {
-            tc_fail($status, $lastMsg);
+        // 认证 / 限流 / 余额类错误:对话接口同样会失败,直接返回原样错误
+        if (in_array($status, array(401, 402, 403, 429), true)) tc_fail($status, $lastMsg);
+        // 「该模型不支持此路径」的提示可能伴随各种状态码(实测 400 / 503 都出现过)。
+        // 命中这类语义时不必再降级参数(参数再少也不行),直接跳出走对话接口兜底。
+        if (tc_error_means_path_unsupported($lastMsg, $status)) break;
+        // 参数类错误(400/422):继续用下一组更精简的参数重试
+        if (!in_array($status, array(400, 422), true)) break; // 其它状态:路径/服务不可用,改走对话兜底
+    }
+    // ---- 兜底:改走 chat/completions ----
+    // 不少平台(如 api.apilio.ai 的 gemini / gpt-4o-image / nano-banana 等)根本没有
+    // images/generations 路径,而是用对话接口出图、把图片放进 message.content。
+    // 因此当该路径不可用或响应里取不到图片时,自动改用对话接口重试一次。
+    $items = array();
+    $usedChat = false;
+    if ($status < 400) {
+        $j = json_decode((string) (isset($res['body']) ? $res['body'] : ''), true);
+        $chatText = '';
+        $items = tc_image_results_from_payload($j, $ctx['n']);
+        // 响应体里可能直接是对话结构(Markdown 图片),一并尝试抽取
+        if (!$items) {
+            $fromChat = tc_images_from_chat_response($j, $ctx['n'], $chatText);
+            if ($fromChat) { $items = $fromChat; $usedChat = true; }
         }
     }
-    if ($status >= 400) {
-        // 降级重试后仍被拒,直接返回上游原始错误
+    if (!$items) {
+        // 无论前一步是路径不可用还是响应里没找到图,都尝试对话接口
+        $chatBody = array(
+            'model' => $ctx['model'],
+            'stream' => false,
+            'messages' => array(array('role' => 'user', 'content' => tc_image_edit_message_content($ctx['prompt'], $ctx['images']))),
+        );
+        $chatRes = tc_http_request(tc_api_url($provider['baseUrl'], '/chat/completions'), 'POST', $headers, tc_json_encode($chatBody), $ctx['timeout'], false, null, true, 30000);
+        if (!empty($chatRes['ok']) && (int) $chatRes['status'] < 400) {
+            $cj = json_decode((string) (isset($chatRes['body']) ? $chatRes['body'] : ''), true);
+            $ctext = '';
+            $chatItems = tc_images_from_chat_response($cj, $ctx['n'], $ctext);
+            if ($chatItems) {
+                $items = $chatItems;
+                $res = $chatRes;
+                $status = (int) $chatRes['status'];
+                $usedChat = true;
+            } elseif ($ctext !== '') {
+                // 对话接口回复了文字但没出图:多为上游拒绝或需要更明确的指令,回传原文便于定位
+                tc_fail(502, '该模型未返回图片，上游回复：' . substr($ctext, 0, 200));
+            }
+        }
+    }
+    if (!$items && $status >= 400) {
+        // 两条路径都没成功,返回上游原始错误
         tc_fail($status, $lastMsg !== '' ? $lastMsg : ('上游 API 错误 (HTTP ' . $status . ')'));
     }
-    $j = json_decode((string) (isset($res['body']) ? $res['body'] : ''), true);
-    $items = tc_image_results_from_payload($j, $ctx['n']);
     // 为每个 URL 结果补一个同源代理地址:多数平台的图片在第三方对象存储域,
     // 部分网络下浏览器直连加载不到(后端却已成功出图),经本站转发即可稳定显示。
     foreach ($items as &$it) {
@@ -2417,8 +2466,7 @@ function tc_generate_images($apiKeyOwner = null) {
     }
     unset($it);
     if (!$items) {
-        // 有的平台把图片放在非标准字段,或干脆是重定向后的二进制图片地址;给出可操作提示
-        tc_fail(502, '上游未返回可识别的图像数据（已兼容 data[].url / data[].b64_json / images 等形态），请确认该模型支持 images/generations 接口');
+        tc_fail(502, '该模型未返回图片。若这是对话式生图模型，请确认 Base URL 与模型名正确；也可尝试在「设置 → 供应商」中把该模型标记为生图。');
     }
     $usage = array('prompt' => 0, 'completion' => 0);
     tc_with_db(true, function (&$db) use ($user, $provider, $ctx, $usage, $started) {
@@ -2434,10 +2482,6 @@ function tc_generate_images($apiKeyOwner = null) {
     return array('ok' => true, 'model' => $ctx['model'], 'images' => $items);
 }
 
-// 从不同平台的图像响应里提取图片,兼容多种常见形态:
-//   {data:[{url|b64_json, revised_prompt}]} / {images:[...]} / {output:[...]} /
-//   {data:{url}} / 顶层 {url} / data[] 里直接是字符串 URL 或 data: base64
-// 返回 [{url?|b64_json?, revised_prompt?}],最多 $limit 条。
 // ---- 生图结果图片代理 ----
 // 多数生图平台把图片放在第三方对象存储(如 Google Cloud Storage 域),在部分网络下
 // 浏览器加载不到,表现为「后端出图了但页面上看不到图」。这里把图片经由本站转发,
@@ -2611,6 +2655,130 @@ function tc_api_image_proxy() {
     header('Cache-Control: public, max-age=86400');
     echo $buf;
     exit;
+}
+
+// 从对话式图像响应里提取图片:不少平台(如 api.apilio.ai 的 gemini / gpt-4o-image /
+// nano-banana)把出图放在 chat/completions 的 message.content 里,形如
+//   "Here you go: ![image](https://.../x.png)"
+// 或 content 为多模态数组 [{type:'image_url', image_url:{url}}, ...]。
+// $textOut 回填纯文本部分(用于判断上游是「拒绝/反问」还是真的出了图)。
+function tc_images_from_chat_response($j, $limit = 1, &$textOut = '') {
+    $items = array();
+    $textOut = '';
+    if (!is_array($j)) return $items;
+    $limit = max(1, (int) $limit);
+    $content = null;
+    if (isset($j['choices'][0]['message']['content'])) $content = $j['choices'][0]['message']['content'];
+    elseif (isset($j['choices'][0]['text'])) $content = $j['choices'][0]['text'];
+    elseif (isset($j['output_text'])) $content = $j['output_text'];
+    if ($content === null) return $items;
+    $nodes = is_array($content) ? $content : array(array('type' => 'text', 'text' => (string) $content));
+    $pushUrl = function ($u) use (&$items, $limit) {
+        if (count($items) >= $limit) return;
+        $u = trim((string) $u);
+        if ($u === '') return;
+        if (strpos($u, 'data:image/') === 0) {
+            $pos = strpos($u, 'base64,');
+            if ($pos !== false) $items[] = array('b64_json' => substr($u, $pos + 7));
+            return;
+        }
+        if (preg_match('#^https?://#i', $u)) $items[] = array('url' => $u);
+    };
+    foreach ($nodes as $part) {
+        if (is_string($part)) { $textOut .= $part . "\n"; $part = array('type' => 'text', 'text' => $part); }
+        if (!is_array($part)) continue;
+        $type = isset($part['type']) ? (string) $part['type'] : '';
+        // 结构化图片分片
+        if ($type === 'image_url' || $type === 'output_image' || $type === 'image') {
+            $u = '';
+            if (isset($part['image_url']['url'])) $u = $part['image_url']['url'];
+            elseif (isset($part['image_url']) && is_string($part['image_url'])) $u = $part['image_url'];
+            elseif (isset($part['url'])) $u = $part['url'];
+            elseif (isset($part['image']) && is_string($part['image'])) $u = $part['image'];
+            elseif (isset($part['source']['data'])) $u = 'data:image/png;base64,' . $part['source']['data'];
+            if ($u !== '') { $pushUrl($u); continue; }
+        }
+        if (isset($part['url']) && is_string($part['url'])) { $pushUrl($part['url']); continue; }
+        // 文本里内嵌的 Markdown 图片 ![](url)、HTML <img src>、裸 data URL
+        $t = isset($part['text']) ? (string) $part['text'] : '';
+        if ($t !== '') $textOut .= $t . "\n";
+    }
+    if (count($items) < $limit) {
+        // 从整段文本里兜底抽取图片地址
+        $allText = $textOut;
+        if (preg_match_all('#!\[[^\]]*\]\(\s*([^)\s]+)\s*\)#i', $allText, $m)) {
+            foreach ($m[1] as $u) $pushUrl($u);
+        }
+        if (count($items) < $limit && preg_match_all('#<img[^>]+src=["\']([^"\']+)["\']#i', $allText, $m2)) {
+            foreach ($m2[1] as $u) $pushUrl($u);
+        }
+        if (count($items) < $limit && preg_match_all('#(data:image/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+)#i', $allText, $m3)) {
+            foreach ($m3[1] as $u) $pushUrl($u);
+        }
+    }
+    $textOut = trim($textOut);
+    return $items;
+}
+
+// 判断上游错误是否表示「这个模型/接口路径不支持」——这类错误应改走对话接口兜底,
+// 而不是当成参数问题反复降级或直接失败。
+function tc_error_means_path_unsupported($msg, $status = 0) {
+    $s = strtolower((string) $msg);
+    if ($status === 404 || $status === 405 || $status === 415) return true;
+    foreach (array('不支持此 api 路径', '不支持该', '更换请求路径', 'not support', 'unsupported', 'does not support',
+                   'no such', 'not found', 'invalid url', 'unknown endpoint', 'no route') as $kw) {
+        if (strpos($s, $kw) !== false) return true;
+    }
+    return false;
+}
+
+// 轻量公网判断:用于「只是转交给上游、由上游去拉取」的地址(如改图参考图)。
+// 不要求本地能解析该域名(那样会误杀临时不可解析但合法的公网地址),只拦截
+// 明确的内网目标:字面量私有/保留 IP、localhost 与常见内网后缀。
+function tc_url_looks_public($url) {
+    $p = parse_url((string) $url);
+    if (!is_array($p) || empty($p['host'])) return false;
+    $scheme = strtolower(isset($p['scheme']) ? $p['scheme'] : '');
+    if ($scheme !== 'http' && $scheme !== 'https') return false;
+    $host = strtolower($p['host']);
+    if ($host === 'localhost' || substr($host, -6) === '.local' || substr($host, -9) === '.internal') return false;
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        return (bool) filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE);
+    }
+    return true; // 域名交给上游解析
+}
+
+// 组装对话式生图/改图的消息内容:有参考图时用多模态数组(text + image_url),
+// 无参考图时用纯文本字符串(兼容性最好)。
+function tc_image_edit_message_content($prompt, $images) {
+    $prompt = (string) $prompt;
+    if (!is_array($images) || !$images) return $prompt;
+    $content = array(array('type' => 'text', 'text' => $prompt));
+    foreach ($images as $u) {
+        $content[] = array('type' => 'image_url', 'image_url' => array('url' => $u));
+    }
+    return $content;
+}
+
+// 把输入的图片整理成对话编辑请求可用的 image_url 列表(最多 4 张)
+function tc_edit_image_refs($images) {
+    $refs = array();
+    if (!is_array($images)) return $refs;
+    foreach ($images as $im) {
+        $v = '';
+        if (is_string($im)) $v = trim($im);
+        elseif (is_array($im)) {
+            if (isset($im['dataUrl']) && is_string($im['dataUrl'])) $v = trim($im['dataUrl']);
+            elseif (isset($im['data']) && is_string($im['data'])) $v = trim($im['data']);
+            elseif (isset($im['url']) && is_string($im['url'])) $v = trim($im['url']);
+        }
+        if ($v === '') continue;
+        // data:image/... 直接用;远程 URL 只做轻量公网校验,避免把内网地址转发给上游
+        if (strpos($v, 'data:image/') === 0) $refs[] = $v;
+        elseif (preg_match('#^https?://#i', $v) && tc_url_looks_public($v)) $refs[] = $v;
+        if (count($refs) >= 4) break;
+    }
+    return $refs;
 }
 
 function tc_image_results_from_payload($j, $limit = 1) {

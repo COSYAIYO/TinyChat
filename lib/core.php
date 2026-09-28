@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.16');
+define('TC_VERSION', '2.0.17');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -1604,9 +1604,15 @@ function tc_image_model_name_hint($id) {
         '/qwen-?image/',             // 通义千问生图
         '/\bwanx\b/', '/wan-?\d/',
         '/hunyuan-?image/',
-        '/grok-?\d*(-|_)?image/',
+        '/grok-?\d*(-|_)?image/', '/grok-imagine/',
         '/-image\b/',                // 形如 xxx-image 的生图模型
         '/image-generation/',
+        '/nano-?banana/',            // Gemini 系「纳米香蕉」生图
+        '/\bimagine\b/',             // grok imagine 等
+        '/-image-edit/', '/image-edit/', // 图像编辑类模型
+        '/\bsora[_-]?image\b/',
+        '/\bkling-image/',
+        '/\bz-image/',
     );
     foreach ($patterns as $re) {
         if (preg_match($re, $s)) return true;
