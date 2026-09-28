@@ -92,7 +92,7 @@ $TC_SETTINGS_DEFAULTS = array(
     'maxOutputTokens' => 12800,
     // 全局采样温度: null = 不发送该参数(用模型默认);设置后 0-2
     'temperature' => null,
-    // 数据备份:每日自动备份 data/db.json,保留最近 N 份
+    // 数据备份:每日自动备份整库快照到 data/backup/,保留最近 N 份
     'backupEnabled' => true,
     'backupKeep' => 7,
     // 代理接口限流:每用户每分钟最大请求数,0 = 不限制
