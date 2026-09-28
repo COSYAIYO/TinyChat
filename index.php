@@ -206,6 +206,7 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/proxy/anthropic$#', 'tc_api_proxy_anthropic'),
         array('GET', '#^/api/proxy/models$#', 'tc_api_list_models'),
         array('POST', '#^/api/proxy/fetch-models$#', 'tc_api_fetch_models'),
+        array('POST', '#^/api/proxy/images$#', 'tc_api_proxy_images'),
         array('POST', '#^/v1/chat/completions$#', 'tc_api_v1_chat_completions'),
         array('GET', '#^/v1/models$#', 'tc_api_v1_models'),
     );

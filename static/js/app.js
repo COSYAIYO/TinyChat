@@ -4727,8 +4727,79 @@ async function attachDocument(file, attach) {
       closeTools();
       openCompareDialog();
     });
+    const imageTool = $('composer-tool-image');
+    if (imageTool) imageTool.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      closeTools();
+      openImageDialog();
+    });
   }
 })();
+
+// ============ 图像生成 ============
+function openImageDialog() {
+  if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+  if (!state.currentProviderId) { toast('请先在顶部选择供应商', true); return; }
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask';
+  const lastModel = localStorage.getItem('oc_image_model') || '';
+  const lastSize = localStorage.getItem('oc_image_size') || '1024x1024';
+  mask.innerHTML =
+    '<div class="modal modal-md" role="dialog" aria-modal="true">'
+    + '<div class="modal-header"><h3>生成图片</h3>'
+    + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + (window.OC ? OC.icon('close', 16) : '×') + '</button></div>'
+    + '<div class="modal-body">'
+    + '<p class="muted small">调用当前供应商的 <code>images/generations</code> 接口，按一次对话扣费。生成后插入当前对话。</p>'
+    + '<label class="field"><span>提示词</span><textarea id="img-prompt" rows="3" placeholder="描述想要的画面，例如：一只戴墨镜的柯基在冲浪，扁平插画风" style="resize:vertical"></textarea></label>'
+    + '<label class="field"><span>图像模型</span><input id="img-model" placeholder="例如 dall-e-3 / gpt-image-1 / sd3" value="' + escapeHtml(lastModel) + '" autocomplete="off"></label>'
+    + '<label class="field"><span>尺寸</span><select id="img-size">'
+    + ['1024x1024', '1792x1024', '1024x1792', '512x512'].map((s) => '<option value="' + s + '"' + (s === lastSize ? ' selected' : '') + '>' + s + '</option>').join('')
+    + '</select></label>'
+    + '<div class="form-actions"><button class="btn primary" id="img-run" type="button">生成</button><span class="muted small" id="img-status"></span></div>'
+    + '</div></div>';
+  document.body.appendChild(mask);
+  const close = () => mask.remove();
+  mask.addEventListener('click', (e) => { if (e.target === mask || e.target.closest('[data-act="close"]')) close(); });
+  const run = mask.querySelector('#img-run');
+  run.addEventListener('click', async () => {
+    const prompt = (mask.querySelector('#img-prompt') && mask.querySelector('#img-prompt').value.trim()) || '';
+    const model = (mask.querySelector('#img-model') && mask.querySelector('#img-model').value.trim()) || '';
+    const size = (mask.querySelector('#img-size') && mask.querySelector('#img-size').value) || '1024x1024';
+    const status = mask.querySelector('#img-status');
+    if (!prompt) return toast('请输入提示词', true);
+    if (!model) return toast('请填写图像模型', true);
+    localStorage.setItem('oc_image_model', model);
+    localStorage.setItem('oc_image_size', size);
+    run.disabled = true;
+    status.textContent = '生成中，通常需要 10–60 秒…';
+    try {
+      const r = await api('/api/proxy/images', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerId: state.currentProviderId, model, prompt, size, n: 1 }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error((d.error && d.error.message) || ('HTTP ' + r.status));
+      const md = (d.images || []).map((im) => '![' + prompt.replace(/[\[\]]/g, '').slice(0, 60) + '](' + im.url + ')').join('\n\n');
+      let chat = currentChat();
+      if (!chat || !chat.id) chat = newChat();
+      if (!chat.messages.length) { chat.title = '绘画 · ' + prompt.slice(0, 18); renderChatList(); }
+      const reply = { role: 'assistant', content: '**提示词：** ' + prompt + '\n\n' + md, model: model + ' (图像)', createdAt: Date.now() };
+      chat.messages.push(reply);
+      chat.updatedAt = Date.now();
+      state.currentChatId = chat.id;
+      saveChats(); renderMessages();
+      close();
+      toast('已生成并插入对话');
+      await refreshMe();
+    } catch (e) {
+      status.textContent = '';
+      toast('生成失败: ' + (e && e.message) || '未知错误', true);
+    } finally { run.disabled = false; }
+  });
+  setTimeout(() => { const p = mask.querySelector('#img-prompt'); if (p) p.focus(); }, 60);
+}
 
 // ============ 多模型并答对比 ============
 // 独立于流式管线:非流式并行请求,结果并排展示并支持投票(计入模型评价)。每个所选模型各计费一次。

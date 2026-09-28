@@ -2098,6 +2098,83 @@ function tc_v1_authenticate() {
     return $auth;
 }
 
+// ---- 图像生成代理:POST {baseUrl}/images/generations(OpenAI 兼容),按次计费 ----
+// 说明:图像模型不进对话模型清单,因此不做模型成员校验;鉴权/限流/额度/审核与对话一致。
+function tc_api_proxy_images() {
+    $started = tc_now();
+    $ctx = tc_with_db(false, function ($db) {
+        $user = tc_require_auth($db);
+        $rateLimit = isset($db['settings']['rateLimitPerMin']) ? (int) $db['settings']['rateLimitPerMin'] : 30;
+        if (!tc_rate_limit_check('u:' . $user['id'], $rateLimit)) {
+            tc_fail(429, '请求太频繁了，请稍后再试（当前上限 ' . $rateLimit . ' 次/分钟）');
+        }
+        $b = tc_read_json_body(1024 * 1024);
+        $modHit = tc_moderation_hit(isset($db['settings']['moderation']) && is_array($db['settings']['moderation']) ? $db['settings']['moderation'] : array(), (string) (isset($b['prompt']) ? $b['prompt'] : ''));
+        if ($modHit !== '') tc_fail(400, '提示词包含被禁止的内容，请修改后重试');
+        $resolved = tc_resolve_provider($db, $user, array('providerId' => isset($b['providerId']) ? $b['providerId'] : null));
+        if (!empty($resolved['error'])) tc_fail(400, $resolved['error']);
+        $provider = $resolved['provider'];
+        if ((isset($provider['apiFormat']) ? $provider['apiFormat'] : 'chat') === 'anthropic') {
+            tc_fail(400, '该供应商为 Anthropic 格式，暂不支持图像生成');
+        }
+        $cost = tc_provider_cost($provider);
+        if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
+        if (!tc_is_unlimited_quota($user) && (isset($user['quota']) ? (float) $user['quota'] : 0) < $cost) {
+            tc_fail(402, '剩余次数不足，请联系管理员充值');
+        }
+        return array(
+            'user' => $user,
+            'provider' => $provider,
+            'cost' => $cost,
+            'model' => substr(trim((string) (isset($b['model']) ? $b['model'] : '')), 0, 120),
+            'prompt' => substr(trim((string) (isset($b['prompt']) ? $b['prompt'] : '')), 0, 4000),
+            'size' => isset($b['size']) && preg_match('/^\d{3,4}x\d{3,4}$/', (string) $b['size']) ? (string) $b['size'] : '1024x1024',
+            'n' => min(4, max(1, (int) (isset($b['n']) ? $b['n'] : 1) ?: 1)),
+            'timeout' => $db['settings']['proxyTimeoutMs'],
+        );
+    });
+    $provider = $ctx['provider'];
+    $user = $ctx['user'];
+    if ($ctx['model'] === '' || $ctx['prompt'] === '') tc_fail(400, '请填写模型和提示词');
+    $url = rtrim((string) $provider['baseUrl'], '/') . '/images/generations';
+    $headers = array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . $provider['apiKey']);
+    $payload = tc_json_encode(array(
+        'model' => $ctx['model'],
+        'prompt' => $ctx['prompt'],
+        'n' => $ctx['n'],
+        'size' => $ctx['size'],
+    ));
+    $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], false);
+    if (empty($res['ok'])) {
+        tc_fail(502, '无法连接上游 API: ' . (isset($res['error']) ? $res['error'] : '未知错误'));
+    }
+    $status = (int) (isset($res['status']) ? $res['status'] : 0);
+    if ($status >= 400) {
+        tc_fail($status, tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', $status));
+    }
+    $j = json_decode((string) (isset($res['body']) ? $res['body'] : ''), true);
+    $images = array();
+    foreach ((isset($j['data']) && is_array($j['data']) ? $j['data'] : array()) as $d) {
+        if (!is_array($d)) continue;
+        if (!empty($d['url'])) $images[] = array('url' => (string) $d['url']);
+        elseif (!empty($d['b64_json'])) $images[] = array('url' => 'data:image/png;base64,' . (string) $d['b64_json']);
+        if (count($images) >= $ctx['n']) break;
+    }
+    if (!$images) tc_fail(502, '上游未返回图像，请稍后重试或更换模型');
+    $usage = array('prompt' => 0, 'completion' => 0);
+    tc_with_db(true, function (&$db) use ($user, $provider, $ctx, $usage, $started) {
+        $fresh = null;
+        foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
+        if (!$fresh) return;
+        $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $ctx['cost'], $usage), $ctx['model'] . ' (图像)');
+        tc_touch_user($db, $user['id']);
+        $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
+        tc_record_usage_entry($db, $user['id'], $ctx['model'] . ' (图像)', $charged, 0, 0);
+        tc_push_log(array('kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'], 'provider' => $provider['name'], 'model' => $ctx['model'] . ' (图像)', 'format' => 'images', 'status' => 200, 'ms' => tc_now() - $started, 'cost' => $charged, 'stream' => false));
+    });
+    tc_json(200, array('ok' => true, 'model' => $ctx['model'], 'images' => $images));
+}
+
 function tc_api_v1_chat_completions() {
     $auth = tc_v1_authenticate();
     tc_api_proxy('chat', $auth);
