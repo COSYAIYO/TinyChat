@@ -4720,8 +4720,116 @@ async function attachDocument(file, attach) {
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !tools.classList.contains('hidden')) closeTools();
     });
+    const compareTool = $('composer-tool-compare');
+    if (compareTool) compareTool.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      closeTools();
+      openCompareDialog();
+    });
   }
 })();
+
+// ============ 多模型并答对比 ============
+// 独立于流式管线:非流式并行请求,结果并排展示并支持投票(计入模型评价)。每个所选模型各计费一次。
+function openCompareDialog() {
+  if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+  const models = availableModels();
+  if (models.length < 2) return toast('至少需要两个可用模型才能对比', true);
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask';
+  const options = models.map((item) => {
+    const on = item.providerId === state.currentProviderId && item.model === state.currentModel;
+    return '<label class="compare-model-opt"><input type="checkbox" value="' + escapeHtml(item.providerId + '\n' + item.model) + '"' + (on ? ' checked' : '') + '>'
+      + '<span>' + escapeHtml(item.provider + ' · ' + item.model) + '</span></label>';
+  }).join('');
+  mask.innerHTML =
+    '<div class="modal modal-lg compare-modal" role="dialog" aria-modal="true">'
+    + '<div class="modal-header"><h3>多模型对比</h3>'
+    + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + (window.OC ? OC.icon('close', 16) : '×') + '</button></div>'
+    + '<div class="modal-body" id="compare-body">'
+    + '<label class="field"><span>问题（发送给每个所选模型，各自按标准计费）</span><textarea id="compare-q" rows="3" style="resize:vertical"></textarea></label>'
+    + '<div class="section-title">选择模型（2–3 个）</div>'
+    + '<div class="compare-model-list" id="compare-models">' + options + '</div>'
+    + '<div class="form-actions" style="margin-top:10px"><button class="btn primary" id="compare-run" type="button">开始对比</button><span class="muted small" id="compare-status"></span></div>'
+    + '<div class="compare-results" id="compare-results"></div>'
+    + '</div></div>';
+  document.body.appendChild(mask);
+  const qEl = mask.querySelector('#compare-q');
+  const input = $('input');
+  if (qEl && input && input.value.trim()) qEl.value = input.value.trim();
+  if (qEl) setTimeout(() => qEl.focus(), 60);
+  mask.addEventListener('click', (e) => {
+    if (e.target === mask || e.target.closest('[data-act="close"]')) mask.remove();
+  });
+  mask.querySelector('#compare-run').addEventListener('click', async () => {
+    const question = (qEl && qEl.value.trim()) || '';
+    if (!question) return toast('请先输入问题', true);
+    const picks = [];
+    mask.querySelectorAll('#compare-models input:checked').forEach((inp) => {
+      const [providerId, model] = inp.value.split('\n');
+      picks.push({ providerId, model });
+    });
+    if (picks.length < 2) return toast('请至少勾选 2 个模型', true);
+    if (picks.length > 3) return toast('最多对比 3 个模型', true);
+    const runBtn = mask.querySelector('#compare-run');
+    const status = mask.querySelector('#compare-status');
+    const results = mask.querySelector('#compare-results');
+    runBtn.disabled = true;
+    status.textContent = '正在并行询问 ' + picks.length + ' 个模型…';
+    results.innerHTML = picks.map((p, i) =>
+      '<div class="compare-card" data-ci="' + i + '"><div class="compare-card-head"><b>' + escapeHtml(p.model) + '</b><span class="muted small" data-el="' + i + '">生成中…</span></div><div class="compare-card-body muted">…</div>'
+      + '<div class="compare-card-actions hidden"><button class="btn small" data-vote="up" type="button">👍 这个更好</button><button class="btn small" data-copy type="button">复制</button></div></div>'
+    ).join('');
+    const cap = Math.min(128000, Math.max(256, Number((state.chatLimits || {}).maxOutputTokens) || 12800));
+    const started = Date.now();
+    const answers = picks.map((p) => {
+      const prov = (state.providers || []).find((x) => x.id === p.providerId);
+      const format = (prov && prov.apiFormat) || 'chat';
+      const body = { model: p.model, providerId: p.providerId, stream: false, max_tokens: cap, messages: [{ role: 'user', content: question }] };
+      return api(ENDPOINT_BY_FORMAT[format] || '/api/proxy/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then(async (r) => {
+        const data = await r.json();
+        if (!r.ok) throw new Error((data.error && data.error.message) || ('HTTP ' + r.status));
+        return extractText(data, format) || '（空回复）';
+      }).catch((e) => ({ error: (e && e.message) || '请求失败' }));
+    });
+    const settled = await Promise.all(answers.map((p) => p.catch(() => ({ error: '请求失败' }))));
+    const elapsed = Date.now() - started;
+    settled.forEach((res, i) => {
+      const card = results.querySelector('[data-ci="' + i + '"]');
+      if (!card) return;
+      const el = card.querySelector('[data-el]');
+      const bodyEl = card.querySelector('.compare-card-body');
+      const isErr = res && typeof res === 'object' && res.error;
+      if (el) el.textContent = isErr ? '失败' : (elapsed + ' ms');
+      if (bodyEl) {
+        if (isErr) { bodyEl.textContent = '请求失败：' + res.error; bodyEl.classList.add('muted'); }
+        else { bodyEl.textContent = res; bodyEl.classList.remove('muted'); }
+      }
+      const actions = card.querySelector('.compare-card-actions');
+      if (actions && !isErr) {
+        actions.classList.remove('hidden');
+        const voteBtn = actions.querySelector('[data-vote]');
+        if (voteBtn) voteBtn.addEventListener('click', async () => {
+          voteBtn.disabled = true;
+          voteBtn.textContent = '已投票 ✓';
+          try { await api('/api/votes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: picks[i].model, to: 'up' }) }); } catch (e) { /* 投票失败不影响对比 */ }
+        });
+        const copyBtn = actions.querySelector('[data-copy]');
+        if (copyBtn) copyBtn.addEventListener('click', () => {
+          if (navigator.clipboard) navigator.clipboard.writeText(res).then(() => toast('已复制')).catch(() => {});
+        });
+      }
+    });
+    status.textContent = '完成，用时 ' + elapsed + ' ms。点击"这个更好"为满意的模型投票（计入模型评价）。';
+    runBtn.disabled = false;
+    runBtn.textContent = '再来一轮';
+  });
+}
 
 // 键盘快捷键
 window.OCConversations.initShortcuts({
