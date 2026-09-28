@@ -811,6 +811,7 @@ function fillChatLimits(s) {
     $('chat-temperature').value = Number.isFinite(t) ? t : '';
   }
   if ($('chat-ratelimit')) $('chat-ratelimit').value = Math.min(600, Math.max(0, parseInt(src.rateLimitPerMin, 10) || 0));
+  if ($('chat-timeout')) $('chat-timeout').value = Math.min(600, Math.max(5, Math.round((parseInt(src.proxyTimeoutMs, 10) || 120000) / 1000)));
   if ($('chat-context-learn')) $('chat-context-learn').checked = src.contextAutoLearn !== false;
   if ($('chat-persist-chats')) $('chat-persist-chats').checked = src.persistChats !== false;
 }
@@ -833,6 +834,7 @@ function fillChatLimits(s) {
     const tempRaw = parseFloat(($('chat-temperature') && $('chat-temperature').value) || '');
     const temperature = Number.isFinite(tempRaw) ? Math.min(2, Math.max(0, tempRaw)) : null;
     const rateLimit = Math.min(600, Math.max(0, parseInt($('chat-ratelimit') && $('chat-ratelimit').value, 10) || 0));
+    const timeoutSec = Math.min(600, Math.max(5, parseInt($('chat-timeout') && $('chat-timeout').value, 10) || 120));
     const contextLearn = !!($('chat-context-learn') && $('chat-context-learn').checked);
     const persistChats = !!($('chat-persist-chats') && $('chat-persist-chats').checked);
     save.disabled = true;
@@ -840,7 +842,7 @@ function fillChatLimits(s) {
       const r = await api('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature, rateLimitPerMin: rateLimit, contextAutoLearn: contextLearn, persistChats }),
+        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature, rateLimitPerMin: rateLimit, proxyTimeoutMs: timeoutSec * 1000, contextAutoLearn: contextLearn, persistChats }),
       });
       const data = await r.json();
       if (!r.ok) return toast((data.error && data.error.message) || '保存失败', true);

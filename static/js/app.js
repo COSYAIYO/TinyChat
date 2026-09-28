@@ -2950,10 +2950,14 @@ function renderUsageLedger() {
     box.innerHTML = '<p class="muted small">近 14 天还没有用量记录。</p>';
     return;
   }
+  // 注意:-1 表示无限额度,不能当作「已用完」(此前误把 -1 <= 0 判为耗尽)
+  const unlimited = state.user ? quotaIsUnlimited(state.user.quota) : false;
   const left = state.user ? state.user.quota : 0;
-  const head = left <= 0
-    ? '<p class="usage-empty">剩余次数已用完。近 14 天的消耗如下，需要管理员充值后才能继续。</p>'
-    : '<p class="muted small">近 14 天按模型和日期的消耗。今天剩余 ' + left + ' 次。</p>';
+  const head = unlimited
+    ? '<p class="muted small">近 14 天按模型和日期的消耗。您当前为无限额度。</p>'
+    : (left <= 0
+      ? '<p class="usage-empty">剩余次数已用完。近 14 天的消耗如下，需要管理员充值后才能继续。</p>'
+      : '<p class="muted small">近 14 天按模型和日期的消耗。今天剩余 ' + left + ' 次。</p>');
   box.innerHTML = head + rows.map((row) => {
     const models = (row.models || []).map((m) => escapeHtml(m.model) + ' ' + (m.calls || 0) + ' 次').join('，');
     return '<div class="usage-row"><span class="usage-name">' + escapeHtml(String(row.day || '').slice(5)) + '</span>'
