@@ -2410,6 +2410,12 @@ function tc_generate_images($apiKeyOwner = null) {
     }
     $j = json_decode((string) (isset($res['body']) ? $res['body'] : ''), true);
     $items = tc_image_results_from_payload($j, $ctx['n']);
+    // 为每个 URL 结果补一个同源代理地址:多数平台的图片在第三方对象存储域,
+    // 部分网络下浏览器直连加载不到(后端却已成功出图),经本站转发即可稳定显示。
+    foreach ($items as &$it) {
+        if (!empty($it['url'])) $it['display'] = tc_img_proxy_path($it['url']);
+    }
+    unset($it);
     if (!$items) {
         // 有的平台把图片放在非标准字段,或干脆是重定向后的二进制图片地址;给出可操作提示
         tc_fail(502, '上游未返回可识别的图像数据（已兼容 data[].url / data[].b64_json / images 等形态），请确认该模型支持 images/generations 接口');
@@ -2432,6 +2438,181 @@ function tc_generate_images($apiKeyOwner = null) {
 //   {data:[{url|b64_json, revised_prompt}]} / {images:[...]} / {output:[...]} /
 //   {data:{url}} / 顶层 {url} / data[] 里直接是字符串 URL 或 data: base64
 // 返回 [{url?|b64_json?, revised_prompt?}],最多 $limit 条。
+// ---- 生图结果图片代理 ----
+// 多数生图平台把图片放在第三方对象存储(如 Google Cloud Storage 域),在部分网络下
+// 浏览器加载不到,表现为「后端出图了但页面上看不到图」。这里把图片经由本站转发,
+// 让 <img> 始终从同源加载。
+//
+// 鉴权方式:签名而非 Bearer——<img> 请求不会带 Authorization 头。服务器生成带 HMAC
+// 的地址,因此代理不会被当成任意 URL 的开放转发。
+function tc_img_proxy_token($url) {
+    return substr(hash_hmac('sha256', (string) $url, tc_secret()), 0, 24);
+}
+function tc_img_proxy_path($url) {
+    $u = (string) $url;
+    if (!preg_match('#^https?://#i', $u)) return $u; // data: 等无需代理
+    return '/api/proxy/image?u=' . rawurlencode($u) . '&s=' . tc_img_proxy_token($u);
+}
+
+// SSRF 防护:只允许指向公网地址的 http(s) URL
+function tc_url_is_public_http($url) {
+    $p = parse_url((string) $url);
+    if (!is_array($p) || empty($p['host'])) return false;
+    $scheme = strtolower(isset($p['scheme']) ? $p['scheme'] : '');
+    if ($scheme !== 'http' && $scheme !== 'https') return false;
+    $host = $p['host'];
+    $ips = array();
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        $ips[] = $host;
+    } else {
+        $recs = @dns_get_record($host, DNS_A | DNS_AAAA);
+        if (is_array($recs)) {
+            foreach ($recs as $r) {
+                if (!empty($r['ip'])) $ips[] = $r['ip'];
+                elseif (!empty($r['ipv6'])) $ips[] = $r['ipv6'];
+            }
+        }
+        if (!$ips) {
+            $one = @gethostbyname($host);
+            if ($one && $one !== $host) $ips[] = $one;
+        }
+    }
+    if (!$ips) return false;
+    foreach ($ips as $ip) {
+        // 拒绝私有/保留网段(含回环、链路本地 169.254、内网等)
+        if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) return false;
+    }
+    return true;
+}
+
+function tc_img_cache_dir() {
+    $dir = tc_data_dir() . '/imgcache';
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    return $dir;
+}
+
+// 缓存落盘(按 URL 哈希),并做总量清理;返回缓存文件路径或 ''
+function tc_img_cache_lookup($url) {
+    $file = tc_img_cache_dir() . '/' . hash('sha256', (string) $url) . '.bin';
+    if (!is_file($file)) return '';
+    if (filesize($file) < 8) { @unlink($file); return ''; }
+    return $file;
+}
+function tc_img_cache_store($url, $bytes, $ctype) {
+    $dir = tc_img_cache_dir();
+    if (!is_dir($dir) || !is_writable($dir)) return;
+    // 头部 1 字节长度 + 内容类型,再存图片字节
+    $ct = substr((string) $ctype, 0, 120);
+    $head = chr(strlen($ct)) . $ct;
+    @file_put_contents($dir . '/' . hash('sha256', (string) $url) . '.bin', $head . $bytes, LOCK_EX);
+    tc_img_cache_gc($dir);
+}
+// 缓存总量上限 300MB,超出按修改时间从旧到新删除
+function tc_img_cache_gc($dir, $limitBytes = 314572800) {
+    $files = @glob($dir . '/*.bin');
+    if (!is_array($files) || count($files) < 2) return;
+    $total = 0; $rows = array();
+    foreach ($files as $f) {
+        $sz = @filesize($f); if ($sz === false) continue;
+        $total += $sz;
+        $rows[] = array('f' => $f, 't' => (int) @filemtime($f), 's' => $sz);
+    }
+    if ($total <= $limitBytes) return;
+    usort($rows, function ($a, $b) { return $a['t'] - $b['t']; });
+    foreach ($rows as $r) {
+        if ($total <= $limitBytes) break;
+        if (@unlink($r['f'])) $total -= $r['s'];
+    }
+}
+
+// 输出缓存文件(带长缓存头)
+function tc_img_serve_cached($file) {
+    $raw = @file_get_contents($file);
+    if ($raw === false || strlen($raw) < 2) return false;
+    $len = ord($raw[0]);
+    $ctype = substr($raw, 1, $len);
+    $body = substr($raw, 1 + $len);
+    if ($ctype === '' || strpos($ctype, 'image/') !== 0) $ctype = 'image/png';
+    header('Content-Type: ' . $ctype);
+    header('Content-Length: ' . strlen($body));
+    header('Cache-Control: public, max-age=86400');
+    echo $body;
+    return true;
+}
+
+// GET /api/proxy/image?u=<原始图片地址>&s=<签名>
+function tc_api_image_proxy() {
+    $q = tc_query();
+    $url = isset($q['u']) ? (string) $q['u'] : '';
+    $sig = isset($q['s']) ? (string) $q['s'] : '';
+    if ($url === '' || $sig === '' || !hash_equals(tc_img_proxy_token($url), $sig)) {
+        http_response_code(403);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '签名无效';
+        exit;
+    }
+    // 每 IP 限流,避免被当作图片转发器刷带宽
+    if (!tc_rate_limit_check('imgpx:' . tc_client_ip(), 300)) {
+        http_response_code(429);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '请求过于频繁';
+        exit;
+    }
+    // 命中缓存直接返回
+    $cached = tc_img_cache_lookup($url);
+    if ($cached !== '' && tc_img_serve_cached($cached)) exit;
+    // 安全校验:必须是公网 http(s)
+    if (!tc_url_is_public_http($url)) {
+        http_response_code(400);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '图片地址不被允许';
+        exit;
+    }
+    // 拉取图片,限制体积(25MB)与超时;跟随少量重定向
+    $max = 25 * 1024 * 1024;
+    $ch = curl_init($url);
+    curl_setopt_array($ch, array(
+        CURLOPT_RETURNTRANSFER => false,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_MAXREDIRS => 2,
+        CURLOPT_CONNECTTIMEOUT => 15,
+        CURLOPT_TIMEOUT => 60,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_USERAGENT => 'TinyChat-ImageProxy/1.0',
+    ));
+    $ca = tc_cacert_path();
+    if ($ca) curl_setopt($ch, CURLOPT_CAINFO, $ca);
+    $buf = '';
+    $tooBig = false;
+    $ctype = '';
+    curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($ch, $line) use (&$ctype) {
+        if (stripos($line, 'content-type:') === 0) $ctype = trim(substr($line, 13));
+        return strlen($line);
+    });
+    curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $data) use (&$buf, &$tooBig, $max) {
+        if (strlen($buf) + strlen($data) > $max) { $tooBig = true; return 0; }
+        $buf .= $data;
+        return strlen($data);
+    });
+    @curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if ($tooBig || $status < 200 || $status >= 300 || $buf === '') {
+        // 代理失败时回退:302 到原始地址(用户浏览器直连,或许能打开)
+        header('Location: ' . $url, true, 302);
+        exit;
+    }
+    $ctype = strtolower(trim(explode(';', $ctype)[0]));
+    if (strpos($ctype, 'image/') !== 0) $ctype = 'image/png';
+    tc_img_cache_store($url, $buf, $ctype);
+    header('Content-Type: ' . $ctype);
+    header('Content-Length: ' . strlen($buf));
+    header('Cache-Control: public, max-age=86400');
+    echo $buf;
+    exit;
+}
+
 function tc_image_results_from_payload($j, $limit = 1) {
     $items = array();
     $limit = max(1, (int) $limit);

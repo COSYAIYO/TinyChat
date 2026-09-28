@@ -4981,11 +4981,13 @@ function openImageDialog() {
       });
       const d = await r.json();
       if (!r.ok) throw new Error((d.error && d.error.message) || ('HTTP ' + r.status));
-      // 兼容 url 与 b64_json 两种返回形态,组装成 Markdown 图片
+      // 兼容 url 与 b64_json 两种返回形态,组装成 Markdown 图片。
+      // 优先用 display(同源代理地址):平台的图片常在第三方对象存储域,
+      // 部分网络下浏览器直连加载不到,经本站转发才能稳定显示。
       const alt = prompt.replace(/[\[\]]/g, '').slice(0, 60);
       const links = (d.images || []).map((im) => {
-        const src = im && im.url
-          ? im.url
+        const src = im && (im.display || im.url)
+          ? (im.display || im.url)
           : (im && im.b64_json ? 'data:image/png;base64,' + im.b64_json : '');
         return src ? '![' + alt + '](' + src + ')' : '';
       }).filter(Boolean);
