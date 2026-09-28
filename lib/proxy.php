@@ -1578,6 +1578,29 @@ function tc_final_cost($provider, $baseCost, $usage) {
     return round(($prompt + $completion) / 1000 * $price, 4);
 }
 
+// 流式按 token 计费结算:首字节时刻用量未知,已按次预扣;流结束按实际用量多退少补。
+// 返回最终扣费额(供台账);无限额度与按次模式是 no-op(delta=0)。
+function tc_settle_stream_charge(&$db, $userId, $provider, $baseCost, $charged, $usage) {
+    $trueCost = tc_final_cost($provider, $baseCost, $usage);
+    $delta = round($trueCost - (float) $charged, 4);
+    if (abs($delta) < 0.0001) return $trueCost;
+    $fresh = null;
+    foreach ($db['users'] as &$u) {
+        if (isset($u['id']) && (string) $u['id'] === (string) $userId) { $fresh = &$u; break; }
+    }
+    unset($u);
+    if (!$fresh) return $charged;
+    if (tc_is_unlimited_quota($fresh)) return 0;
+    if ($delta > 0) {
+        $fresh['quota'] = max(0, round((float) $fresh['quota'] - $delta, 4));
+    } else {
+        // 预扣高于实际用量:返还差额(只动余额,不动发放统计)
+        $fresh['quota'] = round((float) $fresh['quota'] + (-$delta), 4);
+    }
+    $GLOBALS['_tc_quota_after'] = $fresh['quota'];
+    return $trueCost;
+}
+
 function tc_api_proxy($format, $apiKeyOwner = null) {
     $started = tc_now();
     $ctx = tc_with_db(false, function ($db) use ($format, $apiKeyOwner) {
@@ -1779,11 +1802,12 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             sleep(1);
         } while (true);
 
-        // 流结束:把累计的上下行 token 写入用量台账(额度扣费已在首字节完成)
+        // 流结束:按实际用量与首字节预扣额多退少补,并把最终费用写入台账
         if ($headersSent) {
             $modelStr = isset($body['model']) ? $body['model'] : '';
-            tc_with_db(true, function (&$db) use ($user, $modelStr, $cost, $streamUsage) {
-                tc_record_usage_entry($db, $user['id'], $modelStr, $cost, $streamUsage['prompt'], $streamUsage['completion']);
+            tc_with_db(true, function (&$db) use ($user, $modelStr, $provider, $cost, &$charged, $streamUsage) {
+                $final = tc_settle_stream_charge($db, $user['id'], $provider, $cost, $charged, $streamUsage);
+                tc_record_usage_entry($db, $user['id'], $modelStr, $final, $streamUsage['prompt'], $streamUsage['completion']);
             });
         }
 
@@ -1873,7 +1897,7 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                             $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '');
                             tc_touch_user($db, $user['id']);
                             $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
-                            tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $cost, $streamUsage['prompt'], $streamUsage['completion']);
+                            tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $charged, $streamUsage['prompt'], $streamUsage['completion']);
                         });
                         header('Content-Type: text/event-stream; charset=utf-8');
                         header('Cache-Control: no-cache, no-transform');
@@ -1884,8 +1908,9 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                         echo "data: [DONE]\n\n";
                     }
                     if ($headersSent) {
-                        tc_with_db(true, function (&$db) use ($user, $body, $cost, $streamUsage) {
-                            tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $cost, $streamUsage['prompt'], $streamUsage['completion']);
+                        tc_with_db(true, function (&$db) use ($user, $body, $provider, $cost, &$charged, $streamUsage) {
+                            $final = tc_settle_stream_charge($db, $user['id'], $provider, $cost, $charged, $streamUsage);
+                            tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $final, $streamUsage['prompt'], $streamUsage['completion']);
                         });
                         tc_task_finish($taskId, 'completed');
                     }
@@ -2085,14 +2110,20 @@ function tc_v1_authenticate() {
         if (empty($db['settings']['apiKeysEnabled'])) tc_fail(403, '管理员已关闭 API 密钥功能');
         $owner = tc_find_api_key_owner($db, tc_bearer());
         if (!$owner) tc_fail(401, '无效的 API 密钥');
+        // lastUsed 分钟级节流:避免每次 API 调用都全量重写数据库
+        $changed = false;
         foreach ($db['users'] as &$u) {
             if (!isset($u['id']) || (string) $u['id'] !== (string) $owner['userId']) continue;
-            if (isset($u['apiKeys'][$owner['keyIndex']]) && is_array($u['apiKeys'][$owner['keyIndex']])) {
-                $u['apiKeys'][$owner['keyIndex']]['lastUsed'] = tc_now();
+            $k = &$u['apiKeys'][$owner['keyIndex']];
+            if (isset($k) && is_array($k) && (int) (isset($k['lastUsed']) ? $k['lastUsed'] : 0) < tc_now() - 60000) {
+                $k['lastUsed'] = tc_now();
+                $changed = true;
             }
+            unset($k);
             break;
         }
         unset($u);
+        if (!$changed) tc_db_skip_write();
         return array('userId' => (string) $owner['userId']);
     });
     return $auth;

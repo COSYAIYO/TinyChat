@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '1.7.0');
+define('TC_VERSION', '1.7.1');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -750,32 +750,33 @@ function tc_backup_path($name) {
     return is_file($full) ? $full : '';
 }
 
-// ---- 接口限流:滑动窗口(每用户每分钟),计数存 data/ratelimit.json,写锁串行化 ----
-function tc_rate_limit_file() { return tc_data_dir() . '/ratelimit.json'; }
+// ---- 接口限流:滑动窗口(每用户每分钟) ----
+// 计数按 key 分片存 data/ratelimit/{hash}.json:写锁只串行化同一用户,不同用户互不阻塞
+function tc_rate_limit_file($key) {
+    $dir = tc_data_dir() . '/ratelimit';
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    return $dir . '/' . hash('sha256', (string) $key) . '.json';
+}
 
 function tc_rate_limit_check($key, $limitPerMin) {
     $limit = (int) $limitPerMin;
     if ($limit <= 0 || $key === '') return true;
-    $fp = @fopen(tc_rate_limit_file(), 'c+');
+    $fp = @fopen(tc_rate_limit_file($key), 'c+');
     if (!$fp) return true; // 计数存储不可用时不拦截主流程
     @flock($fp, LOCK_EX);
     $data = json_decode((string) stream_get_contents($fp), true);
-    if (!is_array($data)) $data = array();
     $now = tc_now();
     $window = 60 * 1000;
-    foreach ($data as $k => $arr) {
-        $arr = array_values(array_filter((array) $arr, function ($t) use ($now, $window) { return (int) $t > $now - $window; }));
-        if ($arr) $data[$k] = $arr;
-        else unset($data[$k]);
+    $mine = array();
+    foreach ((is_array($data) ? $data : array()) as $t) {
+        if ((int) $t > $now - $window) $mine[] = (int) $t;
     }
-    $mine = isset($data[$key]) ? $data[$key] : array();
     $allowed = count($mine) < $limit;
     if ($allowed) {
         $mine[] = $now;
-        $data[$key] = $mine;
         ftruncate($fp, 0);
         rewind($fp);
-        fwrite($fp, tc_json_encode($data));
+        fwrite($fp, tc_json_encode($mine));
         fflush($fp);
     }
     flock($fp, LOCK_UN);
@@ -1400,7 +1401,8 @@ function tc_charge_user(&$db, &$user, $cost, $model = '') {
     if (!$unlimited) tc_enforce_quota_expiry($db, $user);
     // 0 成本(自有 Key)与无限额度的调用不扣额度,但同样计入调用次数
     if ($n > 0 && !$unlimited) {
-        $user['quota'] = max(0, (isset($user['quota']) ? (float) $user['quota'] : 0) - $n);
+        // 按 token 计费会出现小数额度,4 位舍入避免浮点尘埃累积
+        $user['quota'] = max(0, round((isset($user['quota']) ? (float) $user['quota'] : 0) - $n, 4));
         tc_consume_quota_grants($user, $n);
     }
     // 生命周期调用计数:存用户记录上,清空对话也不丢失

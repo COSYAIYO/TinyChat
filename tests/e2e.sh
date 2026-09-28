@@ -132,6 +132,16 @@ assert_eq "按 token 计费 0.004" "$cost" "0.004"
 quota=$(curl -s "$BASE/api/auth/me" -H "$UAUTH" | jget quota)
 assert_eq "额度扣减 99->98.996" "$quota" "98.996"
 
+# 流式 + token 计费:首字节用量未知按次预扣 1,流结束按 2000 token 结算 0.004 并退差价 → 净扣 0.004,额度 98.996-0.004=98.992
+cat > "$TMP/chat-stream.json" <<EOF
+{"model":"mock-model","providerId":"$PROV","stream":true,"messages":[{"role":"user","content":"hello"}]}
+EOF
+body=$(curl -s -N -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/chat-stream.json")
+assert_contains "流式输出内容" "$body" 'MOCK-REPLY'
+assert_contains "流式正常收尾" "$body" '\[DONE\]'
+quota=$(curl -s "$BASE/api/auth/me" -H "$UAUTH" | jget quota)
+assert_eq "流式按 token 结算(净扣 0.004) 98.992" "$quota" "98.992"
+
 # ---------- 敏感词审核 ----------
 say "== 内容审核 =="
 cat > "$TMP/mod.json" <<'EOF'
