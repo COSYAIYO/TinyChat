@@ -5,6 +5,7 @@
  */
 define('TC_ROOT', __DIR__);
 require_once __DIR__ . '/lib/core.php';
+require_once __DIR__ . '/lib/integrity.php';
 require_once __DIR__ . '/lib/api.php';
 require_once __DIR__ . '/lib/proxy.php';
 require_once __DIR__ . '/lib/tasks.php';
@@ -31,6 +32,17 @@ if ($scriptDir && $scriptDir !== '/' && strpos($path, $scriptDir) === 0) {
 
 if ($path === '/favicon.ico') {
     http_response_code(204);
+    exit;
+}
+
+// 署名完整性校验:署名链接被替换/删除时暂停程序并提示尊重原作者成果。
+// 合法二次开发可在 config.php 里声明 'allow_rebrand' => true 明确接受署名条款。
+$tc_attribution = tc_attribution_violation();
+if ($tc_attribution !== '') {
+    http_response_code(403);
+    header('Content-Type: text/html; charset=utf-8');
+    header('Cache-Control: no-store');
+    echo tc_attribution_notice_html($tc_attribution);
     exit;
 }
 

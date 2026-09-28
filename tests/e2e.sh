@@ -147,6 +147,14 @@ assert_has "新供应商默认对所有分组开放" "$(curl -s "$BASE/api/admin
 # 收窄授权后再次读取必须仍然生效
 curl -s -X POST "$BASE/api/admin/access" -H "$AUTH" -H "Content-Type: application/json" -d "{\"groupId\":\"$GID1\",\"providerId\":\"$PROV\",\"modelIds\":[\"mock-model\"]}" > /dev/null
 assert_has "模型授权保存后可回读" "$(curl -s "$BASE/api/admin/access" -H "$AUTH")" "\"groupId\":\"$GID1\",\"providerId\":\"$PROV\",\"modelIds\":[\"mock-model\"]"
+# 部分模型授权:先给全部,再收窄为单个模型,验证该组用户只能看到被授权的模型
+curl -s -X POST "$BASE/api/admin/access" -H "$AUTH" -H "Content-Type: application/json" -d "{\"groupId\":\"$GID1\",\"providerId\":\"$PROV\",\"modelIds\":[\"*\"]}" > /dev/null
+full=$(curl -s "$BASE/api/providers" -H "$UAUTH")
+assert_contains "全部授权时可见所有模型" "$full" 'mock-image'
+curl -s -X POST "$BASE/api/admin/access" -H "$AUTH" -H "Content-Type: application/json" -d "{\"groupId\":\"$GID1\",\"providerId\":\"$PROV\",\"modelIds\":[\"mock-model\"]}" > /dev/null
+partial=$(curl -s "$BASE/api/providers" -H "$UAUTH")
+assert_contains "部分授权后仍可见被授权模型" "$partial" 'mock-model'
+if printf '%s' "$partial" | grep -q 'mock-image'; then bad "部分授权后不应可见未授权模型 mock-image"; else ok "部分授权后不可见未授权模型"; fi
 # 恢复为全部模型授权,后续计费/图像等用例需要访问 mock-image
 curl -s -X POST "$BASE/api/admin/access" -H "$AUTH" -H "Content-Type: application/json" -d "{\"groupId\":\"$GID1\",\"providerId\":\"$PROV\",\"modelIds\":[\"*\"]}" > /dev/null
 cat > "$TMP/chat1.json" <<EOF
