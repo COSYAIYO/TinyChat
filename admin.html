@@ -118,6 +118,11 @@
       <label class="field"><span>温度 temperature（0–2，留空使用模型默认）</span>
           <input id="chat-temperature" type="number" min="0" max="2" step="0.1" placeholder="留空则不发送该参数">
       </label>
+      <label class="field"><span>接口限流（每用户每分钟请求数，0 = 不限制）</span>
+          <input id="chat-ratelimit" type="number" min="0" max="600" step="1" value="30">
+      </label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-context-learn" checked><span class="slider"></span></span><span>自动学习上下文窗口（从上游 context length 报错回填模型的最大上下文，不覆盖手动设置）</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-persist-chats" checked><span class="slider"></span></span><span>服务器保存对话记录（关闭后对话仅存用户浏览器本地，服务器不留存）</span></label>
       <button class="btn primary" id="chat-limits-save" type="button">保存对话设置</button>
     </div>
   </div>
@@ -313,6 +318,11 @@
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="verify-reset-enabled"><span class="slider"></span></span><span>开启找回密码</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="verify-quota-unlimited"><span class="slider"></span></span><span>新注册用户默认无限额度</span></label>
       <label class="field"><span>新注册用户默认额度</span><input id="verify-free-quota" type="number" min="0" value="100"></label>
+      <div class="row-between" style="gap:10px;flex-wrap:wrap;margin-top:6px">
+        <label class="field" style="margin:0;flex-direction:row;align-items:center;gap:8px"><span style="white-space:nowrap">会话有效期（天）</span><input id="session-days" type="number" min="1" max="30" value="7" style="width:80px"></label>
+        <button class="btn danger" id="session-invalidate" type="button">强制全站下线</button>
+      </div>
+      <p class="muted small" style="margin:6px 0 0">会话有效期修改后对新登录生效；「强制全站下线」会使所有人的现有登录态立即失效（包括你自己），需要重新登录。</p>
       <h3>SMTP</h3>
       <label class="field"><span>服务器</span><input id="smtp-host" placeholder="smtp.example.com"></label>
       <label class="field"><span>端口</span><input id="smtp-port" type="number" value="587"></label>
@@ -488,6 +498,40 @@
         <a id="upd-link" href="#" target="_blank" rel="noopener" class="small">在 GitHub 查看该版本 ↗</a>
       </div>
       <p class="muted small" id="upd-last" style="margin:10px 0 0"></p>
+    </div>
+    <div class="admin-card" style="margin-top:16px">
+      <h2>数据备份</h2>
+      <p class="muted small">备份 data/db.json（用户、供应商、对话、设置等全部数据）到 data/backup/。开启后管理后台每次打开时惰性检查：距最近一份超过 24 小时就自动备份，并只保留最近 N 份。</p>
+      <div class="row-between" style="gap:10px;flex-wrap:wrap;margin-top:6px">
+        <label class="user-form-admin" style="margin:0"><span class="switch"><input type="checkbox" id="backup-enabled" checked><span class="slider"></span></span><span>自动备份</span></label>
+        <label class="field" style="margin:0;flex-direction:row;align-items:center;gap:8px"><span style="white-space:nowrap">保留份数</span><input id="backup-keep" type="number" min="1" max="30" value="7" style="width:80px"></label>
+        <span class="row-between" style="gap:8px;flex-wrap:nowrap">
+          <button class="btn" id="backup-save" type="button">保存设置</button>
+          <button class="btn primary" id="backup-now" type="button">立即备份</button>
+        </span>
+      </div>
+      <div class="users-table-wrap" style="margin-top:12px">
+        <table class="admin-table">
+          <thead><tr><th>备份文件</th><th>大小</th><th>时间</th><th style="text-align:right">操作</th></tr></thead>
+          <tbody id="backup-tbody"></tbody>
+        </table>
+      </div>
+      <p class="muted small" id="backup-empty" style="text-align:center;padding:14px 0">暂无备份</p>
+      <p class="muted small" style="margin:6px 0 0">「恢复」会用所选备份整体替换当前数据库，<b>恢复点之后的全部数据变更会丢失</b>，操作前请先点「立即备份」。</p>
+    </div>
+  </div>
+
+  <div class="admin-panel" id="panel-moderation">
+    <div class="admin-card">
+      <h2>内容安全</h2>
+      <p class="muted small">发送前对最后一条用户消息做敏感词匹配，命中后拒绝本次请求（不拦截正常对话的上下文）。词库仅保存在服务器，不回传前端。输出侧流式内容无法撤回，如需输出侧审核请接入第三方审核服务。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="mod-enabled"><span class="slider"></span></span><span>启用敏感词过滤</span></label>
+      <label class="field"><span>敏感词库（每行一个，也支持逗号分隔，最多 5000 条）</span><textarea id="mod-words" rows="10" spellcheck="false" placeholder="示例词一&#10;示例词二" style="font-family:ui-monospace,SFMono-Regular,Consolas,'Courier New',monospace;font-size:12.5px;line-height:1.6"></textarea></label>
+      <h3 style="margin-top:20px">用户协议</h3>
+      <p class="muted small">启用后：<a href="/agreement" target="_blank" rel="noopener">/agreement</a> 展示协议正文，注册页需勾选同意才能提交。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="agreement-enabled"><span class="slider"></span></span><span>启用用户协议</span></label>
+      <label class="field"><span>协议正文（HTML，支持常用标签，最多 20 万字符）</span><textarea id="agreement-html" rows="10" spellcheck="false" style="font-family:ui-monospace,SFMono-Regular,Consolas,'Courier New',monospace;font-size:12.5px;line-height:1.6"></textarea></label>
+      <button class="btn primary" id="moderation-save" type="button">保存内容安全设置</button>
     </div>
   </div>
 
