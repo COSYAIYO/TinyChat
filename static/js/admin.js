@@ -1288,6 +1288,9 @@ $('ap-save').addEventListener('click', async () => {
   $('ap-name').value = ''; $('ap-baseurl').value = ''; $('ap-key').value = '';
   resetModelTestResults();
   if (apModelList) apModelList.reset();
+  // 计费模式一并回到默认「按次」，避免下次新增供应商继承上次编辑的 token 模式
+  if (window.__setApBilling) window.__setApBilling('call');
+  if ($('ap-price')) $('ap-price').value = 0;
   setKeyVisibility(apKeyInput, toggleKeyBtn, false);
   if (apKeyInput) apKeyInput.placeholder = 'sk-...';
   if ($('ap-key-keep')) $('ap-key-keep').checked = true;
