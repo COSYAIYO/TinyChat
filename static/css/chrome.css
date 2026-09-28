@@ -3654,6 +3654,8 @@ body.is-demo-admin [data-chats] { display: none !important; }
 }
 .img-modal .field > .select-box { width: 100%; }
 .img-modal .field > textarea { min-height: 76px; }
+/* 图片规格:预设下拉 + 自定义输入框(像素尺寸 / 档位 / 宽高比) */
+.img-modal .field > .img-size-input { width: 100%; margin-top: 8px; }
 
 /* 参考图:虚线投放框 + 缩略图 */
 .img-ref-add-btn {
