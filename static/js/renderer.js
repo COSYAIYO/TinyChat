@@ -590,6 +590,21 @@
     });
   }
 
+  // 视频链接 [标题](地址) → 内嵌 <video> 播放器(生视频结果即是这种形式)。
+  // 生视频结果的地址是同源代理 /api/proxy/video?u=...&s=...(原始 .mp4 在 u 参数里被编码),
+  // 因此不能只看后缀,连同源代理前缀一起识别。转成原生 HTML 交给 markdown-it 透传。
+  const VIDEO_LINK = /\[([^\]\n]*)\]\(([^)\s]+)\)/g;
+  const VIDEO_URL = /(\.(?:mp4|webm|mov|m4v|ogv)(?:[?#][^)\s]*)?$)|(\/api\/proxy\/video\?)/i;
+  function liftVideoLinks(text) {
+    return String(text || '').replace(VIDEO_LINK, function (all, label, url) {
+      if (!VIDEO_URL.test(url)) return all;
+      const cap = String(label || '').trim();
+      return '<figure class="md-video"><video src="' + escapeAttr(url) + '" controls preload="metadata" playsinline></video>'
+        + (cap ? '<figcaption>' + escapeHtml(cap) + '</figcaption>' : '')
+        + '</figure>';
+    });
+  }
+
   function isPresentationalHtmlFence(lang, code) {
     const name = String(lang || '').trim().toLowerCase();
     if (name !== 'html' && name !== 'htm') return false;
@@ -692,8 +707,10 @@ R.render = function (text) {
     // 0. 统一提取公式(占位符保护,避免 markdown-it / HTML 干扰)
     const { result: mathProtected, placeholders: mathPl } = extractMath(text || '');
     const htmlLifted = liftPresentationalHtmlFences(mathProtected);
+    // 0b. 视频链接 → 内嵌播放器(在任何 markdown 处理前替换为原生 HTML)
+    const videoLifted = liftVideoLinks(htmlLifted);
     // 1. 预处理容器组件
-    const { result, placeholders } = preprocessContainers(htmlLifted);
+    const { result, placeholders } = preprocessContainers(videoLifted);
     // 2. markdown-it 渲染
     let html = sanitizeRenderedHtml(md.render(result));
     // 3. 恢复公式并渲染 KaTeX

@@ -231,6 +231,7 @@
       + '<th class="col-mtok" title="单次回答最多生成的 token，留空则跟随全局的单次输出上限">max_tokens</th>'
       + '<th class="col-ctx" title="该模型的上下文窗口（token），留空则不做限制">最大上下文</th>'
       + '<th class="col-img" title="标记为生图模型：调用对话接口时会自动改用 images/generations（未标记时按模型名自动判断）">生图</th>'
+      + '<th class="col-img" title="标记为视频生成模型：调用对话接口时会自动改用 videos（未标记时按模型名自动判断）">视频</th>'
       + '</tr></thead><tbody>'
       + rowsHtml
       + '</tbody></table>';
@@ -272,12 +273,18 @@
     const imageCell = opts.stale
       ? '<td class="col-img">' + (isImage ? '<span class="img-flag">生图</span>' : '<i class="muted">—</i>') + '</td>'
       : '<td class="col-img"><input type="checkbox" class="mimg" data-mid="' + escapeHtml(m.id) + '" title="标记为生图模型"' + (isImage ? ' checked' : '') + '></td>';
+    // 视频标记:显式 video 字段优先;未显式设置时按模型名给出建议默认值
+    const isVideo = Object.prototype.hasOwnProperty.call(m, 'video') ? !!m.video : (window.OC && OC.isVideoModelName ? OC.isVideoModelName(m.id) : false);
+    const videoCell = opts.stale
+      ? '<td class="col-img">' + (isVideo ? '<span class="img-flag video-flag">视频</span>' : '<i class="muted">—</i>') + '</td>'
+      : '<td class="col-img"><input type="checkbox" class="mvideo" data-mid="' + escapeHtml(m.id) + '" title="标记为视频生成模型"' + (isVideo ? ' checked' : '') + '></td>';
     return '<tr class="' + cls + '">'
       + '<td class="col-check"><input type="checkbox" ' + attr + '="' + escapeHtml(m.id) + '"' + checked + '></td>'
       + '<td class="col-id"><span class="mid">' + escapeHtml(m.id) + '</span></td>'
       + '<td class="col-name">' + modelNameCell(m, !opts.stale) + '</td>'
       + numCells
       + imageCell
+      + videoCell
       + '</tr>';
   }
 
@@ -319,17 +326,22 @@
         // 生图标记只有调用方显式携带时才更新(上游拉取的原始列表没有该字段,不能覆盖已保存值)
         const hasImage = !!(m && Object.prototype.hasOwnProperty.call(m, 'image'));
         const incomingImage = hasImage ? !!m.image : undefined;
+        const hasVideo = !!(m && Object.prototype.hasOwnProperty.call(m, 'video'));
+        const incomingVideo = hasVideo ? !!m.video : undefined;
         const found = catalog.find((x) => x.id === id);
         if (found) {
           if (updateName && incoming) found.name = incoming;
           else if (incoming && (!found.name || found.name === found.id)) found.name = incoming;
           Object.keys(incomingNums).forEach((f) => { found[f] = incomingNums[f]; });
           if (hasImage) found.image = incomingImage;
+          if (hasVideo) found.video = incomingVideo;
         } else {
           const item = { id, name: incoming || id };
           NUM_FIELDS.forEach((f) => { item[f] = incomingNums[f] !== undefined ? incomingNums[f] : 0; });
           if (hasImage) item.image = incomingImage;
           else if (window.OC && OC.isImageModelName) item.image = OC.isImageModelName(id);
+          if (hasVideo) item.video = incomingVideo;
+          else if (window.OC && OC.isVideoModelName) item.video = OC.isVideoModelName(id);
           catalog.push(item);
           if (selectNew) selected.add(id);
         }
@@ -394,6 +406,12 @@
       if (imgInp) {
         const item = catalog.find((x) => x.id === imgInp.dataset.mid);
         if (item) item.image = !!imgInp.checked;
+        return;
+      }
+      const vidInp = e.target && e.target.closest ? e.target.closest('input.mvideo[data-mid]') : null;
+      if (vidInp) {
+        const item = catalog.find((x) => x.id === vidInp.dataset.mid);
+        if (item) item.video = !!vidInp.checked;
         return;
       }
       const inp = e.target && e.target.closest ? e.target.closest('input[type="checkbox"][data-mid]') : null;
@@ -486,7 +504,8 @@
           MODEL_NUM_COLS.forEach((c) => {
             if (parseInt(m[c.field], 10) > 0) row[c.field] = parseInt(m[c.field], 10);
           });
-          if (m.image) row.image = true;
+          if (Object.prototype.hasOwnProperty.call(m, 'image')) row.image = !!m.image;
+          if (Object.prototype.hasOwnProperty.call(m, 'video')) row.video = !!m.video;
           return row;
         });
       },
@@ -498,7 +517,8 @@
             MODEL_NUM_COLS.forEach((c) => {
               if (parseInt(m[c.field], 10) > 0) row[c.field] = parseInt(m[c.field], 10);
             });
-            if (m.image) row.image = true;
+            if (Object.prototype.hasOwnProperty.call(m, 'image')) row.image = !!m.image;
+            if (Object.prototype.hasOwnProperty.call(m, 'video')) row.video = !!m.video;
             return row;
           });
       },
@@ -877,9 +897,22 @@
     return IMAGE_HINTS.some((re) => re.test(s));
   }
 
+  // 视频模型名启发式(与后端 tc_video_model_name_hint 对应)
+  const VIDEO_HINTS = [
+    /agnes-video/, /(^|[^a-z0-9])video(s)?([^a-z0-9]|$)/, /text-to-video/, /image-to-video/,
+    /(^|[^a-z0-9])(t2v|i2v)([^a-z0-9]|$)/, /kling/, /sora/, /(^|[^a-z0-9])veo([^a-z0-9]|$)/,
+    /runway/, /pika/, /seedance/, /hailuo/, /vidu/, /wan-?video/,
+  ];
+  function isVideoModelName(id) {
+    const s = String(id || '').toLowerCase();
+    if (!s) return false;
+    return VIDEO_HINTS.some((re) => re.test(s));
+  }
+
   // 暴露全局
   window.OC = window.OC || {};
   window.OC.isImageModelName = isImageModelName;
+  window.OC.isVideoModelName = isVideoModelName;
   window.OC.openSelect = openSelect;
   window.OC.closeSelect = closeOpenMenu;
   window.OC.bindModelChecklist = bindModelChecklist;

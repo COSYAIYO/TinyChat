@@ -248,6 +248,25 @@ NOV1=$(curl -s "$BASE/api/providers" -H "$AUTH" | grep -o '"id":"[a-f0-9]*","nam
 [ -n "$NOV1" ] && ok "创建无 /v1 供应商" || bad "创建无 /v1 供应商"
 assert_contains "Base URL 不带 /v1 也能生图" "$(curl -s -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d "{\"providerId\":\"$NOV1\",\"model\":\"mock-image\",\"prompt\":\"x\",\"size\":\"2K\",\"ratio\":\"16:9\"}")" 'example.com/mock.png'
 
+# ---------- 视频生成 ----------
+say "== 视频生成 =="
+cat > "$TMP/prov-video.json" <<EOF
+{"name":"MockVideo","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiKey":"sk-vid","apiFormat":"video","models":[{"id":"mock-video","name":"Mock Video"}],"costPerCall":1,"scope":"global"}
+EOF
+curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/prov-video.json" > /dev/null
+VIDPROV=$(curl -s "$BASE/api/providers" -H "$AUTH" | grep -o '"id":"[a-f0-9]*","name":"MockVideo"' | cut -d'"' -f4)
+[ -n "$VIDPROV" ] && ok "创建视频供应商" || bad "创建视频供应商"
+# 供应商接口格式 video 应能保存并读回
+assert_has "视频供应商接口格式可保存" "$(curl -s "$BASE/api/providers" -H "$AUTH")" '"apiFormat":"video"'
+# 文字生成视频:应返回视频地址 + 同源代理地址
+vidresp=$(curl -s -X POST "$BASE/api/proxy/videos" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$VIDPROV"'","model":"mock-video","prompt":"a rainy city street","mode":"text","seconds":5,"aspect_ratio":"16:9"}')
+assert_contains "视频生成返回 URL" "$vidresp" 'example.com/generated/mock-video.mp4'
+assert_contains "视频结果附同源代理地址" "$vidresp" '/api/proxy/video?u='
+# 视频代理:签名校验(错误签名 403)
+assert_contains "视频代理拒绝无效签名" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/proxy/video?u=https%3A%2F%2Fexample.com%2Fx.mp4&s=bad")" '403'
+# 对话接口自动改走视频(视频模型按名命中时)
+assert_contains "对话接口自动改走生视频" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$VIDPROV"'","model":"mock-video","messages":[{"role":"user","content":"draw"}]}')" 'example.com/generated/mock-video.mp4'
+
 # ---------- 接口限流(tester2 全新窗口:3 次/分钟) ----------
 say "== 接口限流 =="
 cat > "$TMP/reg3.json" <<EOF

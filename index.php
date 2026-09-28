@@ -216,11 +216,15 @@ function tc_dispatch($method, $path) {
         array('GET', '#^/api/proxy/models$#', 'tc_api_list_models'),
         array('POST', '#^/api/proxy/fetch-models$#', 'tc_api_fetch_models'),
         array('POST', '#^/api/proxy/images$#', 'tc_api_proxy_images'),
+        array('POST', '#^/api/proxy/videos$#', 'tc_api_proxy_videos'),
         // 生图结果图片代理(签名鉴权,见 lib/proxy.php;供 <img> 同源加载)
         array('GET', '#^/api/proxy/image$#', 'tc_api_image_proxy'),
+        // 视频结果代理(签名鉴权;转发 Range,供 <video> 同源播放)
+        array('GET', '#^/api/proxy/video$#', 'tc_api_video_proxy'),
         array('POST', '#^/v1/chat/completions$#', 'tc_api_v1_chat_completions'),
         array('GET', '#^/v1/models$#', 'tc_api_v1_models'),
         array('POST', '#^/v1/images/generations$#', 'tc_api_v1_images_generations'),
+        array('POST', '#^/v1/videos$#', 'tc_api_v1_videos'),
     );
     foreach ($routes as $r) {
         if ($r[0] !== $method) continue;
