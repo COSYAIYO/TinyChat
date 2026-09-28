@@ -63,7 +63,10 @@
       <div id="env-check-list" style="font-size:13px;line-height:1.9"></div>
       <div class="row-between" style="margin-top:8px">
         <span class="muted small" id="env-check-status"></span>
-        <button type="button" class="btn small hidden" id="env-check-retry">重新检查</button>
+        <span style="display:flex;gap:8px">
+          <button type="button" class="btn small hidden" id="env-check-retry">重新检查</button>
+          <button type="button" class="btn primary hidden" id="env-check-next">下一步：创建管理员</button>
+        </span>
       </div>
     </div>
     <form id="setup-form" class="hidden" autocomplete="off">
@@ -147,6 +150,6 @@
   </div>
 <script src="./static/js/config.js?v=20260926.25"></script>
 <script src="./static/js/ui.js?v=20260926.25"></script>
-<script src="./static/js/login.js?v=20260927.1"></script>
+<script src="./static/js/login.js?v=20260928.1"></script>
 </body>
 </html>
