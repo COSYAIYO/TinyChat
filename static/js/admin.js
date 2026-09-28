@@ -2498,21 +2498,33 @@ async function loadAnnouncement() {
   try {
     const r = await api('/api/admin/settings');
     const d = await r.json();
-    if (!r.ok) return;
+    if (!r.ok) throw new Error((d.error && d.error.message) || '公告加载失败');
     const ann = (d.settings || {}).announcement || {};
     ANNOUNCE_LOADED_TEXT = ann.text || '';
     if ($('announce-enabled')) $('announce-enabled').checked = !!ann.enabled;
     if ($('announce-text')) $('announce-text').value = ANNOUNCE_LOADED_TEXT;
-  } catch (e) { /* 静默:公告加载失败不影响概览 */ }
+  } catch (e) {
+    if ($('announce-status')) $('announce-status').textContent = '加载失败: ' + e.message;
+  }
 }
 (function initAnnouncement() {
   const save = $('announce-save');
   if (!save) return;
   save.addEventListener('click', async () => {
-    const text = ($('announce-text') && $('announce-text').value) || '';
+    const textEl = $('announce-text');
+    const status = $('announce-status');
+    const text = ((textEl && textEl.value) || '').trim();
     const enabled = !!($('announce-enabled') && $('announce-enabled').checked);
-    const payload = { announcement: { enabled, text, updatedAt: Date.now() } };
+    if (enabled && !text) {
+      if (status) status.textContent = '启用公告时请填写公告内容';
+      if (textEl) textEl.focus();
+      return toast('启用公告时请填写公告内容', true);
+    }
+    const payload = { announcement: { enabled, text } };
+    const oldLabel = save.textContent;
     save.disabled = true;
+    save.textContent = '保存中…';
+    if (status) status.textContent = '正在保存…';
     try {
       const r = await api('/api/admin/settings', {
         method: 'POST',
@@ -2520,12 +2532,20 @@ async function loadAnnouncement() {
         body: JSON.stringify(payload),
       });
       const d = await r.json();
-      if (!r.ok) return toast((d.error && d.error.message) || '保存失败', true);
-      ANNOUNCE_LOADED_TEXT = text;
+      if (!r.ok) throw new Error((d.error && d.error.message) || '保存失败');
+      const saved = (d.settings || {}).announcement || {};
+      if (!!saved.enabled !== enabled || saved.text !== text) throw new Error('服务器未返回已保存的公告');
+      ANNOUNCE_LOADED_TEXT = saved.text;
+      if (textEl) textEl.value = saved.text;
+      if (status) status.textContent = enabled ? '公告已发布' : '公告已关闭';
       toast(enabled ? '公告已发布' : '公告已关闭');
     } catch (e) {
+      if (status) status.textContent = '保存失败: ' + e.message;
       toast('保存失败: ' + e.message, true);
-    } finally { save.disabled = false; }
+    } finally {
+      save.disabled = false;
+      save.textContent = oldLabel;
+    }
   });
 })();
 

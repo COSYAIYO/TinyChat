@@ -84,8 +84,9 @@
       <h2>全站公告</h2>
       <p class="muted small">启用后所有登录用户在顶部看到公告条；用户关闭后，内容更新（重新保存）才会再次显示。纯文本，最多 2000 字。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="announce-enabled"><span class="slider"></span></span><span>启用公告</span></label>
-      <label class="field"><span>公告内容</span><textarea id="announce-text" rows="3" placeholder="例如：系统将于周日晚 22:00–24:00 升级维护" style="resize:vertical"></textarea></label>
+      <label class="field"><span>公告内容</span><textarea id="announce-text" rows="3" maxlength="2000" placeholder="例如：系统将于周日晚 22:00–24:00 升级维护" style="resize:vertical"></textarea></label>
       <button class="btn primary" id="announce-save" type="button">保存公告</button>
+      <span class="muted small" id="announce-status" role="status" aria-live="polite" style="margin-left:8px"></span>
     </div>
   </div>
 
@@ -712,6 +713,6 @@
 <script src="./static/js/icons.js?v=20260926.31"></script>
 <script src="./static/js/ui.js?v=20260926.31"></script>
 <script src="./static/js/components.js?v=20260928.1"></script>
-<script src="./static/js/admin.js?v=20260927.23"></script>
+<script src="./static/js/admin.js?v=20260928.2"></script>
 </body>
 </html>
