@@ -23,7 +23,7 @@
   // static/logo 下现有的图标文件清单:用于校验规则目标是否存在。
   // 新增图标时把文件名补进来即可(缺失会在控制台告警,并在 CI 的 logos 校验里直接失败)。
   const FILES = {
-    'agnesai.svg': 1, 'aihubmix-color.svg': 1, 'aimass-color.svg': 1, 'aiothers.svg': 1,
+    'agnesai.svg': 1, 'aihubmix-color.svg': 1, 'aimass-color.svg': 1,
     'anthropic.svg': 1, 'antigravity-color.svg': 1, 'app-icon.svg': 1, 'apple.svg': 1,
     'azureai-color.svg': 1, 'baichuan-color.svg': 1, 'baidu-color.svg': 1, 'bocha-color.svg': 1,
     'brave-color.svg': 1, 'bytedance-color.svg': 1, 'chatglm-color.svg': 1, 'claude-color.svg': 1,
