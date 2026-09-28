@@ -3611,24 +3611,87 @@ body.is-demo-admin [data-chats] { display: none !important; }
   color: var(--brand, var(--accent));
 }
 
-/* 生图:弹窗标题图标 + 模型图标 */
+/* ============================================================
+   AI 生图弹窗
+   ============================================================ */
+.img-modal { width: min(520px, 94vw); }
+/* 标题:图标包在品牌色圆角块里,比单纯贴图更精致 */
 .img-dialog-logo {
-  width: 18px;
-  height: 18px;
-  vertical-align: -3px;
-  margin-right: 6px;
+  width: 15px;
+  height: 15px;
+  display: block;
 }
+.img-modal .modal-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.img-modal .modal-header h3 .img-dialog-logo { flex: 0 0 auto; }
+.img-modal .modal-header h3 img.img-dialog-logo { box-sizing: content-box; }
+.img-modal-tip {
+  margin: 0 0 16px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--brand, var(--accent)) 7%, transparent);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+.img-modal-tip b { color: var(--text); }
+/* 模型 / 尺寸并排,窄屏自动堆叠 */
+.img-modal-grid {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 480px) {
+  .img-modal-grid { grid-template-columns: 1fr; }
+}
+.img-modal .field > .select-box { width: 100%; }
+.img-modal .field > textarea { min-height: 76px; }
 
-/* 生图弹窗:失败原因常驻显示,避免"点了没反应"的错觉 */
-.img-status-error { color: var(--danger, #e5484d); }
-
-/* 生图:参考图缩略图(改图用) */
+/* 参考图:虚线投放框 + 缩略图 */
+.img-ref-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-style: dashed;
+}
+.img-ref-add-btn .oc-icon { flex: 0 0 auto; }
 .img-refs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 .img-refs:empty { display: none; }
-.img-ref { position: relative; width: 64px; height: 64px; border-radius: 10px; overflow: hidden; border: 1px solid var(--hairline); }
+.img-ref {
+  position: relative;
+  width: 62px;
+  height: 62px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  background: var(--bg-hover);
+}
 .img-ref img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .img-ref-del {
-  position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; line-height: 16px;
-  border: none; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; cursor: pointer;
-  font-size: 13px; padding: 0; text-align: center;
+  position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; line-height: 16px;
+  border: none; border-radius: 50%; background: rgba(0,0,0,.58); color: #fff; cursor: pointer;
+  font-size: 13px; padding: 0; text-align: center; opacity: .9;
+  transition: opacity .15s, background .15s;
 }
+.img-ref-del:hover { opacity: 1; background: var(--danger, #e5484d); }
+
+/* 底部:状态与主按钮同排,状态常驻(不再一闪而过) */
+.img-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.img-run-btn { flex: 0 0 auto; min-width: 116px; }
+.img-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+  word-break: break-word;
+}
+.img-status-error { color: var(--danger, #e5484d); }

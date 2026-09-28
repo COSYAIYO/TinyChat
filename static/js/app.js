@@ -2647,11 +2647,13 @@ function openReaskDialog() {
   if (!models.length) return toast('没有可选的模型', true);
   const mask = document.createElement('div');
   mask.className = 'modal-mask';
-  const options = models.map((item) => {
-    const on = item.providerId === state.currentProviderId && item.model === state.currentModel;
-    return '<option value="' + escapeHtml(item.providerId + '\n' + item.model) + '"' + (on ? ' selected' : '') + '>'
-      + escapeHtml(item.provider + '@' + item.model) + '</option>';
-  }).join('');
+  // 自定义下拉的候选项(替代原生 select)
+  const reaskItems = models.map((item) => ({
+    value: item.providerId + '\n' + item.model,
+    label: item.provider + '@' + item.model,
+  }));
+  const cur = models.find((item) => item.providerId === state.currentProviderId && item.model === state.currentModel) || models[0];
+  const curValue = cur ? cur.providerId + '\n' + cur.model : '';
   const rows = messages.map((x) => {
     const text = stripInterruptMarks(x.m.content).replace(/\s+/g, ' ');
     const who = x.m.role === 'user' ? '用户' : 'AI';
@@ -2662,7 +2664,8 @@ function openReaskDialog() {
     + '<div class="modal-header"><h3>换模型重答</h3>'
     + '<button class="icon-btn" data-act="close" aria-label="关闭">' + (window.OC ? window.OC.icon('close', 16) : '×') + '</button></div>'
     + '<div class="modal-body">'
-    + '<label class="field"><span>用这个模型重新回答</span><select id="reask-model">' + options + '</select></label>'
+    + '<div class="field"><span>用这个模型重新回答</span>'
+    + selectBoxHtml('reask-model', cur ? cur.provider + '@' + cur.model : '请选择模型', curValue) + '</div>'
     + '<div class="reask-list">' + rows + '</div>'
     + '<div class="form-actions"><button class="btn primary" data-act="go" type="button">生成新回答</button></div>'
     + '</div></div>';
@@ -2672,12 +2675,14 @@ function openReaskDialog() {
     else mask.remove();
     setTimeout(() => mask.remove(), 360);
   };
+  const reaskBox = mask.querySelector('#reask-model');
+  bindModalSelect(reaskBox, reaskItems);
   mask.addEventListener('click', async (e) => {
     if (e.target === mask || e.target.closest('[data-act="close"]')) return close();
     if (!e.target.closest('[data-act="go"]')) return;
     const picked = Array.from(mask.querySelectorAll('.reask-row input:checked')).map((el) => Number(el.dataset.idx));
     if (!picked.length) return toast('请至少勾选一条消息', true);
-    const chosen = String((mask.querySelector('#reask-model') || {}).value || '').split('\n');
+    const chosen = String(reaskBox ? (reaskBox.getAttribute('data-value') || '') : '').split('\n');
     const providerId = chosen[0] || '';
     const model = chosen[1] || '';
     if (!providerId || !model) return toast('请选择模型', true);
@@ -4965,61 +4970,118 @@ function imageModelsOfCurrentProvider() {
   if (!p || !Array.isArray(p.models)) return [];
   return p.models.filter((m) => m && m.id && modelIsImage(m.id));
 }
+// 在动态弹窗里挂一个自定义下拉,替代原生 <select>:样式与全站统一,且支持搜索。
+function bindModalSelect(box, getItems, onSelect) {
+  if (!box || !window.OC || !OC.openSelect) return;
+  const open = () => {
+    const items = typeof getItems === 'function' ? getItems() : (getItems || []);
+    if (!items.length) return;
+    OC.openSelect(box, items, {
+      selected: box.getAttribute('data-value') || '',
+      searchable: items.length > 8,
+      fitWidth: true,
+      onSelect: (val, item) => {
+        box.setAttribute('data-value', val);
+        const lab = box.querySelector('.sb-label');
+        if (lab) lab.textContent = (item && item.label) || val;
+        if (onSelect) onSelect(val, item);
+      },
+    });
+  };
+  box.addEventListener('click', open);
+  box.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+  });
+}
+// 自定义下拉的 HTML 骨架(与全站 .select-box 同款)
+function selectBoxHtml(id, label, value) {
+  return '<div class="select-box" id="' + id + '" data-value="' + escapeHtml(value || '') + '" role="button" tabindex="0" aria-haspopup="listbox">'
+    + '<span class="sb-label">' + escapeHtml(label || '请选择') + '</span>'
+    + '<span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>'
+    + '</div>';
+}
+
 function openImageDialog() {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
   if (!state.currentProviderId) { toast('请先在顶部选择供应商', true); return; }
+  if (document.querySelector('.img-modal')) return; // 已打开时不重复弹出
+  const lastModel = localStorage.getItem('oc_image_model') || '';
+  const IMG_SIZES = ['1024x1024', '1792x1024', '1024x1792', '512x512'];
+  const lastSize = IMG_SIZES.indexOf(localStorage.getItem('oc_image_size')) >= 0
+    ? localStorage.getItem('oc_image_size') : IMG_SIZES[0];
+  // 当前供应商里可用的生图模型(显式标记优先,其次按模型名判断)
+  const imageModels = imageModelsOfCurrentProvider();
+  const hasModelList = imageModels.length > 0;
+  const defaultModel = imageModels.some((m) => m.id === lastModel) ? lastModel : (imageModels[0] ? imageModels[0].id : '');
+
   const mask = document.createElement('div');
   mask.className = 'modal-mask';
-  const lastModel = localStorage.getItem('oc_image_model') || '';
-  const lastSize = localStorage.getItem('oc_image_size') || '1024x1024';
-  // 列出当前供应商里可用的生图模型(显式标记优先,其次按模型名判断),供下拉选择
-  const imageModels = imageModelsOfCurrentProvider();
-  const modelOptions = imageModels.length
-    ? '<label class="field"><span>图像模型</span><select id="img-model-select">'
-      + imageModels.map((m) => '<option value="' + escapeHtml(m.id) + '"' + (m.id === lastModel ? ' selected' : '') + '>' + escapeHtml(m.name || m.id) + '</option>').join('')
-      + '<option value="__custom__">其他（手动输入）</option></select></label>'
-      + '<label class="field" id="img-model-custom-row" style="display:none"><span>模型 ID</span><input id="img-model" placeholder="例如 dall-e-3 / gpt-image-1 / sd3" value="' + escapeHtml(lastModel) + '" autocomplete="off"></label>'
-    : '<label class="field"><span>图像模型</span><input id="img-model" placeholder="例如 dall-e-3 / gpt-image-1 / sd3" value="' + escapeHtml(lastModel) + '" autocomplete="off"></label>';
   const iconHtml = (window.OC && OC.logoImg) ? OC.logoImg(imageModelLogo(), 'img-dialog-logo') : '';
+  const modelBlock = hasModelList
+    ? '<div class="field"><span>图像模型</span>' + selectBoxHtml('img-model-box', '选择生图模型', defaultModel) + '</div>'
+      + '<label class="field" id="img-model-custom-row" style="display:none"><span>模型 ID</span>'
+      + '<input id="img-model" placeholder="手动输入模型 ID" autocomplete="off"></label>'
+    : '<div class="field"><span>图像模型</span>'
+      + '<input id="img-model" placeholder="例如 dall-e-3 / gpt-image-1" value="' + escapeHtml(lastModel) + '" autocomplete="off"></div>';
+
   mask.innerHTML =
-    '<div class="modal modal-sm" role="dialog" aria-modal="true">'
-    + '<div class="modal-header"><h3>' + iconHtml + '生成图片</h3>'
-    + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + (window.OC ? OC.icon('close', 16) : '×') + '</button></div>'
+    '<div class="modal img-modal" role="dialog" aria-modal="true" aria-labelledby="img-dialog-title">'
+    + '<div class="modal-header">'
+    + '<h3 id="img-dialog-title">' + iconHtml + 'AI 生图</h3>'
+    + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + (window.OC ? OC.icon('close', 16) : '×') + '</button>'
+    + '</div>'
     + '<div class="modal-body">'
-    + '<p class="muted small">按一次对话扣费，生成后插入当前对话。对话中直接用生图模型也会自动改走生图接口；<b>上传参考图即可修改图片</b>（部分模型支持，如 Agnes、gemini 等）。</p>'
-    + '<label class="field"><span>提示词</span><textarea id="img-prompt" rows="3" placeholder="描述想要的画面，例如：一只戴墨镜的柯基在冲浪，扁平插画风" style="resize:vertical"></textarea></label>'
-    + modelOptions
-    + '<div class="field"><span>参考图（选填，最多 4 张；上传后按提示词修改）</span>'
+    + '<p class="img-modal-tip">描述你想要的画面；上传参考图即可<b>修改图片</b>。结果会插入当前对话，每次按一次调用计费。</p>'
+    + '<label class="field"><span>提示词</span>'
+    + '<textarea id="img-prompt" rows="3" placeholder="例如：一只戴墨镜的柯基在冲浪，扁平插画风" style="resize:vertical"></textarea>'
+    + '</label>'
+    + '<div class="img-modal-grid">'
+    + modelBlock
+    + '<div class="field"><span>尺寸</span>' + selectBoxHtml('img-size-box', lastSize, lastSize) + '</div>'
+    + '</div>'
+    + '<div class="field"><span>参考图（选填，最多 4 张；上传后按提示词修改图片）</span>'
     + '<div class="img-refs" id="img-refs"></div>'
     + '<input type="file" id="img-ref-input" accept="image/*" multiple hidden>'
-    + '<button class="btn small" id="img-ref-add" type="button">添加图片</button>'
+    + '<button class="btn small img-ref-add-btn" id="img-ref-add" type="button">'
+    + (window.OC && OC.icon ? OC.icon('plus', 13) : '') + '<span>添加图片</span></button>'
     + '</div>'
-    + '<label class="field"><span>尺寸</span><select id="img-size">'
-    + ['1024x1024', '1792x1024', '1024x1792', '512x512'].map((s) => '<option value="' + s + '"' + (s === lastSize ? ' selected' : '') + '>' + s + '</option>').join('')
-    + '</select></label>'
-    + '<div class="form-actions"><button class="btn primary" id="img-run" type="button">生成</button><span class="muted small" id="img-status"></span></div>'
-    + '</div></div>';
+    + '</div>'
+    + '<div class="modal-footer img-modal-footer">'
+    + '<span class="img-status" id="img-status" role="status" aria-live="polite"></span>'
+    + '<button class="btn primary img-run-btn" id="img-run" type="button">生成图片</button>'
+    + '</div>'
+    + '</div>';
   document.body.appendChild(mask);
   const close = () => mask.remove();
   mask.addEventListener('click', (e) => { if (e.target === mask || e.target.closest('[data-act="close"]')) close(); });
-  // 「其他（手动输入）」选中时显示手动模型输入框
-  const modelSel = mask.querySelector('#img-model-select');
+
+  // 自定义下拉:模型 + 尺寸
+  const modelBox = mask.querySelector('#img-model-box');
   const customRow = mask.querySelector('#img-model-custom-row');
-  if (modelSel && customRow) {
-    const syncCustom = () => { customRow.style.display = modelSel.value === '__custom__' ? '' : 'none'; };
-    modelSel.addEventListener('change', () => {
-      syncCustom();
-      if (modelSel.value === '__custom__') { const inp = mask.querySelector('#img-model'); if (inp) inp.focus(); }
-    });
+  const sizeBox = mask.querySelector('#img-size-box');
+  const syncCustom = () => {
+    if (!customRow || !modelBox) return;
+    const custom = modelBox.getAttribute('data-value') === '__custom__';
+    customRow.style.display = custom ? '' : 'none';
+    if (custom) { const inp = mask.querySelector('#img-model'); if (inp) inp.focus(); }
+  };
+  if (modelBox) {
+    const items = imageModels.map((m) => ({ value: m.id, label: m.name || m.id }))
+      .concat([{ value: '__custom__', label: '其他（手动输入）' }]);
+    bindModalSelect(modelBox, items, () => syncCustom());
     syncCustom();
   }
+  if (sizeBox) {
+    bindModalSelect(sizeBox, IMG_SIZES.map((s) => ({ value: s, label: s })));
+  }
   const readImageModel = () => {
-    if (modelSel) {
-      if (modelSel.value !== '__custom__') return modelSel.value;
-      return (mask.querySelector('#img-model') && mask.querySelector('#img-model').value.trim()) || '';
+    if (modelBox) {
+      const v = modelBox.getAttribute('data-value') || '';
+      if (v && v !== '__custom__') return v;
     }
     return (mask.querySelector('#img-model') && mask.querySelector('#img-model').value.trim()) || '';
   };
+  const readSize = () => (sizeBox && sizeBox.getAttribute('data-value')) || lastSize;
   // 参考图(改图用):保存 data URL 列表并渲染缩略图
   const imgRefs = [];
   const refsBox = mask.querySelector('#img-refs');
@@ -5055,7 +5117,7 @@ function openImageDialog() {
   run.addEventListener('click', async () => {
     const prompt = (mask.querySelector('#img-prompt') && mask.querySelector('#img-prompt').value.trim()) || '';
     const model = readImageModel();
-    const size = (mask.querySelector('#img-size') && mask.querySelector('#img-size').value) || '1024x1024';
+    const size = readSize();
     const status = mask.querySelector('#img-status');
     if (!prompt) return toast('请输入提示词', true);
     if (!model) return toast('请填写图像模型', true);
