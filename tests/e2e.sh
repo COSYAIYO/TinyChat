@@ -239,7 +239,31 @@ assert_contains "演示管理员可保存设置" "$(curl -s -X POST "$BASE/api/a
 assert_contains "演示管理员不可改密码" "$(curl -s -X POST "$BASE/api/auth/password" -H "$DAUTH" -H "Content-Type: application/json" -d '{"oldPassword":"demo1234","newPassword":"other1234"}')" '演示账号不允许修改密码'
 assert_contains "演示管理员不可强制下线" "$(curl -s -X POST "$BASE/api/admin/session/invalidate" -H "$DAUTH")" '演示账号不能强制全站下线'
 assert_contains "演示管理员不可删用户" "$(curl -s -X DELETE "$BASE/api/admin/users/$GID1" -H "$DAUTH")" '演示账号不能删除用户'
+assert_contains "演示管理员不可改公告" "$(curl -s -X POST "$BASE/api/admin/settings" -H "$DAUTH" -H "Content-Type: application/json" -d '{"announcement":{"enabled":true,"text":"x"}}')" '演示管理员不能修改公告'
+assert_contains "演示管理员不可查看用户对话" "$(curl -s "$BASE/api/admin/users/chats" -H "$DAUTH")" '演示管理员不能查看用户对话'
+assert_contains "演示管理员不可创建用户" "$(curl -s -X POST "$BASE/api/admin/users" -H "$DAUTH" -H "Content-Type: application/json" -d '{"name":"zzz","password":"pass1234"}')" '演示管理员不能管理用户账号'
 assert_contains "config 暴露 demoMode" "$(curl -s "$BASE/api/config")" '"demoMode":true'
+# 演示管理员额度必须尊重填入值(此前会被强制写成 1e15)
+dq=$(curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"demoq","password":"demo1234","demo":true,"quota":9999,"demoMinutes":5}' | jget quota)
+assert_eq "演示管理员额度按填入值" "$dq" "9999"
+assert_contains "演示管理员可配复原时长" "$(curl -s "$BASE/api/config")" '"demoExpireMinutes":5'
+
+# ---------- 游客模式 ----------
+say "== 游客模式 =="
+assert_contains "游客默认关闭被拒" "$(curl -s -X POST "$BASE/api/auth/guest")" '游客体验已关闭'
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"guestEnabled":true,"guestRounds":4}' > /dev/null
+assert_contains "config 暴露游客开关" "$(curl -s "$BASE/api/config")" '"guestEnabled":true'
+glog=$(curl -s -X POST "$BASE/api/auth/guest")
+assert_contains "游客自动登录" "$glog" '"guest":true'
+GTOKEN=$(printf '%s' "$glog" | jget token)
+[ -n "$GTOKEN" ] && ok "游客获取令牌" || bad "游客获取令牌"
+assert_contains "游客命名带前缀" "$glog" '"name":"游客'
+assert_contains "游客按轮数发放额度" "$glog" '"quota":4'
+GAUTH="Authorization: Bearer $GTOKEN"
+# 游客可看到全局供应商,说明游客组默认授权生效
+assert_contains "游客组可见全局模型" "$(curl -s "$BASE/api/providers" -H "$GAUTH")" 'Mock'
+# 后台用户列表展示游客标记与 IP
+assert_contains "用户列表含 IP 字段" "$(curl -s "$BASE/api/admin/users" -H "$AUTH")" '"lastIp":'
 
 say ""
 say "结果: $PASS 通过, $FAIL 失败"

@@ -237,6 +237,18 @@ function api(path, opts = {}) {
   });
 }
 
+// 容错解析 JSON:响应不是 JSON(常见于服务器返回 HTML 错误页)时返回带提示的对象,而不是抛解析异常
+async function readJsonSafe(res) {
+  let text = '';
+  try { text = await res.text(); } catch (e) { text = ''; }
+  const trimmed = text.trim();
+  if (!trimmed) return {};
+  if (trimmed.charAt(0) === '{' || trimmed.charAt(0) === '[') {
+    try { return JSON.parse(trimmed); } catch (e) { /* 落到下面统一处理 */ }
+  }
+  return { error: { message: '服务器返回了非预期内容（HTTP ' + res.status + '），请检查站点配置或稍后重试' } };
+}
+
 function toast(msg, isError = false) {
   if (window.OCUI) return window.OCUI.toast(msg, isError ? 'error' : undefined);
   const t = document.createElement('div');
@@ -1841,12 +1853,19 @@ async function sendMessage() {
   }
   if (!text && !attachments.length) return;
 
-  if (!state.currentProviderId || !state.currentModel) {
-    toast('请先在顶部选择供应商和模型', true);
+  if (!state.user || !state.currentProviderId || !state.currentModel) {
+    openAuthModal();
     return;
   }
-  if (!state.user || (!quotaIsUnlimited(state.user.quota) && state.user.quota <= 0)) {
-    toast('剩余次数不足，请联系管理员', true);
+  if (!quotaIsUnlimited(state.user.quota) && state.user.quota <= 0) {
+    // 游客额度用尽:引导登录;普通用户则提示充值
+    if (state.isGuest) {
+      state.isGuestExpired = true;
+      showGuestBar();
+      openAuthModal('游客体验次数已用完，注册或登录后可继续对话');
+    } else {
+      toast('剩余次数不足，请联系管理员', true);
+    }
     return;
   }
 
@@ -4224,8 +4243,10 @@ if (pFetchBtn) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ baseUrl, apiKey, apiFormat }),
       });
-      const data = await r.json();
-      if (!r.ok) { toast((data.error && data.error.message) || '获取失败', true); return; }
+      // 上游或服务器异常时可能返回 HTML 错误页,直接 .json() 会抛 "Unexpected token '<'",
+      // 这里改为先取文本再尝试解析,给出可读提示
+      const data = await readJsonSafe(r);
+      if (!r.ok) { toast((data.error && data.error.message) || ('获取失败（HTTP ' + r.status + '）'), true); return; }
       const models = data.models || [];
       if (!models.length) { toast('上游未返回模型', true); return; }
       if (window.OC && window.OC.openFetchedModelsModal) {
@@ -4362,7 +4383,16 @@ $('admin-link').addEventListener('click', () => location.href = apiUrl('/admin')
     if (!ann || !ann.text) return;
     current = ann;
     const txt = $('announce-text');
-    if (txt) txt.textContent = ann.text;
+    if (txt) {
+      // 公告支持 Markdown 与内联 HTML(经渲染器统一清洗),便于富文本排版
+      const raw = String(ann.text);
+      let html = '';
+      if (window.OCRenderer && window.OCRenderer.render) {
+        try { html = window.OCRenderer.render(raw); } catch (e) { html = ''; }
+      }
+      if (!html) html = escapeHtml(raw).replace(/\n/g, '<br>');
+      txt.innerHTML = html;
+    }
     const title = $('announce-title');
     if (title) title.textContent = ann.title || '公告';
     if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(modal);
@@ -5455,15 +5485,124 @@ function autosizeInput() {
   inputEl.style.height = Math.min(inputEl.scrollHeight, 180) + 'px';
 }
 
+// ============ 游客 / 未登录 ============
+let AUTH_MODAL_BOUND = false;
+function openAuthModal(message) {
+  const modal = $('auth-modal');
+  if (!modal) { location.href = apiUrl('/login'); return; }
+  const err = $('auth-modal-error');
+  if (err) {
+    err.textContent = message || '';
+    err.classList.toggle('hidden', !message);
+  }
+  if (!AUTH_MODAL_BOUND && window.OCUI) {
+    AUTH_MODAL_BOUND = true;
+    window.OCUI.bindModal(modal, { closeId: 'auth-modal-close' });
+    const form = $('auth-modal-login');
+    if (form) form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = ($('am-name') && $('am-name').value.trim()) || '';
+      const pass = ($('am-pass') && $('am-pass').value) || '';
+      if (!name || !pass) { if (err) { err.textContent = '请输入用户名和密码'; err.classList.remove('hidden'); } return; }
+      const btn = $('am-login-btn');
+      if (btn) btn.disabled = true;
+      try {
+        const r = await fetch(apiUrl('/api/auth/login'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, password: pass }),
+        });
+        const d = await readJsonSafe(r);
+        if (!r.ok) throw new Error((d.error && d.error.message) || '登录失败');
+        localStorage.setItem('oc_token', d.token);
+        localStorage.setItem('oc_user', JSON.stringify(d.user || {}));
+        location.reload();
+      } catch (ex) {
+        if (err) { err.textContent = ex.message; err.classList.remove('hidden'); }
+        if (btn) btn.disabled = false;
+      }
+    });
+    const goReg = $('am-go-register');
+    if (goReg) goReg.addEventListener('click', (e) => { e.preventDefault(); location.href = apiUrl('/login'); });
+  }
+  if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(modal);
+  else modal.classList.remove('hidden');
+}
+function showGuestBar() {
+  const bar = $('guest-bar');
+  if (!bar) return;
+  const txt = $('guest-bar-text');
+  const left = state.user ? state.user.quota : 0;
+  if (txt) {
+    txt.textContent = (state.isGuestExpired || (Number.isFinite(left) && left <= 0))
+      ? '游客体验次数已用完，登录后可继续对话'
+      : '您正在以游客身份体验，剩余 ' + left + ' 轮'
+        + (state.guestRounds ? '（开通账号可无限使用）' : '');
+  }
+  bar.classList.remove('hidden');
+  const btn = $('guest-bar-login');
+  if (btn && !btn.dataset.bound) {
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', () => openAuthModal());
+  }
+}
+// 未登录且未开启游客模式:正常显示对话主页(只读),点击输入框/发送弹出登录弹窗
+function enterReadonlyHome() {
+  state.readonlyGuest = true;
+  document.body.classList.add('readonly-guest');
+  const composer = document.querySelector('.composer-wrap') || document.querySelector('.composer');
+  if (composer) {
+    composer.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openAuthModal();
+    }, true);
+  }
+  const input = $('input');
+  if (input) {
+    input.setAttribute('readonly', 'readonly');
+    input.addEventListener('focus', (e) => { input.blur(); openAuthModal(); });
+  }
+  const send = $('send-btn');
+  if (send) send.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openAuthModal(); }, true);
+  document.querySelectorAll('#new-chat, #assistant-lib-btn, #account-chip').forEach((el) => {
+    el.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openAuthModal(); }, true);
+  });
+}
+
 // ============ 启动 ============
 (async function init() {
-  if (!state.token) { location.href = apiUrl('/login'); return; }
   initTheme();
+  if (!state.token) {
+    let cfg = null;
+    try {
+      const cr = await fetch(apiUrl('/api/config'));
+      cfg = await readJsonSafe(cr);
+    } catch (e) { cfg = null; }
+    if (cfg && cfg.guestEnabled) {
+      // 开启游客模式:为本次访客自动创建一个独立游客账号,便于后台管理
+      try {
+        const gr = await fetch(apiUrl('/api/auth/guest'), { method: 'POST' });
+        const gd = await readJsonSafe(gr);
+        if (gr.ok && gd.token) {
+          state.token = gd.token;
+          localStorage.setItem('oc_token', gd.token);
+          state.isGuest = true;
+          state.guestRounds = gd.rounds || 0;
+        }
+      } catch (e) { /* 落到只读首页 */ }
+    }
+    if (!state.token) {
+      // 未开启游客:直接显示对话主页(不再强制跳转登录页),点击输入框再弹登录
+      enterReadonlyHome();
+      return;
+    }
+  }
   try {
     const r = await api('/api/auth/me');
     const data = await r.json();
     if (!r.ok) throw new Error('invalid');
     state.user = data.user;
+    if (state.user && state.user.guest) { state.isGuest = true; state.guestRounds = state.guestRounds || 0; }
     if (data.tools) state.tools = data.tools;
     // 启动时必须带上用量数据,否则设置→用量/账户面板在首次刷新前显示为 0
     state.usage = Array.isArray(data.usage) ? data.usage : [];
@@ -5490,7 +5629,14 @@ function autosizeInput() {
     updateSendBtn();
     if (typeof syncComposerEffort === 'function') syncComposerEffort();
     if (typeof syncComposerWebSearch === 'function') syncComposerWebSearch();
+    if (state.isGuest) showGuestBar();
   } catch (e) {
-    logout();
+    // 令牌失效或接口异常:清掉令牌回到只读首页并提示登录,而不是硬跳转到独立登录页
+    localStorage.removeItem('oc_token');
+    localStorage.removeItem('oc_user');
+    state.token = '';
+    state.user = null;
+    enterReadonlyHome();
+    openAuthModal('登录状态已失效，请重新登录');
   }
 })();
