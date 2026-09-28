@@ -4004,7 +4004,7 @@ function renderProviderList() {
     const showUrl = isOwner || isAdmin;
     const urlText = showUrl ? p.baseUrl : '';
     // 只有平台计费的全局供应商才需要展示扣费;自己的 Key 不扣次数,不必说明
-    const costText = isOwner ? '' : '扣 ' + p.costPerCall + ' 次/次调用';
+    const costText = isOwner ? '' : '每次调用扣 ' + p.costPerCall + ' 次';
     const urlParts = [urlText, p.apiFormat, costText].filter(Boolean).map((x) => escapeHtml(x));
     const urlHtml = urlParts.length ? '<div class="pc-url">' + urlParts.join(' · ') + '</div>' : '';
     let keyHtml = '';

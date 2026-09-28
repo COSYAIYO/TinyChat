@@ -789,14 +789,25 @@ body {
   transition: background 0.15s;
 }
 .provider-card:hover { background: var(--bg-hover); }
-.provider-card .pc-info { min-width: 0; }
+/* min-width:0 让信息列可被压缩;width:100% 保证窄屏堆叠时不再按内容撑宽 */
+.provider-card .pc-info { min-width: 0; width: 100%; }
 .provider-card-actions { flex-wrap: wrap; justify-content: flex-end; }
 @media (max-width: 560px) {
   .provider-card { align-items: flex-start; flex-direction: column; }
   .provider-card-actions { width: 100%; justify-content: flex-start; }
+  .provider-card .pc-name { font-size: 13.5px; }
+  .provider-card .pc-key { overflow-wrap: anywhere; }
 }
 .provider-card .pc-name { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.provider-card .pc-url { font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+.provider-card .pc-url {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  /* 长 Base URL / 模型名要能换行,否则会顶破卡片与页面边界(移动端尤其明显) */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .badge { font-size: 11px; padding: 2px 9px; border-radius: 999px; font-weight: 500; }
 .badge.global { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); }
 .badge.default { background: var(--bg-active); color: var(--text-secondary); }
