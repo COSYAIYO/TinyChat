@@ -1074,6 +1074,7 @@ function fillMineruSettings(s) {
     { value: 'responses', label: 'OpenAI responses', sub: '新版接口 /v1/responses' },
     { value: 'completions', label: 'OpenAI completions', sub: '旧版补全 /v1/completions' },
     { value: 'anthropic', label: 'Anthropic messages', sub: 'Claude 消息接口 /v1/messages' },
+    { value: 'video', label: 'Agnes videos', sub: '视频生成 /v1/videos（异步任务，前台可生视频）' },
   ];
   const setLabel = (v) => {
     const f = FORMATS.find((x) => x.value === (v || box.getAttribute('data-value') || 'chat'));

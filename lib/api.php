@@ -164,6 +164,10 @@ function tc_normalize_models($models) {
         if (is_array($m) && array_key_exists('image', $m)) {
             $row['image'] = !empty($m['image']);
         }
+        // 视频模型标记(可选):true/false 显式声明;缺省时由模型名启发式判断(tc_model_is_video)
+        if (is_array($m) && array_key_exists('video', $m)) {
+            $row['video'] = !empty($m['video']);
+        }
         $out[] = $row;
         if (count($out) >= 500) break;
     }
@@ -181,7 +185,7 @@ function tc_normalize_provider_input($b, $base = array()) {
     }
     if (array_key_exists('keyRevealable', $b)) $p['keyRevealable'] = !empty($b['keyRevealable']);
     if (array_key_exists('enabled', $b)) $p['enabled'] = !empty($b['enabled']);
-    if (array_key_exists('apiFormat', $b) && in_array($b['apiFormat'], array('chat', 'responses', 'completions', 'anthropic'), true)) {
+    if (array_key_exists('apiFormat', $b) && in_array($b['apiFormat'], array('chat', 'responses', 'completions', 'anthropic', 'video'), true)) {
         $p['apiFormat'] = $b['apiFormat'];
     }
     if (array_key_exists('costPerCall', $b)) $p['costPerCall'] = max(0, min(1000, (float) $b['costPerCall']));

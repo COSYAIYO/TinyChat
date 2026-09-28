@@ -288,6 +288,40 @@ function modelIsImage(modelId) {
 function imageModelLogo() {
   return (window.OC && OC.imageLogo) ? OC.imageLogo() : 'static/logo/picture.svg';
 }
+// 视频模型判定:优先用供应商配置里的显式 video 标记,缺省时按模型名启发式;
+// 若供应商接口格式本身就是 video,该供应商下模型一律视为视频模型。
+function modelIsVideo(modelId) {
+  const id = String(modelId || '').trim();
+  if (!id) return false;
+  const hint = (window.OC && OC.isVideoModelName) ? OC.isVideoModelName : () => false;
+  for (const p of state.providers || []) {
+    if (p && p.apiFormat === 'video') {
+      for (const m of p.models || []) {
+        if (m && String(m.id) === id) return true;
+      }
+    }
+    for (const m of p.models || []) {
+      if (m && String(m.id) === id) {
+        if (Object.prototype.hasOwnProperty.call(m, 'video')) return !!m.video;
+        return hint(id);
+      }
+    }
+  }
+  return hint(id);
+}
+// 当前供应商下被判定为视频生成的模型
+function videoModelsOfCurrentProvider() {
+  const p = (state.providers || []).find((x) => x.id === state.currentProviderId);
+  if (!p || !Array.isArray(p.models)) return [];
+  return p.models.filter((m) => m && m.id && modelIsVideo(m.id));
+}
+function videoModelLogo() {
+  return 'static/logo/picture.svg';
+}
+// 生图 / 生视频都「不使用助手」,也不参与 @助手 候选
+function modelIsVisual(modelId) {
+  return modelIsImage(modelId) || modelIsVideo(modelId);
+}
 // 读取本地图片为 data URL(供改图参考图使用)
 function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
@@ -343,13 +377,23 @@ function parseImageSpec(raw) {
   if (/^\d{1,2}:\d{1,2}$/.test(s)) return { size: '', ratio: s };
   return { size: '1024x1024', ratio: '' };
 }
-// 助手头像按消息所属模型匹配图标:生图模型统一用 picture.svg,其余匹配厂商 logo,未命中回退站点 logo
+// 视频规格:时长(4~12 秒)与画面比例,沿用生视频弹窗最近一次的选择
+const VIDEO_RATIOS = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'];
+function parseVideoSpec() {
+  const rawSec = parseInt(localStorage.getItem('oc_video_seconds') || '', 10);
+  const seconds = (rawSec >= 4 && rawSec <= 12) ? rawSec : 5;
+  const rawRatio = String(localStorage.getItem('oc_video_ratio') || '').trim();
+  const ratio = VIDEO_RATIOS.indexOf(rawRatio) >= 0 ? rawRatio : '16:9';
+  return { seconds, ratio };
+}
+// 助手头像按消息所属模型匹配图标:生图/生视频模型统一用 picture.svg,其余匹配厂商 logo,未命中回退站点 logo
 function aiAvatarHtml(modelText) {
   const raw = String(modelText || '').trim();
-  // 生图结果的消息模型名形如 "xxx (图像)"
+  // 生图结果的消息模型名形如 "xxx (图像)",生视频形如 "xxx (视频)"
   const isImageMsg = /\(图像\)\s*$/.test(raw);
-  const modelId = raw.replace(/\s*\(图像\)\s*$/, '');
-  if (window.OC && window.OC.logoImg && (isImageMsg || (modelId && modelIsImage(modelId)))) {
+  const isVideoMsg = /\(视频\)\s*$/.test(raw);
+  const modelId = raw.replace(/\s*\((图像|视频)\)\s*$/, '');
+  if (window.OC && window.OC.logoImg && (isImageMsg || isVideoMsg || (modelId && (modelIsImage(modelId) || modelIsVideo(modelId))))) {
     const html = window.OC.logoImg(imageModelLogo(), 'avatar-logo-img');
     if (html) return html;
   }
@@ -1377,8 +1421,9 @@ function buildMsgNode(m, chat, idx) {
     }
   } else if (role === 'assistant') {
     if (m.imagePending && !m.content) {
-      // 生图占位:出图通常要 10–60 秒,给出明确的等待提示而不是空白气泡
-      contentDiv.innerHTML = '<div class="phase-indicator"><span class="phase-spinner"></span><span class="phase-text">正在生成图片…</span></div>';
+      // 生图/生视频占位:出图通常要 10–60 秒,出视频更久,给出明确的等待提示而不是空白气泡
+      const waiting = m.pendingKind === 'video' ? '正在生成视频（可能需要 1–5 分钟）…' : '正在生成图片…';
+      contentDiv.innerHTML = '<div class="phase-indicator"><span class="phase-spinner"></span><span class="phase-text">' + waiting + '</span></div>';
       div.appendChild(contentDiv);
       return div;
     }
@@ -1574,8 +1619,8 @@ async function loadModels(opts) {
   else if (state.models.length) state.currentModel = state.models[0].id;
   persistCurrentModel();
   renderModelPicker();
-  // 切换后若当前模型是生图模型,自动取消 @助手
-  if (modelIsImage(state.currentModel)) enforceImageModelAssistant({ silent: true });
+  // 切换后若当前模型是生图/生视频模型,自动取消 @助手
+  if (modelIsVisual(state.currentModel)) enforceImageModelAssistant({ silent: true });
 }
 function modelHealthOf(id) {
   const row = id && state.modelHealth ? state.modelHealth[id] : null;
@@ -1649,32 +1694,40 @@ function renderProviderLabel() {
 function availableModelItems() {
   const chat = [];
   const image = [];
+  const video = [];
   (state.providers || []).forEach((provider) => {
     (provider.models || []).forEach((m) => {
       const id = m && m.id ? String(m.id) : '';
       if (!id) return;
       const name = m.name || id;
       const health = provider.id === state.currentProviderId ? modelHealthOf(id) : { state: 'idle', title: '最近 4 小时无人调用' };
-      const isImage = Object.prototype.hasOwnProperty.call(m, 'image')
+      const isVideo = provider.apiFormat === 'video'
+        || (Object.prototype.hasOwnProperty.call(m, 'video')
+          ? !!m.video
+          : !!((window.OC && OC.isVideoModelName) ? OC.isVideoModelName(id) : false));
+      const isImage = !isVideo && (Object.prototype.hasOwnProperty.call(m, 'image')
         ? !!m.image
-        : !!((window.OC && OC.isImageModelName) ? OC.isImageModelName(id) : false);
+        : !!((window.OC && OC.isImageModelName) ? OC.isImageModelName(id) : false));
       const logo = (window.OC && OC.modelIcon)
-        ? OC.modelIcon(id + ' ' + name, provider.name, isImage)
+        ? OC.modelIcon(id + ' ' + name, provider.name, isImage || isVideo)
         : '';
       const item = {
         value: provider.id + '\n' + id, providerId: provider.id, modelId: id,
         label: provider.name + '@' + name, search: provider.name + ' ' + id + ' ' + name,
-        health: health.state, healthTitle: health.title, icon: logo, isImage,
+        health: health.state, healthTitle: health.title, icon: logo, isImage, isVideo,
       };
-      (isImage ? image : chat).push(item);
+      (isVideo ? video : (isImage ? image : chat)).push(item);
     });
   });
   const byLabel = (a, b) => a.label.localeCompare(b.label, 'zh');
   chat.sort(byLabel);
   image.sort(byLabel);
+  video.sort(byLabel);
   const groups = [];
-  if (chat.length) groups.push({ label: image.length ? '对话模型' : '', items: chat });
+  const hasVisual = image.length || video.length;
+  if (chat.length) groups.push({ label: hasVisual ? '对话模型' : '', items: chat });
   if (image.length) groups.push({ label: '生图模型', items: image });
+  if (video.length) groups.push({ label: '生视频模型', items: video });
   return groups;
 }
 function togglePinnedSelection(value) {
@@ -1707,7 +1760,7 @@ if (modelPickerEl) {
         await loadModels({ prefer: parts.slice(1).join('\n') });
         renderProviderLabel();
         renderModelPicker();
-        if (item && item.isImage) enforceImageModelAssistant();
+        if (item && (item.isImage || item.isVideo)) enforceImageModelAssistant();
       },
       onPin: (val) => togglePinnedSelection(val),
     });
@@ -2005,6 +2058,18 @@ async function sendMessage() {
     renderAttachments();
     updateSendBtn();
     await sendImageTurn(text, imageAtts);
+    return;
+  }
+
+  // 视频模型:纯文本=文生视频,带图=以图为参考生视频,都走视频接口(异步任务)。
+  if (modelIsVideo(state.currentModel)) {
+    const imageAtts = attachments.filter((a) => a && a.type === 'image' && a.dataUrl).slice(0, 5);
+    input.value = '';
+    autosizeInput();
+    state.pendingAttachments = [];
+    renderAttachments();
+    updateSendBtn();
+    await sendVideoTurn(text, imageAtts);
     return;
   }
 
@@ -4986,6 +5051,13 @@ async function attachDocument(file, attach) {
       closeTools();
       openImageDialog();
     });
+    const videoTool = $('composer-tool-video');
+    if (videoTool) videoTool.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      closeTools();
+      openVideoDialog();
+    });
   }
 })();
 
@@ -5199,6 +5271,217 @@ function openImageDialog() {
   setTimeout(() => { const p = mask.querySelector('#img-prompt'); if (p) p.focus(); }, 60);
 }
 
+// ============ 视频生成 ============
+// 生视频弹窗:提示词 + 模式(文字/首尾帧/参考图) + 时长 + 画面比例 + 参考图。
+// 后端建任务并轮询到出片,结果插入当前对话。
+function openVideoDialog() {
+  if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+  if (!state.currentProviderId) { toast('请先在顶部选择供应商', true); return; }
+  if (document.querySelector('.vid-modal')) return;
+  const videoModels = videoModelsOfCurrentProvider();
+  const lastModel = localStorage.getItem('oc_video_model') || '';
+  const hasModelList = videoModels.length > 0;
+  const defaultModel = videoModels.some((m) => m.id === lastModel) ? lastModel : (videoModels[0] ? videoModels[0].id : '');
+  const spec = parseVideoSpec();
+  const SECONDS = ['4', '5', '6', '8', '10', '12'];
+
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask';
+  const iconHtml = (window.OC && OC.logoImg) ? OC.logoImg(videoModelLogo(), 'img-dialog-logo') : '';
+  const modelBlock = hasModelList
+    ? '<div class="field"><span>视频模型</span>' + selectBoxHtml('vid-model-box', '选择视频模型', defaultModel) + '</div>'
+      + '<label class="field" id="vid-model-custom-row" style="display:none"><span>模型 ID</span>'
+      + '<input id="vid-model" placeholder="手动输入模型 ID" autocomplete="off"></label>'
+    : '<div class="field"><span>视频模型</span>'
+      + '<input id="vid-model" placeholder="例如 agnes-video-2.5-flash" value="' + escapeHtml(lastModel) + '" autocomplete="off"></div>';
+
+  mask.innerHTML =
+    '<div class="modal img-modal vid-modal" role="dialog" aria-modal="true" aria-labelledby="vid-dialog-title">'
+    + '<div class="modal-header">'
+    + '<h3 id="vid-dialog-title">' + iconHtml + 'AI 生视频</h3>'
+    + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + (window.OC ? OC.icon('close', 16) : '×') + '</button>'
+    + '</div>'
+    + '<div class="modal-body">'
+    + '<p class="img-modal-tip">描述你想要的画面与运镜；<b>首尾帧模式</b>上传首帧/尾帧，<b>参考图模式</b>可上传最多 5 张参考图。生成较慢（约 1–5 分钟），完成后插入当前对话，每次按一次调用计费。</p>'
+    + '<label class="field"><span>提示词</span>'
+    + '<textarea id="vid-prompt" rows="3" placeholder="例如：雨后的未来城市街道，镜头缓慢推进，霓虹倒影" style="resize:vertical"></textarea>'
+    + '</label>'
+    + '<div class="img-modal-grid">'
+    + modelBlock
+    + '<div class="field"><span>生成模式</span>' + selectBoxHtml('vid-mode-box', '文字生成', 'text') + '</div>'
+    + '</div>'
+    + '<div class="img-modal-grid">'
+    + '<div class="field"><span>时长（秒）</span>' + selectBoxHtml('vid-sec-box', String(spec.seconds), String(spec.seconds)) + '</div>'
+    + '<div class="field"><span>画面比例</span>' + selectBoxHtml('vid-ratio-box', spec.ratio, spec.ratio) + '</div>'
+    + '</div>'
+    + '<div class="field" id="vid-first-last" style="display:none"><span>首帧 / 尾帧（至少一张）</span>'
+    + '<div class="vid-two">'
+    + '<div class="vid-slot" data-slot="first_frame"><div class="img-refs" id="vid-first-refs"></div>'
+    + '<input type="file" id="vid-first-input" accept="image/*" hidden>'
+    + '<button class="btn small img-ref-add-btn" id="vid-first-add" type="button">' + (window.OC && OC.icon ? OC.icon('plus', 13) : '') + '<span>首帧</span></button></div>'
+    + '<div class="vid-slot" data-slot="last_frame"><div class="img-refs" id="vid-last-refs"></div>'
+    + '<input type="file" id="vid-last-input" accept="image/*" hidden>'
+    + '<button class="btn small img-ref-add-btn" id="vid-last-add" type="button">' + (window.OC && OC.icon ? OC.icon('plus', 13) : '') + '<span>尾帧</span></button></div>'
+    + '</div>'
+    + '</div>'
+    + '<div class="field" id="vid-refs-field" style="display:none"><span>参考图（最多 5 张）</span>'
+    + '<div class="img-refs" id="vid-refs"></div>'
+    + '<input type="file" id="vid-ref-input" accept="image/*" multiple hidden>'
+    + '<button class="btn small img-ref-add-btn" id="vid-ref-add" type="button">'
+    + (window.OC && OC.icon ? OC.icon('plus', 13) : '') + '<span>添加图片</span></button>'
+    + '</div>'
+    + '</div>'
+    + '<div class="modal-footer img-modal-footer">'
+    + '<span class="img-status" id="vid-status" role="status" aria-live="polite"></span>'
+    + '<button class="btn primary img-run-btn" id="vid-run" type="button">生成视频</button>'
+    + '</div>'
+    + '</div>';
+  document.body.appendChild(mask);
+  const close = () => mask.remove();
+  mask.addEventListener('click', (e) => { if (e.target === mask || e.target.closest('[data-act="close"]')) close(); });
+
+  // 自定义下拉:模型 / 模式 / 时长 / 比例
+  const modelBox = mask.querySelector('#vid-model-box');
+  const customRow = mask.querySelector('#vid-model-custom-row');
+  const modeBox = mask.querySelector('#vid-mode-box');
+  const secBox = mask.querySelector('#vid-sec-box');
+  const ratioBox = mask.querySelector('#vid-ratio-box');
+  const MODES = [
+    { value: 'text', label: '文字生成', sub: '纯文本生成视频' },
+    { value: 'keyframe', label: '首尾帧', sub: '给定首帧/尾帧生成过渡' },
+    { value: 'reference', label: '参考图', sub: '以图片/音频为参考' },
+  ];
+  const syncMode = (val) => {
+    const m = val || (modeBox && modeBox.getAttribute('data-value')) || 'text';
+    const fl = mask.querySelector('#vid-first-last');
+    const rf = mask.querySelector('#vid-refs-field');
+    if (fl) fl.style.display = m === 'keyframe' ? '' : 'none';
+    if (rf) rf.style.display = m === 'reference' ? '' : 'none';
+  };
+  const syncCustom = () => {
+    if (!customRow || !modelBox) return;
+    const custom = modelBox.getAttribute('data-value') === '__custom__';
+    customRow.style.display = custom ? '' : 'none';
+    if (custom) { const inp = mask.querySelector('#vid-model'); if (inp) inp.focus(); }
+  };
+  if (modelBox) {
+    const items = videoModels.map((m) => ({ value: m.id, label: m.name || m.id }))
+      .concat([{ value: '__custom__', label: '其他（手动输入）' }]);
+    bindModalSelect(modelBox, items, () => syncCustom());
+    syncCustom();
+  }
+  if (modeBox) bindModalSelect(modeBox, MODES.map((m) => ({ value: m.value, label: m.label, sub: m.sub })), (v) => syncMode(v));
+  if (secBox) bindModalSelect(secBox, SECONDS.map((s) => ({ value: s, label: s + ' 秒' })));
+  if (ratioBox) bindModalSelect(ratioBox, VIDEO_RATIOS.map((r) => ({ value: r, label: r })));
+  syncMode('text');
+  const readVideoModel = () => {
+    if (modelBox) {
+      const v = modelBox.getAttribute('data-value') || '';
+      if (v && v !== '__custom__') return v;
+    }
+    return (mask.querySelector('#vid-model') && mask.querySelector('#vid-model').value.trim()) || '';
+  };
+  const readVal = (box, fallback) => (box && box.getAttribute('data-value')) || fallback;
+
+  // 参考图:refs(参考图模式)/ first/last(首尾帧模式)
+  const refs = [];
+  const firstRef = [];
+  const lastRef = [];
+  const renderRefs = (box, arr, onDel) => {
+    if (!box) return;
+    box.innerHTML = arr.map((r, i) =>
+      '<span class="img-ref"><img src="' + r + '" alt="">'
+      + '<button type="button" class="img-ref-del" data-idx="' + i + '" aria-label="移除">×</button></span>'
+    ).join('');
+    box.querySelectorAll('[data-idx]').forEach((b) => b.addEventListener('click', () => { onDel(Number(b.dataset.idx)); }));
+  };
+  const bindRefInput = (addId, inputId, paneId, arr, max) => {
+    const add = mask.querySelector(addId), input = mask.querySelector(inputId), pane = mask.querySelector(paneId);
+    if (!add || !input || !pane) return;
+    const redraw = () => renderRefs(pane, arr, (i) => { arr.splice(i, 1); redraw(); });
+    add.addEventListener('click', () => input.click());
+    input.addEventListener('change', async () => {
+      const files = Array.from(input.files || []);
+      for (const f of files) {
+        if (arr.length >= max) { toast('最多 ' + max + ' 张', true); break; }
+        if (!/^image\//.test(f.type)) continue;
+        if (f.size > 15 * 1024 * 1024) { toast('单张图片请小于 15MB', true); continue; }
+        try { arr.push(await readImageRefCompressed(f)); } catch (e) { /* 跳过读失败的文件 */ }
+      }
+      input.value = '';
+      redraw();
+    });
+  };
+  bindRefInput('#vid-ref-add', '#vid-ref-input', '#vid-refs', refs, 5);
+  bindRefInput('#vid-first-add', '#vid-first-input', '#vid-first-refs', firstRef, 1);
+  bindRefInput('#vid-last-add', '#vid-last-input', '#vid-last-refs', lastRef, 1);
+
+  const run = mask.querySelector('#vid-run');
+  run.addEventListener('click', async () => {
+    const prompt = (mask.querySelector('#vid-prompt') && mask.querySelector('#vid-prompt').value.trim()) || '';
+    const model = readVideoModel();
+    const mode = readVal(modeBox, 'text');
+    const seconds = parseInt(readVal(secBox, '5'), 10) || 5;
+    const ratio = readVal(ratioBox, '16:9');
+    const status = mask.querySelector('#vid-status');
+    if (!prompt) return toast('请输入提示词', true);
+    if (!model) return toast('请填写视频模型', true);
+    if (mode === 'keyframe' && !firstRef.length && !lastRef.length) return toast('首尾帧模式至少上传首帧或尾帧', true);
+    localStorage.setItem('oc_video_model', model);
+    localStorage.setItem('oc_video_seconds', String(seconds));
+    localStorage.setItem('oc_video_ratio', ratio);
+    run.disabled = true;
+    status.textContent = '生成中，通常需要 1–5 分钟，请勿关闭页面…';
+    try {
+      const payload = { providerId: state.currentProviderId, model, prompt, mode, seconds, aspect_ratio: ratio, n: 1 };
+      if (mode === 'reference') payload.images = refs.slice();
+      if (mode === 'keyframe') {
+        if (firstRef[0]) payload.first_frame = firstRef[0];
+        if (lastRef[0]) payload.last_frame = lastRef[0];
+      }
+      const r = await api('/api/proxy/videos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error((d.error && d.error.message) || ('HTTP ' + r.status));
+      insertVideoResult(model, prompt, d.videos, mode);
+      close();
+      toast('已生成视频并插入对话');
+      await refreshMe();
+    } catch (e) {
+      const msg = (e && e.message) ? e.message : '未知错误';
+      if (status) { status.textContent = '生成失败：' + msg; status.classList.add('img-status-error'); }
+      toast('生成失败: ' + msg, true);
+    } finally { run.disabled = false; }
+  });
+  setTimeout(() => { const p = mask.querySelector('#vid-prompt'); if (p) p.focus(); }, 60);
+}
+// 把生视频结果插入当前对话
+function insertVideoResult(model, prompt, videos, mode) {
+  const links = videoLinksFromResults(videos, prompt);
+  if (!links) throw new Error('未返回可用的视频数据');
+  let chat = currentChat();
+  if (!chat || !chat.id) chat = newChat();
+  if (chat.assistantId) enforceImageModelAssistant({ silent: true });
+  const userMsg = { role: 'user', content: prompt || '（视频）', text: prompt, attachments: [], createdAt: Date.now() };
+  chat.messages.push(userMsg);
+  if (chat.messages.filter((m) => m.role === 'user').length === 1) {
+    chat.title = '视频 · ' + String(prompt || '生成视频').slice(0, 18);
+    renderChatList();
+  }
+  const modes = { text: '提示词', keyframe: '首尾帧', reference: '参考图' };
+  const head = '**' + (modes[mode] || '提示词') + '：** ' + prompt;
+  const reply = { role: 'assistant', content: head + '\n\n' + links, model: model + ' (视频)', createdAt: Date.now() };
+  chat.messages.push(reply);
+  chat.updatedAt = Date.now();
+  state.currentChatId = chat.id;
+  saveChats();
+  renderMessages();
+  return links;
+}
+
 // 把生图结果插入当前对话(绘图弹窗路径)。与输入框路径一样,先落用户消息再落结果,
 // 保证两条入口在对话里的呈现一致;refUrls 为参考图(改图时)的 data URL 列表。
 function insertImageResult(model, prompt, images, kindLabel, refUrls) {
@@ -5330,6 +5613,89 @@ function imageLinksFromResults(images, prompt) {
     const src = imageSourceOf(im);
     return src ? '![' + alt + '](' + src + ')' : '';
   }).filter(Boolean).join('\n\n');
+}
+// 视频结果 → Markdown 链接(渲染端识别 .mp4/.webm/.mov 后缀渲染为 <video>)
+function videoSourceOf(v) {
+  if (!v) return '';
+  return v.display || v.url || '';
+}
+function videoLinksFromResults(videos, prompt) {
+  const alt = String(prompt || '').replace(/[()\[\]]/g, '').slice(0, 60) || '生成视频';
+  return (videos || []).map((v) => {
+    const src = videoSourceOf(v);
+    return src ? '[' + alt + '](' + src + ')' : '';
+  }).filter(Boolean).join('\n\n');
+}
+// 对话内生视频:视频模型下在输入框发指令(纯文本=文生视频,带图=以图生视频)。
+// 后端建任务并轮询到出片后返回视频地址;期间显示「正在生成视频…」占位。
+async function sendVideoTurn(prompt, imageAtts) {
+  if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+  const model = state.currentModel;
+  const providerId = state.currentProviderId;
+  const text = String(prompt || '').trim();
+  const atts = (imageAtts || []).slice(0, 5);
+  if (!text && !atts.length) return;
+
+  let chat = currentChat();
+  if (!chat || !chat.id) chat = newChat();
+
+  const refUrls = (await Promise.all(atts.map((a) => compressImageRef(a.dataUrl || a)))).filter(Boolean);
+  const refAtts = atts.map((a, i) => Object.assign({}, a, { dataUrl: refUrls[i] || a.dataUrl }));
+  const hasRefs = refUrls.length > 0;
+  if (!text && !hasRefs) { toast('请输入画面描述', true); return; }
+  if (!hasRefs && !text) { toast('请输入画面描述', true); return; }
+
+  const parts = [];
+  if (text) parts.push(text);
+  if (refAtts.length && window.OCMultimodal) refAtts.forEach((a) => parts.push(window.OCMultimodal.toMarkdown(a)));
+  const userMsg = { role: 'user', content: parts.join('\n\n') || '（参考图）', text, attachments: refAtts, createdAt: Date.now() };
+  chat.messages.push(userMsg);
+  const placeholder = { role: 'assistant', content: '', imagePending: true, pendingKind: 'video', model, providerId, createdAt: Date.now() };
+  chat.messages.push(placeholder);
+  if (chat.messages.filter((m) => m.role === 'user').length === 1) {
+    chat.title = '视频 · ' + String(text || '参考图').slice(0, 18);
+    renderChatList();
+  }
+  chat.updatedAt = Date.now();
+  state.currentChatId = chat.id;
+  saveChats();
+  renderMessages();
+  if (chat.assistantId) enforceImageModelAssistant({ silent: true });
+
+  // 视频规格沿用绘图弹窗里最近一次的选择(时长 / 比例)
+  const spec = parseVideoSpec();
+  state.streaming = true;
+  updateSendBtn();
+  try {
+    const r = await api('/api/proxy/videos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providerId, model, prompt: text, mode: hasRefs ? 'reference' : 'text', seconds: spec.seconds, aspect_ratio: spec.ratio, images: refUrls }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error((d.error && d.error.message) || ('HTTP ' + r.status));
+    const links = videoLinksFromResults(d.videos, text);
+    if (!links) throw new Error('未返回可用的视频数据');
+    const head = '**' + (hasRefs ? '参考图视频' : '提示词') + '：** ' + (text || '参考图');
+    placeholder.content = head + '\n\n' + links;
+    placeholder.imagePending = false;
+    placeholder.createdAt = Date.now();
+    saveChats();
+    renderMessages();
+    toast('已生成视频并插入对话');
+    await refreshMe();
+  } catch (e) {
+    placeholder.imagePending = false;
+    placeholder.error = true;
+    placeholder.content = '生视频失败：' + ((e && e.message) || '未知错误');
+    saveChats();
+    renderMessages();
+    toast('生视频失败: ' + ((e && e.message) || '未知错误'), true);
+  } finally {
+    state.streaming = false;
+    updateSendBtn();
+    refreshModelHealth();
+  }
 }
 function imageSourceOf(im) {
   if (!im) return '';
@@ -5776,8 +6142,8 @@ function assistantCatName(id) {
 function mentionQuery() {
   const el = inputEl;
   if (!el) return null;
-  // 生图模型不使用助手,选中时不再弹出 @助手 候选
-  if (modelIsImage(state.currentModel)) return null;
+  // 生图/生视频模型不使用助手,选中时不再弹出 @助手 候选
+  if (modelIsVisual(state.currentModel)) return null;
   const pos = typeof el.selectionStart === 'number' ? el.selectionStart : String(el.value || '').length;
   const before = String(el.value || '').slice(0, pos);
   const at = before.lastIndexOf('@');

@@ -6,6 +6,23 @@
 $uri = isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '';
 $body = json_decode((string) file_get_contents('php://input'), true);
 header('Content-Type: application/json');
+// ---- 视频生成(异步任务:POST /v1/videos 建任务,GET /agnesapi 查询) ----
+// 建任务:返回 video_id;查询:首次返回 processing,之后返回 completed + url。
+if (strpos($uri, 'agnesapi') !== false) {
+    $vid = isset($_GET['video_id']) ? (string) $_GET['video_id'] : '';
+    echo json_encode(array(
+        'id' => $vid, 'object' => 'video', 'status' => 'completed', 'progress' => 100,
+        'seconds' => '4', 'size' => '720P', 'url' => 'https://example.com/generated/mock-video.mp4',
+    ));
+    return;
+}
+if (strpos($uri, 'videos') !== false && strpos($uri, 'chat/completions') === false) {
+    if (!is_array($body) || !isset($body['model'])) { http_response_code(400); echo json_encode(array('error' => array('message' => 'model required'))); return; }
+    // 校验必需参数,便于 E2E 断言参数透传
+    if (empty($body['mode'])) { http_response_code(400); echo json_encode(array('error' => array('message' => 'mode required'))); return; }
+    echo json_encode(array('id' => 'task_mock_video_1', 'task_id' => 'task_mock_video_1', 'video_id' => 'task_mock_video_1', 'object' => 'video', 'status' => 'queued', 'progress' => 0));
+    return;
+}
 // 对话式出图平台:没有 images/generations 路径,图片在 chat 回复里(复现 apilio 等平台)
 if (is_array($body) && isset($body['model']) && $body['model'] === 'mock-chat-image'
     && strpos($uri, 'chat/completions') !== false) {

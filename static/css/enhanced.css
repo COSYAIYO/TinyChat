@@ -312,6 +312,22 @@
   color: var(--text-tertiary);
   margin-top: 6px;
 }
+/* 视频（生视频结果） */
+.md-video { margin: 12px 0; text-align: center; }
+.md-video video {
+  width: 100%;
+  max-width: 640px;
+  max-height: 480px;
+  border-radius: var(--radius-md);
+  background: #000;
+  box-shadow: var(--shadow-sm);
+  display: inline-block;
+}
+.md-video figcaption {
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+  margin-top: 6px;
+}
 .lightbox {
   position: fixed;
   inset: 0;
