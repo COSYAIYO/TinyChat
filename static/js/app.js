@@ -5243,18 +5243,32 @@ async function sendImageTurn(prompt, imageAtts) {
   const text = String(prompt || '').trim();
   const atts = (imageAtts || []).slice(0, 4);
   if (!text && !atts.length) return;
-  const hasRefs = atts.length > 0;
-  if (!hasRefs && !text) { toast('请输入画面描述', true); return; }
-
-  // 参考图先压缩(长边 1536 / JPEG),与绘图弹窗走同一压缩逻辑:
-  // 这样气泡里显示的、以及发给上游的,都是同一份压缩图,两条入口结果一致。
-  // 压缩后再落用户消息,避免把原图 data URL 存进对话(占用本地存储)。
-  const refUrls = (await Promise.all(atts.map((a) => compressImageRef(a.dataUrl || a)))).filter(Boolean);
-  const refAtts = atts.map((a, i) => Object.assign({}, a, { dataUrl: refUrls[i] || a.dataUrl }));
 
   // 落用户消息,让输入框里的提示词与参考图和弹窗路径表现一致
   let chat = currentChat();
   if (!chat || !chat.id) chat = newChat();
+
+  // 参考图:优先用本次附的图;用户没附图时,追问自动把本会话上一张生成图作为参考图(改图)。
+  // 取到后统一压缩(长边 1536 / JPEG),与绘图弹窗走同一逻辑,发给上游的图片一致。
+  let refUrls = (await Promise.all(atts.map((a) => compressImageRef(a.dataUrl || a)))).filter(Boolean);
+  let autoRef = false;
+  if (!refUrls.length && text) {
+    const prev = lastImageSourceInChat(chat);
+    if (prev) {
+      const dataUrl = await imageSourceToDataUrl(prev);
+      const comp = dataUrl ? await compressImageRef(dataUrl) : '';
+      // 只有确实拿到可用的图片才作为参考图;取不到(过期/跨域失败/非图片)就静默回退为纯文生图
+      if (comp && /^data:image\//i.test(comp)) { refUrls = [comp]; autoRef = true; }
+    }
+  }
+  const hasRefs = refUrls.length > 0;
+  if (!hasRefs && !text) { toast('请输入画面描述', true); return; }
+
+  // 展示用附件:用户附图沿用其文件名;自动参考的上一张图给一个可读名字
+  const refAtts = autoRef
+    ? [{ type: 'image', name: '上一张图', size: 0, meta: {}, dataUrl: refUrls[0] }]
+    : atts.map((a, i) => Object.assign({}, a, { dataUrl: refUrls[i] || a.dataUrl }));
+
   const parts = [];
   if (text) parts.push(text);
   if (refAtts.length && window.OCMultimodal) refAtts.forEach((a) => parts.push(window.OCMultimodal.toMarkdown(a)));
@@ -5271,6 +5285,7 @@ async function sendImageTurn(prompt, imageAtts) {
   saveChats();
   renderMessages();
   if (chat.assistantId) enforceImageModelAssistant({ silent: true });
+  if (autoRef) toast('已把上一张图作为参考图，可直接描述要修改的地方');
 
   // 图片规格沿用「绘图弹窗」里最近一次的选择(尺寸或宽高比),两条入口共用同一偏好
   const spec = parseImageSpec(localStorage.getItem('oc_image_size') || '');
@@ -5312,11 +5327,49 @@ async function sendImageTurn(prompt, imageAtts) {
 function imageLinksFromResults(images, prompt) {
   const alt = String(prompt || '').replace(/[\[\]]/g, '').slice(0, 60);
   return (images || []).map((im) => {
-    const src = im && (im.display || im.url)
-      ? (im.display || im.url)
-      : (im && im.b64_json ? 'data:image/png;base64,' + im.b64_json : '');
+    const src = imageSourceOf(im);
     return src ? '![' + alt + '](' + src + ')' : '';
   }).filter(Boolean).join('\n\n');
+}
+function imageSourceOf(im) {
+  if (!im) return '';
+  if (im.display) return im.display;                       // 同源代理地址(优先:fetch 不受跨域限制)
+  if (im.url) return im.url;
+  if (im.b64_json) return 'data:image/png;base64,' + im.b64_json;
+  return '';
+}
+// 找本会话最近一张生成图的地址:从最新的助手消息往前找,取消息里的最后一张图。
+// 追问改图时用它作为参考图(用户没另外附图时)。
+function lastImageSourceInChat(chat) {
+  const msgs = (chat && chat.messages) || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (!m || m.role !== 'assistant' || typeof m.content !== 'string') continue;
+    const re = /!\[[^\]]*\]\(([^)]+)\)/g;
+    let hit = '';
+    let match;
+    while ((match = re.exec(m.content))) hit = match[1];
+    if (hit) return hit;
+  }
+  return '';
+}
+// 把图片来源转成 data URL:data: 直接用;同源代理地址 / 公网地址则 fetch 回来。
+// 失败返回 '',调用方据此回退为「纯文生图」,不会因参考图取不到而中断。
+function imageSourceToDataUrl(src) {
+  const s = String(src || '');
+  if (!s) return Promise.resolve('');
+  if (/^data:image\//i.test(s)) return Promise.resolve(s);
+  return new Promise((resolve) => {
+    fetch(s, { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('HTTP ' + r.status))))
+      .then((blob) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result || ''));
+        fr.onerror = () => resolve('');
+        fr.readAsDataURL(blob);
+      })
+      .catch(() => resolve(''));
+  });
 }
 
 // ============ 多模型并答对比 ============
