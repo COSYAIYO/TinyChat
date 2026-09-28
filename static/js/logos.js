@@ -34,7 +34,7 @@
     'kimi-color.svg': 1, 'kling-color.svg': 1, 'longcat-color.svg': 1, 'luma-color.svg': 1,
     'meta-color.svg': 1, 'microsoft-color.svg': 1, 'midjourney.svg': 1, 'minimax-color.svg': 1,
     'mistral-color.svg': 1, 'monica-color.svg': 1, 'nanobanana-color.svg': 1, 'ollama.svg': 1,
-    'openai.svg': 1, 'openrouter-color.svg': 1, 'perplexity-color.svg': 1, 'qingyan-color.svg': 1,
+    'openai.svg': 1, 'openrouter-color.svg': 1, 'perplexity-color.svg': 1, 'picture.svg': 1, 'qingyan-color.svg': 1,
     'qwen-color.svg': 1, 'replicate.svg': 1, 'runway.svg': 1, 'searxng-color.svg': 1,
     'stability-color.svg': 1, 'suno.svg': 1, 'tavily-color.svg': 1, 'tiangong-color.svg': 1,
     'together-color.svg': 1, 'vertexai-color.svg': 1, 'wenxin-color.svg': 1, 'xiaomimimo.svg': 1,
@@ -184,6 +184,8 @@
   const cache = new Map();
   // 未命中任何关键词时回退到站点 logo(HTML 由 OC.logoImg 输出,深浅主题自动切换)
   const SITE_LOGO = ':site:';
+  // 生图模型统一使用 picture.svg 作为头像/图标
+  const IMAGE_LOGO = url('picture.svg');
 
   function modelLogo(text) {
     const key = String(text || '').toLowerCase();
@@ -248,9 +250,21 @@
     return SITE_LOGO;
   }
 
+  // 图标选择:生图模型统一用 picture.svg;否则按模型名匹配品牌图标。
+  // isImage 未显式传入时,回退到 OC.isImageModelName(由 components.js 提供)按名称判断。
+  function modelIcon(text, providerName, isImage) {
+    const flag = isImage !== undefined
+      ? !!isImage
+      : !!(window.OC && window.OC.isImageModelName && window.OC.isImageModelName(text));
+    if (flag) return IMAGE_LOGO;
+    return modelLogoWithFallback(text, providerName);
+  }
+
   window.OC = window.OC || {};
   window.OC.modelLogo = modelLogo;
   window.OC.modelLogoWithFallback = modelLogoWithFallback;
+  window.OC.modelIcon = modelIcon;
+  window.OC.imageLogo = () => IMAGE_LOGO;
   window.OC.providerLogo = providerLogo;
   window.OC.chatLogo = chatLogo;
   window.OC.logoImg = logoImg;

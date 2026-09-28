@@ -3610,3 +3610,11 @@ body.is-demo-admin [data-chats] { display: none !important; }
   background: color-mix(in srgb, var(--brand, var(--accent)) 14%, transparent);
   color: var(--brand, var(--accent));
 }
+
+/* 生图:弹窗标题图标 + 模型图标 */
+.img-dialog-logo {
+  width: 18px;
+  height: 18px;
+  vertical-align: -3px;
+  margin-right: 6px;
+}

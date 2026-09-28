@@ -267,11 +267,36 @@ const LOGO_AVATAR_HTML = '<img src="./logo.svg" class="brand-logo-light avatar-l
   + '<img src="./logo-dark.svg" class="brand-logo-dark avatar-logo-img" alt="">';
 const USER_AVATAR_SVG = LOGO_AVATAR_HTML;
 const AI_AVATAR_SVG = LOGO_AVATAR_HTML;
-// 助手头像按消息所属模型匹配厂商 logo(DeepSeek/Kimi/Qwen 等),未命中回退站点 logo
+// 生图模型判定:优先用供应商配置里的显式 image 标记,缺省时按模型名启发式
+function modelIsImage(modelId) {
+  const id = String(modelId || '').trim();
+  if (!id) return false;
+  const hint = (window.OC && OC.isImageModelName) ? OC.isImageModelName : () => false;
+  for (const p of state.providers || []) {
+    for (const m of p.models || []) {
+      if (m && String(m.id) === id) {
+        if (Object.prototype.hasOwnProperty.call(m, 'image')) return !!m.image;
+        return hint(id);
+      }
+    }
+  }
+  return hint(id);
+}
+function imageModelLogo() {
+  return (window.OC && OC.imageLogo) ? OC.imageLogo() : 'static/logo/picture.svg';
+}
+// 助手头像按消息所属模型匹配图标:生图模型统一用 picture.svg,其余匹配厂商 logo,未命中回退站点 logo
 function aiAvatarHtml(modelText) {
-  const t = String(modelText || '').trim();
-  if (t && window.OC && window.OC.logoImg && window.OC.modelLogo) {
-    const html = window.OC.logoImg(window.OC.modelLogo(t), 'avatar-logo-img');
+  const raw = String(modelText || '').trim();
+  // 生图结果的消息模型名形如 "xxx (图像)"
+  const isImageMsg = /\(图像\)\s*$/.test(raw);
+  const modelId = raw.replace(/\s*\(图像\)\s*$/, '');
+  if (window.OC && window.OC.logoImg && (isImageMsg || (modelId && modelIsImage(modelId)))) {
+    const html = window.OC.logoImg(imageModelLogo(), 'avatar-logo-img');
+    if (html) return html;
+  }
+  if (raw && window.OC && window.OC.logoImg && window.OC.modelLogo) {
+    const html = window.OC.logoImg(window.OC.modelLogo(raw), 'avatar-logo-img');
     if (html) return html;
   }
   return AI_AVATAR_SVG;
@@ -697,6 +722,19 @@ function useAssistantOnChat(assistant, opts) {
     toast(assistant ? '已选用「' + (assistant.name || '助手') + '」' : '已取消助手');
   }
   return chat;
+}
+// 选用生图模型时自动去除当前对话的 @助手:
+// 助手注入的是对话系统提示词,对生图请求没有意义,反而可能干扰生图平台。
+function enforceImageModelAssistant(opts) {
+  const chat = currentChat();
+  if (!chat || !chat.assistantId) return false;
+  const name = chat.assistantName || '助手';
+  applyAssistantToChat(chat, null);
+  chat.updatedAt = Date.now();
+  saveChats();
+  updateAssistantChip();
+  if (!(opts && opts.silent)) toast('生图模型不使用助手，已自动取消「' + name + '」');
+  return true;
 }
 function startAssistantChat(assistant) {
   if (!assistant) {
@@ -1472,6 +1510,8 @@ async function loadModels(opts) {
   else if (state.models.length) state.currentModel = state.models[0].id;
   persistCurrentModel();
   renderModelPicker();
+  // 切换后若当前模型是生图模型,自动取消 @助手
+  if (modelIsImage(state.currentModel)) enforceImageModelAssistant({ silent: true });
 }
 function modelHealthOf(id) {
   const row = id && state.modelHealth ? state.modelHealth[id] : null;
@@ -1540,21 +1580,38 @@ function renderProviderLabel() {
 }
 
 // 自定义模型选择器：汇总所有有权限的供应商模型
+// 模型选择器的分组:对话模型在前,生图模型自动归入末尾的「生图模型」分组。
+// openSelect 检测 groups[0].label !== undefined 时按分组渲染。
 function availableModelItems() {
-  const items = [];
+  const chat = [];
+  const image = [];
   (state.providers || []).forEach((provider) => {
     (provider.models || []).forEach((m) => {
       const id = m && m.id ? String(m.id) : '';
       if (!id) return;
       const name = m.name || id;
       const health = provider.id === state.currentProviderId ? modelHealthOf(id) : { state: 'idle', title: '最近 4 小时无人调用' };
-      const logo = window.OC && (OC.modelLogoWithFallback || OC.modelLogo)
-        ? OC.modelLogoWithFallback(id + ' ' + name, provider.name)
+      const isImage = Object.prototype.hasOwnProperty.call(m, 'image')
+        ? !!m.image
+        : !!((window.OC && OC.isImageModelName) ? OC.isImageModelName(id) : false);
+      const logo = (window.OC && OC.modelIcon)
+        ? OC.modelIcon(id + ' ' + name, provider.name, isImage)
         : '';
-      items.push({ value: provider.id + '\n' + id, providerId: provider.id, modelId: id, label: provider.name + '@' + name, search: provider.name + ' ' + id + ' ' + name, health: health.state, healthTitle: health.title, icon: logo });
+      const item = {
+        value: provider.id + '\n' + id, providerId: provider.id, modelId: id,
+        label: provider.name + '@' + name, search: provider.name + ' ' + id + ' ' + name,
+        health: health.state, healthTitle: health.title, icon: logo, isImage,
+      };
+      (isImage ? image : chat).push(item);
     });
   });
-  return items.sort((a, b) => a.label.localeCompare(b.label, 'zh'));
+  const byLabel = (a, b) => a.label.localeCompare(b.label, 'zh');
+  chat.sort(byLabel);
+  image.sort(byLabel);
+  const groups = [];
+  if (chat.length) groups.push({ label: image.length ? '对话模型' : '', items: chat });
+  if (image.length) groups.push({ label: '生图模型', items: image });
+  return groups;
 }
 function togglePinnedSelection(value) {
   const parts = String(value || '').split('\n'); const providerId = parts[0], modelId = parts.slice(1).join('\n');
@@ -1568,23 +1625,25 @@ function togglePinnedSelection(value) {
 const modelPickerEl = $('model-picker');
 if (modelPickerEl) {
   modelPickerEl.addEventListener('click', () => {
-    const items = availableModelItems();
-    if (!items.length) { toast('暂无可用模型', true); return; }
+    const groups = availableModelItems();
+    const total = groups.reduce((n, g) => n + g.items.length, 0);
+    if (!total) { toast('暂无可用模型', true); return; }
     const selected = state.currentProviderId && state.currentModel ? state.currentProviderId + '\n' + state.currentModel : null;
-    OC.openSelect(modelPickerEl, items, {
+    OC.openSelect(modelPickerEl, groups, {
       menuClass: 'oc-model-menu',
       fitWidth: true,
       selected,
       pinned: pinnedProviderId() && pinnedModelId() ? pinnedProviderId() + '\n' + pinnedModelId() : null,
-      searchable: items.length > 8,
+      searchable: total > 8,
       searchPlaceholder: '搜索供应商或模型…',
       chips: (state.providers || []).length > 1 ? state.providers.map((p) => ({ value: p.id, label: p.name || p.id, icon: window.OC && OC.providerLogo ? OC.providerLogo(p.models, p.name) : '' })) : null,
-      onSelect: async (val) => {
+      onSelect: async (val, item) => {
         const parts = String(val).split('\n');
         state.currentProviderId = parts[0];
         await loadModels({ prefer: parts.slice(1).join('\n') });
         renderProviderLabel();
         renderModelPicker();
+        if (item && item.isImage) enforceImageModelAssistant();
       },
       onPin: (val) => togglePinnedSelection(val),
     });
@@ -4850,12 +4909,7 @@ async function attachDocument(file, attach) {
 function imageModelsOfCurrentProvider() {
   const p = (state.providers || []).find((x) => x.id === state.currentProviderId);
   if (!p || !Array.isArray(p.models)) return [];
-  const hint = (window.OC && OC.isImageModelName) ? OC.isImageModelName : () => false;
-  return p.models.filter((m) => {
-    if (!m || !m.id) return false;
-    if (Object.prototype.hasOwnProperty.call(m, 'image')) return !!m.image;
-    return hint(m.id);
-  });
+  return p.models.filter((m) => m && m.id && modelIsImage(m.id));
 }
 function openImageDialog() {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
@@ -4872,9 +4926,10 @@ function openImageDialog() {
       + '<option value="__custom__">其他（手动输入）</option></select></label>'
       + '<label class="field" id="img-model-custom-row" style="display:none"><span>模型 ID</span><input id="img-model" placeholder="例如 dall-e-3 / gpt-image-1 / sd3" value="' + escapeHtml(lastModel) + '" autocomplete="off"></label>'
     : '<label class="field"><span>图像模型</span><input id="img-model" placeholder="例如 dall-e-3 / gpt-image-1 / sd3" value="' + escapeHtml(lastModel) + '" autocomplete="off"></label>';
+  const iconHtml = (window.OC && OC.logoImg) ? OC.logoImg(imageModelLogo(), 'img-dialog-logo') : '';
   mask.innerHTML =
     '<div class="modal modal-sm" role="dialog" aria-modal="true">'
-    + '<div class="modal-header"><h3>生成图片</h3>'
+    + '<div class="modal-header"><h3>' + iconHtml + '生成图片</h3>'
     + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + (window.OC ? OC.icon('close', 16) : '×') + '</button></div>'
     + '<div class="modal-body">'
     + '<p class="muted small">调用当前供应商的 <code>images/generations</code> 接口，按一次对话扣费。生成后插入当前对话；对话中直接用生图模型也会自动改走该接口。</p>'
@@ -4926,9 +4981,20 @@ function openImageDialog() {
       });
       const d = await r.json();
       if (!r.ok) throw new Error((d.error && d.error.message) || ('HTTP ' + r.status));
-      const md = (d.images || []).map((im) => '![' + prompt.replace(/[\[\]]/g, '').slice(0, 60) + '](' + im.url + ')').join('\n\n');
+      // 兼容 url 与 b64_json 两种返回形态,组装成 Markdown 图片
+      const alt = prompt.replace(/[\[\]]/g, '').slice(0, 60);
+      const links = (d.images || []).map((im) => {
+        const src = im && im.url
+          ? im.url
+          : (im && im.b64_json ? 'data:image/png;base64,' + im.b64_json : '');
+        return src ? '![' + alt + '](' + src + ')' : '';
+      }).filter(Boolean);
+      if (!links.length) throw new Error('未返回可用的图像数据');
+      const md = links.join('\n\n');
       let chat = currentChat();
       if (!chat || !chat.id) chat = newChat();
+      // 生图不使用助手:插入前清掉当前对话的 @助手
+      if (chat.assistantId) enforceImageModelAssistant({ silent: true });
       if (!chat.messages.length) { chat.title = '绘画 · ' + prompt.slice(0, 18); renderChatList(); }
       const reply = { role: 'assistant', content: '**提示词：** ' + prompt + '\n\n' + md, model: model + ' (图像)', createdAt: Date.now() };
       chat.messages.push(reply);
@@ -5350,6 +5416,8 @@ function assistantCatName(id) {
 function mentionQuery() {
   const el = inputEl;
   if (!el) return null;
+  // 生图模型不使用助手,选中时不再弹出 @助手 候选
+  if (modelIsImage(state.currentModel)) return null;
   const pos = typeof el.selectionStart === 'number' ? el.selectionStart : String(el.value || '').length;
   const before = String(el.value || '').slice(0, pos);
   const at = before.lastIndexOf('@');
