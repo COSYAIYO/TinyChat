@@ -593,6 +593,12 @@ function tc_api_public_config($db) {
         'mailReady' => !empty($s['smtp']['host']),
         'webSearch' => tc_web_search_public($s),
         'mineru' => tc_mineru_public($s),
+        // 全站公告:enabled 且 text 非空时前台展示;updatedAt 变化视为新公告(重新弹出)
+        'announcement' => array(
+            'enabled' => !empty($s['announcement']['enabled']),
+            'text' => isset($s['announcement']['text']) ? (string) $s['announcement']['text'] : '',
+            'updatedAt' => (int) (isset($s['announcement']['updatedAt']) ? $s['announcement']['updatedAt'] : 0),
+        ),
     ));
 }
 
@@ -1336,6 +1342,57 @@ function tc_api_admin_invalidate_sessions() {
         tc_require_admin($db);
         $db['settings']['authEpoch'] = (int) (isset($db['settings']['authEpoch']) ? $db['settings']['authEpoch'] : 1) + 1;
         tc_json(200, array('ok' => true, 'authEpoch' => (int) $db['settings']['authEpoch']));
+    });
+}
+
+// ---- 用户 API 密钥(OpenAI 兼容出口用) ----
+function tc_api_key_public($k) {
+    return array(
+        'id' => $k['id'],
+        'name' => isset($k['name']) ? $k['name'] : '',
+        'prefix' => isset($k['prefix']) ? $k['prefix'] : '',
+        'createdAt' => isset($k['createdAt']) ? (int) $k['createdAt'] : 0,
+        'lastUsed' => isset($k['lastUsed']) ? (int) $k['lastUsed'] : 0,
+    );
+}
+
+function tc_api_me_apikeys_list() {
+    tc_with_db(false, function ($db) {
+        $user = tc_require_auth($db);
+        $keys = array();
+        foreach ((isset($user['apiKeys']) && is_array($user['apiKeys']) ? $user['apiKeys'] : array()) as $k) {
+            if (is_array($k)) $keys[] = tc_api_key_public($k);
+        }
+        tc_json(200, array('keys' => $keys, 'enabled' => !empty($db['settings']['apiKeysEnabled'])));
+    });
+}
+
+function tc_api_me_apikeys_create() {
+    tc_with_db(true, function (&$db) {
+        $user = tc_require_auth($db);
+        if (empty($db['settings']['apiKeysEnabled'])) tc_fail(403, '管理员已关闭 API 密钥功能');
+        $b = tc_read_json_body();
+        $name = substr(trim((string) (isset($b['name']) ? $b['name'] : '')), 0, 40);
+        $existing = isset($user['apiKeys']) && is_array($user['apiKeys']) ? $user['apiKeys'] : array();
+        if (count($existing) >= 5) tc_fail(400, '最多保留 5 个 API 密钥，请先删除不再使用的');
+        $key = tc_api_key_generate();
+        $record = array('id' => tc_uid(8), 'name' => $name !== '' ? $name : 'API Key', 'hash' => tc_api_key_hash($key), 'prefix' => tc_api_key_prefix($key), 'createdAt' => tc_now(), 'lastUsed' => 0);
+        $existing[] = $record;
+        $user['apiKeys'] = $existing;
+        tc_replace_user($db, $user);
+        tc_json(200, array('key' => tc_api_key_public($record), 'secret' => $key));
+    });
+}
+
+function tc_api_me_apikeys_delete($id) {
+    tc_with_db(true, function (&$db) use ($id) {
+        $user = tc_require_auth($db);
+        $list = isset($user['apiKeys']) && is_array($user['apiKeys']) ? $user['apiKeys'] : array();
+        $kept = array_values(array_filter($list, function ($k) use ($id) { return is_array($k) && isset($k['id']) && $k['id'] !== $id; }));
+        if (count($kept) === count($list)) tc_fail(404, '密钥不存在');
+        $user['apiKeys'] = $kept;
+        tc_replace_user($db, $user);
+        tc_json(200, array('ok' => true));
     });
 }
 

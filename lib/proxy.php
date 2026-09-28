@@ -1565,10 +1565,19 @@ function tc_api_fetch_models() {
     tc_json(200, array('models' => tc_normalize_models($mapped)));
 }
 
-function tc_api_proxy($format) {
+function tc_api_proxy($format, $apiKeyOwner = null) {
     $started = tc_now();
-    $ctx = tc_with_db(false, function ($db) use ($format) {
-        $user = tc_require_auth($db);
+    $ctx = tc_with_db(false, function ($db) use ($format, $apiKeyOwner) {
+        if ($apiKeyOwner !== null) {
+            // OpenAI 兼容出口:密钥已在外层验证,取最新用户记录
+            $user = null;
+            foreach ($db['users'] as $u) {
+                if ((string) $u['id'] === (string) $apiKeyOwner['userId']) { $user = $u; break; }
+            }
+            if (!$user) tc_fail(401, 'API 密钥对应的用户不存在');
+        } else {
+            $user = tc_require_auth($db);
+        }
         $rateLimit = isset($db['settings']['rateLimitPerMin']) ? (int) $db['settings']['rateLimitPerMin'] : 30;
         if (!tc_rate_limit_check('u:' . $user['id'], $rateLimit)) {
             tc_fail(429, '请求太频繁了，请稍后再试（当前上限 ' . $rateLimit . ' 次/分钟）');
@@ -2041,4 +2050,51 @@ function tc_context_learn($provider, $body, $errBody) {
         });
     } catch (Throwable $e) {
     }
+}
+
+// ---- OpenAI 兼容出口:Bearer sk-tc- 密钥鉴权,计费/限流/熔断与网页端完全一致 ----
+function tc_v1_authenticate() {
+    $auth = tc_with_db(true, function (&$db) {
+        if (empty($db['settings']['apiKeysEnabled'])) tc_fail(403, '管理员已关闭 API 密钥功能');
+        $owner = tc_find_api_key_owner($db, tc_bearer());
+        if (!$owner) tc_fail(401, '无效的 API 密钥');
+        foreach ($db['users'] as &$u) {
+            if (!isset($u['id']) || (string) $u['id'] !== (string) $owner['userId']) continue;
+            if (isset($u['apiKeys'][$owner['keyIndex']]) && is_array($u['apiKeys'][$owner['keyIndex']])) {
+                $u['apiKeys'][$owner['keyIndex']]['lastUsed'] = tc_now();
+            }
+            break;
+        }
+        unset($u);
+        return array('userId' => (string) $owner['userId']);
+    });
+    return $auth;
+}
+
+function tc_api_v1_chat_completions() {
+    $auth = tc_v1_authenticate();
+    tc_api_proxy('chat', $auth);
+}
+
+function tc_api_v1_models() {
+    $auth = tc_v1_authenticate();
+    tc_with_db(false, function ($db) use ($auth) {
+        $user = null;
+        foreach ($db['users'] as $u) {
+            if ((string) $u['id'] === $auth['userId']) { $user = $u; break; }
+        }
+        if (!$user) tc_fail(401, 'API 密钥对应的用户不存在');
+        $allowed = tc_user_access($db, $user);
+        $data = array();
+        foreach (tc_visible_providers_of($db, $user) as $p) {
+            $vis = tc_visible_provider($user, $p, $allowed);
+            if (!$vis) continue;
+            $ownerName = (isset($p['name']) && $p['name'] !== '' ? $p['name'] : 'tinychat');
+            foreach ((isset($vis['models']) ? $vis['models'] : array()) as $m) {
+                if (!is_array($m) || !isset($m['id']) || $m['id'] === '') continue;
+                $data[] = array('id' => (string) $m['id'], 'object' => 'model', 'created' => 0, 'owned_by' => $ownerName);
+            }
+        }
+        tc_json(200, array('object' => 'list', 'data' => $data));
+    });
 }

@@ -1786,6 +1786,7 @@ async function loadVerifySettings() {
   ['verify-email-enabled','verify-reset-enabled','verify-quota-unlimited'].forEach((id, i) => { const e=$(id); if(e) e.checked=!![s.emailVerificationEnabled,s.passwordResetEnabled,s.freeQuotaUnlimited][i]; });
   set('verify-free-quota', s.freeQuota); const smtp=s.smtp||{}; set('smtp-host',smtp.host); set('smtp-port',smtp.port||587); set('smtp-user',smtp.username); set('smtp-pass',smtp.password); set('smtp-encryption',smtp.encryption||'tls'); set('smtp-from-name',smtp.fromName||'TinyChat'); set('smtp-from-email',smtp.fromEmail);
   set('session-days', s.sessionDays || 7);
+  if ($('apikeys-enabled')) $('apikeys-enabled').checked = s.apiKeysEnabled !== false;
   const tpl = s.mailTemplates || {};
   MAIL_TPL.siteName = s.siteName || 'TinyChat';
   MAIL_TPL.tpl.verify = { subject: tpl.verifySubject || '', html: tpl.verifyHtml || '' };
@@ -2009,7 +2010,7 @@ async function loadPackages() {
   });
 })();
 (function initVerifyAndPackages(){
-  const save=$('verify-save'); if(save) save.addEventListener('click',async()=>{ const tplPayload=MAIL_TPL.loaded?{mailTemplates:{tplVersion:2,verifySubject:MAIL_TPL.tpl.verify.subject,verifyHtml:MAIL_TPL.tpl.verify.html,resetSubject:MAIL_TPL.tpl.reset.subject,resetHtml:MAIL_TPL.tpl.reset.html}}:{}; const payload=Object.assign({emailVerificationEnabled:!!$('verify-email-enabled').checked,passwordResetEnabled:!!$('verify-reset-enabled').checked,freeQuotaUnlimited:!!$('verify-quota-unlimited').checked,freeQuota:parseInt($('verify-free-quota').value,10)||0,sessionDays:Math.min(30,Math.max(1,parseInt($('session-days')&&$('session-days').value,10)||7)),smtp:{host:$('smtp-host').value.trim(),port:parseInt($('smtp-port').value,10)||587,username:$('smtp-user').value.trim(),password:$('smtp-pass').value,encryption:$('smtp-encryption').value,fromName:$('smtp-from-name').value.trim(),fromEmail:$('smtp-from-email').value.trim()}},tplPayload); const r=await api('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'保存失败',true); toast('验证设置已保存'); });
+  const save=$('verify-save'); if(save) save.addEventListener('click',async()=>{ const tplPayload=MAIL_TPL.loaded?{mailTemplates:{tplVersion:2,verifySubject:MAIL_TPL.tpl.verify.subject,verifyHtml:MAIL_TPL.tpl.verify.html,resetSubject:MAIL_TPL.tpl.reset.subject,resetHtml:MAIL_TPL.tpl.reset.html}}:{}; const payload=Object.assign({emailVerificationEnabled:!!$('verify-email-enabled').checked,passwordResetEnabled:!!$('verify-reset-enabled').checked,freeQuotaUnlimited:!!$('verify-quota-unlimited').checked,freeQuota:parseInt($('verify-free-quota').value,10)||0,sessionDays:Math.min(30,Math.max(1,parseInt($('session-days')&&$('session-days').value,10)||7)),apiKeysEnabled:!!($('apikeys-enabled')&&$('apikeys-enabled').checked),smtp:{host:$('smtp-host').value.trim(),port:parseInt($('smtp-port').value,10)||587,username:$('smtp-user').value.trim(),password:$('smtp-pass').value,encryption:$('smtp-encryption').value,fromName:$('smtp-from-name').value.trim(),fromEmail:$('smtp-from-email').value.trim()}},tplPayload); const r=await api('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'保存失败',true); toast('验证设置已保存'); });
   const invalidate=$('session-invalidate'); if(invalidate) invalidate.addEventListener('click',async()=>{
     const ok=window.OCUI&&OCUI.confirm?await OCUI.confirm({title:'强制全站下线',message:'所有人的现有登录态会立即失效（包括你自己），需要重新登录。确认执行？',danger:true,confirmText:'执行'}):confirm('所有人的现有登录态会立即失效（包括你自己），确认执行？');
     if(!ok) return;
@@ -2346,7 +2347,7 @@ async function restoreBackup(name) {
 })();
 
 const TAB_LOADERS = {
-  overview: () => loadStats(),
+  overview: () => { loadStats(); loadAnnouncement(); },
   usage: () => loadStats(),
   users: () => loadUsers(),
   groups: () => loadGroups(),
@@ -2405,6 +2406,43 @@ async function loadModeration() {
       if (!r.ok) return toast((d.error && d.error.message) || '保存失败', true);
       toast('内容安全设置已保存');
       loadModeration();
+    } catch (e) {
+      toast('保存失败: ' + e.message, true);
+    } finally { save.disabled = false; }
+  });
+})();
+
+// ============ 全站公告 ============
+let ANNOUNCE_LOADED_TEXT = '';
+async function loadAnnouncement() {
+  try {
+    const r = await api('/api/admin/settings');
+    const d = await r.json();
+    if (!r.ok) return;
+    const ann = (d.settings || {}).announcement || {};
+    ANNOUNCE_LOADED_TEXT = ann.text || '';
+    if ($('announce-enabled')) $('announce-enabled').checked = !!ann.enabled;
+    if ($('announce-text')) $('announce-text').value = ANNOUNCE_LOADED_TEXT;
+  } catch (e) { /* 静默:公告加载失败不影响概览 */ }
+}
+(function initAnnouncement() {
+  const save = $('announce-save');
+  if (!save) return;
+  save.addEventListener('click', async () => {
+    const text = ($('announce-text') && $('announce-text').value) || '';
+    const enabled = !!($('announce-enabled') && $('announce-enabled').checked);
+    const payload = { announcement: { enabled, text, updatedAt: Date.now() } };
+    save.disabled = true;
+    try {
+      const r = await api('/api/admin/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (!r.ok) return toast((d.error && d.error.message) || '保存失败', true);
+      ANNOUNCE_LOADED_TEXT = text;
+      toast(enabled ? '公告已发布' : '公告已关闭');
     } catch (e) {
       toast('保存失败: ' + e.message, true);
     } finally { save.disabled = false; }

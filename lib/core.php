@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '1.2.0');
+define('TC_VERSION', '1.3.0');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -109,6 +109,10 @@ $TC_SETTINGS_DEFAULTS = array(
     'agreementHtml' => '',
     // 隐私:关闭后服务器不保存对话记录(客户端仅本地留存)
     'persistChats' => true,
+    // 全站公告:enabled 且 text 非空时前台展示
+    'announcement' => array('enabled' => false, 'text' => '', 'updatedAt' => 0),
+    // OpenAI 兼容 API 出口:允许用户生成 sk- 密钥通过第三方客户端调用
+    'apiKeysEnabled' => true,
 );
 $TC_SETTINGS_DEFAULTS['mailTemplates'] = tc_mail_default_templates();
 
@@ -363,6 +367,15 @@ function tc_normalize_settings($raw) {
     $s['agreementEnabled'] = !empty($s['agreementEnabled']);
     $s['agreementHtml'] = substr((string) (isset($s['agreementHtml']) ? $s['agreementHtml'] : ''), 0, 200000);
     $s['persistChats'] = !array_key_exists('persistChats', $s) || !empty($s['persistChats']);
+    $ann = isset($s['announcement']) && is_array($s['announcement']) ? $s['announcement'] : array();
+    $annText = trim((string) (isset($ann['text']) ? $ann['text'] : ''));
+    $annChanged = isset($ann['updatedAt']) ? (int) $ann['updatedAt'] : 0;
+    $s['announcement'] = array(
+        'enabled' => !empty($ann['enabled']) && $annText !== '',
+        'text' => substr($annText, 0, 2000),
+        'updatedAt' => $annChanged,
+    );
+    $s['apiKeysEnabled'] = !array_key_exists('apiKeysEnabled', $s) || !empty($s['apiKeysEnabled']);
     return $s;
 }
 
@@ -799,6 +812,33 @@ function tc_moderation_hit($moderation, $text) {
         if (strpos($haystack, strtolower($w)) !== false) return $w;
     }
     return '';
+}
+
+// ---- 用户 API 密钥(sk-tc-...):哈希落库,仅创建时完整展示一次,用于 OpenAI 兼容出口 ----
+function tc_api_key_generate() {
+    return 'sk-tc-' . tc_uid(24);
+}
+
+function tc_api_key_hash($key) {
+    return hash_hmac('sha256', (string) $key, tc_secret() . '|api-key-v1');
+}
+
+function tc_api_key_prefix($key) {
+    return substr((string) $key, 0, 12);
+}
+
+// 按明文 Key 定位用户:key 哈希比对(每用户最多 5 把)。返回 ['userId','keyIndex'] 或 null
+function tc_find_api_key_owner($db, $key) {
+    if ((string) $key === '' || strpos((string) $key, 'sk-tc-') !== 0) return null;
+    $hash = tc_api_key_hash($key);
+    foreach ($db['users'] as $ui => $u) {
+        if (empty($u['apiKeys']) || !is_array($u['apiKeys'])) continue;
+        foreach ($u['apiKeys'] as $ki => $k) {
+            if (!is_array($k) || !isset($k['hash'])) continue;
+            if (hash_equals((string) $k['hash'], $hash)) return array('userId' => (string) $u['id'], 'keyIndex' => $ki);
+        }
+    }
+    return null;
 }
 
 function tc_read_db_unlocked() {

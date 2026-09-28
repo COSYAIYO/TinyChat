@@ -1,0 +1,19 @@
+{
+  "name": "TinyChat",
+  "short_name": "TinyChat",
+  "description": "自建 AI 聊天站：多模型、多供应商统一接入",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [
+    {
+      "src": "./static/logo/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
