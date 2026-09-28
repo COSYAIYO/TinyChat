@@ -13,7 +13,7 @@
 <link rel="stylesheet" href="./static/css/refine.css?v=20260926.31">
 <link rel="stylesheet" href="./static/css/redesign.css?v=20260926.31">
 <link rel="stylesheet" href="./static/css/polish.css?v=20260926.33">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20260927.17">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20260928.1">
 <script>
 (function () {
   try {
@@ -531,7 +531,7 @@
     </div>
     <div class="admin-card" style="margin-top:16px">
       <h2>数据备份</h2>
-      <p class="muted small">备份 data/db.json（用户、供应商、对话、设置等全部数据）到 data/backup/。开启后管理后台每次打开时惰性检查：距最近一份超过 24 小时就自动备份，并只保留最近 N 份。</p>
+      <p class="muted small">备份整库快照（用户、供应商、对话、设置等全部数据）到 data/backup/，文件为平铺 JSON 格式，可跨版本恢复。开启后管理后台每次打开时惰性检查：距最近一份超过 24 小时就自动备份，并只保留最近 N 份。</p>
       <div class="row-between" style="gap:10px;flex-wrap:wrap;margin-top:6px">
         <label class="user-form-admin" style="margin:0"><span class="switch"><input type="checkbox" id="backup-enabled" checked><span class="slider"></span></span><span>自动备份</span></label>
         <label class="field" style="margin:0;flex-direction:row;align-items:center;gap:8px"><span style="white-space:nowrap">保留份数</span><input id="backup-keep" type="number" min="1" max="30" value="7" style="width:80px"></label>
@@ -711,7 +711,7 @@
 <script src="./static/js/config.js?v=20260926.31"></script>
 <script src="./static/js/icons.js?v=20260926.31"></script>
 <script src="./static/js/ui.js?v=20260926.31"></script>
-<script src="./static/js/components.js?v=20260926.31"></script>
+<script src="./static/js/components.js?v=20260928.1"></script>
 <script src="./static/js/admin.js?v=20260927.23"></script>
 </body>
 </html>

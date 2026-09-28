@@ -58,6 +58,17 @@
       <p class="muted">登录后继续对话</p>
     </div>
     <div id="auth-error" class="auth-error hidden" role="alert"></div>
+    <div id="env-check-box" class="hidden" style="border:1px solid var(--hairline);border-radius:12px;padding:14px 16px;margin-bottom:14px;background:var(--bg-surface,#f7f8f7)">
+      <div style="font-weight:600;margin-bottom:8px">首次运行环境检查</div>
+      <div id="env-check-list" style="font-size:13px;line-height:1.9"></div>
+      <div class="row-between" style="margin-top:8px">
+        <span class="muted small" id="env-check-status"></span>
+        <span style="display:flex;gap:8px">
+          <button type="button" class="btn small hidden" id="env-check-retry">重新检查</button>
+          <button type="button" class="btn primary hidden" id="env-check-next">下一步：创建管理员</button>
+        </span>
+      </div>
+    </div>
     <form id="setup-form" class="hidden" autocomplete="off">
       <p class="muted" style="margin:0 0 12px">还没有管理员。先设一个账号，再去后台添加供应商。</p>
       <label class="field">
@@ -139,6 +150,6 @@
   </div>
 <script src="./static/js/config.js?v=20260926.25"></script>
 <script src="./static/js/ui.js?v=20260926.25"></script>
-<script src="./static/js/login.js?v=20260927.1"></script>
+<script src="./static/js/login.js?v=20260928.1"></script>
 </body>
 </html>

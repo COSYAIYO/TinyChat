@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '1.7.1');
+define('TC_VERSION', '2.0.0');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -92,7 +92,7 @@ $TC_SETTINGS_DEFAULTS = array(
     'maxOutputTokens' => 12800,
     // 全局采样温度: null = 不发送该参数(用模型默认);设置后 0-2
     'temperature' => null,
-    // 数据备份:每日自动备份 data/db.json,保留最近 N 份
+    // 数据备份:每日自动备份整库快照到 data/backup/,保留最近 N 份
     'backupEnabled' => true,
     'backupKeep' => 7,
     // 代理接口限流:每用户每分钟最大请求数,0 = 不限制
@@ -694,8 +694,7 @@ function tc_migrate_db($raw) {
     return $db;
 }
 
-function tc_db_file() { return tc_data_dir() . '/db.json'; }
-function tc_lock_file() { return tc_data_dir() . '/db.lock'; }
+function tc_db_file() { return tc_data_dir() . '/tinychat.sqlite'; }
 
 // ---- 数据备份:data/backup/db-YYYYMMDD-HHMMSS.json,自动每日一份并按 backupKeep 轮换 ----
 function tc_backup_dir() {
@@ -716,15 +715,19 @@ function tc_backup_list() {
     return $out;
 }
 
-function tc_backup_create() {
-    $dbFile = tc_db_file();
-    if (!is_file($dbFile)) return null;
+function tc_backup_create($db = null) {
     $name = 'db-' . date('Ymd-His') . '.json';
     if (is_file(tc_backup_dir() . '/' . $name)) {
         // 同一秒内多次备份:追加短随机后缀避免覆盖
         $name = 'db-' . date('Ymd-His') . '-' . substr(bin2hex(random_bytes(2)), 0, 4) . '.json';
     }
-    if (!@copy($dbFile, tc_backup_dir() . '/' . $name)) return null;
+    try {
+        $snapshot = $db !== null ? $db : tc_with_db(false, function ($d) { return $d; });
+        $json = tc_json_encode($snapshot);
+    } catch (Throwable $e) {
+        return null;
+    }
+    if (file_put_contents(tc_backup_dir() . '/' . $name, $json, LOCK_EX) === false) return null;
     return $name;
 }
 
@@ -738,12 +741,13 @@ function tc_backup_prune($settings) {
 }
 
 // 管理后台加载时惰性触发:距最近一份备份超过 24 小时(或还没有)就自动备份一次
-function tc_backup_maybe($settings) {
+function tc_backup_maybe($db) {
+    $settings = isset($db['settings']) && is_array($db['settings']) ? $db['settings'] : array();
     if (empty($settings['backupEnabled'])) return;
     try {
         $list = tc_backup_list();
         if ($list && (tc_now() - (int) $list[0]['time']) < 24 * 3600 * 1000) return;
-        if (tc_backup_create() !== null) tc_backup_prune($settings);
+        if (tc_backup_create($db) !== null) tc_backup_prune($settings);
     } catch (Throwable $e) { /* 备份失败不影响主流程 */ }
 }
 
@@ -849,70 +853,160 @@ function tc_find_api_key_owner($db, $key) {
     return null;
 }
 
-function tc_read_db_unlocked() {
-    $file = tc_db_file();
-    if (!is_file($file)) return tc_empty_db();
-    $raw = @file_get_contents($file);
-    if ($raw === false || $raw === '') return tc_empty_db();
-    $json = json_decode($raw, true);
-    if (!is_array($json)) return tc_empty_db();
-    return tc_migrate_db($json);
+// ---- 数据库:SQLite(WAL 模式) ----
+// 库表 store(k, v):顶层键各占一行(JSON 编码);userChats 例外——按用户拆成 chat:{uid} 行,
+// 聊天保存只重写该用户自己的行。事务由 SQLite 原生保证,不再依赖 flock 与全量重写。
+function tc_db() {
+    static $pdo = null;
+    if ($pdo !== null) return $pdo;
+    if (!extension_loaded('pdo_sqlite')) throw new RuntimeException('主机缺少 pdo_sqlite 扩展，无法运行');
+    $pdo = new PDO('sqlite:' . tc_db_file(), null, null, array(
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    ));
+    $pdo->exec('PRAGMA journal_mode=WAL');
+    $pdo->exec('PRAGMA busy_timeout=5000');
+    $pdo->exec('PRAGMA synchronous=NORMAL');
+    $pdo->exec('CREATE TABLE IF NOT EXISTS store (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
+    tc_db_import_legacy($pdo);
+    return $pdo;
 }
 
-function tc_write_db_unlocked($db) {
-    $file = tc_db_file();
-    $tmp = $file . '.tmp';
-    $json = json_encode($db, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
-    if ($json === false) throw new RuntimeException('数据库序列化失败');
-    if (file_put_contents($tmp, $json, LOCK_EX) === false) throw new RuntimeException('数据库写入失败');
-    if (!@rename($tmp, $file)) {
-        @unlink($file);
-        if (!@rename($tmp, $file)) throw new RuntimeException('数据库替换失败');
+// 一次性导入旧版 db.json(存在且库为空时),导入成功后原文件改名留档
+function tc_db_import_legacy($pdo) {
+    $legacy = tc_data_dir() . '/db.json';
+    if (!is_file($legacy)) return;
+    $n = (int) $pdo->query('SELECT COUNT(*) FROM store')->fetchColumn();
+    if ($n > 0) return;
+    $json = json_decode((string) @file_get_contents($legacy), true);
+    if (is_array($json) && isset($json['users']) && is_array($json['users']) && count($json['users']) > 0) {
+        try {
+            tc_db_write_snapshot($pdo, tc_migrate_db($json));
+        } catch (Throwable $e) {
+            return; // 导入失败保留原文件,继续以空库运行
+        }
+    }
+    @rename($legacy, $legacy . '.imported-' . date('Ymd-His'));
+}
+
+// 从 store 表装配出业务数组(含迁移与默认值),userChats 保持 stdClass 形状
+function tc_db_load_all($pdo) {
+    $db = tc_empty_db();
+    $db['userChats'] = new stdClass();
+    $rows = $pdo->query('SELECT k, v FROM store')->fetchAll();
+    foreach ($rows as $row) {
+        $k = (string) $row['k'];
+        if (strncmp($k, 'chat:', 5) === 0) {
+            $val = json_decode($row['v'], true);
+            if (is_array($val)) {
+                $uid = substr($k, 5);
+                $db['userChats']->$uid = $val;
+            }
+            continue;
+        }
+        $val = json_decode($row['v'], true);
+        if ($val === null && $row['v'] !== 'null') continue;
+        $db[$k] = $val;
+    }
+    return tc_migrate_db($db);
+}
+
+// 整库快照写入(迁移导入 / 恢复备份用):清空后按顶层键落行
+function tc_db_write_snapshot($pdo, $db) {
+    $pdo->exec('DELETE FROM store');
+    $ins = $pdo->prepare('INSERT INTO store (k, v) VALUES (:k, :v)');
+    foreach ($db as $k => $v) {
+        if ($k === 'userChats') {
+            foreach (tc_assoc($v) as $uid => $row) {
+                $ins->execute(array(':k' => 'chat:' . $uid, ':v' => tc_json_encode($row)));
+            }
+            continue;
+        }
+        $ins->execute(array(':k' => $k, ':v' => tc_json_encode($v)));
     }
 }
 
 function tc_with_db($write, $fn) {
-    $lockPath = tc_lock_file();
-    $fp = fopen($lockPath, 'c+');
-    if (!$fp) throw new RuntimeException('无法打开数据锁');
-    if (!flock($fp, $write ? LOCK_EX : LOCK_SH)) {
-        fclose($fp);
-        throw new RuntimeException('无法锁定数据库');
+    $pdo = tc_db();
+    $db = tc_db_load_all($pdo);
+    $orig = array();
+    $origChats = array();
+    foreach ($db as $k => $v) {
+        if ($k === 'userChats') {
+            foreach (tc_assoc($v) as $uid => $row) $origChats[$uid] = tc_json_encode($row);
+            continue;
+        }
+        $orig[$k] = tc_json_encode($v);
     }
-    $db = tc_read_db_unlocked();
     $GLOBALS['_tc_db'] = &$db;
-    $GLOBALS['_tc_db_ctx'] = array('fp' => $fp, 'write' => $write, 'committed' => false);
+    $GLOBALS['_tc_db_ctx'] = array(
+        'write' => $write, 'committed' => false, 'pdo' => $pdo,
+        'orig' => $orig, 'origChats' => $origChats,
+    );
     try {
+        if ($write) $pdo->exec('BEGIN IMMEDIATE');
         $ret = $fn($db);
         tc_db_commit();
         return $ret;
+    } catch (Throwable $e) {
+        if (empty($GLOBALS['_tc_db_ctx']['committed'])) {
+            try { $pdo->exec('ROLLBACK'); } catch (Throwable $e2) {}
+            $GLOBALS['_tc_db_ctx']['committed'] = true;
+        }
+        throw $e;
     } finally {
         tc_db_release();
     }
 }
 
 function tc_db_skip_write() {
-    if (!empty($GLOBALS['_tc_db_ctx'])) $GLOBALS['_tc_db_ctx']['write'] = false;
-}
-
-function tc_db_commit() {
     if (empty($GLOBALS['_tc_db_ctx']) || !empty($GLOBALS['_tc_db_ctx']['committed'])) return;
     $GLOBALS['_tc_db_ctx']['committed'] = true;
-    if (!empty($GLOBALS['_tc_db_ctx']['write']) && isset($GLOBALS['_tc_db'])) {
-        tc_write_db_unlocked($GLOBALS['_tc_db']);
+    if (!empty($GLOBALS['_tc_db_ctx']['write'])) {
+        try { $GLOBALS['_tc_db_ctx']['pdo']->exec('ROLLBACK'); } catch (Throwable $e) {}
+    }
+}
+
+// 提交:只写发生变化的行(逐键比对),userChats 按用户粒度比对
+function tc_db_commit() {
+    if (empty($GLOBALS['_tc_db_ctx']) || !empty($GLOBALS['_tc_db_ctx']['committed'])) return;
+    $ctx = &$GLOBALS['_tc_db_ctx'];
+    $ctx['committed'] = true;
+    $pdo = $ctx['pdo'];
+    if (empty($ctx['write'])) return; // 读请求不落库
+    try {
+        $db = $GLOBALS['_tc_db'];
+        $ups = $pdo->prepare('INSERT INTO store (k, v) VALUES (:k, :v) ON CONFLICT(k) DO UPDATE SET v = :v2');
+        $del = $pdo->prepare('DELETE FROM store WHERE k = :k');
+        $newChats = tc_assoc(isset($db['userChats']) ? $db['userChats'] : null);
+        foreach ($db as $k => $v) {
+            if ($k === 'userChats') {
+                foreach ($newChats as $uid => $row) {
+                    $json = tc_json_encode($row);
+                    if (isset($ctx['origChats'][$uid]) && $ctx['origChats'][$uid] === $json) continue;
+                    $ups->execute(array(':k' => 'chat:' . $uid, ':v' => $json, ':v2' => $json));
+                }
+                foreach ($ctx['origChats'] as $uid => $json) {
+                    if (!array_key_exists($uid, $newChats)) $del->execute(array(':k' => 'chat:' . $uid));
+                }
+                continue;
+            }
+            $json = tc_json_encode($v);
+            if (isset($ctx['orig'][$k]) && $ctx['orig'][$k] === $json) continue;
+            $ups->execute(array(':k' => $k, ':v' => $json, ':v2' => $json));
+        }
+        foreach ($ctx['orig'] as $k => $json) {
+            if (!array_key_exists($k, $db)) $del->execute(array(':k' => $k));
+        }
+        $pdo->exec('COMMIT');
+    } catch (Throwable $e) {
+        try { $pdo->exec('ROLLBACK'); } catch (Throwable $e2) {}
+        throw new RuntimeException('数据库写入失败: ' . $e->getMessage());
     }
 }
 
 function tc_db_release() {
     tc_db_commit();
-    if (empty($GLOBALS['_tc_db_ctx']['fp'])) {
-        unset($GLOBALS['_tc_db'], $GLOBALS['_tc_db_ctx']);
-        return;
-    }
-    $fp = $GLOBALS['_tc_db_ctx']['fp'];
-    $GLOBALS['_tc_db_ctx']['fp'] = null;
-    flock($fp, LOCK_UN);
-    fclose($fp);
     unset($GLOBALS['_tc_db'], $GLOBALS['_tc_db_ctx']);
 }
 

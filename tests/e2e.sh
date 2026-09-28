@@ -54,7 +54,8 @@ say "== 基础 =="
 code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/")
 assert_eq "首页 200" "$code" "200"
 cfg=$(curl -s "$BASE/api/config")
-assert_contains "config 返回版本" "$cfg" '"version":"1\.'
+assert_contains "config 返回版本" "$cfg" '"version":"2.'
+assert_contains "环境自检通过" "$(curl -s "$BASE/api/env-check")" '"allOk":true'
 assert_contains "config 返回公告字段" "$cfg" '"announcement"'
 hdr=$(curl -s -D - -o /dev/null "$BASE/api/config")
 assert_contains "CSP 头" "$hdr" "Content-Security-Policy:"

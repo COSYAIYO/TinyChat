@@ -587,6 +587,32 @@ function tc_has_admin($db) {
     return false;
 }
 
+// 首次运行环境自检:不依赖数据库,逐项检查扩展与目录权限,登录页据阻塞项引导
+function tc_api_env_check() {
+    $dir = tc_data_dir();
+    $checks = array();
+    $add = function ($name, $ok, $detail = '', $critical = true) use (&$checks) {
+        $checks[] = array('name' => $name, 'ok' => (bool) $ok, 'detail' => (string) $detail, 'critical' => (bool) $critical);
+    };
+    $add('PHP 版本 ≥ 7.4', version_compare(PHP_VERSION, '7.4.0', '>='), '当前 ' . PHP_VERSION);
+    $add('pdo_sqlite 扩展', extension_loaded('pdo_sqlite'), 'SQLite 数据存储依赖');
+    $add('curl 扩展', extension_loaded('curl'), '调用上游 AI 接口依赖');
+    $add('openssl 扩展', extension_loaded('openssl'), '供应商 Key 加密 / 随机数依赖');
+    $add('json 支持', function_exists('json_encode'), '数据序列化依赖');
+    $add('mbstring 扩展', extension_loaded('mbstring'), '中文用量估算与审核匹配（建议）', false);
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    $writable = is_dir($dir) && is_writable($dir);
+    $probeFile = $dir . '/.probe-' . bin2hex(random_bytes(4));
+    $probe = @file_put_contents($probeFile, 'ok') !== false;
+    if ($probe) @unlink($probeFile);
+    $add('data/ 目录可写', $probe, $dir);
+    $free = function_exists('disk_free_space') ? @disk_free_space($dir) : null;
+    $add('磁盘剩余空间 ≥ 20MB', $free === null || $free > 20 * 1024 * 1024, $dir, false);
+    $allOk = true;
+    foreach ($checks as $c) if ($c['critical'] && !$c['ok']) $allOk = false;
+    tc_json(200, array('checks' => $checks, 'allOk' => $allOk, 'dataDir' => $dir));
+}
+
 function tc_api_public_config($db) {
     $s = $db['settings'];
     tc_json(200, array(
@@ -1035,7 +1061,7 @@ function tc_api_get_share($id) {
 function tc_api_admin_stats() {
     tc_with_db(false, function ($db) {
         tc_require_admin($db);
-        tc_backup_maybe($db['settings']);
+        tc_backup_maybe($db);
         $days = tc_last_n_days(14);
         $byDay = tc_assoc($db['stats']['callsByDay']);
         $trend = array();
@@ -1369,7 +1395,7 @@ function tc_api_redeem_package() {
 function tc_api_admin_get_settings() {
     tc_with_db(false, function ($db) {
         tc_require_admin($db);
-        tc_backup_maybe($db['settings']);
+        tc_backup_maybe($db);
         tc_json(200, array('settings' => tc_admin_settings_public($db['settings'])));
     });
 }
@@ -1617,7 +1643,7 @@ function tc_api_admin_delete_logs() {
 function tc_api_admin_backup_list() {
     tc_with_db(false, function ($db) {
         tc_require_admin($db);
-        tc_backup_maybe($db['settings']);
+        tc_backup_maybe($db);
         tc_json(200, array(
             'backups' => tc_backup_list(),
             'backupEnabled' => !empty($db['settings']['backupEnabled']),
