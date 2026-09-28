@@ -520,33 +520,38 @@ async function loadAccess() {
     const locked = g.role === 'admin';
     section.innerHTML = `<div class="access-title">${escapeHtml(g.name)}${locked ? ' <span class="badge global">始终全部模型</span>' : ''}</div>`;
     PROVIDERS.forEach((p) => {
-      const rule = ACCESS.find((a) => a.groupId === g.id && a.providerId === p.id);
-      const checked = new Set(rule ? rule.modelIds : []);
-      const allOpen = locked || (rule ? rule.modelIds.includes('*') : false);
       const row = document.createElement('div');
       row.className = 'access-row';
+      row.dataset.group = g.id;
+      row.dataset.provider = p.id;
+      row.dataset.locked = locked ? '1' : '';
       row.innerHTML = `
         <div class="access-prov">${escapeHtml(p.name)}
           <label class="access-all" style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-weight:normal">
-            <input type="checkbox" data-prov="${p.id}" ${allOpen ? 'checked' : ''} ${locked ? 'disabled' : ''}> 全部
+            <input type="checkbox" data-prov="${p.id}" ${locked ? 'disabled' : ''}> 全部
           </label>
         </div>
         <div class="access-models">
           ${p.models.map((m) => `
-            <label class="access-model ${allOpen ? 'disabled' : ''}">
-              <input type="checkbox" data-model="${p.id}|${m.id}" ${checked.has(m.id) ? 'checked' : ''} ${allOpen ? 'disabled' : ''}>
+            <label class="access-model">
+              <input type="checkbox" data-model="${p.id}|${m.id}" ${locked ? 'disabled' : ''}>
               ${escapeHtml(m.id)}
             </label>`).join('')}
         </div>`;
+      syncAccessRow(row);
       const allChk = row.querySelector('[data-prov]');
       if (locked) { section.appendChild(row); return; }
+      // 「全部」= 全选/全不选快捷键:勾上写通配 ['*'],取消则清空(之后可逐个勾选)
       allChk.addEventListener('change', async () => {
-        await saveAccessRule(g.id, p.id, allChk.checked ? ['*'] : [], { row, allChk });
+        await saveAccessRule(g.id, p.id, allChk.checked ? ['*'] : [], row);
       });
+      // 单个模型:直接勾选即可只授权部分模型。全选时写回通配,便于新模型自动纳入。
       row.querySelectorAll('[data-model]').forEach((chk) => {
         chk.addEventListener('change', async () => {
-          const sel = Array.from(row.querySelectorAll('[data-model]')).filter((c) => c.checked).map((c) => c.dataset.model.split('|')[1]);
-          await saveAccessRule(g.id, p.id, sel, { row, allChk });
+          const boxes = Array.from(row.querySelectorAll('[data-model]'));
+          const sel = boxes.filter((c) => c.checked).map((c) => c.dataset.model.split('|')[1]);
+          const allSelected = boxes.length > 0 && sel.length === boxes.length;
+          await saveAccessRule(g.id, p.id, allSelected ? ['*'] : sel, row);
         });
       });
       section.appendChild(row);
@@ -555,29 +560,52 @@ async function loadAccess() {
   });
 }
 
-async function saveAccessRule(groupId, providerId, modelIds, { row, allChk } = {}) {
+// 依据当前 ACCESS 同步某一行复选框:通配时全部勾上并显示「全部」;
+// 部分授权时「全部」呈半选(不确定)态。
+function syncAccessRow(row) {
+  if (!row) return;
+  const gid = row.dataset.group;
+  const pid = row.dataset.provider;
+  const locked = row.dataset.locked === '1';
+  const rule = ACCESS.find((a) => a.groupId === gid && a.providerId === pid);
+  const ids = rule && Array.isArray(rule.modelIds) ? rule.modelIds : [];
+  const allOpen = locked || ids.indexOf('*') >= 0;
+  const boxFor = (mid) => allOpen || ids.indexOf(mid) >= 0;
+  row.querySelectorAll('[data-model]').forEach((chk) => {
+    const mid = chk.dataset.model.split('|')[1];
+    chk.checked = boxFor(mid);
+    chk.disabled = locked;
+    const label = chk.closest('.access-model');
+    if (label) label.classList.toggle('disabled', false);
+  });
+  const allChk = row.querySelector('[data-prov]');
+  if (allChk) {
+    const boxes = row.querySelectorAll('[data-model]');
+    const n = Array.from(boxes).filter((c) => c.checked).length;
+    allChk.checked = allOpen || (boxes.length > 0 && n === boxes.length);
+    allChk.indeterminate = !allOpen && n > 0 && n < boxes.length;
+  }
+}
+
+async function saveAccessRule(groupId, providerId, modelIds, row) {
   const r = await api('/api/admin/access', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ groupId, providerId, modelIds }),
   });
-  const data = await r.json();
-  if (!r.ok) return toast((data.error && data.error.message) || '保存授权失败', true);
-  ACCESS = data.rules || [];
-  toast('授权已更新');
-  // 局部同步复选框状态,避免整块重绘导致闪烁
-  if (row && allChk) {
-    const allOpen = modelIds.length === 1 && modelIds[0] === '*';
-    const modelChecks = row.querySelectorAll('[data-model]');
-    modelChecks.forEach((chk) => {
-      const m = chk.dataset.model.split('|')[1];
-      chk.checked = allOpen || modelIds.includes(m);
-      chk.disabled = allOpen;
-    });
-    allChk.checked = allOpen || modelChecks.length > 0 && modelIds.length === (modelChecks.length || -1);
-  } else {
-    loadAccess();
+  const data = await readJsonSafe(r);
+  if (!r.ok) {
+    toast((data.error && data.error.message) || '保存授权失败', true);
+    // 失败时回滚复选框到服务端真实状态
+    syncAccessRow(row);
+    return;
   }
+  ACCESS = data.rules || [];
+  const count = modelIds.length === 1 && modelIds[0] === '*' ? '全部模型' : (modelIds.length + ' 个模型');
+  toast('授权已更新：' + count);
+  // 局部同步复选框状态,避免整块重绘导致闪烁
+  if (row) syncAccessRow(row);
+  else loadAccess();
 }
 
 // ============ 供应商管理 ============

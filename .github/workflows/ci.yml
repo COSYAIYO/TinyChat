@@ -40,6 +40,8 @@ jobs:
         run: php tests/image-parse.php
       - name: 上游地址拼接自检(补 /v1 / 不重复)
         run: php tests/upstream-url.php
+      - name: 署名完整性守卫自检(篡改拦截 / 合法放行)
+        run: php tests/attribution.php
 
   e2e:
     name: E2E(PHP ${{ matrix.php }})
