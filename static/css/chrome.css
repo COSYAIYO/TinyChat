@@ -3742,3 +3742,27 @@ body.is-demo-admin [data-chats] { display: none !important; }
   .composer-area { padding-left: 10px; padding-right: 10px; }
   .img-ref { width: 54px; height: 54px; }
 }
+
+/* ---------- 移动端:字体设置行允许换行 ----------
+   该行是「说明 + 字体下拉 + 自定义输入(固定 150px) + 选择本机字体按钮」的横向布局,
+   窄屏放不下会顶破弹窗右边界。改为整行换行、控件占满可用宽度。 */
+@media (max-width: 560px) {
+  .pref-row {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .pref-row > .pref-info { flex: 1 1 100%; }
+  .font-family-control {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .font-family-control > .font-select-trigger { flex: 1 1 auto; }
+  .font-family-control > .font-family-input {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+  .font-family-control > .btn {
+    flex: 0 0 auto;
+  }
+}

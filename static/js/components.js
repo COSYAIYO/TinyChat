@@ -758,7 +758,12 @@
     document.documentElement.dataset.ocTipsBound = '1';
     let tip = null;
     let hideTimer = 0;
+    let autoHideTimer = 0;
     const TIP_DELAY = 420;
+    // 触摸端没有 mouseout,提示会一直挂在屏幕上(表现为「点一下菜单,黑框菜单二字就一直显示」)。
+    // 因此所有提示最多展示这么久后自动消失;触摸触发的提示会更快收起。
+    const TIP_LIFE_POINTER = 4000;
+    const TIP_LIFE_TOUCH = 2400;
 
     function ensureTip() {
       if (tip) return tip;
@@ -771,11 +776,13 @@
 
     function hideTip() {
       clearTimeout(hideTimer);
+      clearTimeout(autoHideTimer);
       hideTimer = 0;
+      autoHideTimer = 0;
       if (tip) tip.classList.remove('show');
     }
 
-    function showTip(el) {
+    function showTip(el, touch) {
       const text = (el.getAttribute('data-tip') || el.getAttribute('aria-label') || '').trim();
       if (!text) return;
       const box = ensureTip();
@@ -790,6 +797,9 @@
       left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
       box.style.left = Math.round(left) + 'px';
       box.style.top = Math.round(top) + 'px';
+      // 自动消失:防止触摸端提示永久停留
+      clearTimeout(autoHideTimer);
+      autoHideTimer = window.setTimeout(hideTip, touch ? TIP_LIFE_TOUCH : TIP_LIFE_POINTER);
     }
 
     function tipTarget(el) {
@@ -802,7 +812,8 @@
       if (!el) return;
       if (el.hasAttribute('title')) el.removeAttribute('title');
       hideTip();
-      hideTimer = window.setTimeout(() => showTip(el), TIP_DELAY);
+      const touch = e.pointerType === 'touch' || e.pointerType === 'pen';
+      hideTimer = window.setTimeout(() => showTip(el, touch), touch ? 0 : TIP_DELAY);
     }
     function onLeave(e) {
       const from = tipTarget(e.target);
