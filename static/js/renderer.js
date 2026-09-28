@@ -1346,6 +1346,147 @@ R.render = function (text) {
     });
   }
 
+  async function loadSvgImage(xml) {
+    // Blob URL avoids browser URL-length limits when embedded fonts are large.
+    const url = URL.createObjectURL(new Blob([xml], { type: 'image/svg+xml;charset=utf-8' }));
+    try { return await loadImage(url); } finally { URL.revokeObjectURL(url); }
+  }
+
+  function bytesToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const step = 0x8000;
+    for (let i = 0; i < bytes.length; i += step) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
+    }
+    return btoa(binary);
+  }
+
+  const exportFontCache = new Map();
+  async function fontDataUrl(url) {
+    if (!url || /^data:/i.test(url)) return url;
+    if (exportFontCache.has(url)) return exportFontCache.get(url);
+    const task = fetch(url, { credentials: 'same-origin' })
+      .then((res) => {
+        if (!res.ok) throw new Error('font ' + res.status);
+        return res.arrayBuffer();
+      })
+      .then((buffer) => {
+        const lower = url.split('?')[0].toLowerCase();
+        const mime = lower.endsWith('.otf') ? 'font/otf'
+          : lower.endsWith('.woff2') ? 'font/woff2'
+          : lower.endsWith('.woff') ? 'font/woff'
+          : 'font/ttf';
+        return 'data:' + mime + ';base64,' + bytesToBase64(buffer);
+      })
+      .catch(() => '');
+    exportFontCache.set(url, task);
+    return task;
+  }
+
+  function collectFontFaceRules() {
+    const out = [];
+    const seen = new Set();
+    function walk(rules) {
+      if (!rules) return;
+      Array.from(rules).forEach((rule) => {
+        const text = String(rule.cssText || '');
+        if (/^@font-face/i.test(text.trim()) && !seen.has(text)) {
+          seen.add(text);
+          out.push(text);
+        } else if (rule.cssRules) walk(rule.cssRules);
+      });
+    }
+    Array.from(document.styleSheets || []).forEach((sheet) => {
+      try { walk(sheet.cssRules); } catch (e) {}
+    });
+    return out;
+  }
+
+  function exportFontFamily(block) {
+    const target = block.querySelector('.nodeLabel, .edgeLabel, .label, foreignObject') || block;
+    const style = getComputedStyle(target);
+    const fallback = getComputedStyle(document.body).fontFamily || 'sans-serif';
+    const family = String(style.fontFamily || fallback || 'sans-serif').trim();
+    return family && family !== 'inherit' ? family : fallback;
+  }
+
+  function assetUrl(name) {
+    const base = location.pathname.indexOf('/s/') === 0 ? '/static/' : './static/';
+    try { return new URL(base + name, document.baseURI).href; }
+    catch (e) { return base + name; }
+  }
+
+  async function inlineFontFaces(block) {
+    const family = exportFontFamily(block);
+    const familyNames = new Set();
+    family.replace(/(?:^|,)\s*(?:"([^"]+)"|'([^']+)'|([^,]+))/g, (m, quoted1, quoted2, bare) => {
+      const name = String(quoted1 || quoted2 || bare || '').trim();
+      if (name && !/^(serif|sans-serif|monospace|system-ui|inherit)$/i.test(name)) familyNames.add(name.toLowerCase());
+      return m;
+    });
+    const rules = collectFontFaceRules().filter((rule) => {
+      const match = rule.match(/font-family\s*:\s*(?:"([^"]+)"|'([^']+)'|([^;]+))/i);
+      const name = String(match && (match[1] || match[2] || match[3]) || '').trim().toLowerCase();
+      return familyNames.has(name);
+    });
+    let css = rules.join('\n').replace(/font-display\s*:\s*swap/gi, 'font-display:block');
+    const urls = [];
+    const re = /url\(\s*(?:"([^"]+)"|'([^']+)'|([^\)\s]+))\s*\)/gi;
+    css.replace(re, (whole, quoted1, quoted2, bare) => {
+      const raw = quoted1 || quoted2 || bare || '';
+      if (raw && !/^data:|^blob:|^local\(/i.test(raw)) urls.push(raw);
+      return whole;
+    });
+    const replacements = new Map();
+    await Promise.all(Array.from(new Set(urls)).map(async (raw) => {
+      try {
+        const absolute = new URL(raw, document.baseURI).href;
+        const data = await fontDataUrl(absolute);
+        if (data) replacements.set(raw, data);
+      } catch (e) {}
+    }));
+    css = css.replace(re, (whole, quoted1, quoted2, bare) => {
+      const raw = quoted1 || quoted2 || bare || '';
+      const data = replacements.get(raw);
+      return data ? 'url("' + data + '")' : whole;
+    });
+    const symbol = await fontDataUrl(assetUrl('Times New Roman.ttf'));
+    if (symbol) {
+      css += '@font-face{font-family:"TinyChat Export Symbols";src:url("' + symbol + '") format("truetype");font-style:normal;font-weight:400 700;font-display:block;unicode-range:U+2190-21FF;}';
+    }
+    return { css: css, family: family, symbol: !!symbol };
+  }
+
+  function wrapExportArrows(root) {
+    const svgNs = 'http://www.w3.org/2000/svg';
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    let node;
+    while ((node = walker.nextNode())) {
+      const parent = node.parentElement;
+      if (!/[↑↓]/.test(String(node.nodeValue || '')) || !parent) continue;
+      if (/^(style|script)$/i.test(parent.tagName || '')) continue;
+      nodes.push(node);
+    }
+    nodes.forEach((text) => {
+      const fragment = document.createDocumentFragment();
+      String(text.nodeValue || '').split(/([↑↓])/).forEach((part) => {
+        if (!part) return;
+        if (/^[↑↓]$/.test(part)) {
+          const inSvgText = text.parentNode.namespaceURI === svgNs && !text.parentElement.closest('foreignObject');
+          const el = inSvgText
+            ? document.createElementNS(svgNs, 'tspan')
+            : document.createElement('span');
+          el.setAttribute('class', 'tc-export-arrow');
+          el.textContent = part;
+          fragment.appendChild(el);
+        } else fragment.appendChild(document.createTextNode(part));
+      });
+      if (text.parentNode) text.parentNode.replaceChild(fragment, text);
+    });
+  }
+
   async function paintSvgElement(ctx, svg, origin) {
     const rect = svg.getBoundingClientRect();
     const clone = svg.cloneNode(true);
@@ -1353,43 +1494,76 @@ R.render = function (text) {
     clone.setAttribute('width', String(rect.width));
     clone.setAttribute('height', String(rect.height));
     const xml = new XMLSerializer().serializeToString(clone);
-    const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml);
-    const img = await loadImage(url);
+    const img = await loadSvgImage(xml);
     ctx.drawImage(img, rect.left - origin.x, rect.top - origin.y, rect.width, rect.height);
   }
 
+  async function rasterizeSvgImage(img, cssW, cssH, fill) {
+    const scale = EXPORT_DPI / 96;
+    const fullW = Math.max(1, Math.round(cssW * scale));
+    const fullH = Math.max(1, Math.round(cssH * scale));
+    const cols = Math.ceil(fullW / EXPORT_TILE);
+    const rows = Math.ceil(fullH / EXPORT_TILE);
+    const tiles = [];
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const left = col * EXPORT_TILE;
+        const top = row * EXPORT_TILE;
+        const tileW = Math.min(EXPORT_TILE, fullW - left);
+        const tileH = Math.min(EXPORT_TILE, fullH - top);
+        const tile = document.createElement('canvas');
+        tile.width = tileW;
+        tile.height = tileH;
+        const ctx = tile.getContext('2d');
+        ctx.setTransform(scale, 0, 0, scale, -left, -top);
+        ctx.fillStyle = fill;
+        ctx.fillRect(left / scale, top / scale, tileW / scale, tileH / scale);
+        ctx.drawImage(img, 0, 0, cssW, cssH);
+        tiles.push({ canvas: tile, left: left, top: top, width: tileW, height: tileH });
+      }
+    }
+    return tiles.length === 1 ? pngWithDpi(tiles[0].canvas, EXPORT_DPI) : stitchTiles(tiles, fullW, fullH);
+  }
+
   async function exportMermaidPng(block) {
-    const code = block.getAttribute('data-src') || '';
-    if (!code || typeof mermaid === 'undefined') return '';
-    ensureMermaid();
-    const id = 'mermaid-export-' + Date.now();
-    const { svg } = await mermaid.render(id, code);
-    const holder = document.createElement('div');
-    holder.style.cssText = 'position:fixed;left:-10000px;top:0;background:#fff';
-    holder.innerHTML = svg;
-    document.body.appendChild(holder);
+    if (!block) return '';
+    let drawn = block.querySelector(':scope > svg');
+    let holder = null;
+    if (!drawn && typeof mermaid !== 'undefined') {
+      const code = block.getAttribute('data-src') || '';
+      if (!code) return '';
+      ensureMermaid();
+      const id = 'mermaid-export-' + Date.now();
+      const rendered = await mermaid.render(id, code);
+      holder = document.createElement('div');
+      holder.style.cssText = 'position:fixed;left:-10000px;top:0;background:#fff';
+      holder.innerHTML = rendered.svg;
+      document.body.appendChild(holder);
+      drawn = holder.querySelector('svg');
+      if (drawn) softenMermaid(drawn);
+    }
+    if (!drawn) return '';
     try {
-      const drawn = holder.querySelector('svg');
-      if (!drawn) return '';
-      softenMermaid(drawn);
+      if (document.fonts && document.fonts.ready) await document.fonts.ready;
       const rect = drawn.getBoundingClientRect();
       if (rect.width < 8 || rect.height < 8) return '';
-      drawn.setAttribute('width', String(rect.width));
-      drawn.setAttribute('height', String(rect.height));
-      const xml = new XMLSerializer().serializeToString(drawn);
-      const img = await loadImage('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml));
-      const scale = EXPORT_DPI / 96;
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(rect.width * scale));
-      canvas.height = Math.max(1, Math.round(rect.height * scale));
-      const ctx = canvas.getContext('2d');
-      ctx.setTransform(scale, 0, 0, scale, 0, 0);
-      ctx.fillStyle = exportFill(block);
-      ctx.fillRect(0, 0, rect.width, rect.height);
-      ctx.drawImage(img, 0, 0, rect.width, rect.height);
-      return pngWithDpi(canvas, EXPORT_DPI);
+      const clone = drawn.cloneNode(true);
+      clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      clone.setAttribute('width', String(rect.width));
+      clone.setAttribute('height', String(rect.height));
+      wrapExportArrows(clone);
+      const font = await inlineFontFaces(block);
+      const family = font.family + (font.symbol ? ', "TinyChat Export Symbols"' : '');
+      const style = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+      style.textContent = font.css
+        + 'html,body,div,span,p,foreignObject,.nodeLabel,.edgeLabel,.label,text,tspan{font-family:' + family + ' !important;}'
+        + '.tc-export-arrow{font-family:"TinyChat Export Symbols" !important;font-style:normal;font-weight:400 !important;}';
+      clone.insertBefore(style, clone.firstChild);
+      const xml = new XMLSerializer().serializeToString(clone);
+      const img = await loadSvgImage(xml);
+      return rasterizeSvgImage(img, rect.width, rect.height, exportFill(block));
     } finally {
-      holder.remove();
+      if (holder) holder.remove();
     }
   }
 
@@ -1399,7 +1573,9 @@ R.render = function (text) {
       let rules;
       try { rules = sheet.cssRules; } catch (e) { return; }
       if (!rules) return;
-      Array.from(rules).forEach((rule) => chunks.push(rule.cssText));
+      Array.from(rules).forEach((rule) => {
+        if (!/^@font-face/i.test(String(rule.cssText || '').trim())) chunks.push(rule.cssText);
+      });
     });
     chunks.push('.mindmap-wrap{background:transparent !important;border:none !important;box-shadow:none !important;overflow:visible !important;max-height:none !important}');
     chunks.push('.mermaid-wrap,.html-present,.html-present-row{overflow:visible !important;max-height:none !important}');
@@ -1408,11 +1584,10 @@ R.render = function (text) {
   }
 
   function foreignObjectSvg(markup, width, height) {
-    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height + '">'
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height + '">'
       + '<foreignObject width="100%" height="100%">'
       + '<div xmlns="http://www.w3.org/1999/xhtml" style="margin:0;padding:0;background:transparent">'
       + markup + '</div></foreignObject></svg>';
-    return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
   }
 
   async function exportRenderedPng(block, opts) {
@@ -1444,10 +1619,14 @@ R.render = function (text) {
       const fullH = Math.max(1, Math.round(cssH * scale));
       const theme = (document.documentElement.getAttribute('data-theme') || 'light').replace(/[^a-z]/gi, '');
       const rootStyle = document.documentElement.getAttribute('style') || '';
-      const markup = '<style>' + cssTextForExport() + '</style>'
+      const font = await inlineFontFaces(block);
+      wrapExportArrows(clone);
+      const markup = '<style>' + cssTextForExport() + font.css
+        + '.tc-export-arrow{font-family:"TinyChat Export Symbols" !important;font-style:normal;}'
+        + '</style>'
         + '<div data-theme="' + theme + '" style="' + rootStyle.replace(/"/g, '') + ';width:' + cssW + 'px;height:' + cssH + 'px;background:transparent">'
         + clone.outerHTML + '</div>';
-      const img = await loadImage(foreignObjectSvg(markup, cssW, cssH));
+      const img = await loadSvgImage(foreignObjectSvg(markup, cssW, cssH));
       const cols = Math.ceil(fullW / EXPORT_TILE);
       const rows = Math.ceil(fullH / EXPORT_TILE);
       const tiles = [];
@@ -1485,8 +1664,12 @@ R.render = function (text) {
       if (shot) {
         const clearChrome = block.classList.contains('mindmap-wrap');
         let png = '';
-        try { png = await exportRenderedPng(block, { clearChrome: clearChrome }); } catch (e) { png = ''; }
-        if (!png && block.classList.contains('mermaid-wrap')) png = await exportMermaidPng(block);
+        if (block.classList.contains('mermaid-wrap')) {
+          try { png = await exportMermaidPng(block); } catch (e) { png = ''; }
+        }
+        if (!png) {
+          try { png = await exportRenderedPng(block, { clearChrome: clearChrome }); } catch (e) { png = ''; }
+        }
         if (!png) throw new Error('empty');
         const a = document.createElement('a');
         a.href = png;
@@ -1958,8 +2141,12 @@ R.render = function (text) {
     try {
       const clearChrome = block.classList.contains('mindmap-wrap');
       let png = '';
-      try { png = await exportRenderedPng(block, { clearChrome: clearChrome }); } catch (e) { png = ''; }
-      if (!png && block.classList.contains('mermaid-wrap')) png = await exportMermaidPng(block);
+      if (block.classList.contains('mermaid-wrap')) {
+        try { png = await exportMermaidPng(block); } catch (e) { png = ''; }
+      }
+      if (!png) {
+        try { png = await exportRenderedPng(block, { clearChrome: clearChrome }); } catch (e) { png = ''; }
+      }
       if (!png) throw new Error('empty');
       const res = await fetch(png);
       const blob = await res.blob();

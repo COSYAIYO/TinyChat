@@ -4,6 +4,14 @@
 
 开源地址：[github.com/HCARX/TinyChat](https://github.com/HCARX/TinyChat) · License: MIT
 
+## 🔗 Demo
+
+- 前台：<https://demo.tinychat.us.ci/>
+- 后台：<https://demo.tinychat.us.ci/admin>
+- 用户名：`demo` 密码：`123456`
+
+> Demo 站的 `demo` 账号是「演示管理员」：可以修改设置并在前台立即生效，但**改动会在 10 分钟后自动还原**，且不能修改密码。请把它当成沙盒，尽快体验。
+
 ## 🖼 界面预览
 
 | 深色主题 | 浅色主题 |
@@ -91,15 +99,35 @@ NextChat、LobeChat 等项目是「面向个人的聊天客户端」，TinyChat 
 - Apache `mod_rewrite`，或 Nginx `try_files` 转到 `index.php`
 - 站点目录可写 `data/`（SQLite 库、JWT 密钥、备份都写在这里）
 
+### 目录权限（重要）
+
+首次访问会显示**环境自检表单**，其中「`data/` 目录可写」一项用真实写入探针验证。**即使权限不足，自检页也会正常打开**并明确标出这一项失败，页面给出修复指引而不会放行安装（此前权限不足时配置接口会直接报错，页面停在无法注册的注册页）。
+
+推荐权限（Linux / 宝塔类面板）：
+
+```bash
+# 目录：755；宿主机 PHP 进程与文件属主一致时即可写。
+# 若主机以 www / nginx 等其它用户运行 PHP，把 data/ 属主交给它，或放宽到 775：
+chmod 755 data
+chown -R www:www data    # 用户/组名按你的主机而定（www-data / nginx / apache）
+
+# 仅当无法改属主时，才退而求其次放宽权限：
+chmod -R 775 data
+```
+
+- 不要把整个站点目录设为 `777`，也不要给 `lib/`、`config.php` 任何写权限。
+- `data/` 建议禁止外部直接访问（仓库自带的 `data/.htaccess` 已做拒绝规则；Nginx 见文末示例）。
+- 权限不足时的典型现象是：能进环境自检页，但「`data/` 目录可写」一项标红，无法创建管理员。
+
 ## 快速开始
 
 ### 部署到虚拟主机
 
 1. 把本仓库整个上传到主机网站根目录（不要只传 `public`）。
 2. 确认根目录里有 `index.php`、`.htaccess`、`lib/`、`static/`、`vendor/`。
-3. 把 `data/` 权限设为可写（一般 `755` 或 `775`）。
+3. 按上节「目录权限」把 `data/` 设为可写（一般 `755`，PHP 进程用户不一致时 `775` 并调整属主）。
 4. Apache 面板打开「伪静态 / Rewrite」。宝塔 / 主机屋一类面板选 Laravel 或 ThinkPHP 规则也行，本质是未命中静态文件就进 `index.php`。
-5. 浏览器打开站点。还没有管理员时，登录页会让你先创建一个。然后进管理后台添加全局供应商。
+5. 浏览器打开站点。还没有管理员时，登录页会先显示环境自检，全部通过后点「下一步：创建管理员」再创建。然后进管理后台添加全局供应商。
 
 也可以复制 `config.sample.php` 为 `config.php`，写上 `admin_password`，首次访问会自动种下管理员（只在库里还没有管理员时生效）。
 

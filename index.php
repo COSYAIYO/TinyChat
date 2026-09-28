@@ -38,6 +38,8 @@ try {
     tc_with_db(true, function (&$db) {
         $changed = tc_seed_admin($db);
         $changed = tc_seed_default_assistants($db) || $changed;
+        // 演示管理员改动的设置在有效期后自动还原
+        $changed = tc_demo_revert($db) || $changed;
         tc_uptime_sec();
         if (!$changed) tc_db_skip_write();
     });
@@ -224,7 +226,37 @@ function tc_dispatch($method, $path) {
 }
 
 function tc_api_public_config_wrap() {
-    tc_with_db(false, function ($db) { tc_api_public_config($db); });
+    // 数据库不可读写(常见于 data/ 目录权限不足)时也要返回可用的最小配置,
+    // 让登录页能进入环境自检而不是停在无法注册的注册页。
+    try {
+        tc_with_db(false, function ($db) { tc_api_public_config($db); });
+    } catch (Throwable $e) {
+        tc_fail_public_config($e->getMessage());
+    }
+}
+
+function tc_fail_public_config($reason) {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    echo tc_json_encode(array(
+        'siteName' => 'TinyChat',
+        'allowRegister' => false,
+        'freeQuota' => 0,
+        'version' => TC_VERSION,
+        'hasProvider' => false,
+        'needsSetup' => true,
+        'dbError' => (string) $reason,
+        'emailVerificationEnabled' => false,
+        'passwordResetEnabled' => false,
+        'mailReady' => false,
+        'webSearch' => array('enabled' => false),
+        'mineru' => array('token' => '', 'enabled' => false),
+        'announcement' => array('enabled' => false, 'text' => '', 'updatedAt' => 0),
+        'registerInviteRequired' => false,
+        'demoMode' => false,
+        'demoExpireMinutes' => 10,
+    ));
+    exit;
 }
 
 function tc_api_proxy_task($id) {

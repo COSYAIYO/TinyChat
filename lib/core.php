@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.1');
+define('TC_VERSION', '2.0.7');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -89,7 +89,7 @@ $TC_SETTINGS_DEFAULTS = array(
     'defaultGroupId' => '',
     'contextMessages' => 40,
     'maxContextMessages' => 200,
-    'maxOutputTokens' => 12800,
+    'maxOutputTokens' => 8192,
     // 全局采样温度: null = 不发送该参数(用模型默认);设置后 0-2
     'temperature' => null,
     // 数据备份:每日自动备份整库快照到 data/backup/,保留最近 N 份
@@ -113,6 +113,13 @@ $TC_SETTINGS_DEFAULTS = array(
     'announcement' => array('enabled' => false, 'text' => '', 'updatedAt' => 0),
     // OpenAI 兼容 API 出口:允许用户生成 sk- 密钥通过第三方客户端调用
     'apiKeysEnabled' => true,
+    // API 密钥(开放接口)限流:每把密钥每分钟最大请求数,0 = 不限制
+    'apiKeyRateLimitPerMin' => 60,
+    // 开放接口对外暴露的模型白名单,元素形如 "providerId|modelId";为空数组表示全部可用模型
+    'apiExposedModels' => array(),
+    // 演示模式:演示管理员修改的设置将在演示有效期后自动还原
+    'demoMode' => false,
+    'demoExpireMinutes' => 10,
     // 注册邀请码:开启后注册必须提供有效邀请码
     'registerInviteRequired' => false,
     // 注册限流:每 IP 每小时最大注册尝试次数
@@ -387,6 +394,16 @@ function tc_normalize_settings($raw) {
         'updatedAt' => $annChanged,
     );
     $s['apiKeysEnabled'] = !array_key_exists('apiKeysEnabled', $s) || !empty($s['apiKeysEnabled']);
+    $s['apiKeyRateLimitPerMin'] = min(600, max(0, (int) (isset($s['apiKeyRateLimitPerMin']) ? $s['apiKeyRateLimitPerMin'] : $TC_SETTINGS_DEFAULTS['apiKeyRateLimitPerMin'])));
+    $exposed = isset($s['apiExposedModels']) && is_array($s['apiExposedModels']) ? $s['apiExposedModels'] : array();
+    $exposedList = array();
+    foreach ($exposed as $item) {
+        $item = trim((string) $item);
+        if ($item !== '' && strpos($item, '|') !== false) $exposedList[$item] = true;
+    }
+    $s['apiExposedModels'] = array_keys($exposedList);
+    $s['demoMode'] = !empty($s['demoMode']);
+    $s['demoExpireMinutes'] = min(60, max(1, (int) (isset($s['demoExpireMinutes']) ? $s['demoExpireMinutes'] : 10) ?: 10));
     $s['registerInviteRequired'] = !empty($s['registerInviteRequired']);
     $s['registerLimitPerHour'] = min(1000, max(1, (int) (isset($s['registerLimitPerHour']) ? $s['registerLimitPerHour'] : 5) ?: 5));
     return $s;
@@ -533,7 +550,49 @@ function tc_empty_db() {
         'redemptionCodes' => array(),
         'quotaLedger' => array(),
         'inviteCodes' => array(),
+        // 演示模式快照:{settings, accessRules, expireAt, userId};到期后由 tc_demo_revert 还原
+        'demoSnapshot' => null,
     );
+}
+
+function tc_is_demo_user($u) {
+    return is_array($u) && !empty($u['demo']);
+}
+
+// 演示有效期到期后,把被演示管理员改动的设置/授权还原为快照值
+function tc_demo_revert(&$db) {
+    $snap = isset($db['demoSnapshot']) ? $db['demoSnapshot'] : null;
+    if (!is_array($snap) || empty($snap['expireAt'])) return false;
+    if (tc_now() < (int) $snap['expireAt']) return false;
+    if (isset($snap['settings']) && is_array($snap['settings'])) {
+        $db['settings'] = tc_normalize_settings($snap['settings']);
+    }
+    if (isset($snap['accessRules']) && is_array($snap['accessRules'])) {
+        $db['accessRules'] = $snap['accessRules'];
+    }
+    $db['demoSnapshot'] = null;
+    return true;
+}
+
+// 邀请码可用次数:未设置视为 1 次(老数据兼容),<0 表示不限次数
+function tc_invite_max_uses($c) {
+    if (!is_array($c) || !array_key_exists('maxUses', $c)) return 1;
+    $n = (int) $c['maxUses'];
+    if ($n < 0) return -1;
+    return max(1, $n);
+}
+
+function tc_invite_used_count($c) {
+    if (!is_array($c)) return 0;
+    if (array_key_exists('usedCount', $c)) return max(0, (int) $c['usedCount']);
+    return !empty($c['usedBy']) ? 1 : 0;
+}
+
+function tc_invite_is_usable($c) {
+    if (!is_array($c) || empty($c['code'])) return false;
+    $max = tc_invite_max_uses($c);
+    if ($max < 0) return true;
+    return tc_invite_used_count($c) < $max;
 }
 
 function tc_assoc($v) {
@@ -569,6 +628,44 @@ function tc_grant_group_all_globals(&$db, $gid) {
         $added = true;
     }
     return $added;
+}
+
+// 新添加的全局供应商默认授权给全部用户组(含自定义组),即"新模型默认对所有分组开放"
+function tc_grant_all_groups_provider(&$db, $providerId) {
+    if (!$providerId) return;
+    foreach ((isset($db['userGroups']) ? $db['userGroups'] : array()) as $g) {
+        if (empty($g['id'])) continue;
+        $exists = false;
+        foreach ($db['accessRules'] as $r) {
+            if ($r['groupId'] === $g['id'] && $r['providerId'] === $providerId) { $exists = true; break; }
+        }
+        if ($exists) continue;
+        $db['accessRules'][] = array('id' => tc_uid(), 'groupId' => $g['id'], 'providerId' => $providerId, 'modelIds' => array('*'));
+    }
+}
+
+// 供应商新增模型时,把"本次新出现的模型 ID"补进该供应商已有的授权规则:
+// 通配规则('*')本就覆盖新模型;显式清单只追加新模型,
+// 不回填管理员此前刻意取消勾选的模型。
+function tc_sync_new_models_access(&$db, $providerId, $newModelIds) {
+    if (!is_array($newModelIds) || !$newModelIds) return;
+    $add = array();
+    foreach ($newModelIds as $mid) {
+        $mid = (string) $mid;
+        if ($mid !== '') $add[$mid] = true;
+    }
+    if (!$add) return;
+    foreach ($db['accessRules'] as &$r) {
+        if (!isset($r['providerId']) || $r['providerId'] !== $providerId) continue;
+        $ids = isset($r['modelIds']) && is_array($r['modelIds']) ? $r['modelIds'] : array();
+        if (!$ids || in_array('*', $ids, true)) continue;
+        $changed = false;
+        foreach (array_keys($add) as $mid) {
+            if (!in_array($mid, $ids, true)) { $ids[] = $mid; $changed = true; }
+        }
+        if ($changed) $r['modelIds'] = array_values($ids);
+    }
+    unset($r);
 }
 
 function tc_find_builtin_group($db, $role) {
@@ -698,6 +795,12 @@ function tc_migrate_db($raw) {
         if (!$found) $db['defaultProviderId'] = null;
     }
     tc_ensure_default_group($db);
+    // 清理指向已不存在用户组的授权规则(旧版每次加载重生成组 ID 会留下这类孤儿规则)
+    $validGroups = array();
+    foreach ($db['userGroups'] as $g) if (!empty($g['id'])) $validGroups[(string) $g['id']] = true;
+    $db['accessRules'] = array_values(array_filter($db['accessRules'], function ($r) use ($validGroups) {
+        return is_array($r) && !empty($r['groupId']) && isset($validGroups[(string) $r['groupId']]);
+    }));
     return $db;
 }
 
@@ -918,6 +1021,21 @@ function tc_db_load_all($pdo) {
     return tc_migrate_db($db);
 }
 
+// 存储层原始快照:顶层键与 chat: 行分别给出 JSON 文本,用于提交时的逐键变更检测
+function tc_db_raw_snapshot($pdo) {
+    $orig = array();
+    $origChats = array();
+    foreach ($pdo->query('SELECT k, v FROM store') as $row) {
+        $k = (string) $row['k'];
+        if (strncmp($k, 'chat:', 5) === 0) {
+            $origChats[substr($k, 5)] = (string) $row['v'];
+        } else {
+            $orig[$k] = (string) $row['v'];
+        }
+    }
+    return array($orig, $origChats);
+}
+
 // 整库快照写入(迁移导入 / 恢复备份用):清空后按顶层键落行
 function tc_db_write_snapshot($pdo, $db) {
     $pdo->exec('DELETE FROM store');
@@ -935,16 +1053,11 @@ function tc_db_write_snapshot($pdo, $db) {
 
 function tc_with_db($write, $fn) {
     $pdo = tc_db();
+    // 变更检测基线取自"迁移前"的原始存储;若取自迁移后,迁移过程新建的
+    // userGroups / defaultGroupId 会被视为"未变化"而永不落库,导致每次请求都生成
+    // 新的用户组 ID,授权规则随之全部失效。
+    list($orig, $origChats) = tc_db_raw_snapshot($pdo);
     $db = tc_db_load_all($pdo);
-    $orig = array();
-    $origChats = array();
-    foreach ($db as $k => $v) {
-        if ($k === 'userChats') {
-            foreach (tc_assoc($v) as $uid => $row) $origChats[$uid] = tc_json_encode($row);
-            continue;
-        }
-        $orig[$k] = tc_json_encode($v);
-    }
     $GLOBALS['_tc_db'] = &$db;
     $GLOBALS['_tc_db_ctx'] = array(
         'write' => $write, 'committed' => false, 'pdo' => $pdo,
@@ -1128,6 +1241,7 @@ function tc_sanitize_user($u) {
         'createdAt' => isset($u['createdAt']) ? $u['createdAt'] : 0,
         'lastSeen' => isset($u['lastSeen']) ? (float) $u['lastSeen'] : 0,
         'admin' => !empty($u['admin']),
+        'demo' => !empty($u['demo']),
         'groupId' => isset($u['groupId']) ? $u['groupId'] : null,
     );
 }

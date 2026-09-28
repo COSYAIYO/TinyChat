@@ -27,12 +27,12 @@
 <link rel="stylesheet" href="./static/css/style.css?v=20260926.32">
 <link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
 <link rel="stylesheet" href="./vendor/katex/katex.min.css">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20260926.31">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20260928.7">
 <link rel="stylesheet" href="./static/css/refine.css?v=20260926.31">
 <link rel="stylesheet" href="./static/css/redesign.css?v=20260926.31">
 <link rel="stylesheet" href="./static/css/polish.css?v=20260926.33">
 <link rel="stylesheet" href="./static/css/markdown.css?v=20260926.31">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20260928.1">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20260928.7">
 <script>
 /* 在样式表之后立刻刷主题色,避免首屏主按钮仍是默认蓝 */
 (function () {
@@ -136,6 +136,10 @@
           <svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="12" cy="12" r="2.6"/><path d="M19.2 13.4a1.4 1.4 0 00.3 1.5l.1.1a1.7 1.7 0 11-2.4 2.4l-.1-.1a1.4 1.4 0 00-1.5-.3 1.4 1.4 0 00-.9 1.3V19a1.7 1.7 0 11-3.4 0v-.1a1.4 1.4 0 00-.9-1.3 1.4 1.4 0 00-1.5.3l-.1.1a1.7 1.7 0 11-2.4-2.4l.1-.1a1.4 1.4 0 00.3-1.5 1.4 1.4 0 00-1.3-.9H5a1.7 1.7 0 110-3.4h.1a1.4 1.4 0 001.3-.9 1.4 1.4 0 00-.3-1.5l-.1-.1a1.7 1.7 0 112.4-2.4l.1.1a1.4 1.4 0 001.5.3h.1A1.4 1.4 0 0011 5.1V5a1.7 1.7 0 113.4 0v.1a1.4 1.4 0 00.9 1.3h.1a1.4 1.4 0 001.5-.3l.1-.1a1.7 1.7 0 112.4 2.4l-.1.1a1.4 1.4 0 00-.3 1.5v.1a1.4 1.4 0 001.3.9H19a1.7 1.7 0 110 3.4h-.1a1.4 1.4 0 00-1.3.9z" stroke-linecap="round" stroke-linejoin="round"/></svg>
           设置
         </button>
+        <button class="user-menu-item hidden" id="user-menu-announce" role="menuitem" hidden>
+          <svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4 10v4a2 2 0 002 2h1.5L12 19.5V4.5L7.5 8H6a2 2 0 00-2 2z" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.5 9.2a4 4 0 010 5.6M18 6.8a7.4 7.4 0 010 10.4" stroke-linecap="round"/></svg>
+          公告
+        </button>
         <a class="user-menu-item" id="user-menu-github" role="menuitem" href="https://github.com/HCARX/TinyChat" target="_blank" rel="noopener noreferrer">
           <svg class="oc-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
           开源地址
@@ -156,12 +160,6 @@
 
   <!-- 主区域 -->
   <main class="main">
-    <div class="announce-bar hidden" id="announce-bar">
-      <span class="announce-text" id="announce-text"></span>
-      <button class="icon-btn announce-close" id="announce-close" type="button" aria-label="关闭公告">
-        <svg class="oc-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>
-      </button>
-    </div>
     <button class="icon-btn hamburger-btn" id="mobile-menu-btn" title="菜单" aria-label="打开菜单">
       <svg class="oc-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4.5 7h15M4.5 12h15M4.5 17h15" stroke-linecap="round"/></svg>
     </button>
@@ -433,9 +431,10 @@
             <div class="form-actions">
               <button class="btn primary small" id="apikey-create" type="button">生成密钥</button>
             </div>
+            <p class="muted small" id="apikey-limit-note" style="margin:6px 0 0"></p>
             <div id="apikey-list" class="apikey-list"></div>
             <div class="hidden" id="apikey-new-box" style="background:color-mix(in srgb,var(--brand) 8%,transparent);border:1px solid var(--hairline);border-radius:10px;padding:10px 12px;margin-top:8px">
-              <div class="muted small">请立即复制保存（仅显示一次）：</div>
+              <div class="muted small">请立即复制保存（仅显示一次，关闭设置后不再显示）：</div>
               <code id="apikey-new-value" style="word-break:break-all;font-size:12.5px"></code>
             </div>
           </div>
@@ -777,6 +776,24 @@
     </div>
   </div>
 
+  <!-- 全站公告:居中弹窗 -->
+  <div class="modal-mask hidden" id="announce-modal" role="dialog" aria-modal="true" aria-labelledby="announce-title">
+    <div class="modal modal-sm announce-modal">
+      <div class="modal-header">
+        <h3 id="announce-title">公告</h3>
+        <button class="icon-btn" id="announce-close" type="button" aria-label="关闭">
+          <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="announce-text" id="announce-text"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn primary" id="announce-ok" type="button">我知道了</button>
+      </div>
+    </div>
+  </div>
+
   <script src="./static/js/config.js?v=20260926.31"></script>
   <script src="./static/js/icons.js?v=20260926.31"></script>
   <script src="./static/js/logos.js?v=20260926.32"></script>
@@ -784,12 +801,12 @@
   <script src="./static/js/ui.js?v=20260926.31"></script>
   <script src="./static/js/assistants.js?v=20260926.31"></script>
   <script src="./static/js/conversations.js?v=20260926.34"></script>
-  <script src="./static/js/renderer.js?v=20260928.1"></script>
+  <script src="./static/js/renderer.js?v=20260928.7"></script>
   <script src="./static/js/reasoning.js?v=20260926.31"></script>
   <script src="./static/js/office-formula-copy.js?v=20260926.31"></script>
   <script src="./static/js/citations.js?v=20260926.31"></script>
   <script src="./static/js/messages.js?v=20260927.22"></script>
   <script src="./static/js/multimodal.js?v=20260927.1"></script>
-  <script src="./static/js/app.js?v=20260928.1"></script>
+  <script src="./static/js/app.js?v=20260928.7"></script>
 </body>
 </html>
