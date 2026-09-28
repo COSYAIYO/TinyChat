@@ -213,6 +213,7 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/proxy/images$#', 'tc_api_proxy_images'),
         array('POST', '#^/v1/chat/completions$#', 'tc_api_v1_chat_completions'),
         array('GET', '#^/v1/models$#', 'tc_api_v1_models'),
+        array('POST', '#^/v1/images/generations$#', 'tc_api_v1_images_generations'),
     );
     foreach ($routes as $r) {
         if ($r[0] !== $method) continue;

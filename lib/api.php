@@ -104,6 +104,7 @@ function tc_get_default_provider($db, $user, $list) {
 
 function tc_resolve_provider($db, $user, $body) {
     $providerId = isset($body['providerId']) ? $body['providerId'] : null;
+    $wantModel = trim((string) (isset($body['model']) ? $body['model'] : ''));
     $list = tc_visible_providers_of($db, $user);
     $allowed = tc_user_access($db, $user);
     $target = null;
@@ -113,6 +114,15 @@ function tc_resolve_provider($db, $user, $body) {
             foreach ($db['providers'] as $x) if ($x['id'] === $providerId) { if (!tc_provider_enabled($x)) return array('error' => '该供应商已被管理员停用'); break; }
             return array('error' => '指定的供应商不存在或无权访问');
         }
+    } elseif ($wantModel !== '') {
+        // 未指定供应商但给了模型:优先挑出确实拥有该模型的可见供应商。
+        // 生图/开放接口调用常只带 model,靠这一步才能命中正确的供应商而不是默认那一个。
+        foreach ($list as $x) {
+            foreach ((isset($x['models']) ? $x['models'] : array()) as $m) {
+                if (is_array($m) && isset($m['id']) && (string) $m['id'] === $wantModel) { $target = $x; break 2; }
+            }
+        }
+        if (!$target) $target = tc_get_default_provider($db, $user, $list);
     } else {
         $target = tc_get_default_provider($db, $user, $list);
     }
@@ -149,6 +159,10 @@ function tc_normalize_models($models) {
         }
         if (is_array($m) && isset($m['maxContext']) && (int) $m['maxContext'] > 0) {
             $row['maxContext'] = min(2000000, max(256, (int) $m['maxContext']));
+        }
+        // 生图模型标记(可选):true/false 显式声明;缺省时由模型名启发式判断(tc_model_is_image)
+        if (is_array($m) && array_key_exists('image', $m)) {
+            $row['image'] = !empty($m['image']);
         }
         $out[] = $row;
         if (count($out) >= 500) break;

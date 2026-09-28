@@ -3597,3 +3597,16 @@ body.is-demo-admin #session-invalidate { display: none !important; }
 body.is-demo-admin [data-edituser],
 body.is-demo-admin [data-deluser],
 body.is-demo-admin [data-chats] { display: none !important; }
+
+/* 模型清单:生图标记列 */
+.model-table .col-img { width: 56px; text-align: center; }
+.model-table input.mimg { cursor: pointer; }
+.model-table .img-flag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.6;
+  background: color-mix(in srgb, var(--brand, var(--accent)) 14%, transparent);
+  color: var(--brand, var(--accent));
+}
