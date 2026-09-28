@@ -1905,21 +1905,15 @@ function tc_api_admin_create_user() {
             : ($isDemo ? 1e15 : $db['settings']['freeQuota']);
         if ($isDemo) {
             // 演示管理员:可改设置/授权,有效期后自动还原,且不可修改密码、管理其它账号或查看用户对话。
-            // 快照必须在改动设置之前拍下,否则 demoMode 等标记会被一起"还原"成开启状态。
+            // 有效期以本次创建时指定(或默认)的值为准,再拍下改动前状态作为还原快照。
             $minutes = isset($b['demoMinutes']) ? (int) $b['demoMinutes'] : (int) (isset($db['settings']['demoExpireMinutes']) ? $db['settings']['demoExpireMinutes'] : 10);
             $minutes = min(1440, max(1, $minutes ?: 10));
-            $expireAt = tc_now() + $minutes * 60000;
-            $db['demoSnapshot'] = array(
-                'settings' => $db['settings'],
-                'accessRules' => $db['accessRules'],
-                'expireAt' => $expireAt,
-                'userId' => $user['id'],
-                'minutes' => $minutes,
-            );
             $user['demo'] = true;
-            $user['demoExpireAt'] = $expireAt;
-            $db['settings']['demoMode'] = true;
             $db['settings']['demoExpireMinutes'] = $minutes;
+            // 拍下改动前状态作为还原快照;若已有生效中的快照则保留最早那份作为基准
+            tc_demo_arm($db, $user);
+            $user['demoExpireAt'] = (is_array($db['demoSnapshot']) && !empty($db['demoSnapshot']['expireAt']))
+                ? (int) $db['demoSnapshot']['expireAt'] : 0;
         }
         tc_set_password($user, $password);
         $db['users'][] = $user;

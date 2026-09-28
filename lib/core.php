@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.11');
+define('TC_VERSION', '2.0.12');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -556,7 +556,7 @@ function tc_empty_db() {
         'redemptionCodes' => array(),
         'quotaLedger' => array(),
         'inviteCodes' => array(),
-        // 演示模式快照:{settings, accessRules, expireAt, userId};到期后由 tc_demo_revert 还原
+        // 演示模式快照:演示管理员改动前的站点状态,到期后由 tc_demo_revert 还原
         'demoSnapshot' => null,
     );
 }
@@ -565,7 +565,33 @@ function tc_is_demo_user($u) {
     return is_array($u) && !empty($u['demo']);
 }
 
-// 演示有效期到期后,把被演示管理员改动的设置/授权还原为快照值
+// 快照覆盖范围:演示管理员能改动的站点内容。settings 含公告/限流/思考等全部设置。
+function tc_demo_snapshot_fields() {
+    return array('settings', 'accessRules', 'providers', 'packages', 'assistants', 'defaultProviderId');
+}
+
+// 拍一张演示快照(改动前的状态),并按设置的有效期计时。
+// 已有生效中的快照时不覆盖——必须保留最早那份作为还原基准。
+function tc_demo_arm(&$db, $user) {
+    if (!tc_is_demo_user($user)) return false;
+    $snap = isset($db['demoSnapshot']) ? $db['demoSnapshot'] : null;
+    if (is_array($snap) && !empty($snap['expireAt']) && tc_now() < (int) $snap['expireAt']) return false;
+    $minutes = (int) (isset($db['settings']['demoExpireMinutes']) ? $db['settings']['demoExpireMinutes'] : 10);
+    $minutes = min(1440, max(1, $minutes ?: 10));
+    $snapshot = array(
+        'expireAt' => tc_now() + $minutes * 60000,
+        'userId' => isset($user['id']) ? (string) $user['id'] : '',
+        'minutes' => $minutes,
+    );
+    foreach (tc_demo_snapshot_fields() as $k) {
+        $snapshot[$k] = isset($db[$k]) ? $db[$k] : null;
+    }
+    $db['demoSnapshot'] = $snapshot;
+    $db['settings']['demoMode'] = true;
+    return true;
+}
+
+// 演示有效期到期后,把演示管理员改动过的内容还原为快照值
 function tc_demo_revert(&$db) {
     $snap = isset($db['demoSnapshot']) ? $db['demoSnapshot'] : null;
     if (!is_array($snap) || empty($snap['expireAt'])) return false;
@@ -573,8 +599,11 @@ function tc_demo_revert(&$db) {
     if (isset($snap['settings']) && is_array($snap['settings'])) {
         $db['settings'] = tc_normalize_settings($snap['settings']);
     }
-    if (isset($snap['accessRules']) && is_array($snap['accessRules'])) {
-        $db['accessRules'] = $snap['accessRules'];
+    foreach (array('accessRules', 'providers', 'packages', 'assistants') as $k) {
+        if (isset($snap[$k]) && is_array($snap[$k])) $db[$k] = $snap[$k];
+    }
+    if (array_key_exists('defaultProviderId', $snap)) {
+        $db['defaultProviderId'] = $snap['defaultProviderId'];
     }
     $db['demoSnapshot'] = null;
     return true;
@@ -1411,6 +1440,11 @@ function tc_require_auth($db) {
 function tc_require_admin($db) {
     $user = tc_require_auth($db);
     if (empty($user['admin'])) tc_fail(403, '需要管理员权限');
+    // 演示管理员:每次写入前确保有一张生效中的还原快照。
+    // 这样"改动 → 到期还原"可以反复进行,而不是只保护第一轮改动。
+    if (tc_is_demo_user($user) && !empty($GLOBALS['_tc_db_ctx']['write']) && isset($GLOBALS['_tc_db'])) {
+        tc_demo_arm($GLOBALS['_tc_db'], $user);
+    }
     return $user;
 }
 

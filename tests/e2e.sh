@@ -267,6 +267,13 @@ assert_contains "config 暴露 demoMode" "$(curl -s "$BASE/api/config")" '"demoM
 dq=$(curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"demoq","password":"demo1234","demo":true,"quota":9999,"demoMinutes":5}' | jget quota)
 assert_eq "演示管理员额度按填入值" "$dq" "9999"
 assert_contains "演示管理员可配复原时长" "$(curl -s "$BASE/api/config")" '"demoExpireMinutes":5'
+# 演示管理员改动设置后应处于 demo 模式,且快照记录了改动前的 siteName
+DEMOQTOKEN=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"demoq","password":"demo1234"}' | jget token)
+DQAUTH="Authorization: Bearer $DEMOQTOKEN"
+curl -s -X POST "$BASE/api/admin/settings" -H "$DQAUTH" -H "Content-Type: application/json" -d '{"siteName":"DemoRenamed"}' > /dev/null
+assert_contains "演示管理员改动后进入 demo 模式" "$(curl -s "$BASE/api/config")" '"demoMode":true'
+# 还原逻辑的完整往返(拍摄/到期/反复还原)由 tests/demo-revert.php 覆盖,此处只做冒烟
+assert_contains "演示模式提示时长可读" "$(curl -s "$BASE/api/config")" '"demoExpireMinutes":'
 
 # ---------- 游客模式 ----------
 say "== 游客模式 =="
