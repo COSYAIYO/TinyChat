@@ -285,6 +285,46 @@ function modelIsImage(modelId) {
 function imageModelLogo() {
   return (window.OC && OC.imageLogo) ? OC.imageLogo() : 'static/logo/picture.svg';
 }
+// 读取本地图片为 data URL(供改图参考图使用)
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result || ''));
+    fr.onerror = reject;
+    fr.readAsDataURL(file);
+  });
+}
+// 读取并压缩参考图:长边不超过 1536px、JPEG 质量 0.9。
+// 参考图只用于给上游做编辑依据,无需原图分辨率;压缩能显著减小请求体与上游处理开销。
+function readImageRefCompressed(file, maxEdge = 1536) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          let w = img.naturalWidth, h = img.naturalHeight;
+          const scale = Math.min(1, maxEdge / Math.max(w, h));
+          w = Math.max(1, Math.round(w * scale));
+          h = Math.max(1, Math.round(h * scale));
+          const c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          const ctx = c.getContext('2d');
+          // JPEG 无透明通道:先铺白底,避免透明 PNG 转出黑块
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+          const out = c.toDataURL('image/jpeg', 0.9);
+          resolve(out || String(fr.result || ''));
+        } catch (e) { resolve(String(fr.result || '')); }
+      };
+      img.onerror = () => resolve(String(fr.result || ''));
+      img.src = String(fr.result || '');
+    };
+    fr.onerror = reject;
+    fr.readAsDataURL(file);
+  });
+}
 // 助手头像按消息所属模型匹配图标:生图模型统一用 picture.svg,其余匹配厂商 logo,未命中回退站点 logo
 function aiAvatarHtml(modelText) {
   const raw = String(modelText || '').trim();
@@ -1928,6 +1968,20 @@ async function sendMessage() {
       toast('剩余次数不足，请联系管理员', true);
     }
     return;
+  }
+
+  // 生图模型 + 附了图片 = 改图(图生图):走生图接口,把附件图片作为参考图
+  if (modelIsImage(state.currentModel)) {
+    const imgs = attachments.filter((a) => a && a.type === 'image' && a.dataUrl).map((a) => a.dataUrl).slice(0, 4);
+    if (imgs.length) {
+      input.value = '';
+      autosizeInput();
+      state.pendingAttachments = [];
+      renderAttachments();
+      updateSendBtn();
+      await runImageEdit(text, imgs);
+      return;
+    }
   }
 
   input.value = '';
@@ -4932,9 +4986,14 @@ function openImageDialog() {
     + '<div class="modal-header"><h3>' + iconHtml + '生成图片</h3>'
     + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + (window.OC ? OC.icon('close', 16) : '×') + '</button></div>'
     + '<div class="modal-body">'
-    + '<p class="muted small">调用当前供应商的 <code>images/generations</code> 接口，按一次对话扣费。生成后插入当前对话；对话中直接用生图模型也会自动改走该接口。</p>'
+    + '<p class="muted small">按一次对话扣费，生成后插入当前对话。对话中直接用生图模型也会自动改走生图接口；<b>上传参考图即可修改图片</b>（部分模型支持，如 Agnes、gemini 等）。</p>'
     + '<label class="field"><span>提示词</span><textarea id="img-prompt" rows="3" placeholder="描述想要的画面，例如：一只戴墨镜的柯基在冲浪，扁平插画风" style="resize:vertical"></textarea></label>'
     + modelOptions
+    + '<div class="field"><span>参考图（选填，最多 4 张；上传后按提示词修改）</span>'
+    + '<div class="img-refs" id="img-refs"></div>'
+    + '<input type="file" id="img-ref-input" accept="image/*" multiple hidden>'
+    + '<button class="btn small" id="img-ref-add" type="button">添加图片</button>'
+    + '</div>'
     + '<label class="field"><span>尺寸</span><select id="img-size">'
     + ['1024x1024', '1792x1024', '1024x1792', '512x512'].map((s) => '<option value="' + s + '"' + (s === lastSize ? ' selected' : '') + '>' + s + '</option>').join('')
     + '</select></label>'
@@ -4961,6 +5020,37 @@ function openImageDialog() {
     }
     return (mask.querySelector('#img-model') && mask.querySelector('#img-model').value.trim()) || '';
   };
+  // 参考图(改图用):保存 data URL 列表并渲染缩略图
+  const imgRefs = [];
+  const refsBox = mask.querySelector('#img-refs');
+  const refInput = mask.querySelector('#img-ref-input');
+  const IMG_REF_MAX = 4;
+  function renderImgRefs() {
+    if (!refsBox) return;
+    refsBox.innerHTML = imgRefs.map((r, i) =>
+      '<span class="img-ref"><img src="' + r + '" alt="">'
+      + '<button type="button" class="img-ref-del" data-idx="' + i + '" aria-label="移除">×</button></span>'
+    ).join('');
+    refsBox.querySelectorAll('[data-idx]').forEach((b) => b.addEventListener('click', () => {
+      imgRefs.splice(Number(b.dataset.idx), 1);
+      renderImgRefs();
+    }));
+  }
+  const refAdd = mask.querySelector('#img-ref-add');
+  if (refAdd && refInput) {
+    refAdd.addEventListener('click', () => refInput.click());
+    refInput.addEventListener('change', async () => {
+      const files = Array.from(refInput.files || []);
+      for (const f of files) {
+        if (imgRefs.length >= IMG_REF_MAX) { toast('最多 ' + IMG_REF_MAX + ' 张参考图', true); break; }
+        if (!/^image\//.test(f.type)) continue;
+        if (f.size > 15 * 1024 * 1024) { toast('单张参考图请小于 15MB', true); continue; }
+        try { imgRefs.push(await readImageRefCompressed(f)); } catch (e) { /* 跳过读失败的文件 */ }
+      }
+      refInput.value = '';
+      renderImgRefs();
+    });
+  }
   const run = mask.querySelector('#img-run');
   run.addEventListener('click', async () => {
     const prompt = (mask.querySelector('#img-prompt') && mask.querySelector('#img-prompt').value.trim()) || '';
@@ -4977,34 +5067,14 @@ function openImageDialog() {
       const r = await api('/api/proxy/images', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providerId: state.currentProviderId, model, prompt, size, n: 1 }),
+        body: JSON.stringify({ providerId: state.currentProviderId, model, prompt, size, n: 1, images: imgRefs.slice() }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error((d.error && d.error.message) || ('HTTP ' + r.status));
-      // 兼容 url 与 b64_json 两种返回形态,组装成 Markdown 图片。
-      // 优先用 display(同源代理地址):平台的图片常在第三方对象存储域,
-      // 部分网络下浏览器直连加载不到,经本站转发才能稳定显示。
-      const alt = prompt.replace(/[\[\]]/g, '').slice(0, 60);
-      const links = (d.images || []).map((im) => {
-        const src = im && (im.display || im.url)
-          ? (im.display || im.url)
-          : (im && im.b64_json ? 'data:image/png;base64,' + im.b64_json : '');
-        return src ? '![' + alt + '](' + src + ')' : '';
-      }).filter(Boolean);
-      if (!links.length) throw new Error('未返回可用的图像数据');
-      const md = links.join('\n\n');
-      let chat = currentChat();
-      if (!chat || !chat.id) chat = newChat();
-      // 生图不使用助手:插入前清掉当前对话的 @助手
-      if (chat.assistantId) enforceImageModelAssistant({ silent: true });
-      if (!chat.messages.length) { chat.title = '绘画 · ' + prompt.slice(0, 18); renderChatList(); }
-      const reply = { role: 'assistant', content: '**提示词：** ' + prompt + '\n\n' + md, model: model + ' (图像)', createdAt: Date.now() };
-      chat.messages.push(reply);
-      chat.updatedAt = Date.now();
-      state.currentChatId = chat.id;
-      saveChats(); renderMessages();
+      // url / display(同源代理) / b64_json 三种形态统一交给 insertImageResult
+      insertImageResult(model, prompt, d.images, imgRefs.length ? '修改要求' : '');
       close();
-      toast('已生成并插入对话');
+      toast(imgRefs.length ? '已改图并插入对话' : '已生成并插入对话');
       await refreshMe();
     } catch (e) {
       // 失败原因同时显示在弹窗内(常驻,不会被 toast 错过)与 toast
@@ -5017,6 +5087,57 @@ function openImageDialog() {
     } finally { run.disabled = false; }
   });
   setTimeout(() => { const p = mask.querySelector('#img-prompt'); if (p) p.focus(); }, 60);
+}
+
+// 把生图结果插入当前对话(供弹窗与对话内改图共用)
+function insertImageResult(model, prompt, images, kindLabel) {
+  const alt = String(prompt || '').replace(/[\[\]]/g, '').slice(0, 60);
+  const links = (images || []).map((im) => {
+    const src = im && (im.display || im.url)
+      ? (im.display || im.url)
+      : (im && im.b64_json ? 'data:image/png;base64,' + im.b64_json : '');
+    return src ? '![' + alt + '](' + src + ')' : '';
+  }).filter(Boolean);
+  if (!links.length) throw new Error('未返回可用的图像数据');
+  let chat = currentChat();
+  if (!chat || !chat.id) chat = newChat();
+  if (chat.assistantId) enforceImageModelAssistant({ silent: true });
+  if (!chat.messages.length) { chat.title = (kindLabel || '绘画') + ' · ' + String(prompt || '').slice(0, 18); renderChatList(); }
+  const head = kindLabel ? '**' + kindLabel + '：** ' + prompt : '**提示词：** ' + prompt;
+  const reply = { role: 'assistant', content: head + '\n\n' + links.join('\n\n'), model: model + ' (图像)', createdAt: Date.now() };
+  chat.messages.push(reply);
+  chat.updatedAt = Date.now();
+  state.currentChatId = chat.id;
+  saveChats();
+  renderMessages();
+  return links.length;
+}
+
+// 对话内改图:生图模型 + 附了图片时,把图片作为参考图调用生图接口
+async function runImageEdit(prompt, images) {
+  if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+  const model = state.currentModel;
+  const providerId = state.currentProviderId;
+  if (!prompt) { toast('请说明要怎么修改这张图片', true); return; }
+  state.streaming = true;
+  updateSendBtn();
+  try {
+    const r = await api('/api/proxy/images', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providerId, model, prompt, n: 1, images }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error((d.error && d.error.message) || ('HTTP ' + r.status));
+    insertImageResult(model, prompt, d.images, '修改要求');
+    toast('已改图并插入对话');
+    await refreshMe();
+  } catch (e) {
+    toast('改图失败: ' + ((e && e.message) || '未知错误'), true);
+  } finally {
+    state.streaming = false;
+    updateSendBtn();
+  }
 }
 
 // ============ 多模型并答对比 ============

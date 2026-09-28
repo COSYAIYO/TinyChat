@@ -132,7 +132,7 @@ assert_contains "邀请码使用次数记录" "$(curl -s "$BASE/api/admin/invite
 # ---------- 供应商与按次计费 ----------
 say "== 供应商与计费 =="
 cat > "$TMP/prov.json" <<'EOF'
-{"name":"Mock","baseUrl":"http://127.0.0.1:MOCKPORT/v1","apiKey":"sk-mock","apiFormat":"chat","models":[{"id":"mock-model","name":"Mock"},{"id":"mock-image","name":"Mock Image","image":true}],"costPerCall":1,"scope":"global"}
+{"name":"Mock","baseUrl":"http://127.0.0.1:MOCKPORT/v1","apiKey":"sk-mock","apiFormat":"chat","models":[{"id":"mock-model","name":"Mock"},{"id":"mock-image","name":"Mock Image","image":true},{"id":"mock-chat-image","name":"Chat Image","image":true}],"costPerCall":1,"scope":"global"}
 EOF
 sed -i "s/MOCKPORT/$MOCK_PORT/" "$TMP/prov.json"
 curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/prov.json" > /dev/null
@@ -225,6 +225,14 @@ say "== 生图模型自动路由 =="
 # 用生图模型调对话接口:应自动改走 images/generations 并返回图片(而不是上游的 "is an image model" 报错)
 assert_contains "对话接口自动改走生图" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$PROV"'","model":"mock-image","messages":[{"role":"user","content":"draw a corgi"}]}')" 'example.com/mock.png'
 assert_contains "开放接口自动改走生图" "$(curl -s -X POST "$BASE/v1/chat/completions" -H "Authorization: Bearer $IMGKEY" -H "Content-Type: application/json" -d '{"model":"mock-image","messages":[{"role":"user","content":"draw"}]}')" 'example.com/mock.png'
+# 对话式出图模型:生图路径不支持时自动回退到 chat/completions 并从回复里提取图片
+assert_contains "对话式生图自动回退" "$(curl -s -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$PROV"'","model":"mock-chat-image","prompt":"draw a cat"}')" 'example.com/mock-chat.png'
+# 开放接口同样受益于兜底
+assert_contains "开放接口对话式生图兜底" "$(curl -s -X POST "$BASE/v1/images/generations" -H "Authorization: Bearer $IMGKEY" -H "Content-Type: application/json" -d '{"model":"mock-chat-image","prompt":"draw a cat"}')" 'example.com/mock-chat.png'
+
+# 图生图/改图:带 image 数组时应返回改后的图
+assert_contains "图生图(带参考图)返回结果" "$(curl -s -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$PROV"'","model":"mock-image","prompt":"make it red","images":["https://example.com/ref.png"]}')" 'example.com/mock-edited.png'
+
 # 普通文本模型仍走对话,不受影响
 assert_contains "文本模型仍走对话" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$PROV"'","model":"mock-model","messages":[{"role":"user","content":"hi"}]}')" 'MOCK-REPLY'
 # Base URL 不带 /v1(平台文档常见写法,如 Agnes):生图应自动补 /v1,不能拼成 /images/generations(会 404)

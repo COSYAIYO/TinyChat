@@ -44,6 +44,8 @@ jobs:
         run: php tests/attribution.php
       - name: 生图图片代理自检(签名 / SSRF 防护)
         run: php tests/image-proxy.php
+      - name: 对话式生图/改图自检(抽图 / 参考图 / 兜底识别)
+        run: php tests/image-chat.php
 
   e2e:
     name: E2E(PHP ${{ matrix.php }})
