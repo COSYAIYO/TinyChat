@@ -45,7 +45,7 @@ try {
     // 首次写库失败时仍允许继续，具体接口会再报错
 }
 
-if ($path === '/api' || strpos($path, '/api/') === 0) {
+if ($path === '/api' || strpos($path, '/api/') === 0 || $path === '/v1' || strpos($path, '/v1/') === 0) {
     try {
         tc_dispatch($method, $path);
     } catch (Exception $e) {

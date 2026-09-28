@@ -4746,7 +4746,7 @@ function openImageDialog() {
   const lastModel = localStorage.getItem('oc_image_model') || '';
   const lastSize = localStorage.getItem('oc_image_size') || '1024x1024';
   mask.innerHTML =
-    '<div class="modal modal-md" role="dialog" aria-modal="true">'
+    '<div class="modal modal-sm" role="dialog" aria-modal="true">'
     + '<div class="modal-header"><h3>生成图片</h3>'
     + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + (window.OC ? OC.icon('close', 16) : '×') + '</button></div>'
     + '<div class="modal-body">'

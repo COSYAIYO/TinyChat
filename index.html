@@ -69,14 +69,13 @@
   } catch (e) {}
 })();
 </script>
-<!-- 渲染引擎依赖:markdown-it / KaTeX / highlight.js / mermaid(顺序敏感) -->
+<!-- 渲染引擎依赖:markdown-it / KaTeX / highlight.js(顺序敏感);mermaid 体积大,改为出现图表代码块时才懒加载 -->
 <script defer src="./vendor/markdown-it/markdown-it.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-footnote.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-emoji.min.js"></script>
 <script defer src="./vendor/katex/katex.min.js"></script>
 <script defer src="./vendor/katex/auto-render.min.js"></script>
 <script defer src="./vendor/highlight/highlight.min.js"></script>
-<script defer src="./vendor/mermaid/mermaid.min.js?v=11.17.2"></script>
 </head>
 <body>
   <!-- 移动端侧边栏遮罩 -->
