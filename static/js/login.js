@@ -113,6 +113,7 @@ fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
     if (row) row.classList.remove('hidden');
   }
   if (!cfg || !cfg.needsSetup) return;
+  runEnvCheck();
   const setup = $('setup-form');
   const login = $('login-form');
   const reg = $('register-form');
@@ -124,6 +125,38 @@ fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
   const name = $('setup-name');
   if (name) setTimeout(() => name.focus(), 40);
 }).catch(() => {});
+
+// 首次运行环境自检:逐项显示扩展与权限检查结果,存在阻塞项时不放行管理员创建表单
+function escLogin(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function runEnvCheck() {
+  const box = $('env-check-box');
+  const list = $('env-check-list');
+  if (!box || !list) return;
+  box.classList.remove('hidden');
+  list.innerHTML = '<span class="muted">正在检查运行环境…</span>';
+  fetch(apiUrl('/api/env-check')).then((r) => r.json()).then((d) => {
+    const checks = d.checks || [];
+    list.innerHTML = checks.map((c) => {
+      const mark = c.ok ? '<span style="color:#16a34a">✓</span>' : (c.critical ? '<span style="color:#dc2626">✗</span>' : '<span style="color:#d97706">△</span>');
+      return '<div>' + mark + ' ' + escLogin(c.name) + (c.detail ? ' <span class="muted small">' + escLogin(c.detail) + '</span>' : '') + '</div>';
+    }).join('');
+    const blocked = (checks || []).some((c) => c.critical && !c.ok);
+    const status = $('env-check-status');
+    const retry = $('env-check-retry');
+    const setup = $('setup-form');
+    if (status) status.textContent = blocked
+      ? '存在未通过的关键项，请按提示处理后点「重新检查」'
+      : '环境检查通过，可以开始创建管理员';
+    if (retry) retry.classList.toggle('hidden', !blocked);
+    if (setup) setup.classList.toggle('hidden', blocked);
+  }).catch(() => {
+    const list2 = $('env-check-list');
+    if (list2) list2.innerHTML = '<span style="color:#dc2626">✗ 无法读取环境检查结果，请刷新重试</span>';
+  });
+}
+if ($('env-check-retry')) $('env-check-retry').addEventListener('click', () => runEnvCheck());
 
 bindPasswordToggles();
 const forgotForm = $('forgot-form');

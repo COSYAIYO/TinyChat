@@ -61,9 +61,9 @@
 
 **部署与数据**
 
-- 纯 PHP（7.4+），不需要 Composer、数据库、Node 或常驻进程
-- 数据是带文件锁的 JSON 文件，完全自持有，删目录即清空
-- 数据备份：每日自动轮换备份 db.json，后台一键手动备份 / 下载 / 恢复
+- 纯 PHP（7.4+），不需要 Composer、MySQL、Node 或常驻进程；数据存于 SQLite（WAL 模式），多数虚拟主机默认支持
+- 首次运行自动跑环境自检：PHP 版本、pdo_sqlite / curl / openssl 扩展、data/ 目录权限逐项核对，不通过不放行安装
+- 数据备份：每日自动轮换备份整库，后台一键手动备份 / 下载 / 恢复
 - 隐私模式可选：关闭后服务器不保存对话记录，对话仅存用户浏览器本地
 - PWA：可「添加到主屏幕 / 安装」，静态资源离线缓存（需 HTTPS）
 - Apache / Nginx / IIS 伪静态配置齐备，常见虚拟主机、宝塔面板可直接跑
@@ -86,10 +86,10 @@ NextChat、LobeChat 等项目是「面向个人的聊天客户端」，TinyChat 
 
 ## 环境要求
 
-- PHP 7.4+（推荐 8.x）
-- 扩展：`json`、`curl`、`hash`、`openssl`；在线更新需要 `zip` 或 `phar + zlib`
+- PHP 7.4+（推荐 8.x），扩展：`pdo_sqlite`（数据存储）、`curl`、`openssl`、`json`；在线更新需要 `zip` 或 `phar + zlib`
+- 首次访问登录页会自动运行环境自检表单，逐项核对扩展与 `data/` 目录权限
 - Apache `mod_rewrite`，或 Nginx `try_files` 转到 `index.php`
-- 站点目录可写 `data/`（用户、供应商、JWT 密钥都写在这里）
+- 站点目录可写 `data/`（SQLite 库、JWT 密钥、备份都写在这里）
 
 ## 快速开始
 
@@ -171,11 +171,13 @@ TinyChat/
 
 ## 数据
 
-运行后才会写出 `data/db.json` 和 `data/secret`。不要提交到 Git。
+数据存于 `data/tinychat.sqlite`（WAL 模式），`data/secret` 保存 JWT 与加密密钥。不要提交到 Git。
 
-删掉 `data/` 里的 json / secret 即清空本机数据，下次访问会重建空库。若 `config.php` 写了管理员密码且库里还没有管理员，首次访问会再创建一个。
+v1.x 的 `db.json` 会在首次访问时自动导入到 SQLite 并改名为 `db.json.imported-*` 留档，无需手工迁移。
 
-`data/` 自带 `.htaccess` 拒绝 Web 直访；供应商 API Key 以 AES-256-GCM 加密存储，密钥与站点绑定，拿走文件也无法在其他站点解密。
+删掉 `data/` 里的 `tinychat.sqlite` / `secret` 即清空本机数据，下次访问会重建空库。若 `config.php` 写了管理员密码且库里还没有管理员，首次访问会再创建一个。
+
+`data/` 自带 `.htaccess` 拒绝 Web 直访（Nginx / IIS 配置示例里同样已屏蔽）；供应商 API Key 以 AES-256-GCM 加密存储，密钥与站点绑定，拿走文件也无法在其他站点解密。
 
 ## 附录：服务器配置示例
 
