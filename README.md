@@ -1,6 +1,6 @@
 # TinyChat
 
-**自托管的 AI 对话站点系统**：纯 PHP、无需数据库，上传虚拟主机即可运行。ChatGPT 风格界面，支持 OpenAI、Anthropic 及各类兼容接口的多模型切换，内置用户注册、额度计费、兑换码、助手库、联网搜索与在线更新——部署一次，即可让团队或朋友注册使用，所有数据都在你自己手里。
+**自托管的 AI 对话站点系统**：纯 PHP，上传虚拟主机即可运行——不需要独立的数据库服务（数据存于 PHP 自带的 SQLite）、不需要 Composer / Node / 常驻进程。ChatGPT 风格界面，支持 OpenAI、Anthropic 及各类兼容接口的多模型切换，内置文生图、用户注册、额度计费、兑换码、助手库、联网搜索、游客体验与在线更新——部署一次，即可让团队或朋友注册使用，所有数据都在你自己手里。
 
 开源地址：[github.com/HCARX/TinyChat](https://github.com/HCARX/TinyChat) · License: MIT
 
@@ -63,11 +63,18 @@
 - 429/5xx 自动重试一次（未向客户端发送字节前才重试，不重复计费）
 - 安全响应头：CSP、X-Frame-Options、Permissions-Policy；会话有效期可配 + 全站强制下线
 
+**AI 生图**
+
+- 文生图：调用供应商的 `images/generations` 接口（dall-e-3、gpt-image-1、flux、seedream、stable-diffusion、imagen、qwen-image 等），结果以 Markdown 图片插入对话
+- **生图模型自动识别**：后台模型清单可显式勾选「生图」；未勾选时按模型名自动识别。模型选择器会把生图模型自动归入末尾的「生图模型」分组，配合专属图标一眼可辨
+- **对话中无缝生图**：直接用生图模型发消息会自动改走上游生图接口，不再报 `is an image model` 错误；生图模型不使用 @助手，选中时会自动取消，`@` 也不再弹出助手候选
+- **高兼容性对接**：兼容 `data[].url` / `data[].b64_json` / `images` / `output` / 顶层 `url` 等多种返回形态；对不接受 `size` / `n` / `quality` / `response_format` 的平台自动降级重试；连接超时单独放宽到 30 秒并自动重试一次
+- 生图弹窗：直接从当前供应商的生图模型里下拉选择，支持手动输入自定义模型、尺寸选择与 `b64_json` 返回
+
 **开放能力**
 
-- OpenAI 兼容 API：/v1/chat/completions（含流式）、/v1/models 与 /v1/images/generations，用户在账户面板生成 sk-tc- 密钥（哈希落库、仅显示一次、每人最多 5 把），第三方客户端直接接入，计费与网页端一致
-- 图像生成：调用供应商的 images/generations 接口（如 dall-e-3、gpt-image-1、flux、seedream），结果以 Markdown 图片插入对话；**在对话中直接选用生图模型会自动改走生图接口**，无需手动切换
-- 生图模型标记：后台模型清单可显式标记「生图」，未标记时按模型名自动识别（dall-e / gpt-image / flux / seedream / imagen / qwen-image 等）
+- OpenAI 兼容 API：`/v1/chat/completions`（含流式）、`/v1/models`、`/v1/images/generations`，用户在账户面板生成 `sk-tc-` 密钥（哈希落库、仅显示一次、每人最多 5 把），第三方客户端直接接入，计费与网页端一致
+- **开放 API 独立管控**：每把密钥单独限流、站点总限流、对外可用模型白名单（未开放的模型不出现在 `/v1/models` 且调用被拒，网页端不受影响）、一键获取模型
 - 多模型对比：同一问题并行发给 2–3 个模型，并排查看、一键投票（计入模型评价）
 
 **部署与数据**
@@ -144,6 +151,33 @@ Nginx / IIS 的伪静态示例见文末「附录：服务器配置示例」。Ng
 
 子目录部署时，把 `.htaccess` 里的 `RewriteBase /` 改成实际路径，例如 `RewriteBase /chat/`。
 
+## AI 生图（文生图）
+
+TinyChat 支持对接任意提供 OpenAI 兼容 `images/generations` 接口的生图平台。
+
+### 配置步骤
+
+1. 后台「平台配置 → 供应商」新增供应商：填入 Base URL（如 `https://api.openai.com/v1`）与 API Key。
+2. 该供应商的模型列表里填入生图模型（如 `gpt-image-1`、`dall-e-3`、`flux-1.1-pro`、`seedream-3.0`）。
+3. 在模型清单的 **「生图」列**勾选生图模型；名称能被自动识别的模型（`dall-e`、`gpt-image`、`flux`、`seedream`、`stable-diffusion`、`imagen`、`qwen-image` 等）会默认勾上，可手动纠正。
+4. 「模型授权」中把该供应商开放给需要的用户组（游客组亦可，便于演示）。
+
+### 三种用法
+
+| 用法 | 说明 |
+|---|---|
+| 输入区「⋯ → 绘画」 | 打开生图弹窗，从下拉里选择生图模型（或手动输入），填提示词即可生成 |
+| 对话中直接用生图模型 | 模型选择器末尾的「生图模型」分组里选一个，直接发消息——自动改走生图接口 |
+| 第三方客户端 | 用 `sk-tc-` 密钥调用 `POST /v1/images/generations`，与 OpenAI 官方客户端一致 |
+
+### 兼容性说明
+
+- **返回形态**：兼容 `data[].url`、`data[].b64_json`、`images[]`、`output[]`、顶层 `url`、`data[]` 直接是 URL 字符串或 data URL 等；`b64_json` 会直接内联成图片展示。
+- **参数降级**：先按完整参数（含 `size` / `n` / `quality` / `style` / `response_format`）请求；若被上游以 400/422 拒绝，自动逐级去掉可选参数重试，兼容对参数挑剔的平台。认证类错误（401/403/404/429）不会重试。
+- **网络超时**：生图请求连接超时放宽到 30 秒，网络抖动时自动重试一次（不会重复计费）。
+- **计费**：每次生图按一次调用计费，与对话一致；失败不计费。
+- **提示词审核**：生图提示词同样经过后台敏感词过滤。
+
 ## 在线更新
 
 后台「平台配置 → 版本更新」可检查并在线安装新版本：程序对比 GitHub Releases 最新 tag 与 `lib/core.php` 里的 `TC_VERSION`，有新版时下载该 tag 的源码包，解压校验后覆盖站点文件。**`data/` 与 `config.php` 不会被改动**，升级前的程序自动备份到 `data/update/backup/`（仅保留最近一次）。
@@ -179,6 +213,34 @@ Nginx / IIS 的伪静态示例见文末「附录：服务器配置示例」。Ng
 | `github_api_base` | API 根地址，默认 `https://api.github.com`，可换镜像 |
 | `github_base` | 发布包下载根地址，默认 `https://github.com`，可填 ghproxy 类加速前缀 |
 
+## OpenAI 兼容 API
+
+在「设置 → 账户 → API 密钥」生成 `sk-tc-` 密钥后，把任意 OpenAI 兼容客户端的 Base URL 指向 `https://你的站点/v1` 即可。密钥支持流式、计费、限流与模型白名单，与网页端策略一致。可用端点：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/v1/chat/completions` | 对话（默认流式，支持 `stream: true`）；生图模型会自动改走生图接口 |
+| `GET` | `/v1/models` | 列出当前用户可用（且管理员开放）的模型 |
+| `POST` | `/v1/images/generations` | 文生图，返回 `{created, data:[{url\|b64_json}]}` |
+
+请求示例：
+
+```bash
+curl https://your-site/v1/images/generations \
+  -H "Authorization: Bearer sk-tc-xxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-image-1","prompt":"一只戴墨镜的柯基在冲浪","size":"1024x1024","n":1}'
+```
+
+```bash
+curl https://your-site/v1/chat/completions \
+  -H "Authorization: Bearer sk-tc-xxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"你好"}]}'
+```
+
+限流与开放范围在后台「平台配置 → 开放 API」中配置：每把密钥限流、站点总限流、对外模型白名单。
+
 ## 目录
 
 ```
@@ -195,10 +257,31 @@ TinyChat/
 │   ├── updater.php        # 在线更新：检查 GitHub Releases、下载覆盖
 │   ├── catalog.json       # 内置助手库
 │   └── cacert.pem         # Mozilla CA，Windows / 部分虚拟主机缺证书时用
-├── static/  vendor/       # 前端
+├── static/  vendor/       # 前端（含模型图标 static/logo/）
+├── tests/                 # E2E 与自检脚本
+│   ├── e2e.sh             # 端到端冒烟（需 php + curl）
+│   ├── mock-upstream.php  # E2E 用的 mock 上游
+│   ├── demo-revert.php    # 演示管理员还原逻辑自检
+│   ├── image-parse.php    # 生图返回形态解析自检
+│   └── logos-check.js     # 模型图标匹配自检
+├── .github/workflows/ci.yml  # CI：PHP lint + JS 语法 + 自检 + E2E
 ├── index.html login.html admin.html share.html
 └── data/                  # 运行数据（不要提交）
 ```
+
+## 测试
+
+```bash
+# 图标匹配 / 演示还原 / 生图解析自检（无需服务）
+node tests/logos-check.js
+php tests/demo-revert.php
+php tests/image-parse.php
+
+# 端到端冒烟：起真实 PHP 服务 + mock 上游，跑完整业务流
+bash tests/e2e.sh
+```
+
+E2E 覆盖登录与设置、备份与越权防护、邀请码注册、按次与按 token 计费、流式结算、敏感词审核、接口限流、API 密钥与 `/v1` 出口、生图（含自动路由与两种返回形态）、无限额度、游客模式、演示管理员等。CI 会在 PHP 7.4 / 8.1 / 8.3 上分别运行。
 
 ## 数据
 

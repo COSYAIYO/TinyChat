@@ -36,6 +36,8 @@ jobs:
         run: node tests/logos-check.js
       - name: 演示管理员还原自检(拍摄/到期还原/反复还原)
         run: php tests/demo-revert.php
+      - name: 生图响应解析自检(各平台返回形态)
+        run: php tests/image-parse.php
 
   e2e:
     name: E2E(PHP ${{ matrix.php }})

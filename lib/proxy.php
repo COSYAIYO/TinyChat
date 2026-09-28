@@ -2333,27 +2333,47 @@ function tc_generate_images($apiKeyOwner = null) {
     foreach (array('quality', 'style', 'response_format', 'background') as $k) {
         if (isset($ctx['extra'][$k])) $body[$k] = $ctx['extra'][$k];
     }
-    $res = tc_http_request($url, 'POST', $headers, tc_json_encode($body), $ctx['timeout'], false);
-    if (empty($res['ok'])) {
-        tc_fail(isset($res['code']) && $res['code'] ? $res['code'] : 502, tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : ''));
+    // 不同平台对可选参数的容忍度差异很大(有的拒绝 response_format,有的拒绝 size/style)。
+    // 先按完整参数请求,若被上游以 4xx 拒绝,则逐级降级重试,提升对接兼容性。
+    // 允许「无响应体的连接错误」重试一次(提高网络抖动/冷启动的成功率),但参数类错误不重试。
+    $attempts = array(
+        $body,
+        array('model' => $ctx['model'], 'prompt' => $ctx['prompt'], 'n' => $ctx['n']),
+        array('model' => $ctx['model'], 'prompt' => $ctx['prompt']),
+    );
+    $seen = array();
+    $res = null;
+    $status = 0;
+    $lastMsg = '';
+    foreach ($attempts as $idx => $b) {
+        $sig = tc_json_encode($b);
+        if (isset($seen[$sig])) continue;
+        $seen[$sig] = true;
+        $res = tc_http_request($url, 'POST', $headers, $sig, $ctx['timeout'], false, null, true, 30000);
+        if (empty($res['ok'])) {
+            // 连接层失败:网络类(超时/连接)重试一次,其余直接报错
+            $retryable = in_array(isset($res['kind']) ? $res['kind'] : '', array('connect_timeout', 'read_timeout', 'connect'), true);
+            if ($retryable && $idx < 2) { sleep(1); continue; }
+            tc_fail(isset($res['code']) && $res['code'] ? $res['code'] : 502, tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : ''));
+        }
+        $status = (int) (isset($res['status']) ? $res['status'] : 0);
+        if ($status < 400) break;
+        $lastMsg = tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', $status);
+        // 仅 400/422(参数不被接受)降级重试;401/403/404/429 等直接返回,重试无意义
+        if ($status !== 400 && $status !== 422) {
+            tc_fail($status, $lastMsg);
+        }
     }
-    $status = (int) (isset($res['status']) ? $res['status'] : 0);
     if ($status >= 400) {
-        tc_fail($status, tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', $status));
+        // 降级重试后仍被拒,直接返回上游原始错误
+        tc_fail($status, $lastMsg !== '' ? $lastMsg : ('上游 API 错误 (HTTP ' . $status . ')'));
     }
     $j = json_decode((string) (isset($res['body']) ? $res['body'] : ''), true);
-    $raw = (isset($j['data']) && is_array($j['data'])) ? $j['data'] : array();
-    $items = array();
-    foreach ($raw as $d) {
-        if (!is_array($d)) continue;
-        $item = array();
-        if (!empty($d['url'])) $item['url'] = (string) $d['url'];
-        if (!empty($d['b64_json'])) $item['b64_json'] = (string) $d['b64_json'];
-        if (isset($d['revised_prompt'])) $item['revised_prompt'] = (string) $d['revised_prompt'];
-        if ($item) $items[] = $item;
-        if (count($items) >= $ctx['n']) break;
+    $items = tc_image_results_from_payload($j, $ctx['n']);
+    if (!$items) {
+        // 有的平台把图片放在非标准字段,或干脆是重定向后的二进制图片地址;给出可操作提示
+        tc_fail(502, '上游未返回可识别的图像数据（已兼容 data[].url / data[].b64_json / images 等形态），请确认该模型支持 images/generations 接口');
     }
-    if (!$items) tc_fail(502, '上游未返回图像，请稍后重试或更换模型');
     $usage = array('prompt' => 0, 'completion' => 0);
     tc_with_db(true, function (&$db) use ($user, $provider, $ctx, $usage, $started) {
         $fresh = null;
@@ -2366,6 +2386,63 @@ function tc_generate_images($apiKeyOwner = null) {
         tc_push_log(array('kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'], 'provider' => $provider['name'], 'model' => $ctx['model'] . ' (图像)', 'format' => 'images', 'status' => 200, 'ms' => tc_now() - $started, 'cost' => $charged, 'stream' => false));
     });
     return array('ok' => true, 'model' => $ctx['model'], 'images' => $items);
+}
+
+// 从不同平台的图像响应里提取图片,兼容多种常见形态:
+//   {data:[{url|b64_json, revised_prompt}]} / {images:[...]} / {output:[...]} /
+//   {data:{url}} / 顶层 {url} / data[] 里直接是字符串 URL 或 data: base64
+// 返回 [{url?|b64_json?, revised_prompt?}],最多 $limit 条。
+function tc_image_results_from_payload($j, $limit = 1) {
+    $items = array();
+    $limit = max(1, (int) $limit);
+    $push = function ($node) use (&$items, $limit) {
+        if (count($items) >= $limit) return;
+        if (is_string($node)) {
+            $s = trim($node);
+            if ($s === '') return;
+            if (strpos($s, 'data:image/') === 0) {
+                $pos = strpos($s, 'base64,');
+                if ($pos !== false) { $items[] = array('b64_json' => substr($s, $pos + 7)); return; }
+            }
+            if (preg_match('#^https?://#i', $s)) { $items[] = array('url' => $s); return; }
+            return;
+        }
+        if (!is_array($node)) return;
+        $item = array();
+        if (!empty($node['url']) && is_string($node['url'])) $item['url'] = $node['url'];
+        elseif (!empty($node['b64_json'])) $item['b64_json'] = (string) $node['b64_json'];
+        elseif (!empty($node['image_url']) && is_string($node['image_url'])) $item['url'] = $node['image_url'];
+        elseif (!empty($node['image']) && is_string($node['image'])) {
+            // image 字段可能是裸 base64 或 data URL
+            $v = $node['image'];
+            if (strpos($v, 'data:image/') === 0) {
+                $pos = strpos($v, 'base64,');
+                if ($pos !== false) $item['b64_json'] = substr($v, $pos + 7);
+            } elseif (preg_match('#^https?://#i', $v)) {
+                $item['url'] = $v;
+            } else {
+                $item['b64_json'] = $v;
+            }
+        }
+        if (isset($node['revised_prompt']) && is_string($node['revised_prompt'])) $item['revised_prompt'] = $node['revised_prompt'];
+        if ($item) $items[] = $item;
+    };
+    if (!is_array($j)) return $items;
+    foreach (array('data', 'images', 'output', 'artifacts', 'results', 'image') as $key) {
+        if (!array_key_exists($key, $j)) continue;
+        $v = $j[$key];
+        if (is_array($v)) {
+            // 关联数组且自身带 url/b64_json,视为单个对象
+            if (isset($v['url']) || isset($v['b64_json']) || isset($v['image']) || isset($v['image_url'])) $push($v);
+            else foreach ($v as $one) $push($one);
+        } else {
+            $push($v);
+        }
+        if (count($items) >= $limit) break;
+    }
+    // 顶层直接是单张图片
+    if (!$items && (isset($j['url']) || isset($j['b64_json']) || isset($j['image']))) $push($j);
+    return $items;
 }
 
 // 网页端入口:返回 {ok, model, images:[{url|b64_json}]}
