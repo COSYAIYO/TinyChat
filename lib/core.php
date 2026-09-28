@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '1.0.0');
+define('TC_VERSION', '1.7.1');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -90,6 +90,33 @@ $TC_SETTINGS_DEFAULTS = array(
     'contextMessages' => 40,
     'maxContextMessages' => 200,
     'maxOutputTokens' => 12800,
+    // 全局采样温度: null = 不发送该参数(用模型默认);设置后 0-2
+    'temperature' => null,
+    // 数据备份:每日自动备份 data/db.json,保留最近 N 份
+    'backupEnabled' => true,
+    'backupKeep' => 7,
+    // 代理接口限流:每用户每分钟最大请求数,0 = 不限制
+    'rateLimitPerMin' => 30,
+    // 会话:登录态有效天数;authEpoch 递增可强制全站重新登录
+    'sessionDays' => 7,
+    'authEpoch' => 1,
+    // 从上游 context length 报错自动回填模型的 maxContext(不覆盖手动设置)
+    'contextAutoLearn' => true,
+    // 内容审核:发送前对用户消息做敏感词过滤
+    'moderation' => array('enabled' => false, 'words' => ''),
+    // 用户协议:启用后注册页需勾选同意,/agreement 展示协议正文
+    'agreementEnabled' => false,
+    'agreementHtml' => '',
+    // 隐私:关闭后服务器不保存对话记录(客户端仅本地留存)
+    'persistChats' => true,
+    // 全站公告:enabled 且 text 非空时前台展示
+    'announcement' => array('enabled' => false, 'text' => '', 'updatedAt' => 0),
+    // OpenAI 兼容 API 出口:允许用户生成 sk- 密钥通过第三方客户端调用
+    'apiKeysEnabled' => true,
+    // 注册邀请码:开启后注册必须提供有效邀请码
+    'registerInviteRequired' => false,
+    // 注册限流:每 IP 每小时最大注册尝试次数
+    'registerLimitPerHour' => 5,
 );
 $TC_SETTINGS_DEFAULTS['mailTemplates'] = tc_mail_default_templates();
 
@@ -328,6 +355,33 @@ function tc_normalize_settings($raw) {
     $s['contextMessages'] = min($s['maxContextMessages'], max(2, $ctx ?: $TC_SETTINGS_DEFAULTS['contextMessages']));
     $out = isset($s['maxOutputTokens']) ? (int) $s['maxOutputTokens'] : $TC_SETTINGS_DEFAULTS['maxOutputTokens'];
     $s['maxOutputTokens'] = min(128000, max(256, $out ?: $TC_SETTINGS_DEFAULTS['maxOutputTokens']));
+    $temp = isset($s['temperature']) && $s['temperature'] !== '' && $s['temperature'] !== null ? (float) $s['temperature'] : null;
+    $s['temperature'] = $temp === null ? null : min(2, max(0, $temp));
+    $s['backupEnabled'] = !array_key_exists('backupEnabled', $s) || !empty($s['backupEnabled']);
+    $s['backupKeep'] = min(30, max(1, (int) (isset($s['backupKeep']) ? $s['backupKeep'] : 7) ?: 7));
+    $s['rateLimitPerMin'] = min(600, max(0, (int) (isset($s['rateLimitPerMin']) ? $s['rateLimitPerMin'] : 30)));
+    $s['sessionDays'] = min(30, max(1, (int) (isset($s['sessionDays']) ? $s['sessionDays'] : 7) ?: 7));
+    $s['authEpoch'] = max(1, (int) (isset($s['authEpoch']) ? $s['authEpoch'] : 1));
+    $s['contextAutoLearn'] = !array_key_exists('contextAutoLearn', $s) || !empty($s['contextAutoLearn']);
+    $mod = isset($s['moderation']) && is_array($s['moderation']) ? $s['moderation'] : array();
+    $s['moderation'] = array(
+        'enabled' => !empty($mod['enabled']),
+        'words' => tc_moderation_words_text(isset($mod['words']) ? $mod['words'] : ''),
+    );
+    $s['agreementEnabled'] = !empty($s['agreementEnabled']);
+    $s['agreementHtml'] = substr((string) (isset($s['agreementHtml']) ? $s['agreementHtml'] : ''), 0, 200000);
+    $s['persistChats'] = !array_key_exists('persistChats', $s) || !empty($s['persistChats']);
+    $ann = isset($s['announcement']) && is_array($s['announcement']) ? $s['announcement'] : array();
+    $annText = trim((string) (isset($ann['text']) ? $ann['text'] : ''));
+    $annChanged = isset($ann['updatedAt']) ? (int) $ann['updatedAt'] : 0;
+    $s['announcement'] = array(
+        'enabled' => !empty($ann['enabled']) && $annText !== '',
+        'text' => substr($annText, 0, 2000),
+        'updatedAt' => $annChanged,
+    );
+    $s['apiKeysEnabled'] = !array_key_exists('apiKeysEnabled', $s) || !empty($s['apiKeysEnabled']);
+    $s['registerInviteRequired'] = !empty($s['registerInviteRequired']);
+    $s['registerLimitPerHour'] = min(1000, max(1, (int) (isset($s['registerLimitPerHour']) ? $s['registerLimitPerHour'] : 5) ?: 5));
     return $s;
 }
 
@@ -471,6 +525,7 @@ function tc_empty_db() {
         'packages' => array(),
         'redemptionCodes' => array(),
         'quotaLedger' => array(),
+        'inviteCodes' => array(),
     );
 }
 
@@ -580,7 +635,7 @@ function tc_migrate_db($raw) {
     $base = tc_empty_db();
     $db = array_merge($base, is_array($raw) ? $raw : array());
     $db['version'] = TC_DB_VERSION;
-    foreach (array('users', 'providers', 'userGroups', 'accessRules', 'assistantCategories', 'assistants', 'packages', 'redemptionCodes', 'quotaLedger') as $k) {
+    foreach (array('users', 'providers', 'userGroups', 'accessRules', 'assistantCategories', 'assistants', 'packages', 'redemptionCodes', 'quotaLedger', 'inviteCodes') as $k) {
         $db[$k] = isset($db[$k]) && is_array($db[$k]) ? array_values($db[$k]) : array();
     }
     tc_migrate_provider_keys($db);
@@ -641,6 +696,158 @@ function tc_migrate_db($raw) {
 
 function tc_db_file() { return tc_data_dir() . '/db.json'; }
 function tc_lock_file() { return tc_data_dir() . '/db.lock'; }
+
+// ---- 数据备份:data/backup/db-YYYYMMDD-HHMMSS.json,自动每日一份并按 backupKeep 轮换 ----
+function tc_backup_dir() {
+    $dir = tc_data_dir() . '/backup';
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    return $dir;
+}
+
+function tc_backup_list() {
+    $dir = tc_backup_dir();
+    $out = array();
+    foreach ((is_dir($dir) ? scandir($dir) : array()) as $f) {
+        if (!preg_match('/^db-\d{8}-\d{6}(?:-[a-z0-9]{4})?\.json$/', (string) $f)) continue;
+        $full = $dir . '/' . $f;
+        $out[] = array('name' => $f, 'size' => (int) @filesize($full), 'time' => (int) @filemtime($full));
+    }
+    usort($out, function ($a, $b) { return $b['time'] - $a['time']; });
+    return $out;
+}
+
+function tc_backup_create() {
+    $dbFile = tc_db_file();
+    if (!is_file($dbFile)) return null;
+    $name = 'db-' . date('Ymd-His') . '.json';
+    if (is_file(tc_backup_dir() . '/' . $name)) {
+        // 同一秒内多次备份:追加短随机后缀避免覆盖
+        $name = 'db-' . date('Ymd-His') . '-' . substr(bin2hex(random_bytes(2)), 0, 4) . '.json';
+    }
+    if (!@copy($dbFile, tc_backup_dir() . '/' . $name)) return null;
+    return $name;
+}
+
+function tc_backup_prune($settings) {
+    $keep = isset($settings['backupKeep']) ? (int) $settings['backupKeep'] : 7;
+    if ($keep < 1) $keep = 1;
+    $list = tc_backup_list();
+    foreach (array_slice($list, $keep) as $old) {
+        @unlink(tc_backup_dir() . '/' . $old['name']);
+    }
+}
+
+// 管理后台加载时惰性触发:距最近一份备份超过 24 小时(或还没有)就自动备份一次
+function tc_backup_maybe($settings) {
+    if (empty($settings['backupEnabled'])) return;
+    try {
+        $list = tc_backup_list();
+        if ($list && (tc_now() - (int) $list[0]['time']) < 24 * 3600 * 1000) return;
+        if (tc_backup_create() !== null) tc_backup_prune($settings);
+    } catch (Throwable $e) { /* 备份失败不影响主流程 */ }
+}
+
+function tc_backup_path($name) {
+    if (!preg_match('/^db-\d{8}-\d{6}(?:-[a-z0-9]{4})?\.json$/', (string) $name)) return '';
+    $full = tc_backup_dir() . '/' . $name;
+    return is_file($full) ? $full : '';
+}
+
+// ---- 接口限流:滑动窗口(每用户每分钟) ----
+// 计数按 key 分片存 data/ratelimit/{hash}.json:写锁只串行化同一用户,不同用户互不阻塞
+function tc_rate_limit_file($key) {
+    $dir = tc_data_dir() . '/ratelimit';
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    return $dir . '/' . hash('sha256', (string) $key) . '.json';
+}
+
+function tc_rate_limit_check($key, $limitPerMin, $windowMs = 60000) {
+    $limit = (int) $limitPerMin;
+    if ($limit <= 0 || $key === '') return true;
+    $window = max(1000, (int) $windowMs);
+    $fp = @fopen(tc_rate_limit_file($key), 'c+');
+    if (!$fp) return true; // 计数存储不可用时不拦截主流程
+    @flock($fp, LOCK_EX);
+    $data = json_decode((string) stream_get_contents($fp), true);
+    $now = tc_now();
+    $mine = array();
+    foreach ((is_array($data) ? $data : array()) as $t) {
+        if ((int) $t > $now - $window) $mine[] = (int) $t;
+    }
+    $allowed = count($mine) < $limit;
+    if ($allowed) {
+        $mine[] = $now;
+        ftruncate($fp, 0);
+        rewind($fp);
+        fwrite($fp, tc_json_encode($mine));
+        fflush($fp);
+    }
+    flock($fp, LOCK_UN);
+    fclose($fp);
+    return $allowed;
+}
+
+// ---- 内容审核:本地敏感词表(每行一个,也支持逗号分隔),发送前对用户消息匹配 ----
+function tc_moderation_words_text($raw) {
+    $out = array();
+    $seen = array();
+    foreach (preg_split('/[\r\n,;，；]+/u', (string) $raw) as $w) {
+        $w = trim((string) $w);
+        if ($w === '' || mb_strlen($w, 'UTF-8') > 100) continue;
+        $k = strtolower($w);
+        if (isset($seen[$k])) continue;
+        $seen[$k] = true;
+        $out[] = $w;
+        if (count($out) >= 5000) break;
+    }
+    return implode("\n", $out);
+}
+
+function tc_moderation_hit($moderation, $text) {
+    if (empty($moderation['enabled'])) return '';
+    $words = (string) (isset($moderation['words']) ? $moderation['words'] : '');
+    if (trim($words) === '') return '';
+    $haystack = (string) $text;
+    if ($haystack === '') return '';
+    if (function_exists('mb_stripos')) {
+        foreach (preg_split('/[\r\n]+/u', $words, -1, PREG_SPLIT_NO_EMPTY) as $w) {
+            if (mb_stripos($haystack, $w, 0, 'UTF-8') !== false) return $w;
+        }
+        return '';
+    }
+    $haystack = strtolower($haystack);
+    foreach (preg_split('/[\r\n]+/u', $words, -1, PREG_SPLIT_NO_EMPTY) as $w) {
+        if (strpos($haystack, strtolower($w)) !== false) return $w;
+    }
+    return '';
+}
+
+// ---- 用户 API 密钥(sk-tc-...):哈希落库,仅创建时完整展示一次,用于 OpenAI 兼容出口 ----
+function tc_api_key_generate() {
+    return 'sk-tc-' . tc_uid(24);
+}
+
+function tc_api_key_hash($key) {
+    return hash_hmac('sha256', (string) $key, tc_secret() . '|api-key-v1');
+}
+
+function tc_api_key_prefix($key) {
+    return substr((string) $key, 0, 12);
+}
+
+// 按明文 Key 定位用户:key 哈希比对(每用户最多 5 把)。返回 ['userId','keyIndex'] 或 null
+function tc_find_api_key_owner($db, $key) {
+    if ((string) $key === '' || strpos((string) $key, 'sk-tc-') !== 0) return null;
+    $hash = tc_api_key_hash($key);
+    foreach ($db['users'] as $ui => $u) {
+        if (empty($u['apiKeys']) || !is_array($u['apiKeys'])) continue;
+        foreach ($u['apiKeys'] as $ki => $k) {
+            if (!is_array($k) || !isset($k['hash'])) continue;
+            if (hash_equals((string) $k['hash'], $hash)) return array('userId' => (string) $u['id'], 'keyIndex' => $ki);
+        }
+    }
+    return null;
+}
 
 function tc_read_db_unlocked() {
     $file = tc_db_file();
@@ -793,13 +1000,17 @@ function tc_mail_send($settings, $to, $subject, $html, $text = '', &$err = null)
     $write('QUIT', array(221,250)); fclose($fp); return true;
 }
 
-function tc_issue_token($user) {
+function tc_issue_token($user, $settings = null) {
+    $s = is_array($settings) ? $settings : array();
+    $days = isset($s['sessionDays']) ? max(1, (int) $s['sessionDays']) : 7;
+    $epoch = isset($s['authEpoch']) ? max(1, (int) $s['authEpoch']) : 1;
     return tc_jwt_sign(array(
         'sub' => $user['id'],
         'name' => $user['name'],
         'admin' => !empty($user['admin']),
         'tv' => isset($user['tv']) ? (int) $user['tv'] : 0,
-        'exp' => tc_now() + 7 * 24 * 3600 * 1000,
+        'ep' => $epoch,
+        'exp' => tc_now() + $days * 24 * 3600 * 1000,
     ));
 }
 
@@ -922,6 +1133,10 @@ function tc_auth_user($db) {
     if ($token === '') return null;
     $payload = tc_jwt_verify($token);
     if (!$payload || empty($payload['sub']) || empty($payload['exp']) || $payload['exp'] < tc_now()) return null;
+    // 全站会话纪元:authEpoch 递增后旧令牌全部失效(缺 ep 的老令牌视为纪元 1)
+    $epoch = isset($db['settings']['authEpoch']) ? (int) $db['settings']['authEpoch'] : 1;
+    $payloadEpoch = isset($payload['ep']) ? (int) $payload['ep'] : 1;
+    if ($payloadEpoch !== $epoch) return null;
     foreach ($db['users'] as $u) {
         if ($u['id'] === $payload['sub']) {
             $tv = isset($u['tv']) ? (int) $u['tv'] : 0;
@@ -983,6 +1198,11 @@ function tc_send_cors() {
     header('Access-Control-Max-Age: 86400');
     header('X-Content-Type-Options: nosniff');
     header('Referrer-Policy: strict-origin-when-cross-origin');
+    // 页面含内联脚本/样式(主题色预置、各页面内嵌 JS),CSP 需保留 unsafe-inline;
+    // 站点资源全部本地化,外部来源仅放行聊天内容里的 https 图片
+    header('X-Frame-Options: DENY');
+    header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+    header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
 }
 
 function tc_login_file() { return tc_data_dir() . '/login-fails.json'; }
@@ -1184,7 +1404,8 @@ function tc_charge_user(&$db, &$user, $cost, $model = '') {
     if (!$unlimited) tc_enforce_quota_expiry($db, $user);
     // 0 成本(自有 Key)与无限额度的调用不扣额度,但同样计入调用次数
     if ($n > 0 && !$unlimited) {
-        $user['quota'] = max(0, (isset($user['quota']) ? (float) $user['quota'] : 0) - $n);
+        // 按 token 计费会出现小数额度,4 位舍入避免浮点尘埃累积
+        $user['quota'] = max(0, round((isset($user['quota']) ? (float) $user['quota'] : 0) - $n, 4));
         tc_consume_quota_grants($user, $n);
     }
     // 生命周期调用计数:存用户记录上,清空对话也不丢失

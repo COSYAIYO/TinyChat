@@ -80,11 +80,18 @@
 
       <div class="overview-note muted small">核心状态概览。详细趋势、用量和排行请进入“用量分析”。</div>
     </div>
+    <div class="admin-card" style="margin-top:16px">
+      <h2>全站公告</h2>
+      <p class="muted small">启用后所有登录用户在顶部看到公告条；用户关闭后，内容更新（重新保存）才会再次显示。纯文本，最多 2000 字。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="announce-enabled"><span class="slider"></span></span><span>启用公告</span></label>
+      <label class="field"><span>公告内容</span><textarea id="announce-text" rows="3" placeholder="例如：系统将于周日晚 22:00–24:00 升级维护" style="resize:vertical"></textarea></label>
+      <button class="btn primary" id="announce-save" type="button">保存公告</button>
+    </div>
   </div>
 
   <div class="admin-panel" id="panel-usage">
     <div class="admin-card">
-      <div class="admin-panel-head"><div><h2>用量分析</h2><p class="muted small">近 14 天调用趋势、用户用量、模型评价与额度排行。</p></div></div>
+      <div class="admin-panel-head"><div><h2>用量分析</h2><p class="muted small">近 14 天调用趋势、用户用量、模型评价与额度排行。</p></div><button class="btn small" id="usage-export" type="button">导出明细 CSV</button></div>
       <div class="section-title">近 14 天调用趋势</div><div class="trend-chart" id="trend-chart"></div>
       <div class="meta-row" id="meta-row"></div>
       <div class="section-title">近 14 天用量</div><div class="usage-ledger admin-long-list" id="usage-ledger"></div>
@@ -97,7 +104,7 @@
   <div class="admin-panel" id="panel-chat">
     <div class="admin-card">
       <h2>对话</h2>
-      <p class="muted small">上下文条数 = 每次发给模型的最近消息数（系统提示词不计入）；输出上限 = 单次回答最多生成的 token。用户可在自己的设置里调低，不能超过这里的上限。</p>
+      <p class="muted small">上下文条数 = 每次发给模型的最近消息数（系统提示词不计入）；输出上限 = 单次回答最多生成的 token（用户可在自己的设置里调低，不能超过这里的上限）。模型列表里可为单个模型设置 max_tokens 与最大上下文：max_tokens 留空跟随此处，最大上下文填该模型的窗口大小（token），发送时按「窗口 − 预估输入」自动压缩输出、并裁剪过长的历史消息。温度留空则不发送该参数；推理型模型（如 o 系列、DeepSeek R1）可能不接受 temperature，被拒时会自动去参重试。</p>
       <label class="field"><span>默认上下文条数</span>
         <div class="stepper stepper-field">
           <button type="button" class="seg-btn" data-step="-1" data-target="chat-context" aria-label="减少默认上下文条数">−</button>
@@ -112,9 +119,17 @@
           <button type="button" class="seg-btn" data-step="1" data-target="chat-context-max" aria-label="增加上下文条数上限">+</button>
         </div>
       </label>
-      <label class="field"><span>单次输出上限（token）</span>
+      <label class="field"><span>单次输出上限（token，即 max_tokens）</span>
           <input id="chat-output" type="number" min="256" max="128000" step="256" value="12800">
       </label>
+      <label class="field"><span>温度 temperature（0–2，留空使用模型默认）</span>
+          <input id="chat-temperature" type="number" min="0" max="2" step="0.1" placeholder="留空则不发送该参数">
+      </label>
+      <label class="field"><span>接口限流（每用户每分钟请求数，0 = 不限制）</span>
+          <input id="chat-ratelimit" type="number" min="0" max="600" step="1" value="30">
+      </label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-context-learn" checked><span class="slider"></span></span><span>自动学习上下文窗口（从上游 context length 报错回填模型的最大上下文，不覆盖手动设置）</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-persist-chats" checked><span class="slider"></span></span><span>服务器保存对话记录（关闭后对话仅存用户浏览器本地，服务器不留存）</span></label>
       <button class="btn primary" id="chat-limits-save" type="button">保存对话设置</button>
     </div>
   </div>
@@ -275,6 +290,13 @@
             </div>
           </div>
           <label class="field"><span>每次调用扣费次数</span><input id="ap-cost" type="number" min="1" value="1"></label>
+          <div class="field"><span>计费模式</span>
+            <div class="select-box" id="ap-billing" data-value="call" role="button" tabindex="0">
+              <span class="sb-label">按次（扣费次数）</span>
+              <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
+            </div>
+          </div>
+          <label class="field hidden" id="ap-price-row"><span>每 1K token 价格（额度，含输入+输出）</span><input id="ap-price" type="number" min="0" max="1000" step="0.0001" value="0"></label>
           <div class="probe-box">
             <label class="field"><span>测试模型</span>
               <div class="select-box" id="ap-test-model" data-value="" role="button" tabindex="0">
@@ -310,6 +332,27 @@
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="verify-reset-enabled"><span class="slider"></span></span><span>开启找回密码</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="verify-quota-unlimited"><span class="slider"></span></span><span>新注册用户默认无限额度</span></label>
       <label class="field"><span>新注册用户默认额度</span><input id="verify-free-quota" type="number" min="0" value="100"></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="apikeys-enabled" checked><span class="slider"></span></span><span>允许用户生成 API 密钥（OpenAI 兼容出口 /v1，计费与网页端一致）</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="invite-required"><span class="slider"></span></span><span>注册需要邀请码</span></label>
+      <div class="row-between" style="gap:10px;flex-wrap:wrap;margin:6px 0">
+        <span class="row-between" style="gap:8px;flex-wrap:nowrap">
+          <input id="invite-count" type="number" min="1" max="50" value="5" style="width:70px">
+          <button class="btn small" id="invite-generate" type="button">生成邀请码</button>
+        </span>
+        <span class="muted small" id="invite-count-info"></span>
+      </div>
+      <div class="users-table-wrap" style="max-height:220px;overflow:auto">
+        <table class="admin-table">
+          <thead><tr><th>邀请码</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
+          <tbody id="invite-tbody"></tbody>
+        </table>
+      </div>
+      <p class="muted small" id="invite-empty" style="text-align:center;padding:10px 0">暂无邀请码</p>
+      <div class="row-between" style="gap:10px;flex-wrap:wrap;margin-top:6px">
+        <label class="field" style="margin:0;flex-direction:row;align-items:center;gap:8px"><span style="white-space:nowrap">会话有效期（天）</span><input id="session-days" type="number" min="1" max="30" value="7" style="width:80px"></label>
+        <button class="btn danger" id="session-invalidate" type="button">强制全站下线</button>
+      </div>
+      <p class="muted small" style="margin:6px 0 0">会话有效期修改后对新登录生效；「强制全站下线」会使所有人的现有登录态立即失效（包括你自己），需要重新登录。</p>
       <h3>SMTP</h3>
       <label class="field"><span>服务器</span><input id="smtp-host" placeholder="smtp.example.com"></label>
       <label class="field"><span>端口</span><input id="smtp-port" type="number" value="587"></label>
@@ -485,6 +528,40 @@
         <a id="upd-link" href="#" target="_blank" rel="noopener" class="small">在 GitHub 查看该版本 ↗</a>
       </div>
       <p class="muted small" id="upd-last" style="margin:10px 0 0"></p>
+    </div>
+    <div class="admin-card" style="margin-top:16px">
+      <h2>数据备份</h2>
+      <p class="muted small">备份 data/db.json（用户、供应商、对话、设置等全部数据）到 data/backup/。开启后管理后台每次打开时惰性检查：距最近一份超过 24 小时就自动备份，并只保留最近 N 份。</p>
+      <div class="row-between" style="gap:10px;flex-wrap:wrap;margin-top:6px">
+        <label class="user-form-admin" style="margin:0"><span class="switch"><input type="checkbox" id="backup-enabled" checked><span class="slider"></span></span><span>自动备份</span></label>
+        <label class="field" style="margin:0;flex-direction:row;align-items:center;gap:8px"><span style="white-space:nowrap">保留份数</span><input id="backup-keep" type="number" min="1" max="30" value="7" style="width:80px"></label>
+        <span class="row-between" style="gap:8px;flex-wrap:nowrap">
+          <button class="btn" id="backup-save" type="button">保存设置</button>
+          <button class="btn primary" id="backup-now" type="button">立即备份</button>
+        </span>
+      </div>
+      <div class="users-table-wrap" style="margin-top:12px">
+        <table class="admin-table">
+          <thead><tr><th>备份文件</th><th>大小</th><th>时间</th><th style="text-align:right">操作</th></tr></thead>
+          <tbody id="backup-tbody"></tbody>
+        </table>
+      </div>
+      <p class="muted small" id="backup-empty" style="text-align:center;padding:14px 0">暂无备份</p>
+      <p class="muted small" style="margin:6px 0 0">「恢复」会用所选备份整体替换当前数据库，<b>恢复点之后的全部数据变更会丢失</b>，操作前请先点「立即备份」。</p>
+    </div>
+  </div>
+
+  <div class="admin-panel" id="panel-moderation">
+    <div class="admin-card">
+      <h2>内容安全</h2>
+      <p class="muted small">发送前对最后一条用户消息做敏感词匹配，命中后拒绝本次请求（不拦截正常对话的上下文）。词库仅保存在服务器，不回传前端。输出侧流式内容无法撤回，如需输出侧审核请接入第三方审核服务。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="mod-enabled"><span class="slider"></span></span><span>启用敏感词过滤</span></label>
+      <label class="field"><span>敏感词库（每行一个，也支持逗号分隔，最多 5000 条）</span><textarea id="mod-words" rows="10" spellcheck="false" placeholder="示例词一&#10;示例词二" style="font-family:ui-monospace,SFMono-Regular,Consolas,'Courier New',monospace;font-size:12.5px;line-height:1.6"></textarea></label>
+      <h3 style="margin-top:20px">用户协议</h3>
+      <p class="muted small">启用后：<a href="/agreement" target="_blank" rel="noopener">/agreement</a> 展示协议正文，注册页需勾选同意才能提交。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="agreement-enabled"><span class="slider"></span></span><span>启用用户协议</span></label>
+      <label class="field"><span>协议正文（HTML，支持常用标签，最多 20 万字符）</span><textarea id="agreement-html" rows="10" spellcheck="false" style="font-family:ui-monospace,SFMono-Regular,Consolas,'Courier New',monospace;font-size:12.5px;line-height:1.6"></textarea></label>
+      <button class="btn primary" id="moderation-save" type="button">保存内容安全设置</button>
     </div>
   </div>
 

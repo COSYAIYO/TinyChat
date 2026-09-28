@@ -1846,7 +1846,93 @@ body.share-page {
   background: var(--bg-hover);
 }
 
-/* 模型列表表格：勾选 | 模型 ID | 显示名称 */
+/* 多模型对比 */
+.compare-modal .compare-model-list {
+  max-height: 200px;
+  overflow: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  padding: 6px;
+}
+.compare-model-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.compare-model-opt:hover { background: var(--bg-surface); }
+.compare-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.compare-card {
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: var(--bg-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.compare-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+}
+.compare-card-head b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compare-card-body {
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
+.compare-card-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 全站公告条 */
+.announce-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  margin: 8px 10px 0;
+  border: 1px solid color-mix(in srgb, var(--brand) 35%, var(--hairline));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--brand) 8%, var(--bg-surface));
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.announce-bar .announce-text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.announce-bar .announce-close {
+  flex-shrink: 0;
+  opacity: .6;
+}
+.announce-bar .announce-close:hover { opacity: 1; }
+
+/* 模型列表表格：勾选 | 模型 ID | 显示名称 | max_tokens | 最大上下文 */
 .model-table {
   width: 100%;
   border-collapse: separate;
@@ -1875,10 +1961,16 @@ body.share-page {
   padding-right: 4px;
 }
 .model-table .col-id {
-  width: 46%;
+  width: 32%;
 }
 .model-table .col-name {
   width: auto;
+}
+.model-table .col-mtok {
+  width: 96px;
+}
+.model-table .col-ctx {
+  width: 112px;
 }
 .model-table tbody td {
   padding: 6px 10px;
@@ -1916,6 +2008,38 @@ body.share-page {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.model-table .mtokens,
+.model-table .mctx {
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 7px;
+  background: var(--bg-surface);
+  color: var(--text);
+  font-size: 12.5px;
+  box-shadow: none;
+  text-align: right;
+}
+.model-table .mtokens:focus,
+.model-table .mctx:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--brand) 45%, var(--hairline));
+}
+.model-table .mtokens-static,
+.model-table .mctx-static {
+  display: block;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.model-table .mtokens-static i,
+.model-table .mctx-static i {
+  font-style: normal;
+  color: var(--text-tertiary);
 }
 .model-table .mname-static em {
   margin-left: 6px;

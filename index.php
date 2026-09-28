@@ -45,7 +45,7 @@ try {
     // 首次写库失败时仍允许继续，具体接口会再报错
 }
 
-if ($path === '/api' || strpos($path, '/api/') === 0) {
+if ($path === '/api' || strpos($path, '/api/') === 0 || $path === '/v1' || strpos($path, '/v1/') === 0) {
     try {
         tc_dispatch($method, $path);
     } catch (Exception $e) {
@@ -70,6 +70,10 @@ if ($method === 'GET' || $method === 'HEAD') {
     }
     if (preg_match('/^\/s\/[A-Za-z0-9]+$/', $path)) {
         tc_send_page('share.html');
+        exit;
+    }
+    if ($path === '/agreement') {
+        tc_api_agreement_page();
         exit;
     }
 }
@@ -111,6 +115,13 @@ function tc_dispatch($method, $path) {
         array('GET', '#^/api/auth/me$#', 'tc_api_me'),
         array('GET', '#^/api/me$#', 'tc_api_me'),
         array('POST', '#^/api/me/tools$#', 'tc_api_save_tools'),
+        array('GET', '#^/api/me/apikeys$#', 'tc_api_me_apikeys_list'),
+        array('POST', '#^/api/me/apikeys$#', 'tc_api_me_apikeys_create'),
+        array('DELETE', '#^/api/me/apikeys/([^/]+)$#', 'tc_api_me_apikeys_delete'),
+        array('GET', '#^/api/admin/invites$#', 'tc_api_admin_invites_list'),
+        array('POST', '#^/api/admin/invites$#', 'tc_api_admin_invites_create'),
+        array('DELETE', '#^/api/admin/invites/([^/]+)$#', 'tc_api_admin_invites_delete'),
+        array('GET', '#^/api/admin/usage/export$#', 'tc_api_admin_usage_export'),
         array('POST', '#^/api/auth/password$#', 'tc_api_change_password'),
         array('GET', '#^/api/providers$#', 'tc_api_list_providers'),
         array('POST', '#^/api/providers$#', 'tc_api_create_provider'),
@@ -136,6 +147,7 @@ function tc_dispatch($method, $path) {
         array('GET', '#^/api/admin/stats$#', 'tc_api_admin_stats'),
         array('GET', '#^/api/admin/settings$#', 'tc_api_admin_get_settings'),
         array('POST', '#^/api/admin/settings$#', 'tc_api_admin_save_settings'),
+        array('POST', '#^/api/admin/session/invalidate$#', 'tc_api_admin_invalidate_sessions'),
         array('GET', '#^/api/admin/thinking$#', 'tc_api_admin_get_thinking'),
         array('POST', '#^/api/admin/thinking$#', 'tc_api_admin_save_thinking'),
         array('GET', '#^/api/packages$#', 'tc_api_list_packages'),
@@ -156,6 +168,10 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/admin/search/test$#', 'tc_api_admin_test_search'),
         array('GET', '#^/api/admin/logs$#', 'tc_api_admin_logs'),
         array('DELETE', '#^/api/admin/logs$#', 'tc_api_admin_delete_logs'),
+        array('GET', '#^/api/admin/backup$#', 'tc_api_admin_backup_list'),
+        array('POST', '#^/api/admin/backup$#', 'tc_api_admin_backup_create'),
+        array('GET', '#^/api/admin/backup/download$#', 'tc_api_admin_backup_download'),
+        array('POST', '#^/api/admin/backup/restore$#', 'tc_api_admin_backup_restore'),
         array('GET', '#^/api/admin/users$#', 'tc_api_admin_users'),
         array('GET', '#^/api/admin/users/chats$#', 'tc_api_admin_user_chats'),
         array('POST', '#^/api/admin/users$#', 'tc_api_admin_create_user'),
@@ -190,6 +206,9 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/proxy/anthropic$#', 'tc_api_proxy_anthropic'),
         array('GET', '#^/api/proxy/models$#', 'tc_api_list_models'),
         array('POST', '#^/api/proxy/fetch-models$#', 'tc_api_fetch_models'),
+        array('POST', '#^/api/proxy/images$#', 'tc_api_proxy_images'),
+        array('POST', '#^/v1/chat/completions$#', 'tc_api_v1_chat_completions'),
+        array('GET', '#^/v1/models$#', 'tc_api_v1_models'),
     );
     foreach ($routes as $r) {
         if ($r[0] !== $method) continue;

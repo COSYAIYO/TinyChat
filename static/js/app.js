@@ -1609,10 +1609,44 @@ function contextLimitNow() {
   const chosen = Number(uiPref('contextMessages', fallback));
   return Math.min(cap, Math.max(2, isFinite(chosen) ? chosen : fallback));
 }
+// 粗略 token 估算:中日韩按 1 token/字,其余按 4 字符/token(与服务端同一口径,宁高勿低)
+function estimateTextTokens(s) {
+  const str = String(s || '');
+  if (!str) return 0;
+  const cjk = (str.match(/[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7a3\uf900-\ufaf6\uff00-\uffef]/g) || []).length;
+  return Math.round(cjk + (str.length - cjk) / 4);
+}
+function estimateMessageTokens(m) {
+  let n = estimateTextTokens(flattenApiContent(messageApiContent(m, 'chat')));
+  // 图片/文件附件按固定开销计,避免按文本低估
+  if (m && Array.isArray(m.attachments)) n += m.attachments.length * 1024;
+  return n;
+}
+function currentModelSpec() {
+  if (!state.currentModel) return null;
+  return (state.models || []).find((x) => x && x.id === state.currentModel) || null;
+}
 function outgoingMessages(chatMessages, chat) {
   const msgs = (chatMessages || []).filter((m) => m && m.role !== 'system');
   const limit = contextLimitNow();
-  const kept = msgs.length > limit ? msgs.slice(-limit) : msgs;
+  let kept = msgs.length > limit ? msgs.slice(-limit) : msgs;
+  // 模型配置了最大上下文时,再做一轮 token 预算裁剪:输入 + 预留输出不超过窗口
+  const spec = currentModelSpec();
+  const maxCtx = spec && parseInt(spec.maxContext, 10) > 0 ? parseInt(spec.maxContext, 10) : 0;
+  if (maxCtx > 0 && kept.length) {
+    const outCap = spec && parseInt(spec.maxTokens, 10) > 0 ? parseInt(spec.maxTokens, 10) : (Number((state.chatLimits || {}).maxOutputTokens) || 12800);
+    const reserve = Math.min(outCap, Math.max(256, Math.floor(maxCtx / 2)));
+    const budget = maxCtx - reserve;
+    const sysTokens = estimateTextTokens(chatSystemPrompt(chat));
+    const costs = kept.map((m) => estimateMessageTokens(m));
+    let total = sysTokens + costs.reduce((a, b) => a + b, 0);
+    let drop = 0;
+    while (total > budget && drop < kept.length - 1) {
+      total -= costs[drop];
+      drop++;
+    }
+    if (drop > 0) kept = kept.slice(drop);
+  }
   const prompt = chatSystemPrompt(chat);
   const out = prompt ? [{ role: 'system', content: prompt }].concat(kept) : kept;
   out.contextCount = kept.length;
@@ -4300,6 +4334,97 @@ if (composerAt) {
 $('logout-btn').addEventListener('click', logout);
 $('admin-link').addEventListener('click', () => location.href = apiUrl('/admin'));
 
+// ============ 全站公告 ============
+(function initAnnouncement() {
+  // PWA:注册 service worker(静态资源离线缓存,"添加到主屏幕")
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register(apiUrl('sw.js')).catch(() => {});
+    });
+  }
+  const bar = $('announce-bar');
+  if (!bar) return;
+  fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
+    const ann = cfg && cfg.announcement;
+    if (!ann || !ann.enabled || !ann.text) return;
+    const seen = Number(localStorage.getItem('oc_announcement_seen')) || 0;
+    if (ann.updatedAt && ann.updatedAt <= seen) return;
+    const txt = $('announce-text');
+    if (txt) txt.textContent = ann.text;
+    bar.classList.remove('hidden');
+    const close = $('announce-close');
+    if (close) close.addEventListener('click', () => {
+      bar.classList.add('hidden');
+      localStorage.setItem('oc_announcement_seen', String(ann.updatedAt || Date.now()));
+    });
+  }).catch(() => {});
+})();
+
+// ============ API 密钥(OpenAI 兼容出口) ============
+function renderApiKeys(keys) {
+  const box = $('apikey-list');
+  if (!box) return;
+  if (!keys.length) { box.innerHTML = '<p class="muted small" style="margin:8px 0 0">还没有 API 密钥</p>'; return; }
+  box.innerHTML = keys.map((k) => {
+    const last = k.lastUsed ? new Date(k.lastUsed).toLocaleString('zh-CN') : '从未使用';
+    return '<div class="row-between" style="padding:6px 0;border-bottom:1px solid var(--hairline)">'
+      + '<div style="min-width:0"><div>' + escapeHtml(k.name) + ' <code class="muted small">' + escapeHtml(k.prefix) + '••••</code></div>'
+      + '<div class="muted small">创建于 ' + new Date(k.createdAt).toLocaleDateString('zh-CN') + ' · 最后使用 ' + last + '</div></div>'
+      + '<button class="btn small danger" data-del-key="' + escapeHtml(k.id) + '" type="button">删除</button></div>';
+  }).join('');
+  box.querySelectorAll('[data-del-key]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const ok = window.OCUI && OCUI.confirm
+        ? await OCUI.confirm({ title: '删除 API 密钥', message: '使用该密钥的客户端将立即无法调用。确认删除？', danger: true, confirmText: '删除' })
+        : confirm('确认删除该 API 密钥？');
+      if (!ok) return;
+      try {
+        const r = await api('/api/me/apikeys/' + encodeURIComponent(btn.dataset.delKey), { method: 'DELETE' });
+        const d = await r.json();
+        if (!r.ok) return toast((d.error && d.error.message) || '删除失败', true);
+        toast('已删除'); loadApiKeys();
+      } catch (e) { toast('删除失败: ' + e.message, true); }
+    });
+  });
+}
+function loadApiKeys() {
+  const box = $('apikey-list');
+  if (!box) return;
+  api('/api/me/apikeys').then((r) => r.json()).then((d) => {
+    renderApiKeys(d.keys || []);
+    if ($('acc-api-base')) $('acc-api-base').textContent = location.origin + '/v1';
+  }).catch(() => {});
+}
+(function initApiKeysUI() {
+  const create = $('apikey-create');
+  if (!create) return;
+  create.addEventListener('click', async () => {
+    create.disabled = true;
+    try {
+      const r = await api('/api/me/apikeys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: ($('apikey-name') && $('apikey-name').value.trim()) || '' }),
+      });
+      const d = await r.json();
+      if (!r.ok) return toast((d.error && d.error.message) || '创建失败', true);
+      const box = $('apikey-new-box');
+      const val = $('apikey-new-value');
+      if (box && val) { val.textContent = d.secret; box.classList.remove('hidden'); }
+      const input = $('apikey-name');
+      if (input) input.value = '';
+      loadApiKeys();
+      toast('密钥已生成，请立即复制保存');
+    } catch (e) {
+      toast('创建失败: ' + e.message, true);
+    } finally { create.disabled = false; }
+  });
+  if ($('sp-account') && window.MutationObserver) {
+    new MutationObserver(() => { if ($('sp-account').classList.contains('active')) loadApiKeys(); })
+      .observe($('sp-account'), { attributes: true, attributeFilter: ['class'] });
+  }
+})();
+
 // ============ 空状态建议 ============
 (function initEmptySuggests() {
   const wrap = $('empty-suggests');
@@ -4595,8 +4720,187 @@ async function attachDocument(file, attach) {
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !tools.classList.contains('hidden')) closeTools();
     });
+    const compareTool = $('composer-tool-compare');
+    if (compareTool) compareTool.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      closeTools();
+      openCompareDialog();
+    });
+    const imageTool = $('composer-tool-image');
+    if (imageTool) imageTool.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      closeTools();
+      openImageDialog();
+    });
   }
 })();
+
+// ============ 图像生成 ============
+function openImageDialog() {
+  if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+  if (!state.currentProviderId) { toast('请先在顶部选择供应商', true); return; }
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask';
+  const lastModel = localStorage.getItem('oc_image_model') || '';
+  const lastSize = localStorage.getItem('oc_image_size') || '1024x1024';
+  mask.innerHTML =
+    '<div class="modal modal-sm" role="dialog" aria-modal="true">'
+    + '<div class="modal-header"><h3>生成图片</h3>'
+    + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + (window.OC ? OC.icon('close', 16) : '×') + '</button></div>'
+    + '<div class="modal-body">'
+    + '<p class="muted small">调用当前供应商的 <code>images/generations</code> 接口，按一次对话扣费。生成后插入当前对话。</p>'
+    + '<label class="field"><span>提示词</span><textarea id="img-prompt" rows="3" placeholder="描述想要的画面，例如：一只戴墨镜的柯基在冲浪，扁平插画风" style="resize:vertical"></textarea></label>'
+    + '<label class="field"><span>图像模型</span><input id="img-model" placeholder="例如 dall-e-3 / gpt-image-1 / sd3" value="' + escapeHtml(lastModel) + '" autocomplete="off"></label>'
+    + '<label class="field"><span>尺寸</span><select id="img-size">'
+    + ['1024x1024', '1792x1024', '1024x1792', '512x512'].map((s) => '<option value="' + s + '"' + (s === lastSize ? ' selected' : '') + '>' + s + '</option>').join('')
+    + '</select></label>'
+    + '<div class="form-actions"><button class="btn primary" id="img-run" type="button">生成</button><span class="muted small" id="img-status"></span></div>'
+    + '</div></div>';
+  document.body.appendChild(mask);
+  const close = () => mask.remove();
+  mask.addEventListener('click', (e) => { if (e.target === mask || e.target.closest('[data-act="close"]')) close(); });
+  const run = mask.querySelector('#img-run');
+  run.addEventListener('click', async () => {
+    const prompt = (mask.querySelector('#img-prompt') && mask.querySelector('#img-prompt').value.trim()) || '';
+    const model = (mask.querySelector('#img-model') && mask.querySelector('#img-model').value.trim()) || '';
+    const size = (mask.querySelector('#img-size') && mask.querySelector('#img-size').value) || '1024x1024';
+    const status = mask.querySelector('#img-status');
+    if (!prompt) return toast('请输入提示词', true);
+    if (!model) return toast('请填写图像模型', true);
+    localStorage.setItem('oc_image_model', model);
+    localStorage.setItem('oc_image_size', size);
+    run.disabled = true;
+    status.textContent = '生成中，通常需要 10–60 秒…';
+    try {
+      const r = await api('/api/proxy/images', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerId: state.currentProviderId, model, prompt, size, n: 1 }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error((d.error && d.error.message) || ('HTTP ' + r.status));
+      const md = (d.images || []).map((im) => '![' + prompt.replace(/[\[\]]/g, '').slice(0, 60) + '](' + im.url + ')').join('\n\n');
+      let chat = currentChat();
+      if (!chat || !chat.id) chat = newChat();
+      if (!chat.messages.length) { chat.title = '绘画 · ' + prompt.slice(0, 18); renderChatList(); }
+      const reply = { role: 'assistant', content: '**提示词：** ' + prompt + '\n\n' + md, model: model + ' (图像)', createdAt: Date.now() };
+      chat.messages.push(reply);
+      chat.updatedAt = Date.now();
+      state.currentChatId = chat.id;
+      saveChats(); renderMessages();
+      close();
+      toast('已生成并插入对话');
+      await refreshMe();
+    } catch (e) {
+      status.textContent = '';
+      toast('生成失败: ' + (e && e.message) || '未知错误', true);
+    } finally { run.disabled = false; }
+  });
+  setTimeout(() => { const p = mask.querySelector('#img-prompt'); if (p) p.focus(); }, 60);
+}
+
+// ============ 多模型并答对比 ============
+// 独立于流式管线:非流式并行请求,结果并排展示并支持投票(计入模型评价)。每个所选模型各计费一次。
+function openCompareDialog() {
+  if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+  const models = availableModels();
+  if (models.length < 2) return toast('至少需要两个可用模型才能对比', true);
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask';
+  const options = models.map((item) => {
+    const on = item.providerId === state.currentProviderId && item.model === state.currentModel;
+    return '<label class="compare-model-opt"><input type="checkbox" value="' + escapeHtml(item.providerId + '\n' + item.model) + '"' + (on ? ' checked' : '') + '>'
+      + '<span>' + escapeHtml(item.provider + ' · ' + item.model) + '</span></label>';
+  }).join('');
+  mask.innerHTML =
+    '<div class="modal modal-lg compare-modal" role="dialog" aria-modal="true">'
+    + '<div class="modal-header"><h3>多模型对比</h3>'
+    + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + (window.OC ? OC.icon('close', 16) : '×') + '</button></div>'
+    + '<div class="modal-body" id="compare-body">'
+    + '<label class="field"><span>问题（发送给每个所选模型，各自按标准计费）</span><textarea id="compare-q" rows="3" style="resize:vertical"></textarea></label>'
+    + '<div class="section-title">选择模型（2–3 个）</div>'
+    + '<div class="compare-model-list" id="compare-models">' + options + '</div>'
+    + '<div class="form-actions" style="margin-top:10px"><button class="btn primary" id="compare-run" type="button">开始对比</button><span class="muted small" id="compare-status"></span></div>'
+    + '<div class="compare-results" id="compare-results"></div>'
+    + '</div></div>';
+  document.body.appendChild(mask);
+  const qEl = mask.querySelector('#compare-q');
+  const input = $('input');
+  if (qEl && input && input.value.trim()) qEl.value = input.value.trim();
+  if (qEl) setTimeout(() => qEl.focus(), 60);
+  mask.addEventListener('click', (e) => {
+    if (e.target === mask || e.target.closest('[data-act="close"]')) mask.remove();
+  });
+  mask.querySelector('#compare-run').addEventListener('click', async () => {
+    const question = (qEl && qEl.value.trim()) || '';
+    if (!question) return toast('请先输入问题', true);
+    const picks = [];
+    mask.querySelectorAll('#compare-models input:checked').forEach((inp) => {
+      const [providerId, model] = inp.value.split('\n');
+      picks.push({ providerId, model });
+    });
+    if (picks.length < 2) return toast('请至少勾选 2 个模型', true);
+    if (picks.length > 3) return toast('最多对比 3 个模型', true);
+    const runBtn = mask.querySelector('#compare-run');
+    const status = mask.querySelector('#compare-status');
+    const results = mask.querySelector('#compare-results');
+    runBtn.disabled = true;
+    status.textContent = '正在并行询问 ' + picks.length + ' 个模型…';
+    results.innerHTML = picks.map((p, i) =>
+      '<div class="compare-card" data-ci="' + i + '"><div class="compare-card-head"><b>' + escapeHtml(p.model) + '</b><span class="muted small" data-el="' + i + '">生成中…</span></div><div class="compare-card-body muted">…</div>'
+      + '<div class="compare-card-actions hidden"><button class="btn small" data-vote="up" type="button">👍 这个更好</button><button class="btn small" data-copy type="button">复制</button></div></div>'
+    ).join('');
+    const cap = Math.min(128000, Math.max(256, Number((state.chatLimits || {}).maxOutputTokens) || 12800));
+    const started = Date.now();
+    const answers = picks.map((p) => {
+      const prov = (state.providers || []).find((x) => x.id === p.providerId);
+      const format = (prov && prov.apiFormat) || 'chat';
+      const body = { model: p.model, providerId: p.providerId, stream: false, max_tokens: cap, messages: [{ role: 'user', content: question }] };
+      return api(ENDPOINT_BY_FORMAT[format] || '/api/proxy/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then(async (r) => {
+        const data = await r.json();
+        if (!r.ok) throw new Error((data.error && data.error.message) || ('HTTP ' + r.status));
+        return extractText(data, format) || '（空回复）';
+      }).catch((e) => ({ error: (e && e.message) || '请求失败' }));
+    });
+    const settled = await Promise.all(answers.map((p) => p.catch(() => ({ error: '请求失败' }))));
+    const elapsed = Date.now() - started;
+    settled.forEach((res, i) => {
+      const card = results.querySelector('[data-ci="' + i + '"]');
+      if (!card) return;
+      const el = card.querySelector('[data-el]');
+      const bodyEl = card.querySelector('.compare-card-body');
+      const isErr = res && typeof res === 'object' && res.error;
+      if (el) el.textContent = isErr ? '失败' : (elapsed + ' ms');
+      if (bodyEl) {
+        if (isErr) { bodyEl.textContent = '请求失败：' + res.error; bodyEl.classList.add('muted'); }
+        else { bodyEl.textContent = res; bodyEl.classList.remove('muted'); }
+      }
+      const actions = card.querySelector('.compare-card-actions');
+      if (actions && !isErr) {
+        actions.classList.remove('hidden');
+        const voteBtn = actions.querySelector('[data-vote]');
+        if (voteBtn) voteBtn.addEventListener('click', async () => {
+          voteBtn.disabled = true;
+          voteBtn.textContent = '已投票 ✓';
+          try { await api('/api/votes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: picks[i].model, to: 'up' }) }); } catch (e) { /* 投票失败不影响对比 */ }
+        });
+        const copyBtn = actions.querySelector('[data-copy]');
+        if (copyBtn) copyBtn.addEventListener('click', () => {
+          if (navigator.clipboard) navigator.clipboard.writeText(res).then(() => toast('已复制')).catch(() => {});
+        });
+      }
+    });
+    status.textContent = '完成，用时 ' + elapsed + ' ms。点击"这个更好"为满意的模型投票（计入模型评价）。';
+    runBtn.disabled = false;
+    runBtn.textContent = '再来一轮';
+  });
+}
 
 // 键盘快捷键
 window.OCConversations.initShortcuts({

@@ -594,7 +594,7 @@ async function loadProviders() {
           ${isDefault ? '<span class="badge default">默认</span>' : ''}
           ${disabled ? '<span class="badge disabled">已停用</span>' : ''}
         </div>
-        <div class="pc-url">${escapeHtml(p.baseUrl)} · ${escapeHtml(p.apiFormat)} · 模型: ${escapeHtml(p.models.map((m) => m.id).join(', '))} · 扣 ${p.costPerCall} 次</div>
+        <div class="pc-url">${escapeHtml(p.baseUrl)} · ${escapeHtml(p.apiFormat)} · 模型: ${escapeHtml(p.models.map((m) => m.id).join(', '))} · ${p.billingMode === 'token' ? ('按 token ' + (p.pricePer1k || 0) + '/1K') : ('扣 ' + p.costPerCall + ' 次')}</div>
         ${keyHtml}
       </div>
       <div class="provider-card-actions" style="display:flex;gap:6px;flex-shrink:0">
@@ -680,6 +680,8 @@ async function loadProviders() {
       if (window.__setApFormat) window.__setApFormat(target.apiFormat);
       if (apModelList) apModelList.setEnabled(target.models || []);
       $('ap-cost').value = target.costPerCall;
+      if (window.__setApBilling) window.__setApBilling(target.billingMode || 'call');
+      if ($('ap-price')) $('ap-price').value = target.pricePer1k != null ? target.pricePer1k : 0;
       $('ap-save').dataset.editId = target.id;
       $('ap-save').textContent = '保存修改';
     };
@@ -746,6 +748,13 @@ function fillChatLimits(s) {
   if ($('chat-context-max')) $('chat-context-max').value = maxCtx;
   if ($('chat-context')) $('chat-context').value = ctx;
   if ($('chat-output')) $('chat-output').value = output;
+  if ($('chat-temperature')) {
+    const t = parseFloat(src.temperature);
+    $('chat-temperature').value = Number.isFinite(t) ? t : '';
+  }
+  if ($('chat-ratelimit')) $('chat-ratelimit').value = Math.min(600, Math.max(0, parseInt(src.rateLimitPerMin, 10) || 0));
+  if ($('chat-context-learn')) $('chat-context-learn').checked = src.contextAutoLearn !== false;
+  if ($('chat-persist-chats')) $('chat-persist-chats').checked = src.persistChats !== false;
 }
 (function initChatLimits() {
   document.querySelectorAll('#panel-chat .stepper [data-step]').forEach((btn) => {
@@ -763,16 +772,21 @@ function fillChatLimits(s) {
     const maxCtx = Math.min(500, Math.max(2, parseInt($('chat-context-max') && $('chat-context-max').value, 10) || 200));
     const ctx = Math.min(maxCtx, Math.max(2, parseInt($('chat-context') && $('chat-context').value, 10) || 40));
     const output = Math.min(128000, Math.max(256, parseInt($('chat-output') && $('chat-output').value, 10) || 12800));
+    const tempRaw = parseFloat(($('chat-temperature') && $('chat-temperature').value) || '');
+    const temperature = Number.isFinite(tempRaw) ? Math.min(2, Math.max(0, tempRaw)) : null;
+    const rateLimit = Math.min(600, Math.max(0, parseInt($('chat-ratelimit') && $('chat-ratelimit').value, 10) || 0));
+    const contextLearn = !!($('chat-context-learn') && $('chat-context-learn').checked);
+    const persistChats = !!($('chat-persist-chats') && $('chat-persist-chats').checked);
     save.disabled = true;
     try {
       const r = await api('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output }),
+        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature, rateLimitPerMin: rateLimit, contextAutoLearn: contextLearn, persistChats }),
       });
       const data = await r.json();
       if (!r.ok) return toast((data.error && data.error.message) || '保存失败', true);
-      fillChatLimits(data.settings || { contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output });
+      fillChatLimits(data.settings || { contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature });
       toast('对话设置已保存');
     } catch (e) {
       toast('保存失败: ' + e.message, true);
@@ -989,7 +1003,30 @@ function fillMineruSettings(s) {
   });
 })();
 
-// 自动获取模型列表,勾选后才启用
+// 计费模式自定义选择:按次 / 按 token
+(function initBillingSelect() {
+  const box = $('ap-billing');
+  if (!box) return;
+  const MODES = [
+    { value: 'call', label: '按次（扣费次数）', sub: '每次调用扣固定次数' },
+    { value: 'token', label: '按 token', sub: '按实际用量（输入+输出）/1K 计费' },
+  ];
+  const setLabel = (v) => {
+    const m = MODES.find((x) => x.value === (v || 'call'));
+    box.querySelector('.sb-label').textContent = m ? m.label : v;
+  };
+  const togglePrice = (v) => { const row = $('ap-price-row'); if (row) row.classList.toggle('hidden', v !== 'token'); };
+  window.__setApBilling = (v) => { box.setAttribute('data-value', v === 'token' ? 'token' : 'call'); setLabel(v); togglePrice(v); };
+  box.addEventListener('click', () => {
+    OC.openSelect(box, MODES, {
+      selected: box.getAttribute('data-value') || 'call',
+      onSelect: (val) => { box.setAttribute('data-value', val); setLabel(val); togglePrice(val); },
+    });
+  });
+  box.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); box.click(); }
+  });
+})();
 $('ap-fetch-models').addEventListener('click', async () => {
   const baseUrl = $('ap-baseurl').value.trim();
   const apiKey = $('ap-key').value.trim();
@@ -1233,7 +1270,7 @@ $('ap-save').addEventListener('click', async () => {
 
   const editId = $('ap-save').dataset.editId;
   const url = editId ? '/api/admin/providers/' + editId : '/api/providers';
-  const payload = { name, baseUrl, apiFormat, models, costPerCall: cost, scope: 'global', keyRevealable: !!($('ap-key-keep') && $('ap-key-keep').checked) };
+  const payload = { name, baseUrl, apiFormat, models, costPerCall: cost, billingMode: ($('ap-billing') && $('ap-billing').getAttribute('data-value')) || 'call', pricePer1k: Math.min(1000, Math.max(0, parseFloat($('ap-price') && $('ap-price').value) || 0)), scope: 'global', keyRevealable: !!($('ap-key-keep') && $('ap-key-keep').checked) };
   // 编辑时留空或仍是掩码，表示不改密钥；服务端会保留原值。
   if (!(editId && (!apiKey || apiKey.includes('••')))) payload.apiKey = apiKey;
   const r = await api(url, {
@@ -1251,6 +1288,9 @@ $('ap-save').addEventListener('click', async () => {
   $('ap-name').value = ''; $('ap-baseurl').value = ''; $('ap-key').value = '';
   resetModelTestResults();
   if (apModelList) apModelList.reset();
+  // 计费模式一并回到默认「按次」，避免下次新增供应商继承上次编辑的 token 模式
+  if (window.__setApBilling) window.__setApBilling('call');
+  if ($('ap-price')) $('ap-price').value = 0;
   setKeyVisibility(apKeyInput, toggleKeyBtn, false);
   if (apKeyInput) apKeyInput.placeholder = 'sk-...';
   if ($('ap-key-keep')) $('ap-key-keep').checked = true;
@@ -1773,6 +1813,9 @@ async function loadVerifySettings() {
   const s = d.settings || {}; const set = (id, v) => { const e = $(id); if (e) e.value = v == null ? '' : v; };
   ['verify-email-enabled','verify-reset-enabled','verify-quota-unlimited'].forEach((id, i) => { const e=$(id); if(e) e.checked=!![s.emailVerificationEnabled,s.passwordResetEnabled,s.freeQuotaUnlimited][i]; });
   set('verify-free-quota', s.freeQuota); const smtp=s.smtp||{}; set('smtp-host',smtp.host); set('smtp-port',smtp.port||587); set('smtp-user',smtp.username); set('smtp-pass',smtp.password); set('smtp-encryption',smtp.encryption||'tls'); set('smtp-from-name',smtp.fromName||'TinyChat'); set('smtp-from-email',smtp.fromEmail);
+  set('session-days', s.sessionDays || 7);
+  if ($('apikeys-enabled')) $('apikeys-enabled').checked = s.apiKeysEnabled !== false;
+  if ($('invite-required')) $('invite-required').checked = !!s.registerInviteRequired;
   const tpl = s.mailTemplates || {};
   MAIL_TPL.siteName = s.siteName || 'TinyChat';
   MAIL_TPL.tpl.verify = { subject: tpl.verifySubject || '', html: tpl.verifyHtml || '' };
@@ -1780,7 +1823,58 @@ async function loadVerifySettings() {
   MAIL_TPL.loaded = true;
   mailTplBind();
   mailTplSyncInputs();
+  loadInvites();
 }
+async function loadInvites() {
+  try {
+    const r = await api('/api/admin/invites');
+    const d = await r.json();
+    if (!r.ok) return;
+    if ($('invite-required')) $('invite-required').checked = !!d.required;
+    const codes = d.codes || [];
+    const unused = codes.filter((c) => !c.usedBy).length;
+    if ($('invite-count-info')) $('invite-count-info').textContent = '未使用 ' + unused + ' / 共 ' + codes.length;
+    const tb = $('invite-tbody');
+    if (!tb) return;
+    tb.innerHTML = codes.map((c) => {
+      const status = c.usedBy
+        ? '<span class="muted">已使用 · ' + escapeHtml(c.usedByName || c.usedBy) + '</span>'
+        : '<b>未使用</b>';
+      return '<tr><td><code>' + escapeHtml(c.code) + '</code></td><td>' + status + '</td>'
+        + '<td style="text-align:right">' + (c.usedBy ? '' : '<button class="btn small danger" data-del-invite="' + escapeHtml(c.code) + '" type="button">删除</button>') + '</td></tr>';
+    }).join('');
+    if ($('invite-empty')) $('invite-empty').style.display = codes.length ? 'none' : 'block';
+    tb.querySelectorAll('[data-del-invite]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const r = await api('/api/admin/invites/' + encodeURIComponent(btn.dataset.delInvite), { method: 'DELETE' });
+        const d = await r.json();
+        if (!r.ok) return toast((d.error && d.error.message) || '删除失败', true);
+        loadInvites();
+      });
+    });
+  } catch (e) { toast('邀请码加载失败: ' + e.message, true); }
+}
+(function initInvites() {
+  const gen = $('invite-generate');
+  if (!gen) return;
+  gen.addEventListener('click', async () => {
+    gen.disabled = true;
+    try {
+      const count = Math.min(50, Math.max(1, parseInt($('invite-count') && $('invite-count').value, 10) || 5));
+      const r = await api('/api/admin/invites', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count }),
+      });
+      const d = await r.json();
+      if (!r.ok) return toast((d.error && d.error.message) || '生成失败', true);
+      toast('已生成 ' + (d.created || []).length + ' 个邀请码');
+      loadInvites();
+    } catch (e) {
+      toast('生成失败: ' + e.message, true);
+    } finally { gen.disabled = false; }
+  });
+})();
 let CODES_CACHE = [];
 const CODES_PAGE_SIZE = 20;
 let CODES_PAGE = 1;
@@ -1996,7 +2090,12 @@ async function loadPackages() {
   });
 })();
 (function initVerifyAndPackages(){
-  const save=$('verify-save'); if(save) save.addEventListener('click',async()=>{ const tplPayload=MAIL_TPL.loaded?{mailTemplates:{tplVersion:2,verifySubject:MAIL_TPL.tpl.verify.subject,verifyHtml:MAIL_TPL.tpl.verify.html,resetSubject:MAIL_TPL.tpl.reset.subject,resetHtml:MAIL_TPL.tpl.reset.html}}:{}; const payload=Object.assign({emailVerificationEnabled:!!$('verify-email-enabled').checked,passwordResetEnabled:!!$('verify-reset-enabled').checked,freeQuotaUnlimited:!!$('verify-quota-unlimited').checked,freeQuota:parseInt($('verify-free-quota').value,10)||0,smtp:{host:$('smtp-host').value.trim(),port:parseInt($('smtp-port').value,10)||587,username:$('smtp-user').value.trim(),password:$('smtp-pass').value,encryption:$('smtp-encryption').value,fromName:$('smtp-from-name').value.trim(),fromEmail:$('smtp-from-email').value.trim()}},tplPayload); const r=await api('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'保存失败',true); toast('验证设置已保存'); });
+  const save=$('verify-save'); if(save) save.addEventListener('click',async()=>{ const tplPayload=MAIL_TPL.loaded?{mailTemplates:{tplVersion:2,verifySubject:MAIL_TPL.tpl.verify.subject,verifyHtml:MAIL_TPL.tpl.verify.html,resetSubject:MAIL_TPL.tpl.reset.subject,resetHtml:MAIL_TPL.tpl.reset.html}}:{}; const payload=Object.assign({emailVerificationEnabled:!!$('verify-email-enabled').checked,passwordResetEnabled:!!$('verify-reset-enabled').checked,freeQuotaUnlimited:!!$('verify-quota-unlimited').checked,freeQuota:parseInt($('verify-free-quota').value,10)||0,sessionDays:Math.min(30,Math.max(1,parseInt($('session-days')&&$('session-days').value,10)||7)),apiKeysEnabled:!!($('apikeys-enabled')&&$('apikeys-enabled').checked),registerInviteRequired:!!($('invite-required')&&$('invite-required').checked),smtp:{host:$('smtp-host').value.trim(),port:parseInt($('smtp-port').value,10)||587,username:$('smtp-user').value.trim(),password:$('smtp-pass').value,encryption:$('smtp-encryption').value,fromName:$('smtp-from-name').value.trim(),fromEmail:$('smtp-from-email').value.trim()}},tplPayload); const r=await api('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'保存失败',true); toast('验证设置已保存'); });
+  const invalidate=$('session-invalidate'); if(invalidate) invalidate.addEventListener('click',async()=>{
+    const ok=window.OCUI&&OCUI.confirm?await OCUI.confirm({title:'强制全站下线',message:'所有人的现有登录态会立即失效（包括你自己），需要重新登录。确认执行？',danger:true,confirmText:'执行'}):confirm('所有人的现有登录态会立即失效（包括你自己），确认执行？');
+    if(!ok) return;
+    try { const r=await api('/api/admin/session/invalidate',{method:'POST'}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'操作失败',true); toast('已强制全站下线，即将重新登录'); setTimeout(()=>{ localStorage.removeItem('oc_token'); localStorage.removeItem('oc_user'); location.href=apiUrl('/login'); },1200); } catch(e) { toast('操作失败: '+e.message,true); }
+  });
   const ps=$('pkg-save'); if(ps) ps.addEventListener('click',async()=>{
     const priceRaw=$('pkg-price').value.trim();
     const price=(priceRaw===''?'':parseFloat(priceRaw));
@@ -2242,8 +2341,93 @@ async function loadUpdatePanel() {
 
 // ============ 页签切换(懒加载) ============
 const tabLoaded = {};
+// ============ 数据备份 ============
+function fmtBytes(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(2) + ' MB';
+}
+async function loadBackups() {
+  try {
+    const r = await api('/api/admin/backup');
+    const d = await r.json();
+    if ($('backup-enabled')) $('backup-enabled').checked = !!d.backupEnabled;
+    if ($('backup-keep')) $('backup-keep').value = d.backupKeep || 7;
+    const tb = $('backup-tbody');
+    if (!tb) return;
+    const list = d.backups || [];
+    tb.innerHTML = list.map((b) => {
+      const time = b.time ? new Date(b.time).toLocaleString('zh-CN') : '—';
+      return '<tr><td>' + escapeHtml(b.name) + '</td><td>' + fmtBytes(b.size) + '</td><td>' + time + '</td>'
+        + '<td style="text-align:right;white-space:nowrap">'
+        + '<a class="btn small" href="' + apiUrl('/api/admin/backup/download?id=' + encodeURIComponent(b.name)) + '">下载</a> '
+        + '<button class="btn small danger" data-restore="' + escapeHtml(b.name) + '" type="button">恢复</button></td></tr>';
+    }).join('');
+    if ($('backup-empty')) $('backup-empty').style.display = list.length ? 'none' : 'block';
+    tb.querySelectorAll('[data-restore]').forEach((btn) => {
+      btn.addEventListener('click', () => restoreBackup(btn.dataset.restore));
+    });
+  } catch (e) {
+    toast('备份列表加载失败: ' + e.message, true);
+  }
+}
+async function restoreBackup(name) {
+  const message = '确认用 ' + name + ' 整体替换当前数据库？恢复点之后的全部数据变更会丢失。';
+  const ok = window.OCUI && OCUI.confirm
+    ? await OCUI.confirm({ title: '恢复备份', message, danger: true, confirmText: '恢复' })
+    : confirm(message);
+  if (!ok) return;
+  try {
+    const r = await api('/api/admin/backup/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: name }),
+    });
+    const d = await r.json();
+    if (!r.ok) return toast((d.error && d.error.message) || '恢复失败', true);
+    toast('已恢复（' + d.users + ' 个用户），即将刷新页面');
+    setTimeout(() => location.reload(), 1200);
+  } catch (e) {
+    toast('恢复失败: ' + e.message, true);
+  }
+}
+(function initBackupUI() {
+  const save = $('backup-save');
+  if (save) save.addEventListener('click', async () => {
+    const payload = {
+      backupEnabled: !!($('backup-enabled') && $('backup-enabled').checked),
+      backupKeep: Math.min(30, Math.max(1, parseInt($('backup-keep') && $('backup-keep').value, 10) || 7)),
+    };
+    try {
+      const r = await api('/api/admin/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (!r.ok) return toast((d.error && d.error.message) || '保存失败', true);
+      toast('备份设置已保存');
+      loadBackups();
+    } catch (e) { toast('保存失败: ' + e.message, true); }
+  });
+  const nowBtn = $('backup-now');
+  if (nowBtn) nowBtn.addEventListener('click', async () => {
+    nowBtn.disabled = true;
+    try {
+      const r = await api('/api/admin/backup', { method: 'POST' });
+      const d = await r.json();
+      if (!r.ok) return toast((d.error && d.error.message) || '备份失败', true);
+      toast('已创建备份 ' + d.created);
+      loadBackups();
+    } catch (e) {
+      toast('备份失败: ' + e.message, true);
+    } finally { nowBtn.disabled = false; }
+  });
+})();
+
 const TAB_LOADERS = {
-  overview: () => loadStats(),
+  overview: () => { loadStats(); loadAnnouncement(); },
   usage: () => loadStats(),
   users: () => loadUsers(),
   groups: () => loadGroups(),
@@ -2260,14 +2444,114 @@ const TAB_LOADERS = {
   assistants: () => loadAssistants(),
   logs: () => loadLogs(),
   thinking: () => loadThinking(),
-  update: () => loadUpdatePanel(),
+  update: async () => {
+    loadUpdatePanel();
+    await loadBackups();
+  },
+  moderation: () => loadModeration(),
 };
+
+// ============ 内容安全 ============
+async function loadModeration() {
+  const r = await api('/api/admin/settings');
+  const d = await r.json();
+  if (!r.ok) return toast((d.error && d.error.message) || '加载失败', true);
+  const s = d.settings || {};
+  const mod = s.moderation || {};
+  if ($('mod-enabled')) $('mod-enabled').checked = !!mod.enabled;
+  if ($('mod-words')) $('mod-words').value = mod.words || '';
+  if ($('agreement-enabled')) $('agreement-enabled').checked = !!s.agreementEnabled;
+  if ($('agreement-html')) $('agreement-html').value = s.agreementHtml || '';
+}
+(function initModeration() {
+  const save = $('moderation-save');
+  if (!save) return;
+  save.addEventListener('click', async () => {
+    const payload = {
+      moderation: {
+        enabled: !!($('mod-enabled') && $('mod-enabled').checked),
+        words: ($('mod-words') && $('mod-words').value) || '',
+      },
+      agreementEnabled: !!($('agreement-enabled') && $('agreement-enabled').checked),
+      agreementHtml: ($('agreement-html') && $('agreement-html').value) || '',
+    };
+    save.disabled = true;
+    try {
+      const r = await api('/api/admin/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (!r.ok) return toast((d.error && d.error.message) || '保存失败', true);
+      toast('内容安全设置已保存');
+      loadModeration();
+    } catch (e) {
+      toast('保存失败: ' + e.message, true);
+    } finally { save.disabled = false; }
+  });
+})();
+
+// ============ 全站公告 ============
+let ANNOUNCE_LOADED_TEXT = '';
+async function loadAnnouncement() {
+  try {
+    const r = await api('/api/admin/settings');
+    const d = await r.json();
+    if (!r.ok) return;
+    const ann = (d.settings || {}).announcement || {};
+    ANNOUNCE_LOADED_TEXT = ann.text || '';
+    if ($('announce-enabled')) $('announce-enabled').checked = !!ann.enabled;
+    if ($('announce-text')) $('announce-text').value = ANNOUNCE_LOADED_TEXT;
+  } catch (e) { /* 静默:公告加载失败不影响概览 */ }
+}
+(function initAnnouncement() {
+  const save = $('announce-save');
+  if (!save) return;
+  save.addEventListener('click', async () => {
+    const text = ($('announce-text') && $('announce-text').value) || '';
+    const enabled = !!($('announce-enabled') && $('announce-enabled').checked);
+    const payload = { announcement: { enabled, text, updatedAt: Date.now() } };
+    save.disabled = true;
+    try {
+      const r = await api('/api/admin/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (!r.ok) return toast((d.error && d.error.message) || '保存失败', true);
+      ANNOUNCE_LOADED_TEXT = text;
+      toast(enabled ? '公告已发布' : '公告已关闭');
+    } catch (e) {
+      toast('保存失败: ' + e.message, true);
+    } finally { save.disabled = false; }
+  });
+})();
+
+// ============ 用量导出 ============
+$('usage-export')?.addEventListener('click', async () => {
+  const btn = $('usage-export');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/admin/usage/export');
+    if (!r.ok) return toast('导出失败', true);
+    const blob = await r.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'tinychat-usage-' + new Date().toISOString().slice(0, 10) + '.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  } catch (e) {
+    toast('导出失败: ' + e.message, true);
+  } finally { btn.disabled = false; }
+});
 
 const ADMIN_GROUPS = {
   overview: [{ id: 'overview', label: '概览' }, { id: 'usage', label: '用量分析' }, { id: 'logs', label: '运行日志' }],
   users: [{ id: 'users', label: '用户' }, { id: 'groups', label: '用户组' }, { id: 'access', label: '模型授权' }, { id: 'verify', label: '用户验证' }],
   billing: [{ id: 'packages', label: '额度套餐' }, { id: 'codes', label: '兑换码' }],
-  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'update', label: '版本更新' }],
+  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'update', label: '版本更新' }],
   thinking: [{ id: 'thinking', label: '思考策略' }],
   content: [{ id: 'assistants', label: '助手库' }],
 };

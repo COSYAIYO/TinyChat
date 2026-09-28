@@ -1,0 +1,41 @@
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # CGI / FastCGI 下把 Authorization 传给 PHP，否则登录态会丢
+  RewriteCond %{HTTP:Authorization} .
+  RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+  # 已存在的文件 / 目录直接走静态（CSS、JS、图片、vendor）
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # 其余全部交给 index.php（/api、/login、/admin、/s/xxx）
+  RewriteRule ^ index.php [QSA,L]
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+</IfModule>
+
+# 禁止直接下载数据与配置
+<IfModule mod_authz_core.c>
+  <FilesMatch "^(config\.php|db\.json|db\.lock|secret|login-fails\.json|logs\.json)$">
+    Require all denied
+  </FilesMatch>
+</IfModule>
+
+<IfModule !mod_authz_core.c>
+  <FilesMatch "^(config\.php|db\.json|db\.lock|secret|login-fails\.json|logs\.json)$">
+    Order allow,deny
+    Deny from all
+  </FilesMatch>
+</IfModule>
+
+DirectoryIndex index.php index.html
+
+# 流式对话尽量不要被 gzip / 代理缓冲
+<IfModule mod_deflate.c>
+  SetEnvIfNoCase Request_URI ^/api/proxy/ no-gzip dont-vary
+</IfModule>

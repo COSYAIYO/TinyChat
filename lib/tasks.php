@@ -6,6 +6,23 @@ function tc_task_dir() {
     if (!is_dir($dir)) @mkdir($dir, 0755, true);
     return $dir;
 }
+
+// 任务文件在流结束后仍需保留一段时间供断线恢复重放;这里惰性清理超过 6 小时的旧任务。
+// 以二十分之一的概率触发,分摊目录扫描成本;文件含完整对话内容,不可无限堆积
+function tc_task_gc() {
+    static $ran = false;
+    if ($ran) return;
+    $ran = true;
+    if (random_int(1, 20) !== 1) return;
+    $dir = tc_task_dir();
+    if (!is_dir($dir)) return;
+    $cut = time() - 6 * 3600;
+    foreach ((array) @scandir($dir) as $f) {
+        if (!preg_match('/^[A-Za-z0-9_-]{1,32}\.json$/', (string) $f)) continue;
+        $full = $dir . '/' . $f;
+        if (@filemtime($full) < $cut) @unlink($full);
+    }
+}
 function tc_task_path($id) {
     $id = preg_replace('/[^A-Za-z0-9_-]/', '', (string) $id);
     return tc_task_dir() . '/' . $id . '.json';
@@ -29,6 +46,7 @@ function tc_task_write($id, $data) {
     return $ok;
 }
 function tc_task_create($id, $userId, $meta = array()) {
+    tc_task_gc();
     $now = tc_now();
     return tc_task_write($id, array_merge(array(
         'id' => (string) $id, 'userId' => (string) $userId, 'status' => 'running',

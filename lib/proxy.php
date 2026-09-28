@@ -256,7 +256,7 @@ function tc_prepare_upstream_body($b, $provider, $format) {
 function tc_unsupported_param_names($raw) {
     $text = strtolower((string) $raw);
     if ($text === '') return array();
-    $known = array('enable_thinking', 'reasoning_effort', 'thinking_effort', 'thinking', 'reasoning');
+    $known = array('enable_thinking', 'reasoning_effort', 'thinking_effort', 'thinking', 'reasoning', 'temperature');
     $found = array();
     if (preg_match_all('/[`\'"]([a-z0-9_.]+)[`\'"]/i', (string) $raw, $m)) {
         foreach ($m[1] as $name) {
@@ -265,9 +265,9 @@ function tc_unsupported_param_names($raw) {
         }
     }
     // 上游对"不支持某参数"的表述五花八门(如 Kimi:"Unsupported Kimi K3 thinking_effort=...; supported values are ..."),
-    // 只要错误文本表达了"不支持"且点名了已知推理参数,就纳入去参重试的范围
+    // 只要错误文本表达了"不支持"且点名了已知参数,就纳入去参重试的范围
     if (strpos($text, 'unsupported') !== false || strpos($text, 'not supported') !== false || strpos($text, 'supported values') !== false) {
-        if (preg_match_all('/\b(enable_thinking|reasoning_effort|thinking_effort|thinking|reasoning)\b/', $text, $m2)) {
+        if (preg_match_all('/\b(enable_thinking|reasoning_effort|thinking_effort|thinking|reasoning|temperature)\b/', $text, $m2)) {
             foreach ($m2[0] as $name) if (!in_array($name, $found, true)) $found[] = $name;
         }
     }
@@ -372,6 +372,9 @@ function tc_strip_reasoning_params(&$body, $names) {
         if ($name === 'enable_thinking' && array_key_exists('enable_thinking', $body)) {
             unset($body['enable_thinking']);
             $changed = true;
+        } elseif ($name === 'temperature' && array_key_exists('temperature', $body)) {
+            unset($body['temperature']);
+            $changed = true;
         } elseif ($name === 'reasoning_effort' && array_key_exists('reasoning_effort', $body)) {
             unset($body['reasoning_effort']);
             $changed = true;
@@ -389,13 +392,14 @@ function tc_strip_reasoning_params(&$body, $names) {
     return $changed;
 }
 
-function tc_clamp_output_tokens(&$body, $format, $cap) {
+// $force=true 时无条件写入(模型级 max_tokens 覆盖),否则只在缺失或超上限时压回
+function tc_clamp_output_tokens(&$body, $format, $cap, $force = false) {
     $cap = (int) $cap;
     if ($cap < 256) return;
     if ($format === 'anthropic') {
         $want = isset($body['max_tokens']) ? (int) $body['max_tokens'] : 1024;
         if ($want <= 0) $want = 1024;
-        $body['max_tokens'] = min($cap, max(256, $want));
+        $body['max_tokens'] = $force ? $cap : min($cap, max(256, $want));
         if (!empty($body['thinking']['budget_tokens'])) {
             $budget = (int) $body['thinking']['budget_tokens'];
             if ($budget >= $body['max_tokens']) {
@@ -407,13 +411,50 @@ function tc_clamp_output_tokens(&$body, $format, $cap) {
     }
     if ($format === 'responses') {
         $current = isset($body['max_output_tokens']) ? (int) $body['max_output_tokens'] : 0;
-        if ($current <= 0 || $current > $cap) $body['max_output_tokens'] = $cap;
+        if ($force || $current <= 0 || $current > $cap) $body['max_output_tokens'] = $cap;
         return;
     }
     if ($format === 'chat' || $format === 'completions') {
         $current = isset($body['max_tokens']) ? (int) $body['max_tokens'] : 0;
-        if ($current <= 0 || $current > $cap) $body['max_tokens'] = $cap;
+        if ($force || $current <= 0 || $current > $cap) $body['max_tokens'] = $cap;
     }
+}
+
+// 全局温度:管理员未设置(null)时不发送,避免影响不接受该参数的推理型模型
+function tc_apply_temperature(&$body, $format, $temperature) {
+    if ($temperature === null || $temperature === '') return;
+    $t = (float) $temperature;
+    if ($t < 0) $t = 0;
+    // Anthropic 的温度取值范围是 0-1
+    if ($format === 'anthropic') $t = min(1, $t);
+    $body['temperature'] = $t;
+}
+
+// 粗略 token 估算:中日韩字符按 1 token/字,其余按 4 字符/token(宁可略高估,保证输出预算留足)
+function tc_estimate_text_tokens($s) {
+    if ($s === '' || !is_string($s)) return 0;
+    $len = mb_strlen($s, 'UTF-8');
+    if ($len === 0) return 0;
+    $cjk = @preg_match_all('/[\x{3000}-\x{30ff}\x{3400}-\x{4dbf}\x{4e00}-\x{9fff}\x{ac00}-\x{d7a3}\x{f900}-\x{faf6}\x{ff00}-\x{ffef}]/u', $s);
+    $cjk = $cjk === false ? 0 : (int) $cjk;
+    return (int) round($cjk + ($len - $cjk) / 4);
+}
+
+// 递归估算请求体 token:图片/文件等多模态部分按固定 1024 计,base64 数据不计(避免把图片体积当文本)
+function tc_estimate_body_tokens($v) {
+    if (is_string($v)) {
+        $v = preg_replace('#data:[a-z]+/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+#', '', (string) $v);
+        $v = preg_replace('#\b[A-Za-z0-9+/=]{512,}\b#', '', (string) $v);
+        return tc_estimate_text_tokens($v);
+    }
+    if (is_array($v)) {
+        $type = isset($v['type']) && is_string($v['type']) ? $v['type'] : '';
+        if (in_array($type, array('image_url', 'input_image', 'image', 'file', 'input_file', 'document'), true)) return 1024;
+        $sum = 0;
+        foreach ($v as $val) $sum += tc_estimate_body_tokens($val);
+        return $sum;
+    }
+    return 0;
 }
 
 function tc_disable_buffers() {
@@ -554,6 +595,52 @@ function tc_web_search_query_from_body($body, $format) {
     if (function_exists('mb_strlen') && mb_strlen($text, 'UTF-8') < 2) return '';
     if (strlen($text) < 2) return '';
     return $text;
+}
+
+// 提取最后一条用户消息的纯文本(用于内容审核,不做截断压缩)
+function tc_last_user_text($body, $format) {
+    $text = '';
+    if ($format === 'responses' && isset($body['input'])) {
+        if (is_string($body['input'])) $text = $body['input'];
+        elseif (is_array($body['input'])) {
+            for ($i = count($body['input']) - 1; $i >= 0; $i--) {
+                $m = $body['input'][$i];
+                if (!is_array($m)) continue;
+                $role = isset($m['role']) ? $m['role'] : '';
+                if ($role && $role !== 'user') continue;
+                $c = isset($m['content']) ? $m['content'] : '';
+                if (is_string($c)) { $text = $c; break; }
+                if (is_array($c)) {
+                    $parts = array();
+                    foreach ($c as $p) {
+                        if (is_string($p)) $parts[] = $p;
+                        elseif (is_array($p) && isset($p['text'])) $parts[] = $p['text'];
+                    }
+                    $text = implode("\n", $parts);
+                    if (trim($text) !== '') break;
+                }
+            }
+        }
+    } elseif ($format === 'completions' && isset($body['prompt'])) {
+        $text = (string) $body['prompt'];
+    } elseif (isset($body['messages']) && is_array($body['messages'])) {
+        for ($i = count($body['messages']) - 1; $i >= 0; $i--) {
+            $m = $body['messages'][$i];
+            if (!is_array($m) || (isset($m['role']) && $m['role'] !== 'user')) continue;
+            $c = isset($m['content']) ? $m['content'] : '';
+            if (is_string($c)) { $text = $c; break; }
+            if (is_array($c)) {
+                $parts = array();
+                foreach ($c as $p) {
+                    if (is_string($p)) $parts[] = $p;
+                    elseif (is_array($p) && isset($p['text'])) $parts[] = $p['text'];
+                }
+                $text = implode("\n", $parts);
+                if (trim($text) !== '') break;
+            }
+        }
+    }
+    return tc_plain_text($text, 20000);
 }
 
 function tc_normalize_search_hits($rows, $max) {
@@ -1478,15 +1565,73 @@ function tc_api_fetch_models() {
     tc_json(200, array('models' => tc_normalize_models($mapped)));
 }
 
-function tc_api_proxy($format) {
+// 计费结算:billingMode=call 按次;=token 按 (prompt+completion)/1000 × pricePer1k。
+// 按 token 时若上游未返回用量(如部分流式),回退按次计费,避免漏计
+function tc_final_cost($provider, $baseCost, $usage) {
+    $mode = isset($provider['billingMode']) ? $provider['billingMode'] : 'call';
+    if ($mode !== 'token') return $baseCost;
+    $price = isset($provider['pricePer1k']) ? (float) $provider['pricePer1k'] : 0;
+    if ($price <= 0) return 0;
+    $prompt = isset($usage['prompt']) ? (int) $usage['prompt'] : 0;
+    $completion = isset($usage['completion']) ? (int) $usage['completion'] : 0;
+    if ($prompt <= 0 && $completion <= 0) return $baseCost;
+    return round(($prompt + $completion) / 1000 * $price, 4);
+}
+
+// 流式按 token 计费结算:首字节时刻用量未知,已按次预扣;流结束按实际用量多退少补。
+// 返回最终扣费额(供台账);无限额度与按次模式是 no-op(delta=0)。
+function tc_settle_stream_charge(&$db, $userId, $provider, $baseCost, $charged, $usage) {
+    $trueCost = tc_final_cost($provider, $baseCost, $usage);
+    $delta = round($trueCost - (float) $charged, 4);
+    if (abs($delta) < 0.0001) return $trueCost;
+    $fresh = null;
+    foreach ($db['users'] as &$u) {
+        if (isset($u['id']) && (string) $u['id'] === (string) $userId) { $fresh = &$u; break; }
+    }
+    unset($u);
+    if (!$fresh) return $charged;
+    if (tc_is_unlimited_quota($fresh)) return 0;
+    if ($delta > 0) {
+        $fresh['quota'] = max(0, round((float) $fresh['quota'] - $delta, 4));
+    } else {
+        // 预扣高于实际用量:返还差额(只动余额,不动发放统计)
+        $fresh['quota'] = round((float) $fresh['quota'] + (-$delta), 4);
+    }
+    $GLOBALS['_tc_quota_after'] = $fresh['quota'];
+    return $trueCost;
+}
+
+function tc_api_proxy($format, $apiKeyOwner = null) {
     $started = tc_now();
-    $ctx = tc_with_db(false, function ($db) use ($format) {
-        $user = tc_require_auth($db);
+    $ctx = tc_with_db(false, function ($db) use ($format, $apiKeyOwner) {
+        if ($apiKeyOwner !== null) {
+            // OpenAI 兼容出口:密钥已在外层验证,取最新用户记录
+            $user = null;
+            foreach ($db['users'] as $u) {
+                if ((string) $u['id'] === (string) $apiKeyOwner['userId']) { $user = $u; break; }
+            }
+            if (!$user) tc_fail(401, 'API 密钥对应的用户不存在');
+        } else {
+            $user = tc_require_auth($db);
+        }
+        $rateLimit = isset($db['settings']['rateLimitPerMin']) ? (int) $db['settings']['rateLimitPerMin'] : 30;
+        if (!tc_rate_limit_check('u:' . $user['id'], $rateLimit)) {
+            tc_fail(429, '请求太频繁了，请稍后再试（当前上限 ' . $rateLimit . ' 次/分钟）');
+        }
         $b = tc_read_json_body(20 * 1024 * 1024);
         $resolved = tc_resolve_provider($db, $user, $b);
         if (!empty($resolved['error'])) tc_fail(400, $resolved['error']);
         $provider = $resolved['provider'];
+        // 熔断:该模型近期持续全失败时快速失败,给出清晰提示(管理员豁免,便于现场排查)
+        if (empty($user['admin'])) {
+            $circuitModel = isset($b['model']) ? (string) $b['model'] : (isset($provider['models'][0]['id']) ? (string) $provider['models'][0]['id'] : '');
+            $circuitMsg = tc_model_circuit_message($db, isset($provider['id']) ? $provider['id'] : '', $circuitModel);
+            if ($circuitMsg !== '') tc_fail(503, $circuitMsg);
+        }
         $cost = tc_provider_cost($provider);
+        // 内容审核:开启敏感词过滤时,先检查最后一条用户消息
+        $modHit = tc_moderation_hit(isset($db['settings']['moderation']) && is_array($db['settings']['moderation']) ? $db['settings']['moderation'] : array(), tc_last_user_text($b, $format));
+        if ($modHit !== '') tc_fail(400, '消息包含被禁止的内容，请修改后重试');
         // 用户自备供应商(自己的 Key):不扣站点次数,也不设额度门槛
         if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
         if (!tc_is_unlimited_quota($user) && (isset($user['quota']) ? (float) $user['quota'] : 0) < $cost) {
@@ -1508,6 +1653,7 @@ function tc_api_proxy($format) {
             'wantSearch' => (!empty($b['webSearch']) && $b['webSearch'] !== 'off' && $b['webSearch'] !== false) ? (string) $b['webSearch'] : '',
             'settings' => tc_user_search_settings($user, $db['settings']),
             'maxOutputTokens' => isset($db['settings']['maxOutputTokens']) ? (int) $db['settings']['maxOutputTokens'] : 12800,
+            'temperature' => isset($db['settings']['temperature']) ? $db['settings']['temperature'] : null,
             'thinking' => tc_normalize_thinking(isset($db['settings']['thinking']) ? $db['settings']['thinking'] : null),
         );
     });
@@ -1563,7 +1709,24 @@ function tc_api_proxy($format) {
             }
         }
     }
-    tc_clamp_output_tokens($body, $format, isset($ctx['maxOutputTokens']) ? $ctx['maxOutputTokens'] : 12800);
+    // 模型级 max_tokens / 最大上下文优先于全局输出上限;未配置时沿用全局钳制。
+    // 配置了最大上下文时,先粗估输入 token,输出上限压到「窗口 − 预估输入」内,避免总量超窗
+    $modelMaxTokens = 0;
+    $modelMaxContext = 0;
+    $reqModel = isset($body['model']) ? (string) $body['model'] : '';
+    foreach ((isset($provider['models']) ? $provider['models'] : array()) as $m) {
+        if (!is_array($m) || !isset($m['id']) || (string) $m['id'] !== $reqModel) continue;
+        if (!empty($m['maxTokens'])) $modelMaxTokens = (int) $m['maxTokens'];
+        if (!empty($m['maxContext'])) $modelMaxContext = (int) $m['maxContext'];
+        break;
+    }
+    $outCap = $modelMaxTokens > 0 ? $modelMaxTokens : (isset($ctx['maxOutputTokens']) ? (int) $ctx['maxOutputTokens'] : 12800);
+    if ($modelMaxContext > 0) {
+        $promptEst = tc_estimate_body_tokens($body);
+        $outCap = min($outCap, max(256, $modelMaxContext - $promptEst));
+    }
+    tc_clamp_output_tokens($body, $format, $outCap, $modelMaxTokens > 0 || $modelMaxContext > 0);
+    tc_apply_temperature($body, $format, isset($ctx['temperature']) ? $ctx['temperature'] : null);
     tc_apply_thinking_rules($body, isset($ctx['thinking']) ? $ctx['thinking'] : null);
     $url = tc_upstream_path(rtrim((string) $provider['baseUrl'], '/'), $format);
     $isStream = !empty($body['stream']);
@@ -1594,17 +1757,21 @@ function tc_api_proxy($format) {
         $headersSent = false;
         $charged = 0;
         $streamUsage = array('prompt' => 0, 'completion' => 0);
-        $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage) {
+        // 429/5xx 一次自动重试:错误响应不会进入 onChunk(未计费未发送),重试安全
+        $attempt = 0;
+        do {
+            $attempt++;
+            $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage) {
             tc_capture_stream_usage($streamUsage, $chunk, $format);
             if (!$headersSent) {
                 // First successful bytes: charge then start SSE.
                 $ms = tc_now() - $started;
                 $charged = 0;
-                tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged) {
+                tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage) {
                     $fresh = null;
                     foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
                     if (!$fresh) return;
-                    $charged = tc_charge_user($db, $fresh, $cost, isset($body['model']) ? $body['model'] : '');
+                    $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '');
                     tc_touch_user($db, $user['id']);
                     $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
                 });
@@ -1631,12 +1798,16 @@ function tc_api_proxy($format) {
             if (function_exists('ob_flush')) @ob_flush();
             flush();
         });
+            if (!( !empty($res['ok']) && !empty($res['status']) && in_array((int) $res['status'], array(429, 500, 502, 503, 504), true) && $attempt < 2 )) break;
+            sleep(1);
+        } while (true);
 
-        // 流结束:把累计的上下行 token 写入用量台账(额度扣费已在首字节完成)
+        // 流结束:按实际用量与首字节预扣额多退少补,并把最终费用写入台账
         if ($headersSent) {
             $modelStr = isset($body['model']) ? $body['model'] : '';
-            tc_with_db(true, function (&$db) use ($user, $modelStr, $cost, $streamUsage) {
-                tc_record_usage_entry($db, $user['id'], $modelStr, $cost, $streamUsage['prompt'], $streamUsage['completion']);
+            tc_with_db(true, function (&$db) use ($user, $modelStr, $provider, $cost, &$charged, $streamUsage) {
+                $final = tc_settle_stream_charge($db, $user['id'], $provider, $cost, $charged, $streamUsage);
+                tc_record_usage_entry($db, $user['id'], $modelStr, $final, $streamUsage['prompt'], $streamUsage['completion']);
             });
         }
 
@@ -1656,6 +1827,7 @@ function tc_api_proxy($format) {
         }
         if (!empty($res['status']) && $res['status'] >= 400) {
             $errBody = isset($res['body']) ? $res['body'] : '';
+            tc_context_learn($provider, $body, $errBody);
             $unsupported = tc_unsupported_param_names($errBody);
             $learnLevels = null;
             $effortRemapped = false;
@@ -1682,11 +1854,11 @@ function tc_api_proxy($format) {
                     if (!$headersSent) {
                         $ms = tc_now() - $started;
                         $charged = 0;
-                        tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged) {
+                        tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage) {
                             $fresh = null;
                             foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
                             if (!$fresh) return;
-                            $charged = tc_charge_user($db, $fresh, $cost, isset($body['model']) ? $body['model'] : '');
+                            $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '');
                             tc_touch_user($db, $user['id']);
                             $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
                         });
@@ -1718,14 +1890,14 @@ function tc_api_proxy($format) {
                         tc_task_finish($taskId, 'completed');
                         $ms = tc_now() - $started;
                         $charged = 0;
-                        tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged) {
+                        tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage) {
                             $fresh = null;
                             foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
                             if (!$fresh) return;
-                            $charged = tc_charge_user($db, $fresh, $cost, isset($body['model']) ? $body['model'] : '');
+                            $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '');
                             tc_touch_user($db, $user['id']);
                             $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
-                            tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $cost, $streamUsage['prompt'], $streamUsage['completion']);
+                            tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $charged, $streamUsage['prompt'], $streamUsage['completion']);
                         });
                         header('Content-Type: text/event-stream; charset=utf-8');
                         header('Cache-Control: no-cache, no-transform');
@@ -1736,8 +1908,9 @@ function tc_api_proxy($format) {
                         echo "data: [DONE]\n\n";
                     }
                     if ($headersSent) {
-                        tc_with_db(true, function (&$db) use ($user, $body, $cost, $streamUsage) {
-                            tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $cost, $streamUsage['prompt'], $streamUsage['completion']);
+                        tc_with_db(true, function (&$db) use ($user, $body, $provider, $cost, &$charged, $streamUsage) {
+                            $final = tc_settle_stream_charge($db, $user['id'], $provider, $cost, $charged, $streamUsage);
+                            tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $final, $streamUsage['prompt'], $streamUsage['completion']);
                         });
                         tc_task_finish($taskId, 'completed');
                     }
@@ -1761,11 +1934,11 @@ function tc_api_proxy($format) {
             tc_task_finish($taskId, 'completed');
             $ms = tc_now() - $started;
             $charged = 0;
-            tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged) {
+            tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage) {
                 $fresh = null;
                 foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
                 if (!$fresh) return;
-                $charged = tc_charge_user($db, $fresh, $cost, isset($body['model']) ? $body['model'] : '');
+                $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '');
                 tc_touch_user($db, $user['id']);
                 $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
                 tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $cost, $streamUsage['prompt'], $streamUsage['completion']);
@@ -1782,9 +1955,17 @@ function tc_api_proxy($format) {
         exit;
     }
 
-    $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], false);
+    // 429/5xx 一次自动重试(非流式):响应未返回给客户端前,重试安全
+    $attempt = 0;
+    do {
+        $attempt++;
+        $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], false);
+        if (!( !empty($res['ok']) && !empty($res['status']) && in_array((int) $res['status'], array(429, 500, 502, 503, 504), true) && $attempt < 2 )) break;
+        sleep(1);
+    } while (true);
     if (!empty($res['ok']) && !empty($res['status']) && $res['status'] >= 400) {
         $errBody = isset($res['body']) ? $res['body'] : '';
+        tc_context_learn($provider, $body, $errBody);
         $unsupported = tc_unsupported_param_names($errBody);
         $learnLevels = null;
         $effortRemapped = tc_effort_remap_from_error($body, $errBody, $learnLevels);
@@ -1830,11 +2011,11 @@ function tc_api_proxy($format) {
         $bodyUsage['prompt'] = (int) (isset($u['prompt_tokens']) ? $u['prompt_tokens'] : (isset($u['input_tokens']) ? $u['input_tokens'] : 0));
         $bodyUsage['completion'] = (int) (isset($u['completion_tokens']) ? $u['completion_tokens'] : (isset($u['output_tokens']) ? $u['output_tokens'] : 0));
     }
-    tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, &$quota, $bodyUsage) {
+    tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, &$quota, $bodyUsage, $provider) {
         $fresh = null;
         foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
         if (!$fresh) return;
-        $charged = tc_charge_user($db, $fresh, $cost, isset($body['model']) ? $body['model'] : '');
+        $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $bodyUsage), isset($body['model']) ? $body['model'] : '');
         tc_touch_user($db, $user['id']);
         $quota = isset($fresh['quota']) ? $fresh['quota'] : 0;
         tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $charged, $bodyUsage['prompt'], $bodyUsage['completion']);
@@ -1870,4 +2051,185 @@ function tc_note_model_health($provider, $body, $ok) {
         });
     } catch (Throwable $e) {
     }
+}
+
+// 熔断判定:近 4 小时内该模型调用 ≥5 次且全部失败 → 视为持续不可用。
+// 熔断期间快速失败,不再打上游,因此不会再产生失败事件,事件随 4 小时窗口老化后自动恢复
+function tc_model_circuit_message($db, $providerId, $model) {
+    if ($providerId === '' || $model === '') return '';
+    $summary = tc_model_health_summary($db, $providerId);
+    $row = isset($summary[$model]) ? $summary[$model] : null;
+    if (!$row || (int) $row['calls'] < 5 || (int) $row['ok'] > 0) return '';
+    return '模型 ' . $model . ' 当前持续不可用（近 4 小时连续 ' . $row['calls'] . ' 次调用全部失败），请换一个模型或稍后再试';
+}
+
+// 从上游报错中提取模型上下文窗口上限
+function tc_context_limit_from_error($raw) {
+    $text = (string) $raw;
+    if ($text === '') return 0;
+    $candidates = array();
+    // OpenAI: "This model's maximum context length is 8192 tokens"
+    if (preg_match('/maximum context length is (\d+)/i', $text, $m)) $candidates[] = (int) $m[1];
+    // Anthropic: "... 205063 tokens > 200000 maximum"
+    if (preg_match('/(\d{3,})\s*tokens?\s*>\s*(\d{3,})\s*maximum/i', $text, $m)) $candidates[] = (int) $m[2];
+    // 通用: context length/window/size 后跟数字(≥4 位,降低误报)
+    if (preg_match('/(?:context[_ ](?:length|window|size)|max(?:imum)?[_ ](?:context|tokens?))[^\d]{0,40}(\d{4,})/i', $text, $m)) $candidates[] = (int) $m[1];
+    if (!$candidates) return 0;
+    $limit = max($candidates);
+    if ($limit < 256) return 0;
+    return min(2000000, $limit);
+}
+
+// 自动学习上下文窗口:仅当管理员开启且该模型尚未配置 maxContext 时回填,不覆盖手动设置
+function tc_context_learn($provider, $body, $errBody) {
+    $model = isset($body['model']) ? (string) $body['model'] : '';
+    $pid = isset($provider['id']) ? $provider['id'] : '';
+    if ($model === '' || $pid === '' || (string) $errBody === '') return;
+    $limit = tc_context_limit_from_error($errBody);
+    if ($limit <= 0) return;
+    try {
+        tc_with_db(true, function (&$db) use ($pid, $model, $limit) {
+            if (empty($db['settings']['contextAutoLearn'])) return;
+            foreach ($db['providers'] as $pi => $p) {
+                if (!isset($p['id']) || $p['id'] !== $pid || empty($p['models']) || !is_array($p['models'])) continue;
+                foreach ($p['models'] as $mi => $m) {
+                    if (!is_array($m) || !isset($m['id']) || (string) $m['id'] !== $model) continue;
+                    if (empty($m['maxContext'])) $db['providers'][$pi]['models'][$mi]['maxContext'] = $limit;
+                    return;
+                }
+                return;
+            }
+        });
+    } catch (Throwable $e) {
+    }
+}
+
+// ---- OpenAI 兼容出口:Bearer sk-tc- 密钥鉴权,计费/限流/熔断与网页端完全一致 ----
+function tc_v1_authenticate() {
+    $auth = tc_with_db(true, function (&$db) {
+        if (empty($db['settings']['apiKeysEnabled'])) tc_fail(403, '管理员已关闭 API 密钥功能');
+        $owner = tc_find_api_key_owner($db, tc_bearer());
+        if (!$owner) tc_fail(401, '无效的 API 密钥');
+        // lastUsed 分钟级节流:避免每次 API 调用都全量重写数据库
+        $changed = false;
+        foreach ($db['users'] as &$u) {
+            if (!isset($u['id']) || (string) $u['id'] !== (string) $owner['userId']) continue;
+            $k = &$u['apiKeys'][$owner['keyIndex']];
+            if (isset($k) && is_array($k) && (int) (isset($k['lastUsed']) ? $k['lastUsed'] : 0) < tc_now() - 60000) {
+                $k['lastUsed'] = tc_now();
+                $changed = true;
+            }
+            unset($k);
+            break;
+        }
+        unset($u);
+        if (!$changed) tc_db_skip_write();
+        return array('userId' => (string) $owner['userId']);
+    });
+    return $auth;
+}
+
+// ---- 图像生成代理:POST {baseUrl}/images/generations(OpenAI 兼容),按次计费 ----
+// 说明:图像模型不进对话模型清单,因此不做模型成员校验;鉴权/限流/额度/审核与对话一致。
+function tc_api_proxy_images() {
+    $started = tc_now();
+    $ctx = tc_with_db(false, function ($db) {
+        $user = tc_require_auth($db);
+        $rateLimit = isset($db['settings']['rateLimitPerMin']) ? (int) $db['settings']['rateLimitPerMin'] : 30;
+        if (!tc_rate_limit_check('u:' . $user['id'], $rateLimit)) {
+            tc_fail(429, '请求太频繁了，请稍后再试（当前上限 ' . $rateLimit . ' 次/分钟）');
+        }
+        $b = tc_read_json_body(1024 * 1024);
+        $modHit = tc_moderation_hit(isset($db['settings']['moderation']) && is_array($db['settings']['moderation']) ? $db['settings']['moderation'] : array(), (string) (isset($b['prompt']) ? $b['prompt'] : ''));
+        if ($modHit !== '') tc_fail(400, '提示词包含被禁止的内容，请修改后重试');
+        $resolved = tc_resolve_provider($db, $user, array('providerId' => isset($b['providerId']) ? $b['providerId'] : null));
+        if (!empty($resolved['error'])) tc_fail(400, $resolved['error']);
+        $provider = $resolved['provider'];
+        if ((isset($provider['apiFormat']) ? $provider['apiFormat'] : 'chat') === 'anthropic') {
+            tc_fail(400, '该供应商为 Anthropic 格式，暂不支持图像生成');
+        }
+        $cost = tc_provider_cost($provider);
+        if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
+        if (!tc_is_unlimited_quota($user) && (isset($user['quota']) ? (float) $user['quota'] : 0) < $cost) {
+            tc_fail(402, '剩余次数不足，请联系管理员充值');
+        }
+        return array(
+            'user' => $user,
+            'provider' => $provider,
+            'cost' => $cost,
+            'model' => substr(trim((string) (isset($b['model']) ? $b['model'] : '')), 0, 120),
+            'prompt' => substr(trim((string) (isset($b['prompt']) ? $b['prompt'] : '')), 0, 4000),
+            'size' => isset($b['size']) && preg_match('/^\d{3,4}x\d{3,4}$/', (string) $b['size']) ? (string) $b['size'] : '1024x1024',
+            'n' => min(4, max(1, (int) (isset($b['n']) ? $b['n'] : 1) ?: 1)),
+            'timeout' => $db['settings']['proxyTimeoutMs'],
+        );
+    });
+    $provider = $ctx['provider'];
+    $user = $ctx['user'];
+    if ($ctx['model'] === '' || $ctx['prompt'] === '') tc_fail(400, '请填写模型和提示词');
+    $url = rtrim((string) $provider['baseUrl'], '/') . '/images/generations';
+    $headers = array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . $provider['apiKey']);
+    $payload = tc_json_encode(array(
+        'model' => $ctx['model'],
+        'prompt' => $ctx['prompt'],
+        'n' => $ctx['n'],
+        'size' => $ctx['size'],
+    ));
+    $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], false);
+    if (empty($res['ok'])) {
+        tc_fail(502, '无法连接上游 API: ' . (isset($res['error']) ? $res['error'] : '未知错误'));
+    }
+    $status = (int) (isset($res['status']) ? $res['status'] : 0);
+    if ($status >= 400) {
+        tc_fail($status, tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', $status));
+    }
+    $j = json_decode((string) (isset($res['body']) ? $res['body'] : ''), true);
+    $images = array();
+    foreach ((isset($j['data']) && is_array($j['data']) ? $j['data'] : array()) as $d) {
+        if (!is_array($d)) continue;
+        if (!empty($d['url'])) $images[] = array('url' => (string) $d['url']);
+        elseif (!empty($d['b64_json'])) $images[] = array('url' => 'data:image/png;base64,' . (string) $d['b64_json']);
+        if (count($images) >= $ctx['n']) break;
+    }
+    if (!$images) tc_fail(502, '上游未返回图像，请稍后重试或更换模型');
+    $usage = array('prompt' => 0, 'completion' => 0);
+    tc_with_db(true, function (&$db) use ($user, $provider, $ctx, $usage, $started) {
+        $fresh = null;
+        foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
+        if (!$fresh) return;
+        $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $ctx['cost'], $usage), $ctx['model'] . ' (图像)');
+        tc_touch_user($db, $user['id']);
+        $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
+        tc_record_usage_entry($db, $user['id'], $ctx['model'] . ' (图像)', $charged, 0, 0);
+        tc_push_log(array('kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'], 'provider' => $provider['name'], 'model' => $ctx['model'] . ' (图像)', 'format' => 'images', 'status' => 200, 'ms' => tc_now() - $started, 'cost' => $charged, 'stream' => false));
+    });
+    tc_json(200, array('ok' => true, 'model' => $ctx['model'], 'images' => $images));
+}
+
+function tc_api_v1_chat_completions() {
+    $auth = tc_v1_authenticate();
+    tc_api_proxy('chat', $auth);
+}
+
+function tc_api_v1_models() {
+    $auth = tc_v1_authenticate();
+    tc_with_db(false, function ($db) use ($auth) {
+        $user = null;
+        foreach ($db['users'] as $u) {
+            if ((string) $u['id'] === $auth['userId']) { $user = $u; break; }
+        }
+        if (!$user) tc_fail(401, 'API 密钥对应的用户不存在');
+        $allowed = tc_user_access($db, $user);
+        $data = array();
+        foreach (tc_visible_providers_of($db, $user) as $p) {
+            $vis = tc_visible_provider($user, $p, $allowed);
+            if (!$vis) continue;
+            $ownerName = (isset($p['name']) && $p['name'] !== '' ? $p['name'] : 'tinychat');
+            foreach ((isset($vis['models']) ? $vis['models'] : array()) as $m) {
+                if (!is_array($m) || !isset($m['id']) || $m['id'] === '') continue;
+                $data[] = array('id' => (string) $m['id'], 'object' => 'model', 'created' => 0, 'owned_by' => $ownerName);
+            }
+        }
+        tc_json(200, array('object' => 'list', 'data' => $data));
+    });
 }

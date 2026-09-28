@@ -25,14 +25,14 @@ function setBusy(btn, busy, label) {
   btn.textContent = busy ? '请稍候…' : label;
 }
 
-async function submitAuth(api, name, password, btn, label, email) {
+async function submitAuth(api, name, password, btn, label, email, extra) {
   clearError();
   setBusy(btn, true, label);
   try {
     const r = await fetch(apiUrl(api), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(email ? { name, password, email } : { name, password }),
+      body: JSON.stringify(Object.assign(email ? { name, password, email } : { name, password }, typeof extra === 'object' && extra ? extra : {})),
     });
     const data = await r.json();
     if (!r.ok) {
@@ -102,6 +102,16 @@ fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
     const wrap = forgotLink ? forgotLink.closest('.auth-switch') : null;
     if (wrap) wrap.classList.add('hidden');
   }
+  // 用户协议:启用时注册页展示勾选项
+  if (cfg && cfg.agreementEnabled) {
+    const row = $('reg-agree-row');
+    if (row) row.classList.remove('hidden');
+  }
+  // 注册邀请码:启用时注册页展示输入框
+  if (cfg && cfg.registerInviteRequired) {
+    const row = $('reg-invite-row');
+    if (row) row.classList.remove('hidden');
+  }
   if (!cfg || !cfg.needsSetup) return;
   const setup = $('setup-form');
   const login = $('login-form');
@@ -141,7 +151,10 @@ if ($('setup-form')) {
 
 $('register-form').addEventListener('submit', (e) => {
   e.preventDefault();
-  submitAuth('/api/auth/register', $('reg-name').value.trim(), $('reg-password').value, $('register-btn'), '注册并登录', $('reg-email') ? $('reg-email').value.trim() : '');
+  submitAuth('/api/auth/register', $('reg-name').value.trim(), $('reg-password').value, $('register-btn'), '注册并登录', $('reg-email') ? $('reg-email').value.trim() : '', {
+    agreementAccepted: !!($('reg-agree') && $('reg-agree').checked),
+    invite: ($('reg-invite') && $('reg-invite').value.trim()) || '',
+  });
 });
 
 $('show-register').addEventListener('click', (e) => {

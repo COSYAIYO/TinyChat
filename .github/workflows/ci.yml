@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: 语法检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+      - name: PHP lint(全部 PHP 文件)
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            php -l "$f" || fail=1
+          done < <(git ls-files '*.php')
+          exit $fail
+      - name: JS 语法检查(排除 vendor)
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            case "$f" in vendor/*) continue;; esac
+            node --check "$f" || fail=1
+          done < <(git ls-files '*.js')
+          exit $fail
+
+  e2e:
+    name: E2E(PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.4', '8.1', '8.3']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+      - name: 运行 E2E 套件
+        run: bash tests/e2e.sh
