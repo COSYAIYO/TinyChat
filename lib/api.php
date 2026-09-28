@@ -643,6 +643,11 @@ function tc_render_mail_template($settings, $kind, $name, $link, $expiresText = 
 function tc_api_register() {
     tc_with_db(true, function (&$db) {
         $b = tc_read_json_body();
+        // 注册限流:每 IP 每小时 N 次(可配),防批量注册薅免费额度
+        $regLimit = isset($db['settings']['registerLimitPerHour']) ? (int) $db['settings']['registerLimitPerHour'] : 5;
+        if (!tc_rate_limit_check('reg:' . tc_client_ip(), $regLimit, 3600000)) {
+            tc_fail(429, '注册过于频繁，请稍后再试');
+        }
         if (empty($db['settings']['allowRegister'])) tc_fail(403, '站点已关闭注册，请联系管理员开通账号');
         if (!empty($db['settings']['agreementEnabled']) && empty($b['agreementAccepted'])) tc_fail(400, '请先阅读并同意用户协议');
         $invite = strtoupper(trim((string) ($b['invite'] ?? '')));
@@ -737,6 +742,10 @@ function tc_api_resend_verification() {
 function tc_api_forgot_password() {
     tc_with_db(true, function (&$db) {
         if (empty($db['settings']['passwordResetEnabled'])) tc_fail(403, '找回密码功能未开启');
+        // 每 IP 每小时 10 次,防邮件轰炸
+        if (!tc_rate_limit_check('forgot:' . tc_client_ip(), 10, 3600000)) {
+            tc_fail(429, '请求过于频繁，请稍后再试');
+        }
         $b = tc_read_json_body(); $email = strtolower(trim((string) ($b['email'] ?? ''))); if (!filter_var($email, FILTER_VALIDATE_EMAIL)) tc_fail(400, '邮箱格式不正确');
         foreach ($db['users'] as &$u) if (strtolower((string) ($u['email'] ?? '')) === $email) { if (!empty($u['resetLastSentAt']) && tc_now() - (int) $u['resetLastSentAt'] < 60000) tc_fail(429, '邮件发送过于频繁，请稍后再试'); $token = bin2hex(random_bytes(24)); $u['resetLastSentAt'] = tc_now(); $u['resetTokenHash'] = hash('sha256', $token); $u['resetTokenExpires'] = tc_now() + 3600000; $link = tc_public_base_url() . '/login?reset=' . rawurlencode($token); [$subject, $html] = tc_render_mail_template($db['settings'], 'reset', isset($u['name']) ? $u['name'] : '', $link, '1 小时'); if (!tc_mail_send($db['settings'], $email, $subject, $html)) tc_fail(503, '重置邮件发送失败'); break; }
         unset($u); tc_json(200, array('ok' => true));
@@ -956,6 +965,10 @@ function tc_api_sync_get_chats() {
 function tc_api_sync_save_chats() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
+        // 同步限流:每用户每分钟 60 次,防大包体刷写
+        if (!tc_rate_limit_check('sync:' . $user['id'], 60)) {
+            tc_fail(429, '同步过于频繁，请稍后再试');
+        }
         $b = tc_read_json_body(50 * 1024 * 1024);
         // 隐私模式:服务器不保存对话记录,客户端仅本地留存
         if (isset($db['settings']['persistChats']) && !$db['settings']['persistChats']) {

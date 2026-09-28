@@ -115,6 +115,8 @@ $TC_SETTINGS_DEFAULTS = array(
     'apiKeysEnabled' => true,
     // 注册邀请码:开启后注册必须提供有效邀请码
     'registerInviteRequired' => false,
+    // 注册限流:每 IP 每小时最大注册尝试次数
+    'registerLimitPerHour' => 5,
 );
 $TC_SETTINGS_DEFAULTS['mailTemplates'] = tc_mail_default_templates();
 
@@ -379,6 +381,7 @@ function tc_normalize_settings($raw) {
     );
     $s['apiKeysEnabled'] = !array_key_exists('apiKeysEnabled', $s) || !empty($s['apiKeysEnabled']);
     $s['registerInviteRequired'] = !empty($s['registerInviteRequired']);
+    $s['registerLimitPerHour'] = min(1000, max(1, (int) (isset($s['registerLimitPerHour']) ? $s['registerLimitPerHour'] : 5) ?: 5));
     return $s;
 }
 
@@ -758,15 +761,15 @@ function tc_rate_limit_file($key) {
     return $dir . '/' . hash('sha256', (string) $key) . '.json';
 }
 
-function tc_rate_limit_check($key, $limitPerMin) {
+function tc_rate_limit_check($key, $limitPerMin, $windowMs = 60000) {
     $limit = (int) $limitPerMin;
     if ($limit <= 0 || $key === '') return true;
+    $window = max(1000, (int) $windowMs);
     $fp = @fopen(tc_rate_limit_file($key), 'c+');
     if (!$fp) return true; // 计数存储不可用时不拦截主流程
     @flock($fp, LOCK_EX);
     $data = json_decode((string) stream_get_contents($fp), true);
     $now = tc_now();
-    $window = 60 * 1000;
     $mine = array();
     foreach ((is_array($data) ? $data : array()) as $t) {
         if ((int) $t > $now - $window) $mine[] = (int) $t;

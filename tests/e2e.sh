@@ -66,7 +66,7 @@ TOKEN=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/jso
 [ -n "$TOKEN" ] && ok "管理员登录" || bad "管理员登录"
 AUTH="Authorization: Bearer $TOKEN"
 cat > "$TMP/settings1.json" <<'EOF'
-{"temperature":0.7,"rateLimitPerMin":50,"backupKeep":3,"agreementEnabled":true,"agreementHtml":"<p>测试协议</p>","registerInviteRequired":true}
+{"temperature":0.7,"rateLimitPerMin":50,"backupKeep":3,"agreementEnabled":true,"agreementHtml":"<p>测试协议</p>","registerInviteRequired":true,"registerLimitPerHour":100}
 EOF
 res=$(curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/settings1.json")
 assert_contains "设置: temperature 保存" "$res" '"temperature":0.7'
