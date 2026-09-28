@@ -660,103 +660,103 @@
   flex-shrink: 0;
   gap: 4px;
 }
-.composer-more,
-.composer-tools { display: none; }
-@media (max-width: 768px) {
-  .composer-more {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 36px;
-    height: 36px;
-    padding: 0;
-    border: none;
-    border-radius: 999px;
-    background: transparent;
-    color: var(--text-secondary);
-    cursor: pointer;
-  }
-  .composer-more:hover,
-  .composer-more[aria-expanded="true"] {
-    background: var(--bg-hover);
-    color: var(--text);
-  }
-  .composer-left { position: relative; }
-  .composer-tools {
-    display: none;
-    position: absolute;
-    left: 0;
-    bottom: calc(100% + 8px);
-    z-index: 46;
-    min-width: 196px;
-    padding: 4px;
-    border: 1px solid var(--hairline);
-    border-radius: 12px;
-    background: var(--bg-surface);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
-  }
-  .composer-tools:not(.hidden) { display: flex; flex-direction: column; }
-  .composer-tool {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    width: 100%;
-    padding: 9px 12px;
-    border: none;
-    border-radius: 8px;
-    background: transparent;
-    color: var(--text);
-    font: inherit;
-    font-size: 14px;
-    cursor: pointer;
-    text-align: left;
-  }
-  .composer-tool:hover { background: var(--bg-hover); }
-  .composer-tool-val { color: var(--text-tertiary); font-size: 13px; }
-  .composer-tool-group {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 8px 10px;
-  }
-  .composer-tool-choices {
-    display: flex;
-    gap: 4px;
-  }
-  .composer-tool-choices button {
-    flex: 1;
-    min-width: 0;
-    padding: 6px 0;
-    border: none;
-    border-radius: 8px;
-    background: var(--bg-hover);
-    color: var(--text-secondary);
-    font: inherit;
-    font-size: 13px;
-    cursor: pointer;
-  }
-  .composer-tool-choices button.active {
-    background: var(--brand-soft);
-    color: var(--brand);
-    font-weight: 650;
-  }
-  .composer-left .attach-btn,
-  .websearch-wrap,
-  .effort-wrap { display: none !important; }
-  .composer-tools:not(.hidden) ~ .websearch-wrap,
-  .composer-tools:not(.hidden) ~ .effort-wrap,
-  .composer-tools:not(.hidden) ~ .attach-btn { display: block !important; }
-  .composer-tools:not(.hidden) ~ .websearch-wrap .websearch-btn,
-  .composer-tools:not(.hidden) ~ .effort-wrap .effort-btn,
-  .composer-tools:not(.hidden) ~ .attach-btn {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-  }
+/* 输入框左侧「≡」菜单:PC 与移动端统一的控制入口(绘画 / 模型对比 / 文件 / 联网 / 思考)。
+   原先只在窄屏出现,PC 上另有独立的附件、联网、思考按钮;现统一为这一个菜单,两端一致。 */
+.composer-left { position: relative; }
+.composer-more {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
 }
+.composer-more:hover,
+.composer-more[aria-expanded="true"] {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+/* 菜单按钮上的小圆点:联网处于「始终」等非默认状态时提示,避免入口收进菜单后看不出来 */
+.composer-more.flag-on::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--brand);
+}
+.composer-tools {
+  display: none;
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 46;
+  min-width: 232px;
+  padding: 4px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--bg-surface);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+}
+.composer-tools:not(.hidden) { display: flex; flex-direction: column; }
+.composer-tool {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+}
+.composer-tool:hover { background: var(--bg-hover); }
+.composer-tool-val { color: var(--text-tertiary); font-size: 13px; }
+.composer-tool-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+}
+.composer-tool-choices {
+  display: flex;
+  gap: 4px;
+}
+.composer-tool-choices button {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 0;
+  border: none;
+  border-radius: 8px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.composer-tool-choices button.active {
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-weight: 650;
+}
+/* 附件 / 联网 / 思考已并入上面的「≡」菜单,独立按钮在所有尺寸下都隐藏 */
+.composer-left .attach-btn,
+.websearch-wrap,
+.effort-wrap { display: none !important; }
 .effort-wrap { position: relative; flex-shrink: 0; }
 .effort-btn {
   height: 36px;

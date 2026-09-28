@@ -94,6 +94,9 @@ function syncComposerWebSearch() {
   document.querySelectorAll('#websearch-pop [data-websearch], #composer-tool-search [data-websearch]').forEach((b) => {
     b.classList.toggle('active', b.dataset.websearch === mode);
   });
+  // 「≡」菜单按钮上加圆点:联网已开启(始终)时提示,收起菜单后也能一眼看出状态
+  const more = $('composer-more');
+  if (more) more.classList.toggle('flag-on', ready && mode === 'on');
 }
 function setEffortMode(mode) {
   const next = (mode === 'off' || mode === 'low' || mode === 'high') ? mode : 'medium';
