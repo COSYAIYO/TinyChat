@@ -38,6 +38,8 @@ jobs:
         run: php tests/demo-revert.php
       - name: 生图响应解析自检(各平台返回形态)
         run: php tests/image-parse.php
+      - name: 上游地址拼接自检(补 /v1 / 不重复)
+        run: php tests/upstream-url.php
 
   e2e:
     name: E2E(PHP ${{ matrix.php }})

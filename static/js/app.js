@@ -5005,8 +5005,13 @@ function openImageDialog() {
       toast('已生成并插入对话');
       await refreshMe();
     } catch (e) {
-      status.textContent = '';
-      toast('生成失败: ' + (e && e.message) || '未知错误', true);
+      // 失败原因同时显示在弹窗内(常驻,不会被 toast 错过)与 toast
+      const msg = (e && e.message) ? e.message : '未知错误';
+      if (status) {
+        status.textContent = '生成失败：' + msg;
+        status.classList.add('img-status-error');
+      }
+      toast('生成失败: ' + msg, true);
     } finally { run.disabled = false; }
   });
   setTimeout(() => { const p = mask.querySelector('#img-prompt'); if (p) p.focus(); }, 60);

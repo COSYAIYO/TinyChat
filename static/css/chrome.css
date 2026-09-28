@@ -3618,3 +3618,6 @@ body.is-demo-admin [data-chats] { display: none !important; }
   vertical-align: -3px;
   margin-right: 6px;
 }
+
+/* 生图弹窗:失败原因常驻显示,避免"点了没反应"的错觉 */
+.img-status-error { color: var(--danger, #e5484d); }

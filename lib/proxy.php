@@ -14,8 +14,22 @@ function tc_endpoints() {
 function tc_upstream_path($baseUrl, $format) {
     $ends = tc_endpoints();
     $endpoint = isset($ends[$format]) ? $ends[$format] : $ends['chat'];
-    if (preg_match('/\/v\d+$/', $baseUrl)) return $baseUrl . $endpoint;
-    return $baseUrl . '/v1' . $endpoint;
+    return tc_api_url($baseUrl, $endpoint);
+}
+
+// 拼一个上游接口地址:baseUrl 已带版本段(如 /v1)就直接拼,否则补上 /v1。
+// 生图、获取模型等路径都必须走这里,否则用户按平台文档填「不带 /v1 的 Base URL」时会拼错路径(404)。
+function tc_api_url($baseUrl, $path) {
+    $base = rtrim(trim((string) $baseUrl), '/');
+    if ($base === '') return (string) $path;
+    $p = '/' . ltrim((string) $path, '/');
+    // 已含版本段(/v1、/v1beta、/v2…):直接拼接
+    if (preg_match('#/v\d+[a-z]*$#i', $base)) return $base . $p;
+    // 若 base 尾部已包含要拼的路径段(如用户填了 .../v1/images/generations),不再重复
+    if (preg_match('#/images/generations$#i', $base) && stripos($p, 'images/generations') !== false) return $base;
+    if (preg_match('#/models$#i', $base) && stripos($p, 'models') !== false) return $base;
+    if (preg_match('#/chat/completions$#i', $base) && stripos($p, 'chat/completions') !== false) return $base;
+    return $base . '/v1' . $p;
 }
 
 define('TC_MINERU_LITE', 'https://mineru.net/api/v1/agent');
@@ -1609,7 +1623,7 @@ function tc_api_fetch_models() {
             }
         }
         if ($apiKey === '') tc_fail(400, '请先填写 API Key');
-        $url = preg_match('/\/v\d+$/', $baseUrl) ? $baseUrl . '/models' : $baseUrl . '/v1/models';
+        $url = tc_api_url($baseUrl, '/models');
         return array('url' => $url, 'apiKey' => $apiKey);
     });
     $res = tc_http_request($ctx['url'], 'GET', array(
@@ -2306,13 +2320,23 @@ function tc_generate_images($apiKeyOwner = null) {
         foreach (array('quality', 'style', 'response_format', 'background') as $k) {
             if (isset($b[$k]) && is_string($b[$k]) && $b[$k] !== '') $extra[$k] = substr($b[$k], 0, 40);
         }
+        // 尺寸:接受「1024x1024」这类精确值,也接受「1K/2K/3K/4K」这类档位(部分平台推荐用档位)
+        $size = '1024x1024';
+        if (isset($b['size']) && is_string($b['size'])) {
+            $s = trim($b['size']);
+            if (preg_match('/^\d{3,4}x\d{3,4}$/i', $s) || preg_match('/^[1-4]K$/i', $s)) $size = $s;
+        }
+        // 宽高比(部分平台如 Agnes 用 ratio 而非 size 表达构图)
+        $ratio = '';
+        if (isset($b['ratio']) && is_string($b['ratio']) && preg_match('#^\d{1,2}:\d{1,2}$#', trim($b['ratio']))) $ratio = trim($b['ratio']);
         return array(
             'user' => $user,
             'provider' => $provider,
             'cost' => $cost,
             'model' => $model,
             'prompt' => substr(trim($promptText), 0, 4000),
-            'size' => isset($b['size']) && preg_match('/^\d{3,4}x\d{3,4}$/', (string) $b['size']) ? (string) $b['size'] : '1024x1024',
+            'size' => $size,
+            'ratio' => $ratio,
             'n' => min(4, max(1, (int) (isset($b['n']) ? $b['n'] : 1) ?: 1)),
             'extra' => $extra,
             'timeout' => $db['settings']['proxyTimeoutMs'],
@@ -2321,7 +2345,8 @@ function tc_generate_images($apiKeyOwner = null) {
     $provider = $ctx['provider'];
     $user = $ctx['user'];
     if ($ctx['model'] === '' || $ctx['prompt'] === '') tc_fail(400, '请填写模型和提示词');
-    $url = rtrim((string) $provider['baseUrl'], '/') . '/images/generations';
+    // 关键:生图也必须补齐 /v1(用户常按平台文档只填 https://host,不写 /v1)
+    $url = tc_api_url($provider['baseUrl'], '/images/generations');
     $headers = array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . $provider['apiKey']);
     $body = array(
         'model' => $ctx['model'],
@@ -2329,18 +2354,33 @@ function tc_generate_images($apiKeyOwner = null) {
         'n' => $ctx['n'],
         'size' => $ctx['size'],
     );
+    if (!empty($ctx['ratio'])) $body['ratio'] = $ctx['ratio'];
     // 透传常见可选参数(如 quality / style / response_format);仅收录白名单键,避免污染上游请求
     foreach (array('quality', 'style', 'response_format', 'background') as $k) {
         if (isset($ctx['extra'][$k])) $body[$k] = $ctx['extra'][$k];
     }
-    // 不同平台对可选参数的容忍度差异很大(有的拒绝 response_format,有的拒绝 size/style)。
-    // 先按完整参数请求,若被上游以 4xx 拒绝,则逐级降级重试,提升对接兼容性。
-    // 允许「无响应体的连接错误」重试一次(提高网络抖动/冷启动的成功率),但参数类错误不重试。
-    $attempts = array(
-        $body,
-        array('model' => $ctx['model'], 'prompt' => $ctx['prompt'], 'n' => $ctx['n']),
-        array('model' => $ctx['model'], 'prompt' => $ctx['prompt']),
-    );
+    // 不同平台对可选参数的容忍度差异很大(有的拒绝 response_format,有的拒绝 size/style;
+    // 还有的(如 Agnes)要求把 response_format 放进 extra_body 而不是顶层)。
+    // 先按完整参数请求,若被上游以 4xx 拒绝,则逐级降级/换形态重试。
+    // 降级顺序刻意「先丢冷门可选参数、最后才丢 size」——因为 size 是很多平台的必填项。
+    // 允许「网络类连接错误」重试一次(提高网络抖动/冷启动的成功率),但参数类错误不重试。
+    $attempts = array();
+    $attempts[] = $body;                                                    // 0. 完整参数
+    if (isset($body['response_format'])) {                                  // 1. response_format 挪进 extra_body
+        $alt = $body;
+        unset($alt['response_format']);
+        $alt['extra_body'] = array('response_format' => $body['response_format']);
+        $attempts[] = $alt;
+    }
+    $strip = function ($src, $keys) {                                        // 去掉指定键,保留其余
+        $out = $src;
+        foreach ($keys as $k) unset($out[$k]);
+        return $out;
+    };
+    $optional = array('quality', 'style', 'background', 'response_format', 'extra_body', 'ratio');
+    $attempts[] = $strip($body, $optional);                                  // 2. 去可选参数,保留 size/n
+    $attempts[] = $strip($body, array_merge($optional, array('n')));         // 3. 再去 n,保留 size
+    $attempts[] = array('model' => $ctx['model'], 'prompt' => $ctx['prompt']); // 4. 最后只剩必填(极端平台)
     $seen = array();
     $res = null;
     $status = 0;

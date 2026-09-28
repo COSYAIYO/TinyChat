@@ -2,6 +2,31 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.14] - 2026-09-29
+
+### 修复
+
+- **生图「没反应」：Base URL 不带 `/v1` 时请求路径拼错**。生图接口此前直接把 `baseUrl + /images/generations` 拼接，而对话接口会先补 `/v1`。多数平台的 Base URL 形如 `https://apihub.agnes-ai.com`（不含 `/v1`，路径在文档里单独给出），于是请求发到了 `https://host/images/generations` 而不是 `https://host/v1/images/generations`，上游返回 404，界面表现为「点了没反应」。现统一走 `tc_api_url` 拼接：不带版本段则补 `/v1`，已带则直接用，贴了完整接口地址也原样使用。获取模型列表同样接入。
+
+### 新增
+
+- 生图请求新增 `ratio` 参数（`1:1` / `16:9` / `9:16` 等），`size` 同时接受精确值（`1024x1024`）与档位（`1K` / `2K` / `3K` / `4K`），适配用「档位 + 比例」表达构图的平台（如 Agnes Image）。
+- `response_format` 顶层被上游拒绝时，自动改放进 `extra_body.response_format` 重试（Agnes 等平台的规范写法）。
+
+### 变更
+
+- 生图参数降级顺序调整：先去掉 `quality` / `style` / `ratio` 等冷门可选参数，**最后才去掉 `size`**——很多平台 `size` 为必填，此前会过早丢掉它。
+- 生图失败原因改为**常驻显示在弹窗内**（同时保留 toast），不再只闪一下就消失。
+
+### 文档
+
+- README 生图章节补充：Base URL 填法说明、尺寸与比例、降级策略、第三方平台排查顺序。
+
+### 测试
+
+- 新增 `tests/upstream-url.php`（12 项地址拼接断言）与 E2E「Base URL 不带 /v1 也能生图」回归。
+- 当前套件：图标匹配 44 项、演示还原 22 项、生图解析 15 项、地址拼接 12 项、E2E 88 项，全部通过。
+
 ## [2.0.13] - 2026-09-29
 
 ### 新增
