@@ -1548,7 +1548,9 @@ function availableModelItems() {
       if (!id) return;
       const name = m.name || id;
       const health = provider.id === state.currentProviderId ? modelHealthOf(id) : { state: 'idle', title: '最近 4 小时无人调用' };
-      const logo = window.OC && OC.modelLogo ? OC.modelLogo(id + ' ' + name + ' ' + (provider.name || '')) : '';
+      const logo = window.OC && (OC.modelLogoWithFallback || OC.modelLogo)
+        ? OC.modelLogoWithFallback(id + ' ' + name, provider.name)
+        : '';
       items.push({ value: provider.id + '\n' + id, providerId: provider.id, modelId: id, label: provider.name + '@' + name, search: provider.name + ' ' + id + ' ' + name, health: health.state, healthTitle: health.title, icon: logo });
     });
   });

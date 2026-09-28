@@ -2,6 +2,21 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.9] - 2026-09-28
+
+### 修复
+
+- **Agnes AI 图标匹配失效**：规则指向不存在的 `agnesai-color.svg`（实际文件为 `agnesai.svg`），导致 Agnes 相关模型一直回退成站点 logo。已修正，并补充规则会把「改了文件名却一直是默认图」这类问题直接在控制台与 CI 中暴露。
+
+### 变更（图标匹配机制完善）
+
+- **分隔符不敏感**：关键词同时按原文与「去掉分隔符的紧凑形式」匹配，`agnes-ai` / `Agnes AI` / `AgnesAI` / `agnes_ai` 都能命中。
+- **公司层图标让位具体品牌**：为规则引入优先级，`anthropic` / `google` / `bytedance` / `meta` 等公司层、聚合层图标标为低优先级。此前「模型 id + 供应商名」一起匹配时（如 `claude-3-5-sonnet … Anthropic`）会错误显示成 Anthropic 图标，现在正确显示 Claude。
+- **供应商图标按「最具体命中」投票**：每个模型只投一票给它命中的最具体图标，再取票数最高者，避免一个泛化关键词覆盖整体判断。
+- **规则目标校验**：图标文件清单与规则在加载时校验，指向缺失文件的规则会被跳过并告警（而不是静默回退）。
+- 补充 `claude` 系列别名（`sonnet` / `opus` / `haiku`）与 `lingyi` 别名。
+- 新增 `tests/logos-check.js` 并在 CI 中执行：校验规则目标文件真实存在、`FILES` 清单与 `static/logo` 实际文件一致，以及关键模型文本命中预期图标。
+
 ## [2.0.8] - 2026-09-28
 
 ### 新增

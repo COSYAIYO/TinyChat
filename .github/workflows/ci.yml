@@ -32,6 +32,8 @@ jobs:
             node --check "$f" || fail=1
           done < <(git ls-files '*.js')
           exit $fail
+      - name: 图标匹配自检(规则目标文件必须存在 + 关键模型命中)
+        run: node tests/logos-check.js
 
   e2e:
     name: E2E(PHP ${{ matrix.php }})
