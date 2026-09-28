@@ -63,16 +63,22 @@ assert_contains "X-Frame-Options DENY" "$hdr" "X-Frame-Options: DENY"
 
 # ---------- 登录与设置 ----------
 say "== 登录与设置 =="
-TOKEN=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"admin","password":"e2e-pass"}' | jget token)
+login_json=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"admin","password":"e2e-pass"}')
+assert_contains "管理员登录返回合法 JSON" "$login_json" '"token":"'
+TOKEN=$(printf '%s' "$login_json" | jget token)
 [ -n "$TOKEN" ] && ok "管理员登录" || bad "管理员登录"
 AUTH="Authorization: Bearer $TOKEN"
 cat > "$TMP/settings1.json" <<'EOF'
-{"temperature":0.7,"rateLimitPerMin":50,"backupKeep":3,"agreementEnabled":true,"agreementHtml":"<p>测试协议</p>","registerInviteRequired":true,"registerLimitPerHour":100}
+{"temperature":0.7,"rateLimitPerMin":50,"backupKeep":3,"agreementEnabled":true,"agreementHtml":"<p>测试协议</p>","registerInviteRequired":true,"registerLimitPerHour":100,"announcement":{"enabled":true,"text":"E2E announcement"}}
 EOF
 res=$(curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/settings1.json")
 assert_contains "设置: temperature 保存" "$res" '"temperature":0.7'
 assert_contains "设置: 限流保存" "$res" '"rateLimitPerMin":50'
 assert_contains "设置: 协议启用" "$res" '"agreementEnabled":true'
+assert_contains "设置: 公告保存" "$res" '"text":"E2E announcement"'
+assert_contains "config 回读公告" "$(curl -s "$BASE/api/config")" '"text":"E2E announcement"'
+empty_ann=$(curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"announcement":{"enabled":true,"text":""}}')
+assert_contains "空公告启用被拒" "$empty_ann" '启用公告时请填写公告内容'
 # 协议页(启用后)
 code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/agreement")
 assert_eq "协议页 200" "$code" "200"

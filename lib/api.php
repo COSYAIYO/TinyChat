@@ -719,7 +719,8 @@ function tc_api_register() {
 
 function tc_api_login() {
     $user = null;
-    tc_with_db(false, function ($db) use (&$user) {
+    $settings = null;
+    tc_with_db(false, function ($db) use (&$user, &$settings) {
         $b = tc_read_json_body();
         $name = trim((string) (isset($b['name']) ? $b['name'] : ''));
         $password = (string) (isset($b['password']) ? $b['password'] : '');
@@ -737,16 +738,18 @@ function tc_api_login() {
         tc_clear_login_fail($name);
         if (!empty($db['settings']['emailVerificationEnabled']) && empty($found['emailVerifiedAt'])) tc_fail(403, '请先验证邮箱后再登录');
         $user = $found;
+        $settings = $db['settings'];
     });
     if (!$user || empty($user['id'])) tc_fail(401, '用户名或密码错误');
     $seenId = $user['id'];
-    tc_with_db(true, function (&$db) use ($seenId, &$user) {
+    tc_with_db(true, function (&$db) use ($seenId, &$user, &$settings) {
         tc_touch_user($db, $seenId);
         foreach ($db['users'] as $u) {
             if ($u['id'] === $seenId) { $user = $u; break; }
         }
+        $settings = $db['settings'];
     });
-    tc_json(200, array('token' => tc_issue_token($user, $db['settings']), 'user' => tc_sanitize_user($user)));
+    tc_json(200, array('token' => tc_issue_token($user, $settings), 'user' => tc_sanitize_user($user)));
 }
 
 function tc_api_verify_email() {
@@ -1564,6 +1567,20 @@ function tc_api_admin_save_settings() {
         tc_require_admin($db);
         $b = tc_read_json_body();
         $src = isset($b['settings']) && is_array($b['settings']) ? $b['settings'] : $b;
+        if (array_key_exists('announcement', $src)) {
+            if (!is_array($src['announcement'])) tc_fail(400, '公告设置格式不正确');
+            $announcementText = trim((string) (isset($src['announcement']['text']) ? $src['announcement']['text'] : ''));
+            $announcementLength = function_exists('mb_strlen')
+                ? mb_strlen($announcementText, 'UTF-8')
+                : preg_match_all('/./us', $announcementText, $announcementChars);
+            if ($announcementLength === false) $announcementLength = strlen($announcementText);
+            if (!empty($src['announcement']['enabled']) && $announcementText === '') {
+                tc_fail(400, '启用公告时请填写公告内容');
+            }
+            if ($announcementLength > 2000) tc_fail(400, '公告内容不能超过 2000 字');
+            $src['announcement']['text'] = $announcementText;
+            $src['announcement']['updatedAt'] = tc_now();
+        }
         if (isset($src['webSearchTavilyKey']) && strpos((string) $src['webSearchTavilyKey'], '••') !== false) {
             unset($src['webSearchTavilyKey']);
         }

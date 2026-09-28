@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.0');
+define('TC_VERSION', '2.0.1');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -373,10 +373,17 @@ function tc_normalize_settings($raw) {
     $s['persistChats'] = !array_key_exists('persistChats', $s) || !empty($s['persistChats']);
     $ann = isset($s['announcement']) && is_array($s['announcement']) ? $s['announcement'] : array();
     $annText = trim((string) (isset($ann['text']) ? $ann['text'] : ''));
+    if (function_exists('mb_substr')) {
+        $annText = mb_substr($annText, 0, 2000, 'UTF-8');
+    } elseif (preg_match('/^.{0,2000}/us', $annText, $annSlice)) {
+        $annText = $annSlice[0];
+    } else {
+        $annText = substr($annText, 0, 2000);
+    }
     $annChanged = isset($ann['updatedAt']) ? (int) $ann['updatedAt'] : 0;
     $s['announcement'] = array(
         'enabled' => !empty($ann['enabled']) && $annText !== '',
-        'text' => substr($annText, 0, 2000),
+        'text' => $annText,
         'updatedAt' => $annChanged,
     );
     $s['apiKeysEnabled'] = !array_key_exists('apiKeysEnabled', $s) || !empty($s['apiKeysEnabled']);
