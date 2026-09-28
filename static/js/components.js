@@ -230,6 +230,7 @@
       + '<th class="col-name">显示名称</th>'
       + '<th class="col-mtok" title="单次回答最多生成的 token，留空则跟随全局的单次输出上限">max_tokens</th>'
       + '<th class="col-ctx" title="该模型的上下文窗口（token），留空则不做限制">最大上下文</th>'
+      + '<th class="col-img" title="标记为生图模型：调用对话接口时会自动改用 images/generations（未标记时按模型名自动判断）">生图</th>'
       + '</tr></thead><tbody>'
       + rowsHtml
       + '</tbody></table>';
@@ -266,11 +267,17 @@
     const cls = 'model-row' + (opts.stale ? ' is-stale' : '');
     const numCells = MODEL_NUM_COLS.map((col) => '<td class="' + (col.cls === 'mtokens' ? 'col-mtok' : 'col-ctx') + '">'
       + modelNumCell(m, col, !opts.stale) + '</td>').join('');
+    // 生图标记:显式 image 字段优先;未显式设置时按模型名给出建议默认值(仅用于勾选态展示)
+    const isImage = Object.prototype.hasOwnProperty.call(m, 'image') ? !!m.image : (window.OC && OC.isImageModelName ? OC.isImageModelName(m.id) : false);
+    const imageCell = opts.stale
+      ? '<td class="col-img">' + (isImage ? '<span class="img-flag">生图</span>' : '<i class="muted">—</i>') + '</td>'
+      : '<td class="col-img"><input type="checkbox" class="mimg" data-mid="' + escapeHtml(m.id) + '" title="标记为生图模型"' + (isImage ? ' checked' : '') + '></td>';
     return '<tr class="' + cls + '">'
       + '<td class="col-check"><input type="checkbox" ' + attr + '="' + escapeHtml(m.id) + '"' + checked + '></td>'
       + '<td class="col-id"><span class="mid">' + escapeHtml(m.id) + '</span></td>'
       + '<td class="col-name">' + modelNameCell(m, !opts.stale) + '</td>'
       + numCells
+      + imageCell
       + '</tr>';
   }
 
@@ -309,14 +316,20 @@
             incomingNums[f] = parseInt(m[f], 10) || 0;
           }
         });
+        // 生图标记只有调用方显式携带时才更新(上游拉取的原始列表没有该字段,不能覆盖已保存值)
+        const hasImage = !!(m && Object.prototype.hasOwnProperty.call(m, 'image'));
+        const incomingImage = hasImage ? !!m.image : undefined;
         const found = catalog.find((x) => x.id === id);
         if (found) {
           if (updateName && incoming) found.name = incoming;
           else if (incoming && (!found.name || found.name === found.id)) found.name = incoming;
           Object.keys(incomingNums).forEach((f) => { found[f] = incomingNums[f]; });
+          if (hasImage) found.image = incomingImage;
         } else {
           const item = { id, name: incoming || id };
           NUM_FIELDS.forEach((f) => { item[f] = incomingNums[f] !== undefined ? incomingNums[f] : 0; });
+          if (hasImage) item.image = incomingImage;
+          else if (window.OC && OC.isImageModelName) item.image = OC.isImageModelName(id);
           catalog.push(item);
           if (selectNew) selected.add(id);
         }
@@ -377,6 +390,12 @@
     }
 
     listEl.addEventListener('change', (e) => {
+      const imgInp = e.target && e.target.closest ? e.target.closest('input.mimg[data-mid]') : null;
+      if (imgInp) {
+        const item = catalog.find((x) => x.id === imgInp.dataset.mid);
+        if (item) item.image = !!imgInp.checked;
+        return;
+      }
       const inp = e.target && e.target.closest ? e.target.closest('input[type="checkbox"][data-mid]') : null;
       if (!inp) return;
       if (inp.checked) selected.add(inp.dataset.mid);
@@ -467,6 +486,7 @@
           MODEL_NUM_COLS.forEach((c) => {
             if (parseInt(m[c.field], 10) > 0) row[c.field] = parseInt(m[c.field], 10);
           });
+          if (m.image) row.image = true;
           return row;
         });
       },
@@ -478,6 +498,7 @@
             MODEL_NUM_COLS.forEach((c) => {
               if (parseInt(m[c.field], 10) > 0) row[c.field] = parseInt(m[c.field], 10);
             });
+            if (m.image) row.image = true;
             return row;
           });
       },
@@ -830,8 +851,24 @@
   });
   titleObserver.observe(document.documentElement, { childList: true, subtree: true });
 
+  // 生图模型名启发式(与后端 tc_image_model_name_hint 对应):供前后台共同复用。
+  // 仅用于 UI 默认勾选/下拉建议,最终以后台显式标记(image 字段)为准。
+  const IMAGE_HINTS = [
+    /dall-?e/, /gpt-image/, /\bimage-?gen(eration)?s?\b/, /stable-?diffusion/,
+    /\bsdxl\b/, /\bsd3\b/, /\bsd-?3(\.5)?\b/, /sd-?turbo/, /\bflux\b/, /flux-?\d/,
+    /midjourney/, /\bniji\b/, /seedream/, /\bimagen\b/, /\bkolors\b/, /cogview/,
+    /qwen-?image/, /\bwanx\b/, /wan-?\d/, /hunyuan-?image/, /grok-?\d*(-|_)?image/,
+    /-image\b/, /image-generation/,
+  ];
+  function isImageModelName(id) {
+    const s = String(id || '').toLowerCase();
+    if (!s) return false;
+    return IMAGE_HINTS.some((re) => re.test(s));
+  }
+
   // 暴露全局
   window.OC = window.OC || {};
+  window.OC.isImageModelName = isImageModelName;
   window.OC.openSelect = openSelect;
   window.OC.closeSelect = closeOpenMenu;
   window.OC.bindModelChecklist = bindModelChecklist;

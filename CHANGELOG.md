@@ -2,6 +2,24 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.10] - 2026-09-28
+
+### 新增
+
+- **生图模型自动路由**：在对话里直接选用生图模型时，自动改走上游 `images/generations`，不再把「xxx is an image model. Use /v1/images/generations」的报错抛给用户。网页端对话接口与 `/v1/chat/completions` 均已支持；普通文本模型不受影响。
+- **开放接口 `POST /v1/images/generations`**：新增 OpenAI 规范的图像生成出口，返回 `{created, data:[{url|b64_json}]}`，计费/限流/额度/审核与既有开放接口一致，并同样受对外模型白名单约束。
+- 供应商模型清单新增 **「生图」标记列**：管理员可显式声明某模型为生图模型；未显式设置时按模型名自动建议（如 `dall-e`、`gpt-image`、`flux`、`seedream`、`stable-diffusion`、`imagen`、`qwen-image` 等）。显式标记优先于名称判断，可双向覆盖（把名称像生图的模型标为非生图，或把自定义生图模型标为生图）。
+- 「生成图片」弹窗的图像模型改为**下拉选择**当前供应商中被判定为生图的模型，并保留「其他（手动输入）」。
+
+### 变更
+
+- 图像生成结果统一为 `{url}` / `{b64_json}` 结构，并透传 `revised_prompt`；请求侧新增 `quality` / `style` / `response_format` / `background` 白名单参数透传，`b64_json` 返回形态可直接使用。
+- 未指定供应商但提供了 `model` 时，按「哪个可见供应商拥有该模型」选择供应商，避免生图/开放接口调用落到默认供应商。
+
+### 测试
+
+- E2E 从 73 项扩展到 **79 项全部通过**：新增图片 URL/b64 两种返回、生图标记持久化、`/v1/images/generations`、对话接口与开放接口的生图自动路由、文本模型不受影响。
+
 ## [2.0.9] - 2026-09-28
 
 ### 修复

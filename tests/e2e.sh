@@ -132,7 +132,7 @@ assert_contains "邀请码使用次数记录" "$(curl -s "$BASE/api/admin/invite
 # ---------- 供应商与按次计费 ----------
 say "== 供应商与计费 =="
 cat > "$TMP/prov.json" <<'EOF'
-{"name":"Mock","baseUrl":"http://127.0.0.1:MOCKPORT/v1","apiKey":"sk-mock","apiFormat":"chat","models":[{"id":"mock-model","name":"Mock"}],"costPerCall":1,"scope":"global"}
+{"name":"Mock","baseUrl":"http://127.0.0.1:MOCKPORT/v1","apiKey":"sk-mock","apiFormat":"chat","models":[{"id":"mock-model","name":"Mock"},{"id":"mock-image","name":"Mock Image","image":true}],"costPerCall":1,"scope":"global"}
 EOF
 sed -i "s/MOCKPORT/$MOCK_PORT/" "$TMP/prov.json"
 curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/prov.json" > /dev/null
@@ -147,6 +147,8 @@ assert_has "新供应商默认对所有分组开放" "$(curl -s "$BASE/api/admin
 # 收窄授权后再次读取必须仍然生效
 curl -s -X POST "$BASE/api/admin/access" -H "$AUTH" -H "Content-Type: application/json" -d "{\"groupId\":\"$GID1\",\"providerId\":\"$PROV\",\"modelIds\":[\"mock-model\"]}" > /dev/null
 assert_has "模型授权保存后可回读" "$(curl -s "$BASE/api/admin/access" -H "$AUTH")" "\"groupId\":\"$GID1\",\"providerId\":\"$PROV\",\"modelIds\":[\"mock-model\"]"
+# 恢复为全部模型授权,后续计费/图像等用例需要访问 mock-image
+curl -s -X POST "$BASE/api/admin/access" -H "$AUTH" -H "Content-Type: application/json" -d "{\"groupId\":\"$GID1\",\"providerId\":\"$PROV\",\"modelIds\":[\"*\"]}" > /dev/null
 cat > "$TMP/chat1.json" <<EOF
 {"model":"mock-model","providerId":"$PROV","stream":false,"messages":[{"role":"user","content":"hello"}]}
 EOF
@@ -196,6 +198,24 @@ cat > "$TMP/img.json" <<EOF
 {"providerId":"$PROV","model":"mock-image","prompt":"a corgi surfing","size":"1024x1024","n":1}
 EOF
 assert_contains "图像生成返回 URL" "$(curl -s -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/img.json")" 'example.com/mock.png'
+# b64_json 返回形态(按 response_format 透传)
+cat > "$TMP/img-b64.json" <<EOF
+{"providerId":"$PROV","model":"mock-image","prompt":"x","n":1,"response_format":"b64_json"}
+EOF
+assert_contains "图像生成支持 b64_json" "$(curl -s -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/img-b64.json")" 'b64_json'
+# 生图模型标记持久化(供应商保存 image:true 后能读回)
+assert_has "供应商模型生图标记可保存" "$(curl -s "$BASE/api/providers" -H "$AUTH")" '"id":"mock-image","name":"Mock Image","image":true'
+# 开放接口 /v1/images/generations
+IMGKEY=$(curl -s -X POST "$BASE/api/me/apikeys" -H "$UAUTH" -H "Content-Type: application/json" -d '{"name":"img"}' | jget secret)
+assert_contains "/v1/images/generations 返回图片" "$(curl -s -X POST "$BASE/v1/images/generations" -H "Authorization: Bearer $IMGKEY" -H "Content-Type: application/json" -d '{"model":"mock-image","prompt":"a corgi","size":"1024x1024","n":1}')" 'example.com/mock.png'
+
+# ---------- 生图模型自动路由 ----------
+say "== 生图模型自动路由 =="
+# 用生图模型调对话接口:应自动改走 images/generations 并返回图片(而不是上游的 "is an image model" 报错)
+assert_contains "对话接口自动改走生图" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$PROV"'","model":"mock-image","messages":[{"role":"user","content":"draw a corgi"}]}')" 'example.com/mock.png'
+assert_contains "开放接口自动改走生图" "$(curl -s -X POST "$BASE/v1/chat/completions" -H "Authorization: Bearer $IMGKEY" -H "Content-Type: application/json" -d '{"model":"mock-image","messages":[{"role":"user","content":"draw"}]}')" 'example.com/mock.png'
+# 普通文本模型仍走对话,不受影响
+assert_contains "文本模型仍走对话" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$PROV"'","model":"mock-model","messages":[{"role":"user","content":"hi"}]}')" 'MOCK-REPLY'
 
 # ---------- 接口限流(tester2 全新窗口:3 次/分钟) ----------
 say "== 接口限流 =="

@@ -65,8 +65,9 @@
 
 **开放能力**
 
-- OpenAI 兼容 API：/v1/chat/completions（含流式）与 /v1/models，用户在账户面板生成 sk-tc- 密钥（哈希落库、仅显示一次、每人最多 5 把），第三方客户端直接接入，计费与网页端一致
-- 图像生成：调用供应商的 images/generations 接口（如 dall-e-3、gpt-image-1），结果以 Markdown 图片插入对话
+- OpenAI 兼容 API：/v1/chat/completions（含流式）、/v1/models 与 /v1/images/generations，用户在账户面板生成 sk-tc- 密钥（哈希落库、仅显示一次、每人最多 5 把），第三方客户端直接接入，计费与网页端一致
+- 图像生成：调用供应商的 images/generations 接口（如 dall-e-3、gpt-image-1、flux、seedream），结果以 Markdown 图片插入对话；**在对话中直接选用生图模型会自动改走生图接口**，无需手动切换
+- 生图模型标记：后台模型清单可显式标记「生图」，未标记时按模型名自动识别（dall-e / gpt-image / flux / seedream / imagen / qwen-image 等）
 - 多模型对比：同一问题并行发给 2–3 个模型，并排查看、一键投票（计入模型评价）
 
 **部署与数据**

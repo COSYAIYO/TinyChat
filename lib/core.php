@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.9');
+define('TC_VERSION', '2.0.10');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -1548,6 +1548,51 @@ function tc_provider_cost($provider) {
     $c = isset($provider['costPerCall']) ? (float) $provider['costPerCall'] : 1;
     if (!is_numeric($c) || is_nan($c) || $c == INF || $c == -INF) $c = 1;
     return max(0, $c);
+}
+
+// 按模型 ID / 名称猜测是否为「生图模型」,用于后台默认勾选与请求自动路由的兜底判断。
+// 只做保守匹配:宁可漏判(交给管理员手动勾选),也不要把普通对话/视觉模型误判成生图。
+function tc_image_model_name_hint($id) {
+    $s = strtolower(trim((string) $id));
+    if ($s === '') return false;
+    $patterns = array(
+        '/dall-?e/',                 // dall-e-3 / dalle3
+        '/gpt-image/',               // gpt-image-1
+        '/\bimage-?gen(eration)?s?\b/', // image-generation / imagegen
+        '/stable-?diffusion/',
+        '/\bsdxl\b/', '/\bsd3\b/', '/\bsd-?3(\.5)?\b/', '/sd-?turbo/',
+        '/\bflux\b/', '/flux-?\d/',  // flux / flux-1.1
+        '/midjourney/', '/\bniji\b/',
+        '/seedream/',                // 豆包 Seedream
+        '/\bimagen\b/',              // Google Imagen
+        '/\bkolors\b/',              // 快手可图
+        '/cogview/',                 // 智谱 CogView
+        '/qwen-?image/',             // 通义千问生图
+        '/\bwanx\b/', '/wan-?\d/',
+        '/hunyuan-?image/',
+        '/grok-?\d*(-|_)?image/',
+        '/-image\b/',                // 形如 xxx-image 的生图模型
+        '/image-generation/',
+    );
+    foreach ($patterns as $re) {
+        if (preg_match($re, $s)) return true;
+    }
+    return false;
+}
+
+// 判断某供应商下的某个模型是否按生图模型处理:
+// 优先用供应商配置里的显式 image 标记,未设置时退回名称猜测。
+function tc_model_is_image($provider, $modelId) {
+    $mid = (string) $modelId;
+    if ($mid === '') return false;
+    if (isset($provider['models']) && is_array($provider['models'])) {
+        foreach ($provider['models'] as $m) {
+            if (!is_array($m) || !isset($m['id']) || (string) $m['id'] !== $mid) continue;
+            if (array_key_exists('image', $m)) return !empty($m['image']);
+            return tc_image_model_name_hint($mid);
+        }
+    }
+    return tc_image_model_name_hint($mid);
 }
 
 function tc_is_unlimited_quota($user) {

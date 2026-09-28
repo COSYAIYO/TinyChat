@@ -4842,6 +4842,17 @@ async function attachDocument(file, attach) {
 })();
 
 // ============ 图像生成 ============
+// 当前供应商下被判定为生图的模型:显式 image 标记优先,否则按模型名启发式判断
+function imageModelsOfCurrentProvider() {
+  const p = (state.providers || []).find((x) => x.id === state.currentProviderId);
+  if (!p || !Array.isArray(p.models)) return [];
+  const hint = (window.OC && OC.isImageModelName) ? OC.isImageModelName : () => false;
+  return p.models.filter((m) => {
+    if (!m || !m.id) return false;
+    if (Object.prototype.hasOwnProperty.call(m, 'image')) return !!m.image;
+    return hint(m.id);
+  });
+}
 function openImageDialog() {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
   if (!state.currentProviderId) { toast('请先在顶部选择供应商', true); return; }
@@ -4849,14 +4860,22 @@ function openImageDialog() {
   mask.className = 'modal-mask';
   const lastModel = localStorage.getItem('oc_image_model') || '';
   const lastSize = localStorage.getItem('oc_image_size') || '1024x1024';
+  // 列出当前供应商里可用的生图模型(显式标记优先,其次按模型名判断),供下拉选择
+  const imageModels = imageModelsOfCurrentProvider();
+  const modelOptions = imageModels.length
+    ? '<label class="field"><span>图像模型</span><select id="img-model-select">'
+      + imageModels.map((m) => '<option value="' + escapeHtml(m.id) + '"' + (m.id === lastModel ? ' selected' : '') + '>' + escapeHtml(m.name || m.id) + '</option>').join('')
+      + '<option value="__custom__">其他（手动输入）</option></select></label>'
+      + '<label class="field" id="img-model-custom-row" style="display:none"><span>模型 ID</span><input id="img-model" placeholder="例如 dall-e-3 / gpt-image-1 / sd3" value="' + escapeHtml(lastModel) + '" autocomplete="off"></label>'
+    : '<label class="field"><span>图像模型</span><input id="img-model" placeholder="例如 dall-e-3 / gpt-image-1 / sd3" value="' + escapeHtml(lastModel) + '" autocomplete="off"></label>';
   mask.innerHTML =
     '<div class="modal modal-sm" role="dialog" aria-modal="true">'
     + '<div class="modal-header"><h3>生成图片</h3>'
     + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + (window.OC ? OC.icon('close', 16) : '×') + '</button></div>'
     + '<div class="modal-body">'
-    + '<p class="muted small">调用当前供应商的 <code>images/generations</code> 接口，按一次对话扣费。生成后插入当前对话。</p>'
+    + '<p class="muted small">调用当前供应商的 <code>images/generations</code> 接口，按一次对话扣费。生成后插入当前对话；对话中直接用生图模型也会自动改走该接口。</p>'
     + '<label class="field"><span>提示词</span><textarea id="img-prompt" rows="3" placeholder="描述想要的画面，例如：一只戴墨镜的柯基在冲浪，扁平插画风" style="resize:vertical"></textarea></label>'
-    + '<label class="field"><span>图像模型</span><input id="img-model" placeholder="例如 dall-e-3 / gpt-image-1 / sd3" value="' + escapeHtml(lastModel) + '" autocomplete="off"></label>'
+    + modelOptions
     + '<label class="field"><span>尺寸</span><select id="img-size">'
     + ['1024x1024', '1792x1024', '1024x1792', '512x512'].map((s) => '<option value="' + s + '"' + (s === lastSize ? ' selected' : '') + '>' + s + '</option>').join('')
     + '</select></label>'
@@ -4865,10 +4884,28 @@ function openImageDialog() {
   document.body.appendChild(mask);
   const close = () => mask.remove();
   mask.addEventListener('click', (e) => { if (e.target === mask || e.target.closest('[data-act="close"]')) close(); });
+  // 「其他（手动输入）」选中时显示手动模型输入框
+  const modelSel = mask.querySelector('#img-model-select');
+  const customRow = mask.querySelector('#img-model-custom-row');
+  if (modelSel && customRow) {
+    const syncCustom = () => { customRow.style.display = modelSel.value === '__custom__' ? '' : 'none'; };
+    modelSel.addEventListener('change', () => {
+      syncCustom();
+      if (modelSel.value === '__custom__') { const inp = mask.querySelector('#img-model'); if (inp) inp.focus(); }
+    });
+    syncCustom();
+  }
+  const readImageModel = () => {
+    if (modelSel) {
+      if (modelSel.value !== '__custom__') return modelSel.value;
+      return (mask.querySelector('#img-model') && mask.querySelector('#img-model').value.trim()) || '';
+    }
+    return (mask.querySelector('#img-model') && mask.querySelector('#img-model').value.trim()) || '';
+  };
   const run = mask.querySelector('#img-run');
   run.addEventListener('click', async () => {
     const prompt = (mask.querySelector('#img-prompt') && mask.querySelector('#img-prompt').value.trim()) || '';
-    const model = (mask.querySelector('#img-model') && mask.querySelector('#img-model').value.trim()) || '';
+    const model = readImageModel();
     const size = (mask.querySelector('#img-size') && mask.querySelector('#img-size').value) || '1024x1024';
     const status = mask.querySelector('#img-status');
     if (!prompt) return toast('请输入提示词', true);

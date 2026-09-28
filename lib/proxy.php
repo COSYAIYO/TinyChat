@@ -1651,6 +1651,15 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                 'need' => $cost,
             ));
         }
+        // 生图模型自动路由:调用对话接口但命中的是生图模型时,改走 images/generations。
+        // 上游对这种请求会直接报错(如 "xxx is an image model. Use /v1/images/generations"),
+        // 这里在发起对话请求前就分流,用户/客户端无需自己判断模型类型。
+        $isImageModel = false;
+        if (in_array($format, array('chat', 'completions', 'responses'), true)) {
+            $reqModel = isset($b['model']) ? (string) $b['model'] : '';
+            if ($reqModel === '' && !empty($provider['models'][0]['id'])) $reqModel = (string) $provider['models'][0]['id'];
+            $isImageModel = tc_model_is_image($provider, $reqModel);
+        }
         return array(
             'user' => $user,
             'provider' => $provider,
@@ -1662,8 +1671,26 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             'maxOutputTokens' => isset($db['settings']['maxOutputTokens']) ? (int) $db['settings']['maxOutputTokens'] : 8192,
             'temperature' => isset($db['settings']['temperature']) ? $db['settings']['temperature'] : null,
             'thinking' => tc_normalize_thinking(isset($db['settings']['thinking']) ? $db['settings']['thinking'] : null),
+            'imageGen' => $isImageModel,
         );
     });
+
+    // 生图模型自动改走生图接口(tc_generate_images 自带鉴权/限流/额度/审核与计费)
+    if (!empty($ctx['imageGen'])) {
+        if ($apiKeyOwner !== null) {
+            $out = tc_generate_images($apiKeyOwner);
+            $data = array();
+            foreach ((isset($out['images']) ? $out['images'] : array()) as $im) {
+                $row = array();
+                if (!empty($im['url'])) $row['url'] = $im['url'];
+                elseif (!empty($im['b64_json'])) $row['b64_json'] = $im['b64_json'];
+                if (isset($im['revised_prompt'])) $row['revised_prompt'] = $im['revised_prompt'];
+                if ($row) $data[] = $row;
+            }
+            tc_json(200, array('created' => (int) floor(tc_now() / 1000), 'data' => $data));
+        }
+        tc_json(200, tc_generate_images(null));
+    }
 
     $provider = $ctx['provider'];
     $user = $ctx['user'];
@@ -2160,36 +2187,65 @@ function tc_api_model_exposed($settings, $providerId, $modelId) {
 
 // ---- 图像生成代理:POST {baseUrl}/images/generations(OpenAI 兼容),按次计费 ----
 // 说明:图像模型不进对话模型清单,因此不做模型成员校验;鉴权/限流/额度/审核与对话一致。
-function tc_api_proxy_images() {
+// $apiKeyOwner 非 null 时走开放接口(密钥)路径,并额外校验对外模型白名单。
+function tc_generate_images($apiKeyOwner = null) {
     $started = tc_now();
-    $ctx = tc_with_db(false, function ($db) {
-        $user = tc_require_auth($db);
+    $authUserId = $apiKeyOwner !== null ? (string) $apiKeyOwner['userId'] : '';
+    $ctx = tc_with_db(false, function ($db) use ($apiKeyOwner, $authUserId) {
+        if ($apiKeyOwner !== null) {
+            $user = null;
+            foreach ($db['users'] as $u) {
+                if ((string) $u['id'] === $authUserId) { $user = $u; break; }
+            }
+            if (!$user) tc_fail(401, 'API 密钥对应的用户不存在');
+        } else {
+            $user = tc_require_auth($db);
+        }
         $rateLimit = isset($db['settings']['rateLimitPerMin']) ? (int) $db['settings']['rateLimitPerMin'] : 30;
         if (!tc_rate_limit_check('u:' . $user['id'], $rateLimit)) {
             tc_fail(429, '请求太频繁了，请稍后再试（当前上限 ' . $rateLimit . ' 次/分钟）');
         }
         $b = tc_read_json_body(1024 * 1024);
-        $modHit = tc_moderation_hit(isset($db['settings']['moderation']) && is_array($db['settings']['moderation']) ? $db['settings']['moderation'] : array(), (string) (isset($b['prompt']) ? $b['prompt'] : ''));
+        // 支持两种入参:原生 {prompt} 与 OpenAI 对话格式 {messages/input}(生图模型自动路由时会用到)
+        $promptText = isset($b['prompt']) ? (string) $b['prompt'] : '';
+        if (trim($promptText) === '' && (isset($b['messages']) || isset($b['input']))) {
+            $promptText = tc_last_user_text($b, isset($b['messages']) ? 'chat' : 'responses');
+        }
+        $modHit = tc_moderation_hit(isset($db['settings']['moderation']) && is_array($db['settings']['moderation']) ? $db['settings']['moderation'] : array(), $promptText);
         if ($modHit !== '') tc_fail(400, '提示词包含被禁止的内容，请修改后重试');
-        $resolved = tc_resolve_provider($db, $user, array('providerId' => isset($b['providerId']) ? $b['providerId'] : null));
+        $model = substr(trim((string) (isset($b['model']) ? $b['model'] : '')), 0, 120);
+        // 解析供应商:显式指定 providerId 优先;开放接口/未指定时按模型归属查找
+        $resolved = tc_resolve_provider($db, $user, array(
+            'providerId' => isset($b['providerId']) ? $b['providerId'] : null,
+            'model' => $model,
+        ));
         if (!empty($resolved['error'])) tc_fail(400, $resolved['error']);
         $provider = $resolved['provider'];
         if ((isset($provider['apiFormat']) ? $provider['apiFormat'] : 'chat') === 'anthropic') {
             tc_fail(400, '该供应商为 Anthropic 格式，暂不支持图像生成');
+        }
+        if ($apiKeyOwner !== null && !tc_api_model_exposed($db['settings'], isset($provider['id']) ? $provider['id'] : '', $model)) {
+            tc_fail(403, '模型 ' . $model . ' 未对开放接口开放，请联系管理员');
         }
         $cost = tc_provider_cost($provider);
         if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
         if (!tc_is_unlimited_quota($user) && (isset($user['quota']) ? (float) $user['quota'] : 0) < $cost) {
             tc_fail(402, '剩余次数不足，请联系管理员充值');
         }
+        // 透传常见可选参数(仅白名单键,避免污染上游请求)
+        $extra = array();
+        foreach (array('quality', 'style', 'response_format', 'background') as $k) {
+            if (isset($b[$k]) && is_string($b[$k]) && $b[$k] !== '') $extra[$k] = substr($b[$k], 0, 40);
+        }
         return array(
             'user' => $user,
             'provider' => $provider,
             'cost' => $cost,
-            'model' => substr(trim((string) (isset($b['model']) ? $b['model'] : '')), 0, 120),
-            'prompt' => substr(trim((string) (isset($b['prompt']) ? $b['prompt'] : '')), 0, 4000),
+            'model' => $model,
+            'prompt' => substr(trim($promptText), 0, 4000),
             'size' => isset($b['size']) && preg_match('/^\d{3,4}x\d{3,4}$/', (string) $b['size']) ? (string) $b['size'] : '1024x1024',
             'n' => min(4, max(1, (int) (isset($b['n']) ? $b['n'] : 1) ?: 1)),
+            'extra' => $extra,
             'timeout' => $db['settings']['proxyTimeoutMs'],
         );
     });
@@ -2198,13 +2254,17 @@ function tc_api_proxy_images() {
     if ($ctx['model'] === '' || $ctx['prompt'] === '') tc_fail(400, '请填写模型和提示词');
     $url = rtrim((string) $provider['baseUrl'], '/') . '/images/generations';
     $headers = array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . $provider['apiKey']);
-    $payload = tc_json_encode(array(
+    $body = array(
         'model' => $ctx['model'],
         'prompt' => $ctx['prompt'],
         'n' => $ctx['n'],
         'size' => $ctx['size'],
-    ));
-    $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], false);
+    );
+    // 透传常见可选参数(如 quality / style / response_format);仅收录白名单键,避免污染上游请求
+    foreach (array('quality', 'style', 'response_format', 'background') as $k) {
+        if (isset($ctx['extra'][$k])) $body[$k] = $ctx['extra'][$k];
+    }
+    $res = tc_http_request($url, 'POST', $headers, tc_json_encode($body), $ctx['timeout'], false);
     if (empty($res['ok'])) {
         tc_fail(502, '无法连接上游 API: ' . (isset($res['error']) ? $res['error'] : '未知错误'));
     }
@@ -2213,14 +2273,18 @@ function tc_api_proxy_images() {
         tc_fail($status, tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', $status));
     }
     $j = json_decode((string) (isset($res['body']) ? $res['body'] : ''), true);
-    $images = array();
-    foreach ((isset($j['data']) && is_array($j['data']) ? $j['data'] : array()) as $d) {
+    $raw = (isset($j['data']) && is_array($j['data'])) ? $j['data'] : array();
+    $items = array();
+    foreach ($raw as $d) {
         if (!is_array($d)) continue;
-        if (!empty($d['url'])) $images[] = array('url' => (string) $d['url']);
-        elseif (!empty($d['b64_json'])) $images[] = array('url' => 'data:image/png;base64,' . (string) $d['b64_json']);
-        if (count($images) >= $ctx['n']) break;
+        $item = array();
+        if (!empty($d['url'])) $item['url'] = (string) $d['url'];
+        if (!empty($d['b64_json'])) $item['b64_json'] = (string) $d['b64_json'];
+        if (isset($d['revised_prompt'])) $item['revised_prompt'] = (string) $d['revised_prompt'];
+        if ($item) $items[] = $item;
+        if (count($items) >= $ctx['n']) break;
     }
-    if (!$images) tc_fail(502, '上游未返回图像，请稍后重试或更换模型');
+    if (!$items) tc_fail(502, '上游未返回图像，请稍后重试或更换模型');
     $usage = array('prompt' => 0, 'completion' => 0);
     tc_with_db(true, function (&$db) use ($user, $provider, $ctx, $usage, $started) {
         $fresh = null;
@@ -2232,7 +2296,27 @@ function tc_api_proxy_images() {
         tc_record_usage_entry($db, $user['id'], $ctx['model'] . ' (图像)', $charged, 0, 0);
         tc_push_log(array('kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'], 'provider' => $provider['name'], 'model' => $ctx['model'] . ' (图像)', 'format' => 'images', 'status' => 200, 'ms' => tc_now() - $started, 'cost' => $charged, 'stream' => false));
     });
-    tc_json(200, array('ok' => true, 'model' => $ctx['model'], 'images' => $images));
+    return array('ok' => true, 'model' => $ctx['model'], 'images' => $items);
+}
+
+// 网页端入口:返回 {ok, model, images:[{url|b64_json}]}
+function tc_api_proxy_images() {
+    tc_json(200, tc_generate_images(null));
+}
+
+// 开放接口入口:POST /v1/images/generations,返回 OpenAI 规范形状
+function tc_api_v1_images_generations() {
+    $auth = tc_v1_authenticate();
+    $out = tc_generate_images($auth);
+    $data = array();
+    foreach ((isset($out['images']) ? $out['images'] : array()) as $im) {
+        $row = array();
+        if (!empty($im['url'])) $row['url'] = $im['url'];
+        elseif (!empty($im['b64_json'])) $row['b64_json'] = $im['b64_json'];
+        if (isset($im['revised_prompt'])) $row['revised_prompt'] = $im['revised_prompt'];
+        if ($row) $data[] = $row;
+    }
+    tc_json(200, array('created' => (int) floor(tc_now() / 1000), 'data' => $data));
 }
 
 function tc_api_v1_chat_completions() {
