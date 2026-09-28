@@ -587,6 +587,32 @@ function tc_has_admin($db) {
     return false;
 }
 
+// 首次运行环境自检:不依赖数据库,逐项检查扩展与目录权限,登录页据阻塞项引导
+function tc_api_env_check() {
+    $dir = tc_data_dir();
+    $checks = array();
+    $add = function ($name, $ok, $detail = '', $critical = true) use (&$checks) {
+        $checks[] = array('name' => $name, 'ok' => (bool) $ok, 'detail' => (string) $detail, 'critical' => (bool) $critical);
+    };
+    $add('PHP 版本 ≥ 7.4', version_compare(PHP_VERSION, '7.4.0', '>='), '当前 ' . PHP_VERSION);
+    $add('pdo_sqlite 扩展', extension_loaded('pdo_sqlite'), 'SQLite 数据存储依赖');
+    $add('curl 扩展', extension_loaded('curl'), '调用上游 AI 接口依赖');
+    $add('openssl 扩展', extension_loaded('openssl'), '供应商 Key 加密 / 随机数依赖');
+    $add('json 支持', function_exists('json_encode'), '数据序列化依赖');
+    $add('mbstring 扩展', extension_loaded('mbstring'), '中文用量估算与审核匹配（建议）', false);
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    $writable = is_dir($dir) && is_writable($dir);
+    $probeFile = $dir . '/.probe-' . bin2hex(random_bytes(4));
+    $probe = @file_put_contents($probeFile, 'ok') !== false;
+    if ($probe) @unlink($probeFile);
+    $add('data/ 目录可写', $probe, $dir);
+    $free = function_exists('disk_free_space') ? @disk_free_space($dir) : null;
+    $add('磁盘剩余空间 ≥ 20MB', $free === null || $free > 20 * 1024 * 1024, $dir, false);
+    $allOk = true;
+    foreach ($checks as $c) if ($c['critical'] && !$c['ok']) $allOk = false;
+    tc_json(200, array('checks' => $checks, 'allOk' => $allOk, 'dataDir' => $dir));
+}
+
 function tc_api_public_config($db) {
     $s = $db['settings'];
     tc_json(200, array(
@@ -643,6 +669,11 @@ function tc_render_mail_template($settings, $kind, $name, $link, $expiresText = 
 function tc_api_register() {
     tc_with_db(true, function (&$db) {
         $b = tc_read_json_body();
+        // 注册限流:每 IP 每小时 N 次(可配),防批量注册薅免费额度
+        $regLimit = isset($db['settings']['registerLimitPerHour']) ? (int) $db['settings']['registerLimitPerHour'] : 5;
+        if (!tc_rate_limit_check('reg:' . tc_client_ip(), $regLimit, 3600000)) {
+            tc_fail(429, '注册过于频繁，请稍后再试');
+        }
         if (empty($db['settings']['allowRegister'])) tc_fail(403, '站点已关闭注册，请联系管理员开通账号');
         if (!empty($db['settings']['agreementEnabled']) && empty($b['agreementAccepted'])) tc_fail(400, '请先阅读并同意用户协议');
         $invite = strtoupper(trim((string) ($b['invite'] ?? '')));
@@ -737,6 +768,10 @@ function tc_api_resend_verification() {
 function tc_api_forgot_password() {
     tc_with_db(true, function (&$db) {
         if (empty($db['settings']['passwordResetEnabled'])) tc_fail(403, '找回密码功能未开启');
+        // 每 IP 每小时 10 次,防邮件轰炸
+        if (!tc_rate_limit_check('forgot:' . tc_client_ip(), 10, 3600000)) {
+            tc_fail(429, '请求过于频繁，请稍后再试');
+        }
         $b = tc_read_json_body(); $email = strtolower(trim((string) ($b['email'] ?? ''))); if (!filter_var($email, FILTER_VALIDATE_EMAIL)) tc_fail(400, '邮箱格式不正确');
         foreach ($db['users'] as &$u) if (strtolower((string) ($u['email'] ?? '')) === $email) { if (!empty($u['resetLastSentAt']) && tc_now() - (int) $u['resetLastSentAt'] < 60000) tc_fail(429, '邮件发送过于频繁，请稍后再试'); $token = bin2hex(random_bytes(24)); $u['resetLastSentAt'] = tc_now(); $u['resetTokenHash'] = hash('sha256', $token); $u['resetTokenExpires'] = tc_now() + 3600000; $link = tc_public_base_url() . '/login?reset=' . rawurlencode($token); [$subject, $html] = tc_render_mail_template($db['settings'], 'reset', isset($u['name']) ? $u['name'] : '', $link, '1 小时'); if (!tc_mail_send($db['settings'], $email, $subject, $html)) tc_fail(503, '重置邮件发送失败'); break; }
         unset($u); tc_json(200, array('ok' => true));
@@ -956,6 +991,10 @@ function tc_api_sync_get_chats() {
 function tc_api_sync_save_chats() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
+        // 同步限流:每用户每分钟 60 次,防大包体刷写
+        if (!tc_rate_limit_check('sync:' . $user['id'], 60)) {
+            tc_fail(429, '同步过于频繁，请稍后再试');
+        }
         $b = tc_read_json_body(50 * 1024 * 1024);
         // 隐私模式:服务器不保存对话记录,客户端仅本地留存
         if (isset($db['settings']['persistChats']) && !$db['settings']['persistChats']) {
@@ -1022,7 +1061,7 @@ function tc_api_get_share($id) {
 function tc_api_admin_stats() {
     tc_with_db(false, function ($db) {
         tc_require_admin($db);
-        tc_backup_maybe($db['settings']);
+        tc_backup_maybe($db);
         $days = tc_last_n_days(14);
         $byDay = tc_assoc($db['stats']['callsByDay']);
         $trend = array();
@@ -1356,7 +1395,7 @@ function tc_api_redeem_package() {
 function tc_api_admin_get_settings() {
     tc_with_db(false, function ($db) {
         tc_require_admin($db);
-        tc_backup_maybe($db['settings']);
+        tc_backup_maybe($db);
         tc_json(200, array('settings' => tc_admin_settings_public($db['settings'])));
     });
 }
@@ -1604,7 +1643,7 @@ function tc_api_admin_delete_logs() {
 function tc_api_admin_backup_list() {
     tc_with_db(false, function ($db) {
         tc_require_admin($db);
-        tc_backup_maybe($db['settings']);
+        tc_backup_maybe($db);
         tc_json(200, array(
             'backups' => tc_backup_list(),
             'backupEnabled' => !empty($db['settings']['backupEnabled']),

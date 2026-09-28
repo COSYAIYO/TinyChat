@@ -104,6 +104,7 @@ function tc_send_page($file) {
 function tc_dispatch($method, $path) {
     $routes = array(
         array('GET', '#^/api/config$#', 'tc_api_public_config_wrap'),
+        array('GET', '#^/api/env-check$#', 'tc_api_env_check'),
         array('POST', '#^/api/setup$#', 'tc_api_setup'),
         array('POST', '#^/api/auth/register$#', 'tc_api_register'),
         array('POST', '#^/api/auth/login$#', 'tc_api_login'),

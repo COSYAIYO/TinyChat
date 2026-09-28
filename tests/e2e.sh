@@ -54,7 +54,8 @@ say "== 基础 =="
 code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/")
 assert_eq "首页 200" "$code" "200"
 cfg=$(curl -s "$BASE/api/config")
-assert_contains "config 返回版本" "$cfg" '"version":"1\.'
+assert_contains "config 返回版本" "$cfg" '"version":"2.'
+assert_contains "环境自检通过" "$(curl -s "$BASE/api/env-check")" '"allOk":true'
 assert_contains "config 返回公告字段" "$cfg" '"announcement"'
 hdr=$(curl -s -D - -o /dev/null "$BASE/api/config")
 assert_contains "CSP 头" "$hdr" "Content-Security-Policy:"
@@ -66,7 +67,7 @@ TOKEN=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/jso
 [ -n "$TOKEN" ] && ok "管理员登录" || bad "管理员登录"
 AUTH="Authorization: Bearer $TOKEN"
 cat > "$TMP/settings1.json" <<'EOF'
-{"temperature":0.7,"rateLimitPerMin":50,"backupKeep":3,"agreementEnabled":true,"agreementHtml":"<p>测试协议</p>","registerInviteRequired":true}
+{"temperature":0.7,"rateLimitPerMin":50,"backupKeep":3,"agreementEnabled":true,"agreementHtml":"<p>测试协议</p>","registerInviteRequired":true,"registerLimitPerHour":100}
 EOF
 res=$(curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/settings1.json")
 assert_contains "设置: temperature 保存" "$res" '"temperature":0.7'
@@ -131,6 +132,16 @@ cost=$(curl -s -D - -o /dev/null -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "
 assert_eq "按 token 计费 0.004" "$cost" "0.004"
 quota=$(curl -s "$BASE/api/auth/me" -H "$UAUTH" | jget quota)
 assert_eq "额度扣减 99->98.996" "$quota" "98.996"
+
+# 流式 + token 计费:首字节用量未知按次预扣 1,流结束按 2000 token 结算 0.004 并退差价 → 净扣 0.004,额度 98.996-0.004=98.992
+cat > "$TMP/chat-stream.json" <<EOF
+{"model":"mock-model","providerId":"$PROV","stream":true,"messages":[{"role":"user","content":"hello"}]}
+EOF
+body=$(curl -s -N -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/chat-stream.json")
+assert_contains "流式输出内容" "$body" 'MOCK-REPLY'
+assert_contains "流式正常收尾" "$body" '\[DONE\]'
+quota=$(curl -s "$BASE/api/auth/me" -H "$UAUTH" | jget quota)
+assert_eq "流式按 token 结算(净扣 0.004) 98.992" "$quota" "98.992"
 
 # ---------- 敏感词审核 ----------
 say "== 内容审核 =="
