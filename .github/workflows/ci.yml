@@ -42,6 +42,8 @@ jobs:
         run: php tests/upstream-url.php
       - name: 署名完整性守卫自检(篡改拦截 / 合法放行)
         run: php tests/attribution.php
+      - name: 生图图片代理自检(签名 / SSRF 防护)
+        run: php tests/image-proxy.php
 
   e2e:
     name: E2E(PHP ${{ matrix.php }})

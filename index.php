@@ -223,6 +223,8 @@ function tc_dispatch($method, $path) {
         array('GET', '#^/api/proxy/models$#', 'tc_api_list_models'),
         array('POST', '#^/api/proxy/fetch-models$#', 'tc_api_fetch_models'),
         array('POST', '#^/api/proxy/images$#', 'tc_api_proxy_images'),
+        // 生图结果图片代理(签名鉴权,见 lib/proxy.php;供 <img> 同源加载)
+        array('GET', '#^/api/proxy/image$#', 'tc_api_image_proxy'),
         array('POST', '#^/v1/chat/completions$#', 'tc_api_v1_chat_completions'),
         array('GET', '#^/v1/models$#', 'tc_api_v1_models'),
         array('POST', '#^/v1/images/generations$#', 'tc_api_v1_images_generations'),

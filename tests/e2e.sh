@@ -205,7 +205,10 @@ say "== 图像生成 =="
 cat > "$TMP/img.json" <<EOF
 {"providerId":"$PROV","model":"mock-image","prompt":"a corgi surfing","size":"1024x1024","n":1}
 EOF
-assert_contains "图像生成返回 URL" "$(curl -s -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/img.json")" 'example.com/mock.png'
+imgresp=$(curl -s -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/img.json")
+assert_contains "图像生成返回 URL" "$imgresp" 'example.com/mock.png'
+# 结果附带同源代理显示地址(供 <img> 稳定加载,规避第三方存储域不可达)
+assert_contains "图像结果附带同源代理地址" "$imgresp" '/api/proxy/image?u='
 # b64_json 返回形态(按 response_format 透传)
 cat > "$TMP/img-b64.json" <<EOF
 {"providerId":"$PROV","model":"mock-image","prompt":"x","n":1,"response_format":"b64_json"}
