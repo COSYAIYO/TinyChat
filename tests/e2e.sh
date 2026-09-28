@@ -216,6 +216,14 @@ assert_contains "对话接口自动改走生图" "$(curl -s -X POST "$BASE/api/p
 assert_contains "开放接口自动改走生图" "$(curl -s -X POST "$BASE/v1/chat/completions" -H "Authorization: Bearer $IMGKEY" -H "Content-Type: application/json" -d '{"model":"mock-image","messages":[{"role":"user","content":"draw"}]}')" 'example.com/mock.png'
 # 普通文本模型仍走对话,不受影响
 assert_contains "文本模型仍走对话" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$PROV"'","model":"mock-model","messages":[{"role":"user","content":"hi"}]}')" 'MOCK-REPLY'
+# Base URL 不带 /v1(平台文档常见写法,如 Agnes):生图应自动补 /v1,不能拼成 /images/generations(会 404)
+cat > "$TMP/prov-nov1.json" <<EOF
+{"name":"NoV1","baseUrl":"http://127.0.0.1:$MOCK_PORT","apiKey":"sk-nov1","apiFormat":"chat","models":[{"id":"mock-image","name":"Mock Image","image":true}],"costPerCall":1,"scope":"global"}
+EOF
+curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/prov-nov1.json" > /dev/null
+NOV1=$(curl -s "$BASE/api/providers" -H "$AUTH" | grep -o '"id":"[a-f0-9]*","name":"NoV1"' | cut -d'"' -f4)
+[ -n "$NOV1" ] && ok "创建无 /v1 供应商" || bad "创建无 /v1 供应商"
+assert_contains "Base URL 不带 /v1 也能生图" "$(curl -s -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d "{\"providerId\":\"$NOV1\",\"model\":\"mock-image\",\"prompt\":\"x\",\"size\":\"2K\",\"ratio\":\"16:9\"}")" 'example.com/mock.png'
 
 # ---------- 接口限流(tester2 全新窗口:3 次/分钟) ----------
 say "== 接口限流 =="
