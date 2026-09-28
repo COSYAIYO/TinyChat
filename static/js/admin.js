@@ -170,6 +170,9 @@ async function openUserForm(user) {
   $('uf-pass-label').textContent = user ? '新密码（留空不改）' : '密码';
   $('uf-quota').value = user ? user.quota : 100;
   $('uf-admin').checked = !!(user && user.admin);
+  if ($('uf-demo')) $('uf-demo').checked = !!(user && user.demo);
+  if ($('uf-demo-row')) $('uf-demo-row').style.display = user ? 'none' : '';
+  if ($('uf-demo-hint')) $('uf-demo-hint').hidden = !($('uf-demo') && $('uf-demo').checked);
   const adminGroup = (GROUPS.find((g) => g.role === 'admin') || {}).id || '';
   const preferred = $('uf-admin').checked
     ? adminGroup
@@ -183,6 +186,18 @@ async function openUserForm(user) {
       const current = $('uf-group').getAttribute('data-value') || '';
       if ($('uf-admin').checked) setGroupSelect($('uf-group'), nextAdmin);
       else if (!current || current === nextAdmin) setGroupSelect($('uf-group'), DEFAULT_GROUP_ID || '');
+    });
+  }
+  if ($('uf-demo') && !$('uf-demo').dataset.boundDemo) {
+    $('uf-demo').dataset.boundDemo = '1';
+    $('uf-demo').addEventListener('change', () => {
+      // 演示管理员必须是管理员,勾选后自动带入管理员组
+      if ($('uf-demo').checked) {
+        $('uf-admin').checked = true;
+        const nextAdmin = (GROUPS.find((g) => g.role === 'admin') || {}).id || '';
+        setGroupSelect($('uf-group'), nextAdmin);
+      }
+      if ($('uf-demo-hint')) $('uf-demo-hint').hidden = !$('uf-demo').checked;
     });
   }
   modal.classList.remove('hidden');
@@ -199,7 +214,8 @@ async function saveUserForm() {
   const name = $('uf-name').value.trim();
   const password = $('uf-pass').value;
   const quota = Number($('uf-quota').value);
-  const admin = $('uf-admin').checked;
+  const demo = !!($('uf-demo') && $('uf-demo').checked && !USER_FORM_ID);
+  const admin = $('uf-admin').checked || demo;
   const groupId = $('uf-group').getAttribute('data-value') || '';
   if (!name) return toast('请填写用户名', true);
   if (!USER_FORM_ID && !password) return toast('请填写密码', true);
@@ -213,7 +229,7 @@ async function saveUserForm() {
       const r = await api('/api/admin/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, password, quota, admin }),
+        body: JSON.stringify({ name, password, quota, admin, demo }),
       });
       const data = await r.json();
       if (!r.ok) return toast((data.error && data.error.message) || '创建失败', true);
@@ -291,6 +307,28 @@ function bindDefaultGroupSelect() {
   });
 }
 
+async function openGroupRename(g) {
+  if (g.builtin) {
+    toast('系统用户组名称固定（按角色识别），可直接在「模型授权」中调整其可用模型', true);
+    return;
+  }
+  const next = window.prompt('修改用户组名称', g.name);
+  if (next == null) return;
+  const name = String(next).trim();
+  if (!name) return toast('组名不能为空', true);
+  if (name === g.name) return;
+  const r = await api('/api/admin/groups/' + encodeURIComponent(g.id), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return toast((d.error && d.error.message) || '修改失败', true);
+  toast('用户组已更新');
+  loadGroups();
+  loadUsers(currentUserKw());
+}
+
 async function loadGroups() {
   const r = await api('/api/admin/groups');
   const data = await r.json();
@@ -313,8 +351,11 @@ async function loadGroups() {
         <div class="pc-url">${g.memberCount} 名成员</div>
       </div>
       <div class="provider-card-actions" style="display:flex;gap:6px;flex-shrink:0">
-        ${g.builtin ? '' : '<button class="btn small danger" data-delgroup="' + escapeHtml(g.id) + '">删除</button>'}
+        ${g.builtin
+          ? '<button class="btn small" data-editgroup="' + escapeHtml(g.id) + '">重命名</button>'
+          : '<button class="btn small" data-editgroup="' + escapeHtml(g.id) + '">重命名</button><button class="btn small danger" data-delgroup="' + escapeHtml(g.id) + '">删除</button>'}
       </div>`;
+    card.querySelector('[data-editgroup]')?.addEventListener('click', () => openGroupRename(g));
     card.querySelector('[data-delgroup]')?.addEventListener('click', async () => {
       const extra = g.id === DEFAULT_GROUP_ID ? '该组当前是注册默认组，删除后会改回系统默认用户组。' : '';
       const ok = window.OCUI
@@ -1829,19 +1870,24 @@ async function loadInvites() {
   try {
     const r = await api('/api/admin/invites');
     const d = await r.json();
-    if (!r.ok) return;
+    if (!r.ok) return toast((d.error && d.error.message) || '邀请码加载失败', true);
     if ($('invite-required')) $('invite-required').checked = !!d.required;
     const codes = d.codes || [];
-    const unused = codes.filter((c) => !c.usedBy).length;
-    if ($('invite-count-info')) $('invite-count-info').textContent = '未使用 ' + unused + ' / 共 ' + codes.length;
+    const usable = codes.filter((c) => c.usable).length;
+    if ($('invite-count-info')) $('invite-count-info').textContent = '可用 ' + usable + ' / 共 ' + codes.length + ' 张';
     const tb = $('invite-tbody');
     if (!tb) return;
     tb.innerHTML = codes.map((c) => {
-      const status = c.usedBy
-        ? '<span class="muted">已使用 · ' + escapeHtml(c.usedByName || c.usedBy) + '</span>'
-        : '<b>未使用</b>';
-      return '<tr><td><code>' + escapeHtml(c.code) + '</code></td><td>' + status + '</td>'
-        + '<td style="text-align:right">' + (c.usedBy ? '' : '<button class="btn small danger" data-del-invite="' + escapeHtml(c.code) + '" type="button">删除</button>') + '</td></tr>';
+      const max = typeof c.maxUses === 'number' ? c.maxUses : 1;
+      const used = typeof c.usedCount === 'number' ? c.usedCount : (c.usedBy ? 1 : 0);
+      const limit = max < 0 ? '不限' : String(max);
+      const status = c.usable
+        ? '<b>可用</b>'
+        : '<span class="muted">已用完</span>';
+      const usage = used + ' / ' + limit
+        + (c.usedByName ? '<div class="muted small">最后：' + escapeHtml(c.usedByName) + '</div>' : '');
+      return '<tr><td><code>' + escapeHtml(c.code) + '</code></td><td>' + status + '</td><td class="muted small">' + usage + '</td>'
+        + '<td style="text-align:right"><button class="btn small danger" data-del-invite="' + escapeHtml(c.code) + '" type="button">删除</button></td></tr>';
     }).join('');
     if ($('invite-empty')) $('invite-empty').style.display = codes.length ? 'none' : 'block';
     tb.querySelectorAll('[data-del-invite]').forEach((btn) => {
@@ -1861,10 +1907,13 @@ async function loadInvites() {
     gen.disabled = true;
     try {
       const count = Math.min(50, Math.max(1, parseInt($('invite-count') && $('invite-count').value, 10) || 5));
+      const rawMax = parseInt($('invite-max-uses') && $('invite-max-uses').value, 10);
+      const maxUses = Number.isFinite(rawMax) && rawMax < 0 ? -1 : Math.min(10000, Math.max(1, rawMax || 1));
+      const prefix = (($('invite-prefix') && $('invite-prefix').value) || '').trim();
       const r = await api('/api/admin/invites', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ count }),
+        body: JSON.stringify({ count, maxUses, prefix }),
       });
       const d = await r.json();
       if (!r.ok) return toast((d.error && d.error.message) || '生成失败', true);
@@ -1873,6 +1922,115 @@ async function loadInvites() {
     } catch (e) {
       toast('生成失败: ' + e.message, true);
     } finally { gen.disabled = false; }
+  });
+  // 「注册需要邀请码」属于验证设置,改动后随验证设置一并保存
+  const req = $('invite-required');
+  if (req) req.addEventListener('change', () => { const sv = $('verify-save'); if (sv) sv.click(); });
+})();
+
+// ============ 开放 API(OpenAI 兼容出口)设置 ============
+let OPENAPI_MODELS = [];   // [{providerId, providerName, models:[{id,name}]}]
+async function loadOpenApi() {
+  const [rs, rp] = await Promise.all([api('/api/admin/settings'), api('/api/providers')]);
+  const ds = await rs.json();
+  const dp = await rp.json();
+  if (!rs.ok) return toast((ds.error && ds.error.message) || '加载失败', true);
+  const s = ds.settings || {};
+  if ($('apikeys-enabled')) $('apikeys-enabled').checked = s.apiKeysEnabled !== false;
+  if ($('openapi-key-limit')) $('openapi-key-limit').value = s.apiKeyRateLimitPerMin == null ? 60 : s.apiKeyRateLimitPerMin;
+  if ($('openapi-user-limit-hint')) $('openapi-user-limit-hint').textContent = (s.rateLimitPerMin == null ? 30 : s.rateLimitPerMin) + ' 次/分钟';
+  const exposed = new Set(Array.isArray(s.apiExposedModels) ? s.apiExposedModels : []);
+  if ($('openapi-restrict')) $('openapi-restrict').checked = exposed.size > 0;
+  OPENAPI_MODELS = (dp.providers || [])
+    .filter((p) => p.scope === 'global' && p.enabled !== false && Array.isArray(p.models) && p.models.length)
+    .map((p) => ({ providerId: p.id, providerName: p.name, models: p.models }));
+  renderOpenApiModels(exposed);
+}
+function renderOpenApiModels(exposed) {
+  const box = $('openapi-models');
+  if (!box) return;
+  const restrict = !!($('openapi-restrict') && $('openapi-restrict').checked);
+  if (!OPENAPI_MODELS.length) {
+    box.innerHTML = '<p class="muted small">暂无可用的全局供应商模型，请先在「供应商」中添加。</p>';
+  } else {
+    box.innerHTML = OPENAPI_MODELS.map((g) => {
+      const items = g.models.map((m) => {
+        const key = g.providerId + '|' + m.id;
+        const on = !restrict || exposed.has(key);
+        return '<label class="access-model' + (restrict ? '' : ' disabled') + '">'
+          + '<input type="checkbox" data-expose="' + escapeHtml(key) + '"' + (on ? ' checked' : '') + (restrict ? '' : ' disabled') + '>'
+          + escapeHtml(m.name || m.id) + '</label>';
+      }).join('');
+      return '<div class="access-row"><div class="access-prov">' + escapeHtml(g.providerName) + '</div>'
+        + '<div class="access-models">' + items + '</div></div>';
+    }).join('');
+  }
+  updateOpenApiCount();
+}
+function updateOpenApiCount() {
+  const el = $('openapi-model-count');
+  if (!el) return;
+  const restrict = !!($('openapi-restrict') && $('openapi-restrict').checked);
+  if (!restrict) { el.textContent = '当前：全部模型可用'; return; }
+  const total = OPENAPI_MODELS.reduce((n, g) => n + g.models.length, 0);
+  const picked = document.querySelectorAll('#openapi-models [data-expose]:checked').length;
+  el.textContent = '已选 ' + picked + ' / ' + total + ' 个模型';
+}
+(function initOpenApi() {
+  const box = $('openapi-models');
+  if (!box) return;
+  $('openapi-restrict')?.addEventListener('change', () => { renderOpenApiModels(new Set()); });
+  box.addEventListener('change', (e) => { if (e.target.closest('[data-expose]')) updateOpenApiCount(); });
+  $('openapi-select-all')?.addEventListener('click', () => {
+    box.querySelectorAll('[data-expose]').forEach((c) => { c.checked = true; });
+    updateOpenApiCount();
+  });
+  $('openapi-select-none')?.addEventListener('click', () => {
+    box.querySelectorAll('[data-expose]').forEach((c) => { c.checked = false; });
+    updateOpenApiCount();
+  });
+  $('openapi-fetch')?.addEventListener('click', async () => {
+    const btn = $('openapi-fetch');
+    const old = btn.textContent;
+    btn.disabled = true; btn.textContent = '获取中…';
+    try {
+      const r = await api('/api/providers?refresh=1');
+      const d = await r.json();
+      if (!r.ok) throw new Error((d.error && d.error.message) || '获取失败');
+      OPENAPI_MODELS = (d.providers || [])
+        .filter((p) => p.scope === 'global' && p.enabled !== false && Array.isArray(p.models) && p.models.length)
+        .map((p) => ({ providerId: p.id, providerName: p.name, models: p.models }));
+      renderOpenApiModels(new Set());
+      toast('已刷新模型列表');
+    } catch (e) {
+      toast('获取失败: ' + e.message, true);
+    } finally { btn.disabled = false; btn.textContent = old; }
+  });
+  $('openapi-save')?.addEventListener('click', async () => {
+    const btn = $('openapi-save');
+    btn.disabled = true;
+    try {
+      const restrict = !!($('openapi-restrict') && $('openapi-restrict').checked);
+      const list = restrict
+        ? Array.from(box.querySelectorAll('[data-expose]:checked')).map((c) => c.dataset.expose)
+        : [];
+      const payload = {
+        apiKeysEnabled: !!($('apikeys-enabled') && $('apikeys-enabled').checked),
+        apiKeyRateLimitPerMin: Math.min(600, Math.max(0, parseInt($('openapi-key-limit') && $('openapi-key-limit').value, 10) || 0)),
+        apiExposedModels: list,
+      };
+      const r = await api('/api/admin/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error((d.error && d.error.message) || '保存失败');
+      toast('开放 API 设置已保存');
+      loadOpenApi();
+    } catch (e) {
+      toast('保存失败: ' + e.message, true);
+    } finally { btn.disabled = false; }
   });
 })();
 let CODES_CACHE = [];
@@ -2439,8 +2597,12 @@ const TAB_LOADERS = {
   search: () => loadSearchSettings(),
   docs: () => loadSearchSettings(),
   verify: () => loadVerifySettings(),
+  invite: () => loadInvites(),
+  openapi: () => loadOpenApi(),
   packages: () => loadPackages(),
   codes: () => loadPackages(),
+  'codes-gen': () => loadPackages(),
+  'codes-fixed': () => loadPackages(),
   assistants: () => loadAssistants(),
   logs: () => loadLogs(),
   thinking: () => loadThinking(),
@@ -2569,9 +2731,14 @@ $('usage-export')?.addEventListener('click', async () => {
 
 const ADMIN_GROUPS = {
   overview: [{ id: 'overview', label: '概览' }, { id: 'usage', label: '用量分析' }, { id: 'logs', label: '运行日志' }],
-  users: [{ id: 'users', label: '用户' }, { id: 'groups', label: '用户组' }, { id: 'access', label: '模型授权' }, { id: 'verify', label: '用户验证' }],
-  billing: [{ id: 'packages', label: '额度套餐' }, { id: 'codes', label: '兑换码' }],
-  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'update', label: '版本更新' }],
+  users: [{ id: 'users', label: '用户' }, { id: 'groups', label: '用户组' }, { id: 'access', label: '模型授权' }, { id: 'verify', label: '用户验证' }, { id: 'invite', label: '邀请码' }],
+  billing: [
+    { id: 'packages', label: '额度套餐' },
+    { id: 'codes', label: '兑换码使用情况' },
+    { id: 'codes-gen', label: '生成兑换码' },
+    { id: 'codes-fixed', label: '添加固定兑换码' },
+  ],
+  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'update', label: '版本更新' }],
   thinking: [{ id: 'thinking', label: '思考策略' }],
   content: [{ id: 'assistants', label: '助手库' }],
 };
@@ -2617,6 +2784,16 @@ window.addEventListener('hashchange', () => {
     if (!me.ok || !data.user.admin) throw new Error('not admin');
     localStorage.setItem('oc_user', JSON.stringify(data.user));
     ME_ID = data.user && data.user.id ? data.user.id : ME_ID;
+    // 演示管理员:顶部常驻提示,提醒修改会失效且密码不可改
+    if (data.user && data.user.demo) {
+      const banner = $('admin-demo-banner');
+      if (banner) banner.classList.remove('hidden');
+      try {
+        const cr = await api('/api/config');
+        const cfg = await cr.json();
+        if ($('admin-demo-minutes')) $('admin-demo-minutes').textContent = cfg.demoExpireMinutes == null ? 10 : cfg.demoExpireMinutes;
+      } catch (e) { /* 提示条不影响后台使用 */ }
+    }
     const rawStart = (location.hash || '').replace(/^#/, '');
     const startParts = rawStart.split('/');
     const start = startParts[0] && ADMIN_GROUPS[startParts[0]] ? (startParts[1] || ADMIN_GROUPS[startParts[0]][0].id) : (rawStart || 'overview');

@@ -9,11 +9,11 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ctext x='12' y='17' text-anchor='middle' font-family='Inter,Segoe UI,Arial,sans-serif' font-size='15' font-weight='800' fill='%23232936'%3ET%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="./static/css/style.css?v=20260926.31">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20260926.31">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20260928.7">
 <link rel="stylesheet" href="./static/css/refine.css?v=20260926.31">
 <link rel="stylesheet" href="./static/css/redesign.css?v=20260926.31">
 <link rel="stylesheet" href="./static/css/polish.css?v=20260926.33">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20260928.1">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20260928.7">
 <script>
 (function () {
   try {
@@ -59,6 +59,9 @@
       <button class="btn danger" id="logout-btn" type="button">退出</button>
     </div>
   </div>
+  <div class="admin-demo-banner hidden" id="admin-demo-banner" role="status">
+    <b>本站为 demo 演示站。</b>您的修改会在 <span id="admin-demo-minutes">10</span> 分钟内自动失效，请尽快体验；演示账号不可修改密码、不可删除用户或强制全站下线。
+  </div>
 
 <!-- 页签导航 -->
   <div class="admin-tabs" id="admin-tabs" role="tablist">
@@ -82,7 +85,7 @@
     </div>
     <div class="admin-card" style="margin-top:16px">
       <h2>全站公告</h2>
-      <p class="muted small">启用后所有登录用户在顶部看到公告条；用户关闭后，内容更新（重新保存）才会再次显示。纯文本，最多 2000 字。</p>
+      <p class="muted small">启用后登录用户会看到<b>居中弹窗</b>；关闭后内容更新（重新保存）才会再次自动弹出。用户可随时从右上角用户菜单的「公告」再次查看。纯文本，最多 2000 字。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="announce-enabled"><span class="slider"></span></span><span>启用公告</span></label>
       <label class="field"><span>公告内容</span><textarea id="announce-text" rows="3" maxlength="2000" placeholder="例如：系统将于周日晚 22:00–24:00 升级维护" style="resize:vertical"></textarea></label>
       <button class="btn primary" id="announce-save" type="button">保存公告</button>
@@ -121,7 +124,7 @@
         </div>
       </label>
       <label class="field"><span>单次输出上限（token，即 max_tokens）</span>
-          <input id="chat-output" type="number" min="256" max="128000" step="256" value="12800">
+          <input id="chat-output" type="number" min="256" max="128000" step="256" value="8192">
       </label>
       <label class="field"><span>温度 temperature（0–2，留空使用模型默认）</span>
           <input id="chat-temperature" type="number" min="0" max="2" step="0.1" placeholder="留空则不发送该参数">
@@ -333,23 +336,7 @@
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="verify-reset-enabled"><span class="slider"></span></span><span>开启找回密码</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="verify-quota-unlimited"><span class="slider"></span></span><span>新注册用户默认无限额度</span></label>
       <label class="field"><span>新注册用户默认额度</span><input id="verify-free-quota" type="number" min="0" value="100"></label>
-      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="apikeys-enabled" checked><span class="slider"></span></span><span>允许用户生成 API 密钥（OpenAI 兼容出口 /v1，计费与网页端一致）</span></label>
-      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="invite-required"><span class="slider"></span></span><span>注册需要邀请码</span></label>
-      <div class="row-between" style="gap:10px;flex-wrap:wrap;margin:6px 0">
-        <span class="row-between" style="gap:8px;flex-wrap:nowrap">
-          <input id="invite-count" type="number" min="1" max="50" value="5" style="width:70px">
-          <button class="btn small" id="invite-generate" type="button">生成邀请码</button>
-        </span>
-        <span class="muted small" id="invite-count-info"></span>
-      </div>
-      <div class="users-table-wrap" style="max-height:220px;overflow:auto">
-        <table class="admin-table">
-          <thead><tr><th>邀请码</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
-          <tbody id="invite-tbody"></tbody>
-        </table>
-      </div>
-      <p class="muted small" id="invite-empty" style="text-align:center;padding:10px 0">暂无邀请码</p>
-      <div class="row-between" style="gap:10px;flex-wrap:wrap;margin-top:6px">
+      <div class="row-between" style="gap:10px;flex-wrap:wrap;margin-top:16px">
         <label class="field" style="margin:0;flex-direction:row;align-items:center;gap:8px"><span style="white-space:nowrap">会话有效期（天）</span><input id="session-days" type="number" min="1" max="30" value="7" style="width:80px"></label>
         <button class="btn danger" id="session-invalidate" type="button">强制全站下线</button>
       </div>
@@ -384,6 +371,57 @@
       <label class="field"><span>邮件预览</span><iframe id="mtpl-preview" title="邮件预览" style="width:100%;height:460px;border:1px solid var(--hairline);border-radius:12px;background:#eef1f6"></iframe></label>
     </div>
   </div>
+  <!-- 用户验证 · 邀请码 -->
+  <div class="admin-panel" id="panel-invite">
+    <div class="admin-card">
+      <h2>邀请码</h2>
+      <p class="muted small">开启后注册必须填写有效邀请码。<b>使用次数</b>可设为多次：填 <code>-1</code> 表示一张码可无限次使用（适合公开招募），填大于 1 的数字表示限量。每个注册成功都会累加使用次数。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="invite-required"><span class="slider"></span></span><span>注册需要邀请码</span></label>
+      <div class="pkg-form-grid" style="margin-top:10px">
+        <label class="field"><span>生成数量（1–50）</span><input id="invite-count" type="number" min="1" max="50" value="5"></label>
+        <label class="field"><span>每张可用次数（-1 为不限）</span><input id="invite-max-uses" type="number" min="-1" value="1"></label>
+        <label class="field"><span>码前缀（选填）</span><input id="invite-prefix" placeholder="如 DEMO" maxlength="8" autocomplete="off"></label>
+      </div>
+      <div class="row-between" style="gap:10px;flex-wrap:wrap;margin:6px 0">
+        <button class="btn primary" id="invite-generate" type="button">生成邀请码</button>
+        <span class="muted small" id="invite-count-info"></span>
+      </div>
+      <div class="users-table-wrap" style="max-height:340px;overflow:auto">
+        <table class="admin-table">
+          <thead><tr><th>邀请码</th><th>状态</th><th>使用情况</th><th style="text-align:right">操作</th></tr></thead>
+          <tbody id="invite-tbody"></tbody>
+        </table>
+      </div>
+      <p class="muted small" id="invite-empty" style="text-align:center;padding:10px 0">暂无邀请码</p>
+    </div>
+  </div>
+
+  <!-- 开放 API -->
+  <div class="admin-panel" id="panel-openapi">
+    <div class="admin-card">
+      <h2>开放 API（OpenAI 兼容出口）</h2>
+      <p class="muted small">用户可在前台账户面板生成 <code>sk-tc-</code> 密钥，通过任意 OpenAI 兼容客户端调用本站模型。请求与网页端共用额度，并额外受下方频率限制与模型白名单约束。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="apikeys-enabled" checked><span class="slider"></span></span><span>允许用户生成 API 密钥</span></label>
+      <div class="pkg-form-grid" style="margin-top:10px">
+        <label class="field"><span>每把密钥限流（次/分钟，0 = 不限制）</span><input id="openapi-key-limit" type="number" min="0" max="600" value="60"></label>
+      </div>
+      <p class="muted small">站点总限流（<b id="openapi-user-limit-hint">—</b>）在「对话设置」中统一配置，两处限制需同时满足。</p>
+      <div class="section-title">对外可用模型</div>
+      <p class="muted small">默认全部可用。若只勾选部分模型，则未勾选的模型不会出现在 <code>/v1/models</code>，调用时也会被拒绝；网页端不受影响。</p>
+      <label class="user-form-admin" style="margin:6px 0 10px"><span class="switch"><input type="checkbox" id="openapi-restrict"><span class="slider"></span></span><span>仅对勾选的模型开放（关闭 = 全部模型可用）</span></label>
+      <div class="row-between" style="gap:8px;flex-wrap:wrap;margin-bottom:8px">
+        <span class="row-between" style="gap:8px;flex-wrap:wrap">
+          <button class="btn small" id="openapi-fetch" type="button">一键获取模型</button>
+          <button class="btn small" id="openapi-select-all" type="button">全选</button>
+          <button class="btn small" id="openapi-select-none" type="button">全不选</button>
+        </span>
+        <span class="muted small" id="openapi-model-count">—</span>
+      </div>
+      <div id="openapi-models" class="access-section" style="max-height:420px;overflow:auto"></div>
+      <button class="btn primary" id="openapi-save" type="button" style="margin-top:12px">保存开放 API 设置</button>
+    </div>
+  </div>
+
   <div class="admin-panel" id="panel-packages">
     <div class="admin-card">
       <h2>额度套餐</h2>
@@ -404,10 +442,11 @@
       <div id="pkg-list" class="pkg-cards"></div>
     </div>
   </div>
+  <!-- 兑换码使用情况 -->
   <div class="admin-panel" id="panel-codes">
     <div class="admin-card">
-      <h2>已生成兑换码及使用情况</h2>
-      <p class="muted small">新生成的兑换码会同时保存明文，用于按套餐导出；此前生成的旧码只有哈希，无法导出明文。固定兑换码的码面直接显示在列表中。</p>
+      <h2>兑换码使用情况</h2>
+      <p class="muted small">按套餐生成的随机兑换码与手动添加的固定兑换码都在此列出：状态、使用者与过期时间。「清理已使用」只删除已核销的记录。</p>
       <div class="row-between" style="margin:10px 0">
         <span class="muted small" id="codes-summary"></span>
         <span class="row-between" style="gap:8px">
@@ -421,25 +460,39 @@
         <span class="muted small" id="codes-page-label"></span>
         <button class="btn small" id="codes-next" type="button">下一页</button>
       </div>
-      <div class="section-title">兑换码管理 · 生成兑换码</div>
+    </div>
+  </div>
+
+  <!-- 生成兑换码 -->
+  <div class="admin-panel" id="panel-codes-gen">
+    <div class="admin-card">
+      <h2>生成兑换码</h2>
+      <p class="muted small">为某个「额度套餐」批量生成随机兑换码。新生成的码会同时保存明文，可在左侧「兑换码使用情况」中按套餐导出；旧版生成的码只有哈希，无法导出明文。</p>
       <label class="field"><span>选择套餐</span><select id="pkg-code-package"></select></label>
-      <label class="field"><span>数量</span><input id="pkg-code-count" type="number" min="1" max="500" value="10"></label>
-      <button class="btn" id="pkg-generate" type="button">生成兑换码</button>
-      <textarea id="pkg-generated-codes" rows="6" readonly placeholder="生成后仅此处显示明文兑换码"></textarea>
-      <div class="section-title">兑换码管理 · 按套餐批量操作</div>
+      <label class="field"><span>数量（1–500）</span><input id="pkg-code-count" type="number" min="1" max="500" value="10"></label>
+      <button class="btn primary" id="pkg-generate" type="button">生成兑换码</button>
+      <textarea id="pkg-generated-codes" rows="6" readonly placeholder="生成后仅此处显示明文兑换码，请及时复制保存"></textarea>
+      <div class="section-title">按套餐批量操作</div>
       <label class="field"><span>选择套餐</span><select id="codes-bulk-package"></select></label>
       <div class="row-between" style="gap:8px">
         <button class="btn" id="codes-export-unused" type="button">导出未使用</button>
         <button class="btn danger" id="codes-clear-unused" type="button">清除未使用</button>
       </div>
       <p class="muted small">导出所选套餐全部未使用兑换码的明文（一行一个，.txt 文件）；清除则删除所选套餐全部未使用的兑换码，已使用的不受影响。</p>
-      <div class="section-title">兑换码管理 · 添加固定兑换码</div>
+    </div>
+  </div>
+
+  <!-- 添加固定兑换码 -->
+  <div class="admin-panel" id="panel-codes-fixed">
+    <div class="admin-card">
+      <h2>添加固定兑换码</h2>
+      <p class="muted small">自定义码面（如 WELCOME2026），适合做活动通用码。可设置总兑换次数与每次兑换获得的额度；开启「每个用户限兑一次」后同一账号只能使用一次。</p>
       <label class="field"><span>兑换码（4-64 位字母或数字）</span><input id="fixed-code-value" placeholder="WELCOME2026" autocomplete="off"></label>
       <label class="field"><span>可兑换次数（总共可被兑换多少次）</span><input id="fixed-code-max" type="number" min="1" value="1"></label>
       <label class="field"><span>每次兑换获得的可用次数（-1 为无限）</span><input id="fixed-code-quota" type="number" min="-1" value="100"></label>
       <label class="field"><span>有效期至（留空则长期有效）</span><input id="fixed-code-expiry" type="datetime-local"></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="fixed-code-peruser" checked><span class="slider"></span></span><span>每个用户限兑一次</span></label>
-      <button class="btn" id="fixed-code-add" type="button">添加固定兑换码</button>
+      <button class="btn primary" id="fixed-code-add" type="button">添加固定兑换码</button>
     </div>
   </div>
 
@@ -634,6 +687,11 @@
         <span class="switch"><input type="checkbox" id="uf-admin"><span class="slider"></span></span>
         <span>设为管理员</span>
       </label>
+      <label class="user-form-admin" id="uf-demo-row">
+        <span class="switch"><input type="checkbox" id="uf-demo"><span class="slider"></span></span>
+        <span>演示管理员（可改设置，10 分钟后自动还原；不可改密码/删号）</span>
+      </label>
+      <p class="muted small" id="uf-demo-hint" hidden>演示管理员登录后会看到「本站为 demo 站」提示；其修改的设置与模型授权在演示有效期结束后自动恢复，密码不可修改。</p>
     </div>
     <div class="modal-footer">
       <button class="btn" id="user-form-cancel" type="button">取消</button>
@@ -712,7 +770,7 @@
 <script src="./static/js/config.js?v=20260926.31"></script>
 <script src="./static/js/icons.js?v=20260926.31"></script>
 <script src="./static/js/ui.js?v=20260926.31"></script>
-<script src="./static/js/components.js?v=20260928.1"></script>
-<script src="./static/js/admin.js?v=20260928.2"></script>
+<script src="./static/js/components.js?v=20260928.7"></script>
+<script src="./static/js/admin.js?v=20260928.7"></script>
 </body>
 </html>

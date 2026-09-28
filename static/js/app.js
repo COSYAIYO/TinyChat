@@ -26,7 +26,7 @@ const state = {
   webSearchAvailable: false,
   tools: null,
   mineru: { enabled: true, mode: 'lite' },
-  chatLimits: { contextMessages: 40, maxContextMessages: 200, maxOutputTokens: 12800 },
+  chatLimits: { contextMessages: 40, maxContextMessages: 200, maxOutputTokens: 8192 },
 };
 
 window.OCState = state;
@@ -1417,7 +1417,7 @@ async function loadProviders() {
     state.chatLimits = {
       contextMessages: Math.min(500, Math.max(2, Number(data.chatLimits.contextMessages) || 40)),
       maxContextMessages: Math.min(500, Math.max(2, Number(data.chatLimits.maxContextMessages) || 200)),
-      maxOutputTokens: Math.min(128000, Math.max(256, Number(data.chatLimits.maxOutputTokens) || 12800)),
+      maxOutputTokens: Math.min(128000, Math.max(256, Number(data.chatLimits.maxOutputTokens) || 8192)),
     };
   }
   if (!state.tools) {
@@ -1634,7 +1634,7 @@ function outgoingMessages(chatMessages, chat) {
   const spec = currentModelSpec();
   const maxCtx = spec && parseInt(spec.maxContext, 10) > 0 ? parseInt(spec.maxContext, 10) : 0;
   if (maxCtx > 0 && kept.length) {
-    const outCap = spec && parseInt(spec.maxTokens, 10) > 0 ? parseInt(spec.maxTokens, 10) : (Number((state.chatLimits || {}).maxOutputTokens) || 12800);
+    const outCap = spec && parseInt(spec.maxTokens, 10) > 0 ? parseInt(spec.maxTokens, 10) : (Number((state.chatLimits || {}).maxOutputTokens) || 8192);
     const reserve = Math.min(outCap, Math.max(256, Math.floor(maxCtx / 2)));
     const budget = maxCtx - reserve;
     const sysTokens = estimateTextTokens(chatSystemPrompt(chat));
@@ -1733,7 +1733,7 @@ function applyReasoningToBody(body, format) {
 }
 function buildRequestBody(chatMessages, format, chat, extra) {
   const msgs = outgoingMessages(chatMessages, chat);
-  const cap = Math.min(128000, Math.max(256, Number((state.chatLimits || {}).maxOutputTokens) || 12800));
+  const cap = Math.min(128000, Math.max(256, Number((state.chatLimits || {}).maxOutputTokens) || 8192));
   const system = chatSystemPrompt(chat);
   if (format === 'anthropic') {
     const body = {
@@ -3120,8 +3120,15 @@ $('user-menu-settings').addEventListener('click', () => {
 });
 const githubLink = $('user-menu-github');
 if (githubLink) githubLink.addEventListener('click', () => closeUserMenu());
+const announceMenuBtn = $('user-menu-announce');
+if (announceMenuBtn) announceMenuBtn.addEventListener('click', () => {
+  closeUserMenu();
+  if (window.OCShowAnnouncement) window.OCShowAnnouncement();
+});
 const modal = $('settings-modal');
 function openSettings(tab) {
+  // 每次打开都从干净状态开始:上次生成的密钥明文不再保留在 DOM 中
+  if (typeof resetApiKeySecret === 'function') resetApiKeySecret();
   if (window.OCUI && window.OCUI.openModal) {
     window.OCUI.openModal(modal);
   } else {
@@ -3142,6 +3149,8 @@ function switchSettingsTab(name) {
   if (name === 'usage2') { usage2Limit = USAGE2_PAGE_SIZE; try { renderUsagePanel(); } catch (e) { console.error(e); } }
 }
 function closeSettings() {
+  // 关闭即清除已生成密钥明文,避免重新打开设置仍能看到
+  if (typeof resetApiKeySecret === 'function') resetApiKeySecret();
   if (window.OCUI && window.OCUI.closeModal) {
     window.OCUI.closeModal(modal);
   } else {
@@ -4342,21 +4351,59 @@ $('admin-link').addEventListener('click', () => location.href = apiUrl('/admin')
       navigator.serviceWorker.register(apiUrl('sw.js')).catch(() => {});
     });
   }
-  const bar = $('announce-bar');
-  if (!bar) return;
-  fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
-    const ann = cfg && cfg.announcement;
-    if (!ann || !ann.enabled || !ann.text) return;
-    const seen = Number(localStorage.getItem('oc_announcement_seen')) || 0;
-    if (ann.updatedAt && ann.updatedAt <= seen) return;
+  const modal = $('announce-modal');
+  if (!modal) return;
+  let current = null;
+  function markSeen() {
+    const t = current && current.updatedAt ? current.updatedAt : Date.now();
+    try { localStorage.setItem('oc_announcement_seen', String(t)); } catch (e) {}
+  }
+  function showAnnouncement(ann) {
+    if (!ann || !ann.text) return;
+    current = ann;
     const txt = $('announce-text');
     if (txt) txt.textContent = ann.text;
-    bar.classList.remove('hidden');
-    const close = $('announce-close');
-    if (close) close.addEventListener('click', () => {
-      bar.classList.add('hidden');
-      localStorage.setItem('oc_announcement_seen', String(ann.updatedAt || Date.now()));
+    const title = $('announce-title');
+    if (title) title.textContent = ann.title || '公告';
+    if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(modal);
+    else modal.classList.remove('hidden');
+  }
+  function closeAnnouncement() {
+    if (window.OCUI && window.OCUI.closeModal) window.OCUI.closeModal(modal);
+    else modal.classList.add('hidden');
+  }
+  if (window.OCUI && window.OCUI.bindModal) {
+    window.OCUI.bindModal(modal, {
+      closeId: 'announce-close',
+      closeSelector: '#announce-ok',
+      onClose: markSeen,
     });
+  } else {
+    $('announce-close') && $('announce-close').addEventListener('click', () => { closeAnnouncement(); markSeen(); });
+    $('announce-ok') && $('announce-ok').addEventListener('click', () => { closeAnnouncement(); markSeen(); });
+    modal.addEventListener('click', (e) => { if (e.target === modal) { closeAnnouncement(); markSeen(); } });
+  }
+  window.OCShowAnnouncement = () => {
+    // 用户菜单里的「公告」入口:总是展示最新公告,不写已读
+    showAnnouncement(current || { text: '', updatedAt: 0 });
+    if (current) return true;
+    return false;
+  };
+  window.OCGetAnnouncement = () => current;
+  fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
+    const ann = cfg && cfg.announcement;
+    // 自动弹出:公告启用且内容比上次已读更新时
+    if (!ann || !ann.enabled || !ann.text) {
+      const menuBtn = $('user-menu-announce');
+      if (menuBtn) { menuBtn.hidden = true; menuBtn.classList.add('hidden'); }
+      return;
+    }
+    current = ann;
+    const menuBtn = $('user-menu-announce');
+    if (menuBtn) { menuBtn.hidden = false; menuBtn.classList.remove('hidden'); }
+    const seen = Number(localStorage.getItem('oc_announcement_seen')) || 0;
+    if (ann.updatedAt && ann.updatedAt <= seen) return;
+    showAnnouncement(ann);
   }).catch(() => {});
 })();
 
@@ -4387,13 +4434,37 @@ function renderApiKeys(keys) {
     });
   });
 }
+function apiKeyLimitText(d) {
+  const parts = [];
+  const keyLimit = Number(d && d.keyRateLimitPerMin);
+  const userLimit = Number(d && d.userRateLimitPerMin);
+  const maxKeys = Number(d && d.maxKeys) || 5;
+  parts.push('每把密钥 ' + (keyLimit > 0 ? keyLimit + ' 次/分钟' : '不限频率'));
+  if (userLimit > 0) parts.push('账号合计 ' + userLimit + ' 次/分钟');
+  parts.push('最多 ' + maxKeys + ' 把');
+  if (d && d.exposeRestricted) parts.push('仅部分模型对开放接口开放');
+  return parts.join(' · ');
+}
 function loadApiKeys() {
   const box = $('apikey-list');
   if (!box) return;
   api('/api/me/apikeys').then((r) => r.json()).then((d) => {
-    renderApiKeys(d.keys || []);
+    const note = $('apikey-limit-note');
+    const enabled = d.enabled !== false;
+    if (note) {
+      note.textContent = enabled ? ('本站限制：' + apiKeyLimitText(d)) : '管理员已关闭 API 密钥功能';
+    }
+    if ($('apikey-create')) $('apikey-create').disabled = !enabled;
+    renderApiKeys(enabled ? (d.keys || []) : []);
     if ($('acc-api-base')) $('acc-api-base').textContent = location.origin + '/v1';
   }).catch(() => {});
+}
+// 关闭设置弹窗时清空"仅显示一次"的密钥框,避免下次打开仍能看到明文
+function resetApiKeySecret() {
+  const val = $('apikey-new-value');
+  const box = $('apikey-new-box');
+  if (val) val.textContent = '';
+  if (box) box.classList.add('hidden');
 }
 (function initApiKeysUI() {
   const create = $('apikey-create');
@@ -4464,8 +4535,9 @@ function renderAttachments() {
       const meta = a.meta || {};
       const size = window.OCMultimodal.formatSize(a.size);
       const status = a.parsing ? (a.parseLabel || '正在解析') : size;
+      const fileName = String(a.name || '未命名文件');
       el.innerHTML = '<span class="fc-icon" style="background:' + (meta.color || '#94a3b8') + '22">' + (meta.svg || window.OC.icon('file', 15)) + '</span>'
-        + '<span class="fc-info"><span class="fc-name">' + escapeHtml(a.name) + '</span><span class="fc-size">' + escapeHtml(status) + '</span>'
+        + '<span class="fc-info"><span class="fc-name" title="' + escapeHtml(fileName) + '">' + escapeHtml(fileName) + '</span><span class="fc-size">' + escapeHtml(status) + '</span>'
         + (a.parsing ? '<span class="fc-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + (a.parsePct || 0) + '"><span style="width:' + (a.parsePct || 8) + '%"></span></span>' : '')
         + '</span>'
         + '<button class="fc-remove">' + window.OC.icon('close', 10) + '</button>';
@@ -4852,7 +4924,7 @@ function openCompareDialog() {
       '<div class="compare-card" data-ci="' + i + '"><div class="compare-card-head"><b>' + escapeHtml(p.model) + '</b><span class="muted small" data-el="' + i + '">生成中…</span></div><div class="compare-card-body muted">…</div>'
       + '<div class="compare-card-actions hidden"><button class="btn small" data-vote="up" type="button">👍 这个更好</button><button class="btn small" data-copy type="button">复制</button></div></div>'
     ).join('');
-    const cap = Math.min(128000, Math.max(256, Number((state.chatLimits || {}).maxOutputTokens) || 12800));
+    const cap = Math.min(128000, Math.max(256, Number((state.chatLimits || {}).maxOutputTokens) || 8192));
     const started = Date.now();
     const answers = picks.map((p) => {
       const prov = (state.providers || []).find((x) => x.id === p.providerId);

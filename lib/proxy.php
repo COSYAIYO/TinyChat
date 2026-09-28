@@ -249,7 +249,7 @@ function tc_prepare_upstream_body($b, $provider, $format) {
     }
     $model = isset($out['model']) ? $out['model'] : (isset($provider['models'][0]['id']) ? $provider['models'][0]['id'] : null);
     if ($model) $out['model'] = $model;
-    if ($format === 'anthropic' && empty($out['max_tokens'])) $out['max_tokens'] = 12800;
+    if ($format === 'anthropic' && empty($out['max_tokens'])) $out['max_tokens'] = 8192;
     return $out;
 }
 
@@ -1622,6 +1622,13 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         $resolved = tc_resolve_provider($db, $user, $b);
         if (!empty($resolved['error'])) tc_fail(400, $resolved['error']);
         $provider = $resolved['provider'];
+        // 开放接口的对外模型白名单:仅对 API 密钥调用生效,网页端不受影响
+        if ($apiKeyOwner !== null) {
+            $reqModel = isset($b['model']) ? (string) $b['model'] : '';
+            if (!tc_api_model_exposed($db['settings'], isset($provider['id']) ? $provider['id'] : '', $reqModel)) {
+                tc_fail(403, '模型 ' . $reqModel . ' 未对开放接口开放，请联系管理员');
+            }
+        }
         // 熔断:该模型近期持续全失败时快速失败,给出清晰提示(管理员豁免,便于现场排查)
         if (empty($user['admin'])) {
             $circuitModel = isset($b['model']) ? (string) $b['model'] : (isset($provider['models'][0]['id']) ? (string) $provider['models'][0]['id'] : '');
@@ -1652,7 +1659,7 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             'timeout' => $db['settings']['proxyTimeoutMs'],
             'wantSearch' => (!empty($b['webSearch']) && $b['webSearch'] !== 'off' && $b['webSearch'] !== false) ? (string) $b['webSearch'] : '',
             'settings' => tc_user_search_settings($user, $db['settings']),
-            'maxOutputTokens' => isset($db['settings']['maxOutputTokens']) ? (int) $db['settings']['maxOutputTokens'] : 12800,
+            'maxOutputTokens' => isset($db['settings']['maxOutputTokens']) ? (int) $db['settings']['maxOutputTokens'] : 8192,
             'temperature' => isset($db['settings']['temperature']) ? $db['settings']['temperature'] : null,
             'thinking' => tc_normalize_thinking(isset($db['settings']['thinking']) ? $db['settings']['thinking'] : null),
         );
@@ -1720,7 +1727,7 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         if (!empty($m['maxContext'])) $modelMaxContext = (int) $m['maxContext'];
         break;
     }
-    $outCap = $modelMaxTokens > 0 ? $modelMaxTokens : (isset($ctx['maxOutputTokens']) ? (int) $ctx['maxOutputTokens'] : 12800);
+    $outCap = $modelMaxTokens > 0 ? $modelMaxTokens : (isset($ctx['maxOutputTokens']) ? (int) $ctx['maxOutputTokens'] : 8192);
     if ($modelMaxContext > 0) {
         $promptEst = tc_estimate_body_tokens($body);
         $outCap = min($outCap, max(256, $modelMaxContext - $promptEst));
@@ -2108,8 +2115,23 @@ function tc_context_learn($provider, $body, $errBody) {
 function tc_v1_authenticate() {
     $auth = tc_with_db(true, function (&$db) {
         if (empty($db['settings']['apiKeysEnabled'])) tc_fail(403, '管理员已关闭 API 密钥功能');
-        $owner = tc_find_api_key_owner($db, tc_bearer());
+        $token = tc_bearer();
+        $owner = tc_find_api_key_owner($db, $token);
         if (!$owner) tc_fail(401, '无效的 API 密钥');
+        // 开放接口限流:按"密钥"独立计数(与网页端按用户计数互不影响),
+        // 使后台设置的频率限制对每个 API 密钥各自生效
+        $keyLimit = isset($db['settings']['apiKeyRateLimitPerMin']) ? (int) $db['settings']['apiKeyRateLimitPerMin'] : 60;
+        if ($keyLimit > 0) {
+            $keyTag = substr(hash('sha256', $token), 0, 24);
+            if (!tc_rate_limit_check('k:' . $keyTag, $keyLimit)) {
+                tc_fail(429, '请求太频繁了，请稍后再试（当前密钥上限 ' . $keyLimit . ' 次/分钟）');
+            }
+        }
+        // 用户级限流同样生效,防止用多把密钥绕过站点总量限制
+        $userLimit = isset($db['settings']['rateLimitPerMin']) ? (int) $db['settings']['rateLimitPerMin'] : 30;
+        if ($userLimit > 0 && !tc_rate_limit_check('u:' . $owner['userId'], $userLimit)) {
+            tc_fail(429, '请求太频繁了，请稍后再试（当前账号上限 ' . $userLimit . ' 次/分钟）');
+        }
         // lastUsed 分钟级节流:避免每次 API 调用都全量重写数据库
         $changed = false;
         foreach ($db['users'] as &$u) {
@@ -2127,6 +2149,13 @@ function tc_v1_authenticate() {
         return array('userId' => (string) $owner['userId']);
     });
     return $auth;
+}
+
+// 开放接口是否对外暴露某个 provider/model:白名单为空表示不限制
+function tc_api_model_exposed($settings, $providerId, $modelId) {
+    $list = isset($settings['apiExposedModels']) && is_array($settings['apiExposedModels']) ? $settings['apiExposedModels'] : array();
+    if (!$list) return true;
+    return in_array($providerId . '|' . $modelId, $list, true);
 }
 
 // ---- 图像生成代理:POST {baseUrl}/images/generations(OpenAI 兼容),按次计费 ----
@@ -2227,6 +2256,8 @@ function tc_api_v1_models() {
             $ownerName = (isset($p['name']) && $p['name'] !== '' ? $p['name'] : 'tinychat');
             foreach ((isset($vis['models']) ? $vis['models'] : array()) as $m) {
                 if (!is_array($m) || !isset($m['id']) || $m['id'] === '') continue;
+                // 对外模型白名单:未开放的模型不出现在 /v1/models 里
+                if (!tc_api_model_exposed($db['settings'], isset($p['id']) ? $p['id'] : '', (string) $m['id'])) continue;
                 $data[] = array('id' => (string) $m['id'], 'object' => 'model', 'created' => 0, 'owned_by' => $ownerName);
             }
         }
