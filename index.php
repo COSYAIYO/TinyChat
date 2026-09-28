@@ -110,6 +110,7 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/setup$#', 'tc_api_setup'),
         array('POST', '#^/api/auth/register$#', 'tc_api_register'),
         array('POST', '#^/api/auth/login$#', 'tc_api_login'),
+        array('POST', '#^/api/auth/guest$#', 'tc_api_guest_login'),
         array('POST', '#^/api/auth/verify-email$#', 'tc_api_verify_email'),
         array('POST', '#^/api/auth/resend-verification$#', 'tc_api_resend_verification'),
         array('POST', '#^/api/auth/forgot-password$#', 'tc_api_forgot_password'),
@@ -255,6 +256,8 @@ function tc_fail_public_config($reason) {
         'registerInviteRequired' => false,
         'demoMode' => false,
         'demoExpireMinutes' => 10,
+        'guestEnabled' => false,
+        'guestRounds' => 3,
     ));
     exit;
 }

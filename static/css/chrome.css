@@ -3474,17 +3474,77 @@ select {
 }
 .user-form-grid .select-box .sb-label { line-height: 42px; }
 
-/* 公告弹窗 */
-.announce-modal { width: min(460px, 92vw); }
+/* 下拉框内文字真正垂直居中:
+   .field span 的 margin-bottom:6px 会被 .sb-label 继承,把居中文字整体上推 3px。
+   这里清掉触发器内部所有元素的默认边距,并让行盒高度与内容一致。 */
+.select-box > *,
+.select-box .sb-label,
+.select-box span,
+.font-select-trigger > *,
+.font-select-label,
+.oc-select-trigger > * {
+  margin: 0 !important;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.select-box .sb-label,
+.font-select-label {
+  display: flex;
+  align-items: center;
+  min-height: 1.25em;
+  line-height: 1.25;
+}
+/* 触发器里的嵌套 span(如 .muted 占位符)不应再撑高 */
+.select-box .sb-label span { display: inline; }
+
+/* 公告弹窗:支持 Markdown / HTML 富文本 */
+.announce-modal { width: min(520px, 92vw); }
 .announce-modal .announce-text {
-  white-space: pre-wrap;
   word-break: break-word;
   font-size: 14px;
   line-height: 1.8;
   color: var(--text);
-  max-height: 60vh;
+  max-height: 62vh;
   overflow: auto;
 }
+.announce-modal .announce-text > :first-child { margin-top: 0; }
+.announce-modal .announce-text > :last-child { margin-bottom: 0; }
+.announce-modal .announce-text p { margin: 0 0 10px; }
+.announce-modal .announce-text h1,
+.announce-modal .announce-text h2,
+.announce-modal .announce-text h3 { margin: 14px 0 8px; line-height: 1.4; }
+.announce-modal .announce-text h1 { font-size: 19px; }
+.announce-modal .announce-text h2 { font-size: 17px; }
+.announce-modal .announce-text h3 { font-size: 15px; }
+.announce-modal .announce-text ul,
+.announce-modal .announce-text ol { margin: 0 0 10px; padding-left: 22px; }
+.announce-modal .announce-text li { margin: 3px 0; }
+.announce-modal .announce-text a { color: var(--brand, var(--accent)); text-decoration: underline; }
+.announce-modal .announce-text img { max-width: 100%; height: auto; border-radius: 8px; }
+.announce-modal .announce-text code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg-hover);
+  font-size: .92em;
+}
+.announce-modal .announce-text pre {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--bg-code, var(--bg-hover));
+  overflow: auto;
+}
+.announce-modal .announce-text pre code { background: none; padding: 0; }
+.announce-modal .announce-text blockquote {
+  margin: 0 0 10px;
+  padding: 2px 0 2px 12px;
+  border-left: 3px solid var(--hairline-strong, var(--hairline));
+  color: var(--text-secondary);
+}
+.announce-modal .announce-text hr { border: 0; border-top: 1px solid var(--hairline); margin: 14px 0; }
+.announce-modal .announce-text table { border-collapse: collapse; width: 100%; margin: 0 0 10px; }
+.announce-modal .announce-text th,
+.announce-modal .announce-text td { border: 1px solid var(--hairline); padding: 6px 9px; text-align: left; }
 
 /* 后台演示模式提示条 */
 .admin-demo-banner {
@@ -3498,3 +3558,42 @@ select {
   line-height: 1.7;
 }
 .admin-demo-banner.hidden { display: none; }
+
+/* ---------- 游客模式 ---------- */
+.guest-bar {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 7px 10px 7px 16px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--brand, var(--accent)) 32%, transparent);
+  background: color-mix(in srgb, var(--brand, var(--accent)) 12%, var(--bg-surface, #fff));
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  box-shadow: var(--shadow-sm, 0 2px 10px rgba(0,0,0,.08));
+  max-width: calc(100vw - 24px);
+}
+.guest-bar.hidden { display: none; }
+.guest-bar #guest-bar-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.guest-bar .btn { flex-shrink: 0; }
+
+/* 只读游客:提示输入区需要登录,保留页面观感 */
+.readonly-guest .composer { cursor: pointer; }
+.readonly-guest #input { cursor: pointer; }
+
+/* 演示管理员:隐藏不可用的敏感操作入口,并给出不可用样式 */
+body.is-demo-admin #user-create-btn,
+body.is-demo-admin .admin-card [id$="-add"],
+body.is-demo-admin #g-add,
+body.is-demo-admin #invite-generate,
+body.is-demo-admin #session-invalidate { display: none !important; }
+body.is-demo-admin [data-edituser],
+body.is-demo-admin [data-deluser],
+body.is-demo-admin [data-chats] { display: none !important; }

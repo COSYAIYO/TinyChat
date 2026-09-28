@@ -24,6 +24,14 @@
     R.components[name] = renderer;
   };
 
+  // 归一化代码块语言标识:模型常写成 ```Mermaid / ```MERMAID / ```mmd,统一按小写识别
+  function normalizeFenceLang(lang) {
+    const l = String(lang == null ? '' : lang).trim().toLowerCase().split(/\s+/)[0] || '';
+    if (l === 'mmd' || l === 'mermaid') return 'mermaid';
+    if (l === 'mind-map' || l === 'mindmap') return 'mindmap';
+    return l;
+  }
+
   // ============ markdown-it 实例 ============
   let md = null;
 
@@ -35,11 +43,12 @@
       typographer: true,
       breaks: true,
       highlight: function (code, lang) {
-        // Mermaid 特殊处理：保留 language-mermaid class 供后续渲染
-        if (lang === 'mermaid') {
+        // Mermaid / 思维导图特殊处理：保留 language-* class 供后续渲染(语言标识大小写不敏感)
+        const fenceLang = normalizeFenceLang(lang);
+        if (fenceLang === 'mermaid') {
           return '<pre class="mermaid-pre"><code class="language-mermaid">' + escapeHtml(code) + '</code></pre>';
         }
-        if (lang === 'mindmap') {
+        if (fenceLang === 'mindmap') {
           return '<pre class="mindmap-pre"><code class="language-mindmap">' + escapeHtml(code) + '</code></pre>';
         }
         // 语法高亮
@@ -744,7 +753,7 @@ R.render = function (text) {
     if (start >= 0) {
       const chunk = src.slice(start);
       const info = (chunk.match(/^```([^\n]*)/) || [])[1] || '';
-      const lang = String(info).trim().split(/\s+/)[0] || '';
+      const lang = normalizeFenceLang(String(info).trim().split(/\s+/)[0] || '');
       const body = chunk.replace(/^```[^\n]*\r?\n?/, '');
       const htmlLang = lang === 'html' || lang === 'htm';
       const htmlish = htmlLang || (!lang && /<[a-z][\s\S]*>/i.test(body));

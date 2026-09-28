@@ -14,6 +14,17 @@ function api(path, opts = {}) {
     return r;
   });
 }
+// 容错解析 JSON:响应不是 JSON(服务器返回 HTML 错误页)时给出可读提示,而不是抛 "Unexpected token '<'"
+async function readJsonSafe(res) {
+  let text = '';
+  try { text = await res.text(); } catch (e) { text = ''; }
+  const trimmed = text.trim();
+  if (!trimmed) return {};
+  if (trimmed.charAt(0) === '{' || trimmed.charAt(0) === '[') {
+    try { return JSON.parse(trimmed); } catch (e) { /* noop */ }
+  }
+  return { error: { message: '服务器返回了非预期内容（HTTP ' + res.status + '），请检查站点配置或稍后重试' } };
+}
 function toast(msg, isError = false) {
   if (window.OCUI && window.OCUI.toast) return window.OCUI.toast(msg, isError);
   const t = document.createElement('div');
@@ -172,7 +183,8 @@ async function openUserForm(user) {
   $('uf-admin').checked = !!(user && user.admin);
   if ($('uf-demo')) $('uf-demo').checked = !!(user && user.demo);
   if ($('uf-demo-row')) $('uf-demo-row').style.display = user ? 'none' : '';
-  if ($('uf-demo-hint')) $('uf-demo-hint').hidden = !($('uf-demo') && $('uf-demo').checked);
+  if ($('uf-demo-options')) $('uf-demo-options').hidden = !($('uf-demo') && $('uf-demo').checked);
+  if ($('uf-demo-minutes')) $('uf-demo-minutes').value = 10;
   const adminGroup = (GROUPS.find((g) => g.role === 'admin') || {}).id || '';
   const preferred = $('uf-admin').checked
     ? adminGroup
@@ -197,7 +209,7 @@ async function openUserForm(user) {
         const nextAdmin = (GROUPS.find((g) => g.role === 'admin') || {}).id || '';
         setGroupSelect($('uf-group'), nextAdmin);
       }
-      if ($('uf-demo-hint')) $('uf-demo-hint').hidden = !$('uf-demo').checked;
+      if ($('uf-demo-options')) $('uf-demo-options').hidden = !$('uf-demo').checked;
     });
   }
   modal.classList.remove('hidden');
@@ -215,6 +227,7 @@ async function saveUserForm() {
   const password = $('uf-pass').value;
   const quota = Number($('uf-quota').value);
   const demo = !!($('uf-demo') && $('uf-demo').checked && !USER_FORM_ID);
+  const demoMinutes = Math.min(1440, Math.max(1, parseInt($('uf-demo-minutes') && $('uf-demo-minutes').value, 10) || 10));
   const admin = $('uf-admin').checked || demo;
   const groupId = $('uf-group').getAttribute('data-value') || '';
   if (!name) return toast('请填写用户名', true);
@@ -229,7 +242,7 @@ async function saveUserForm() {
       const r = await api('/api/admin/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, password, quota, admin, demo }),
+        body: JSON.stringify({ name, password, quota, admin, demo, demoMinutes }),
       });
       const data = await r.json();
       if (!r.ok) return toast((data.error && data.error.message) || '创建失败', true);
@@ -410,7 +423,8 @@ $('g-add').addEventListener('click', async () => {
 
 function visibleUsers() {
   if (USER_FILTER === 'admin') return USER_LIST.filter((u) => u.admin);
-  if (USER_FILTER === 'member') return USER_LIST.filter((u) => !u.admin);
+  if (USER_FILTER === 'guest') return USER_LIST.filter((u) => u.guest);
+  if (USER_FILTER === 'member') return USER_LIST.filter((u) => !u.admin && !u.guest);
   return USER_LIST.slice();
 }
 
@@ -426,7 +440,7 @@ function renderUsers() {
   }
   tbody.innerHTML = '';
   if (!list.length) {
-    tbody.innerHTML = '<tr class="users-empty-row"><td colspan="7">' + (USER_LIST.length ? '没有匹配的用户' : '还没有用户，点右上角创建') + '</td></tr>';
+    tbody.innerHTML = '<tr class="users-empty-row"><td colspan="8">' + (USER_LIST.length ? '没有匹配的用户' : '还没有用户，点右上角创建') + '</td></tr>';
     return;
   }
   list.forEach((u) => {
@@ -440,6 +454,8 @@ function renderUsers() {
       + '<div class="user-meta">'
       + '<div class="user-name">' + escapeHtml(u.name)
       + (u.admin ? ' <span class="badge global">管理员</span>' : '')
+      + (u.demo ? ' <span class="badge">演示</span>' : '')
+      + (u.guest ? ' <span class="badge">游客</span>' : '')
       + (u.id === ME_ID ? ' <span class="badge default">我</span>' : '')
       + '</div></div></div></td>'
       + '<td class="col-quota">' + (u.quota ?? 0) + '</td>'
@@ -447,6 +463,7 @@ function renderUsers() {
       + '<td class="col-chats">' + (u.chatCount || 0) + '</td>'
       + '<td class="col-time muted">' + fmtTime(u.createdAt) + '</td>'
       + '<td class="col-seen muted">' + (u.lastSeen ? fmtTime(u.lastSeen) : '—') + '</td>'
+      + '<td class="col-ip muted">' + (u.lastIp ? escapeHtml(u.lastIp) : '—') + '</td>'
       + '<td class="col-actions"><div class="admin-row-actions">'
       + '<button class="btn small" type="button" data-edit="' + escapeHtml(u.id) + '">编辑</button>'
       + '<button class="btn small" type="button" data-chats="' + escapeHtml(u.id) + '">对话</button>'
@@ -1086,8 +1103,8 @@ $('ap-fetch-models').addEventListener('click', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ baseUrl, apiKey: usedKey, apiFormat, providerId: editId || undefined }),
     });
-    const data = await r.json();
-    if (!r.ok) return toast((data.error && data.error.message) || '获取失败', true);
+    const data = await readJsonSafe(r);
+    if (!r.ok) return toast((data.error && data.error.message) || ('获取失败（HTTP ' + r.status + '）'), true);
     const models = data.models || [];
     if (!models.length) return toast('上游未返回模型', true);
     if (window.OC && window.OC.openFetchedModelsModal) {
@@ -1857,6 +1874,8 @@ async function loadVerifySettings() {
   set('session-days', s.sessionDays || 7);
   if ($('apikeys-enabled')) $('apikeys-enabled').checked = s.apiKeysEnabled !== false;
   if ($('invite-required')) $('invite-required').checked = !!s.registerInviteRequired;
+  if ($('guest-enabled')) $('guest-enabled').checked = !!s.guestEnabled;
+  set('guest-rounds', s.guestRounds || 3);
   const tpl = s.mailTemplates || {};
   MAIL_TPL.siteName = s.siteName || 'TinyChat';
   MAIL_TPL.tpl.verify = { subject: tpl.verifySubject || '', html: tpl.verifyHtml || '' };
@@ -2248,7 +2267,7 @@ async function loadPackages() {
   });
 })();
 (function initVerifyAndPackages(){
-  const save=$('verify-save'); if(save) save.addEventListener('click',async()=>{ const tplPayload=MAIL_TPL.loaded?{mailTemplates:{tplVersion:2,verifySubject:MAIL_TPL.tpl.verify.subject,verifyHtml:MAIL_TPL.tpl.verify.html,resetSubject:MAIL_TPL.tpl.reset.subject,resetHtml:MAIL_TPL.tpl.reset.html}}:{}; const payload=Object.assign({emailVerificationEnabled:!!$('verify-email-enabled').checked,passwordResetEnabled:!!$('verify-reset-enabled').checked,freeQuotaUnlimited:!!$('verify-quota-unlimited').checked,freeQuota:parseInt($('verify-free-quota').value,10)||0,sessionDays:Math.min(30,Math.max(1,parseInt($('session-days')&&$('session-days').value,10)||7)),apiKeysEnabled:!!($('apikeys-enabled')&&$('apikeys-enabled').checked),registerInviteRequired:!!($('invite-required')&&$('invite-required').checked),smtp:{host:$('smtp-host').value.trim(),port:parseInt($('smtp-port').value,10)||587,username:$('smtp-user').value.trim(),password:$('smtp-pass').value,encryption:$('smtp-encryption').value,fromName:$('smtp-from-name').value.trim(),fromEmail:$('smtp-from-email').value.trim()}},tplPayload); const r=await api('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'保存失败',true); toast('验证设置已保存'); });
+  const save=$('verify-save'); if(save) save.addEventListener('click',async()=>{ const tplPayload=MAIL_TPL.loaded?{mailTemplates:{tplVersion:2,verifySubject:MAIL_TPL.tpl.verify.subject,verifyHtml:MAIL_TPL.tpl.verify.html,resetSubject:MAIL_TPL.tpl.reset.subject,resetHtml:MAIL_TPL.tpl.reset.html}}:{}; const payload=Object.assign({emailVerificationEnabled:!!$('verify-email-enabled').checked,passwordResetEnabled:!!$('verify-reset-enabled').checked,freeQuotaUnlimited:!!$('verify-quota-unlimited').checked,freeQuota:parseInt($('verify-free-quota').value,10)||0,sessionDays:Math.min(30,Math.max(1,parseInt($('session-days')&&$('session-days').value,10)||7)),apiKeysEnabled:!!($('apikeys-enabled')&&$('apikeys-enabled').checked),registerInviteRequired:!!($('invite-required')&&$('invite-required').checked),guestEnabled:!!($('guest-enabled')&&$('guest-enabled').checked),guestRounds:Math.min(1000,Math.max(1,parseInt($('guest-rounds')&&$('guest-rounds').value,10)||3)),smtp:{host:$('smtp-host').value.trim(),port:parseInt($('smtp-port').value,10)||587,username:$('smtp-user').value.trim(),password:$('smtp-pass').value,encryption:$('smtp-encryption').value,fromName:$('smtp-from-name').value.trim(),fromEmail:$('smtp-from-email').value.trim()}},tplPayload); const r=await api('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'保存失败',true); toast('验证设置已保存'); });
   const invalidate=$('session-invalidate'); if(invalidate) invalidate.addEventListener('click',async()=>{
     const ok=window.OCUI&&OCUI.confirm?await OCUI.confirm({title:'强制全站下线',message:'所有人的现有登录态会立即失效（包括你自己），需要重新登录。确认执行？',danger:true,confirmText:'执行'}):confirm('所有人的现有登录态会立即失效（包括你自己），确认执行？');
     if(!ok) return;
@@ -2784,10 +2803,15 @@ window.addEventListener('hashchange', () => {
     if (!me.ok || !data.user.admin) throw new Error('not admin');
     localStorage.setItem('oc_user', JSON.stringify(data.user));
     ME_ID = data.user && data.user.id ? data.user.id : ME_ID;
-    // 演示管理员:顶部常驻提示,提醒修改会失效且密码不可改
+    // 演示管理员:顶部常驻提示,提醒修改会失效;敏感入口直接隐藏,避免误操作撞到 403
     if (data.user && data.user.demo) {
       const banner = $('admin-demo-banner');
       if (banner) banner.classList.remove('hidden');
+      document.body.classList.add('is-demo-admin');
+      // 隐藏不可用的敏感操作入口(公告保存、创建/编辑用户、邀请码、查看对话等)
+      ['announce-save'].forEach((id) => { const el = $(id); if (el) el.disabled = true; });
+      const announceBox = $('announce-enabled'); if (announceBox) announceBox.disabled = true;
+      const announceText = $('announce-text'); if (announceText) announceText.disabled = true;
       try {
         const cr = await api('/api/config');
         const cfg = await cr.json();

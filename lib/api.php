@@ -638,6 +638,9 @@ function tc_api_public_config($db) {
         // 演示模式:管理员的改动会在有效期后自动还原,前台据此提示
         'demoMode' => !empty($s['demoMode']),
         'demoExpireMinutes' => isset($s['demoExpireMinutes']) ? (int) $s['demoExpireMinutes'] : 10,
+        // 游客模式:允许未登录访客直接体验对话
+        'guestEnabled' => !empty($s['guestEnabled']),
+        'guestRounds' => isset($s['guestRounds']) ? (int) $s['guestRounds'] : 3,
     ));
 }
 
@@ -754,6 +757,51 @@ function tc_api_login() {
         $settings = $db['settings'];
     });
     tc_json(200, array('token' => tc_issue_token($user, $settings), 'user' => tc_sanitize_user($user)));
+}
+
+// 游客登录:为每位访客自动创建一个独立账号(归入游客组、按 guestRounds 发放额度),
+// 便于后台按用户维度管理、限轮与统计,而不是所有人共用一个匿名身份。
+function tc_api_guest_login() {
+    $GLOBALS['_tc_guest_new'] = false;
+    $ctx = tc_with_db(true, function (&$db) {
+        if (empty($db['settings']['guestEnabled'])) tc_fail(403, '游客体验已关闭，请注册或登录后使用');
+        // 每 IP 每小时最多创建 20 个游客账号,防止被用来刷额度
+        if (!tc_rate_limit_check('guest:' . tc_client_ip(), 20, 3600000)) {
+            tc_fail(429, '游客账号创建过于频繁，请稍后再试');
+        }
+        $rounds = isset($db['settings']['guestRounds']) ? (int) $db['settings']['guestRounds'] : 3;
+        $name = '';
+        for ($try = 0; $try < 12; $try++) {
+            $cand = '游客' . strtoupper(substr(bin2hex(random_bytes(6)), 0, 5));
+            $taken = false;
+            foreach ($db['users'] as $u) {
+                if (isset($u['name']) && strtolower($u['name']) === strtolower($cand)) { $taken = true; break; }
+            }
+            if (!$taken) { $name = $cand; break; }
+        }
+        if ($name === '') tc_fail(500, '游客账号创建失败，请稍后重试');
+        $guestGroup = tc_find_builtin_group($db, 'guest');
+        $user = array(
+            'id' => tc_uid(), 'name' => $name, 'salt' => '', 'passwordHash' => '',
+            'quota' => 0, 'createdAt' => tc_now(), 'admin' => false, 'guest' => true,
+            'groupId' => $guestGroup ? $guestGroup['id'] : tc_default_register_group($db),
+            'tv' => 0, 'email' => '', 'emailVerifiedAt' => 1,
+            'lastIp' => tc_client_ip(),
+        );
+        // 游客账号不设密码:仅凭令牌使用,防止被当作可登录账号
+        tc_set_password($user, bin2hex(random_bytes(16)));
+        $db['users'][] = $user;
+        if ($rounds > 0) tc_add_quota($db, $user, $rounds);
+        $GLOBALS['_tc_guest_new'] = true;
+        return array('user' => $user, 'settings' => $db['settings']);
+    });
+    $user = $ctx['user'];
+    tc_json(200, array(
+        'token' => tc_issue_token($user, $ctx['settings']),
+        'user' => tc_sanitize_user($user),
+        'guest' => true,
+        'rounds' => isset($ctx['settings']['guestRounds']) ? (int) $ctx['settings']['guestRounds'] : 3,
+    ));
 }
 
 function tc_api_verify_email() {
@@ -1533,6 +1581,8 @@ function tc_api_admin_invites_list() {
 function tc_api_admin_invites_create() {
     tc_with_db(true, function (&$db) {
         tc_require_admin($db);
+        $demoAdmin = tc_require_admin($db);
+        tc_demo_guard($demoAdmin, '演示管理员不能管理邀请码');
         $b = tc_read_json_body();
         $count = min(50, max(1, (int) (isset($b['count']) ? $b['count'] : 5) ?: 5));
         // maxUses:每个邀请码可用次数,<0 表示不限次数
@@ -1556,6 +1606,8 @@ function tc_api_admin_invites_create() {
 function tc_api_admin_invites_delete($code) {
     tc_with_db(true, function (&$db) use ($code) {
         tc_require_admin($db);
+        $demoAdmin = tc_require_admin($db);
+        tc_demo_guard($demoAdmin, '演示管理员不能管理邀请码');
         $code = strtoupper(trim((string) $code));
         $kept = array_values(array_filter((isset($db['inviteCodes']) && is_array($db['inviteCodes']) ? $db['inviteCodes'] : array()), function ($c) use ($code) {
             return !is_array($c) || !isset($c['code']) || strtoupper((string) $c['code']) !== $code;
@@ -1594,9 +1646,13 @@ function tc_api_agreement_page() {
 
 function tc_api_admin_save_settings() {
     tc_with_db(true, function (&$db) {
-        tc_require_admin($db);
+        $admin = tc_require_admin($db);
         $b = tc_read_json_body();
         $src = isset($b['settings']) && is_array($b['settings']) ? $b['settings'] : $b;
+        // 公告是面向全站的门面信息,演示管理员不可改动
+        if (tc_is_demo_user($admin) && array_key_exists('announcement', $src)) {
+            tc_fail(403, '演示管理员不能修改公告');
+        }
         if (array_key_exists('announcement', $src)) {
             if (!is_array($src['announcement'])) tc_fail(400, '公告设置格式不正确');
             $announcementText = trim((string) (isset($src['announcement']['text']) ? $src['announcement']['text'] : ''));
@@ -1749,6 +1805,7 @@ function tc_api_admin_backup_restore() {
 function tc_api_admin_user_chats() {
     tc_with_db(false, function ($db) {
         tc_require_admin($db);
+        tc_demo_guard(tc_require_admin($db), '演示管理员不能查看用户对话');
         $q = tc_query();
         $userId = isset($q['userId']) ? $q['userId'] : '';
         $targets = array();
@@ -1811,6 +1868,7 @@ function tc_api_admin_users() {
 function tc_api_admin_create_user() {
     tc_with_db(true, function (&$db) {
         tc_require_admin($db);
+        tc_demo_guard(tc_require_admin($db), '演示管理员不能管理用户账号');
         $b = tc_read_json_body();
         $name = trim((string) (isset($b['name']) ? $b['name'] : ''));
         $password = (string) (isset($b['password']) ? $b['password'] : '');
@@ -1827,26 +1885,31 @@ function tc_api_admin_create_user() {
                 : tc_default_register_group($db),
             'tv' => 0,
         );
+        // 演示管理员默认额度:未显式填写时给一个很大的值,方便演示;填了就以填写值为准
+        $quota = array_key_exists('quota', $b)
+            ? max(0, (float) $b['quota'])
+            : ($isDemo ? 1e15 : $db['settings']['freeQuota']);
         if ($isDemo) {
-            // 演示管理员:可改设置/授权,有效期后自动还原,且不可修改密码或删除其它账号。
+            // 演示管理员:可改设置/授权,有效期后自动还原,且不可修改密码、管理其它账号或查看用户对话。
             // 快照必须在改动设置之前拍下,否则 demoMode 等标记会被一起"还原"成开启状态。
-            $expireAt = tc_now() + (int) (isset($db['settings']['demoExpireMinutes']) ? $db['settings']['demoExpireMinutes'] : 10) * 60000;
+            $minutes = isset($b['demoMinutes']) ? (int) $b['demoMinutes'] : (int) (isset($db['settings']['demoExpireMinutes']) ? $db['settings']['demoExpireMinutes'] : 10);
+            $minutes = min(1440, max(1, $minutes ?: 10));
+            $expireAt = tc_now() + $minutes * 60000;
             $db['demoSnapshot'] = array(
                 'settings' => $db['settings'],
                 'accessRules' => $db['accessRules'],
                 'expireAt' => $expireAt,
                 'userId' => $user['id'],
+                'minutes' => $minutes,
             );
             $user['demo'] = true;
-            $user['quota'] = 1e15;
+            $user['demoExpireAt'] = $expireAt;
             $db['settings']['demoMode'] = true;
+            $db['settings']['demoExpireMinutes'] = $minutes;
         }
         tc_set_password($user, $password);
         $db['users'][] = $user;
-        if (!$isDemo) {
-            $quota = array_key_exists('quota', $b) ? max(0, (float) $b['quota']) : $db['settings']['freeQuota'];
-            if ($quota > 0) tc_add_quota($db, $user, $quota);
-        }
+        if ($quota > 0) tc_add_quota($db, $user, $quota);
         tc_json(200, array('user' => tc_sanitize_user($user)));
     });
 }
@@ -1854,6 +1917,7 @@ function tc_api_admin_create_user() {
 function tc_api_admin_update_user() {
     tc_with_db(true, function (&$db) {
         $admin = tc_require_admin($db);
+        tc_demo_guard($admin, '演示管理员不能管理用户账号');
         $b = tc_read_json_body();
         $user = null;
         foreach ($db['users'] as $u) if ($u['id'] === (string) (isset($b['userId']) ? $b['userId'] : '')) { $user = $u; break; }
@@ -1899,6 +1963,7 @@ function tc_api_admin_update_user() {
 function tc_api_admin_set_quota() {
     tc_with_db(true, function (&$db) {
         tc_require_admin($db);
+        tc_demo_guard(tc_require_admin($db), '演示管理员不能调整用户额度');
         $b = tc_read_json_body();
         $user = null;
         foreach ($db['users'] as $u) if ($u['id'] === (string) (isset($b['userId']) ? $b['userId'] : '')) { $user = $u; break; }
@@ -2039,6 +2104,7 @@ function tc_api_admin_set_default_group() {
 function tc_api_admin_set_user_group() {
     tc_with_db(true, function (&$db) {
         tc_require_admin($db);
+        tc_demo_guard(tc_require_admin($db), '演示管理员不能修改用户组');
         $b = tc_read_json_body();
         $user = null;
         foreach ($db['users'] as $u) if ($u['id'] === (string) (isset($b['userId']) ? $b['userId'] : '')) { $user = $u; break; }

@@ -226,8 +226,27 @@
     requestAnimationFrame(() => el.classList.add('show'));
     if (modalStack.indexOf(el) === -1) modalStack.push(el);
     document.body.classList.add('modal-open');
-    const focusable = el.querySelector('input:not([type=hidden]):not([disabled]), textarea:not([disabled]), button:not([disabled])');
+    // 默认焦点优先落在输入框,其次是主操作按钮;绝不落在右上角关闭(X)等图标按钮上,
+    // 否则弹窗一打开关闭按钮就带着焦点高亮,视觉上像是被"选中"了。
+    const pick = [
+      '[data-autofocus]:not([disabled])',
+      'input:not([type=hidden]):not([disabled]):not([data-no-autofocus])',
+      'textarea:not([disabled]):not([data-no-autofocus])',
+      'button.btn.primary:not([disabled]):not([data-no-autofocus])',
+      '.modal-footer .btn:not(.icon-btn):not([disabled]):not([data-no-autofocus])',
+    ];
+    let focusable = null;
+    for (const sel of pick) {
+      const found = el.querySelector(sel);
+      if (found) { focusable = found; break; }
+    }
     if (focusable) setTimeout(() => focusable.focus(), 80);
+    else {
+      // 没有可聚焦元素时,把焦点交给弹窗容器本身(不可见焦点环),避免浏览器把焦点留给关闭按钮
+      el.setAttribute('tabindex', '-1');
+      el.style.outline = 'none';
+      setTimeout(() => el.focus({ preventScroll: true }), 80);
+    }
   };
   UI.closeModal = function (el) {
     if (!el) return;

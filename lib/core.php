@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.7');
+define('TC_VERSION', '2.0.8');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -120,6 +120,10 @@ $TC_SETTINGS_DEFAULTS = array(
     // 演示模式:演示管理员修改的设置将在演示有效期后自动还原
     'demoMode' => false,
     'demoExpireMinutes' => 10,
+    // 游客模式:允许未登录访客直接体验对话;每个访客自动生成独立账号并归入游客组
+    'guestEnabled' => false,
+    // 游客可进行的有效对话轮数(每轮 1 次调用),新游客账号按此发放额度
+    'guestRounds' => 3,
     // 注册邀请码:开启后注册必须提供有效邀请码
     'registerInviteRequired' => false,
     // 注册限流:每 IP 每小时最大注册尝试次数
@@ -403,7 +407,9 @@ function tc_normalize_settings($raw) {
     }
     $s['apiExposedModels'] = array_keys($exposedList);
     $s['demoMode'] = !empty($s['demoMode']);
-    $s['demoExpireMinutes'] = min(60, max(1, (int) (isset($s['demoExpireMinutes']) ? $s['demoExpireMinutes'] : 10) ?: 10));
+    $s['demoExpireMinutes'] = min(1440, max(1, (int) (isset($s['demoExpireMinutes']) ? $s['demoExpireMinutes'] : 10) ?: 10));
+    $s['guestEnabled'] = !empty($s['guestEnabled']);
+    $s['guestRounds'] = min(1000, max(1, (int) (isset($s['guestRounds']) ? $s['guestRounds'] : 3) ?: 3));
     $s['registerInviteRequired'] = !empty($s['registerInviteRequired']);
     $s['registerLimitPerHour'] = min(1000, max(1, (int) (isset($s['registerLimitPerHour']) ? $s['registerLimitPerHour'] : 5) ?: 5));
     return $s;
@@ -709,11 +715,15 @@ function tc_ensure_builtin_group(&$db, $role, $name) {
 function tc_ensure_default_group(&$db) {
     $userGid = tc_ensure_builtin_group($db, 'user', '默认用户组');
     $adminGid = tc_ensure_builtin_group($db, 'admin', '管理员');
+    $guestGid = tc_ensure_builtin_group($db, 'guest', '游客');
     tc_grant_group_all_globals($db, $adminGid);
     foreach ($db['users'] as &$u) {
         $gid = isset($u['groupId']) ? (string) $u['groupId'] : '';
         if (!empty($u['admin'])) {
             if ($gid === '' || !tc_group_by_id($db, $gid)) $u['groupId'] = $adminGid;
+        } elseif (!empty($u['guest'])) {
+            // 游客账号固定归入游客组,便于后台按组限轮数与清理
+            $u['groupId'] = $guestGid;
         } elseif ($gid === '' || !tc_group_by_id($db, $gid)) {
             $u['groupId'] = $userGid;
         }
@@ -1242,8 +1252,19 @@ function tc_sanitize_user($u) {
         'lastSeen' => isset($u['lastSeen']) ? (float) $u['lastSeen'] : 0,
         'admin' => !empty($u['admin']),
         'demo' => !empty($u['demo']),
+        'demoExpireAt' => !empty($u['demoExpireAt']) ? (int) $u['demoExpireAt'] : 0,
+        'guest' => !empty($u['guest']),
+        'lastIp' => isset($u['lastIp']) ? (string) $u['lastIp'] : '',
         'groupId' => isset($u['groupId']) ? $u['groupId'] : null,
     );
+}
+
+// 演示管理员敏感操作守卫:账号管理、查看对话、公告等一律拒绝,并给出统一提示。
+// $reason 传入完整的拒绝原因文案。
+function tc_demo_guard($user, $reason = '演示管理员不可修改此处') {
+    if (is_array($user) && !empty($user['demo'])) {
+        tc_fail(403, $reason);
+    }
 }
 
 function tc_touch_user(&$db, $userId) {
@@ -1252,6 +1273,9 @@ function tc_touch_user(&$db, $userId) {
     foreach ($db['users'] as &$u) {
         if (!isset($u['id']) || $u['id'] !== $userId) continue;
         $u['lastSeen'] = tc_now();
+        // 记录最近来源 IP,后台用户列表据此展示与排查
+        $ip = tc_client_ip();
+        if ($ip !== '' && $ip !== 'unknown') $u['lastIp'] = $ip;
         return;
     }
     unset($u);
@@ -1405,6 +1429,11 @@ function tc_query() {
 }
 
 function tc_send_cors() {
+    // PHP 警告/通知若被 display_errors 直接打印出来,会污染 JSON 响应,
+    // 前端就会报 "Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON"。
+    // 这里统一改为只写日志不输出,保证接口响应始终是合法 JSON。
+    @ini_set('display_errors', '0');
+    @ini_set('html_errors', '0');
     $origin = tc_cfg('cors_origin') ?: '*';
     header('Access-Control-Allow-Origin: ' . $origin);
     header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
