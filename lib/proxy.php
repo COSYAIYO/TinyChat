@@ -1565,6 +1565,19 @@ function tc_api_fetch_models() {
     tc_json(200, array('models' => tc_normalize_models($mapped)));
 }
 
+// 计费结算:billingMode=call 按次;=token 按 (prompt+completion)/1000 × pricePer1k。
+// 按 token 时若上游未返回用量(如部分流式),回退按次计费,避免漏计
+function tc_final_cost($provider, $baseCost, $usage) {
+    $mode = isset($provider['billingMode']) ? $provider['billingMode'] : 'call';
+    if ($mode !== 'token') return $baseCost;
+    $price = isset($provider['pricePer1k']) ? (float) $provider['pricePer1k'] : 0;
+    if ($price <= 0) return 0;
+    $prompt = isset($usage['prompt']) ? (int) $usage['prompt'] : 0;
+    $completion = isset($usage['completion']) ? (int) $usage['completion'] : 0;
+    if ($prompt <= 0 && $completion <= 0) return $baseCost;
+    return round(($prompt + $completion) / 1000 * $price, 4);
+}
+
 function tc_api_proxy($format, $apiKeyOwner = null) {
     $started = tc_now();
     $ctx = tc_with_db(false, function ($db) use ($format, $apiKeyOwner) {
@@ -1721,17 +1734,21 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         $headersSent = false;
         $charged = 0;
         $streamUsage = array('prompt' => 0, 'completion' => 0);
-        $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage) {
+        // 429/5xx 一次自动重试:错误响应不会进入 onChunk(未计费未发送),重试安全
+        $attempt = 0;
+        do {
+            $attempt++;
+            $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage) {
             tc_capture_stream_usage($streamUsage, $chunk, $format);
             if (!$headersSent) {
                 // First successful bytes: charge then start SSE.
                 $ms = tc_now() - $started;
                 $charged = 0;
-                tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged) {
+                tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage) {
                     $fresh = null;
                     foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
                     if (!$fresh) return;
-                    $charged = tc_charge_user($db, $fresh, $cost, isset($body['model']) ? $body['model'] : '');
+                    $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '');
                     tc_touch_user($db, $user['id']);
                     $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
                 });
@@ -1758,6 +1775,9 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             if (function_exists('ob_flush')) @ob_flush();
             flush();
         });
+            if (!( !empty($res['ok']) && !empty($res['status']) && in_array((int) $res['status'], array(429, 500, 502, 503, 504), true) && $attempt < 2 )) break;
+            sleep(1);
+        } while (true);
 
         // 流结束:把累计的上下行 token 写入用量台账(额度扣费已在首字节完成)
         if ($headersSent) {
@@ -1810,11 +1830,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                     if (!$headersSent) {
                         $ms = tc_now() - $started;
                         $charged = 0;
-                        tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged) {
+                        tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage) {
                             $fresh = null;
                             foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
                             if (!$fresh) return;
-                            $charged = tc_charge_user($db, $fresh, $cost, isset($body['model']) ? $body['model'] : '');
+                            $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '');
                             tc_touch_user($db, $user['id']);
                             $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
                         });
@@ -1846,11 +1866,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                         tc_task_finish($taskId, 'completed');
                         $ms = tc_now() - $started;
                         $charged = 0;
-                        tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged) {
+                        tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage) {
                             $fresh = null;
                             foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
                             if (!$fresh) return;
-                            $charged = tc_charge_user($db, $fresh, $cost, isset($body['model']) ? $body['model'] : '');
+                            $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '');
                             tc_touch_user($db, $user['id']);
                             $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
                             tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $cost, $streamUsage['prompt'], $streamUsage['completion']);
@@ -1889,11 +1909,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             tc_task_finish($taskId, 'completed');
             $ms = tc_now() - $started;
             $charged = 0;
-            tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged) {
+            tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage) {
                 $fresh = null;
                 foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
                 if (!$fresh) return;
-                $charged = tc_charge_user($db, $fresh, $cost, isset($body['model']) ? $body['model'] : '');
+                $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '');
                 tc_touch_user($db, $user['id']);
                 $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
                 tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $cost, $streamUsage['prompt'], $streamUsage['completion']);
@@ -1910,7 +1930,14 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         exit;
     }
 
-    $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], false);
+    // 429/5xx 一次自动重试(非流式):响应未返回给客户端前,重试安全
+    $attempt = 0;
+    do {
+        $attempt++;
+        $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], false);
+        if (!( !empty($res['ok']) && !empty($res['status']) && in_array((int) $res['status'], array(429, 500, 502, 503, 504), true) && $attempt < 2 )) break;
+        sleep(1);
+    } while (true);
     if (!empty($res['ok']) && !empty($res['status']) && $res['status'] >= 400) {
         $errBody = isset($res['body']) ? $res['body'] : '';
         tc_context_learn($provider, $body, $errBody);
@@ -1959,11 +1986,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         $bodyUsage['prompt'] = (int) (isset($u['prompt_tokens']) ? $u['prompt_tokens'] : (isset($u['input_tokens']) ? $u['input_tokens'] : 0));
         $bodyUsage['completion'] = (int) (isset($u['completion_tokens']) ? $u['completion_tokens'] : (isset($u['output_tokens']) ? $u['output_tokens'] : 0));
     }
-    tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, &$quota, $bodyUsage) {
+    tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, &$quota, $bodyUsage, $provider) {
         $fresh = null;
         foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
         if (!$fresh) return;
-        $charged = tc_charge_user($db, $fresh, $cost, isset($body['model']) ? $body['model'] : '');
+        $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $bodyUsage), isset($body['model']) ? $body['model'] : '');
         tc_touch_user($db, $user['id']);
         $quota = isset($fresh['quota']) ? $fresh['quota'] : 0;
         tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $charged, $bodyUsage['prompt'], $bodyUsage['completion']);

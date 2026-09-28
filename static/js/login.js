@@ -107,6 +107,11 @@ fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
     const row = $('reg-agree-row');
     if (row) row.classList.remove('hidden');
   }
+  // 注册邀请码:启用时注册页展示输入框
+  if (cfg && cfg.registerInviteRequired) {
+    const row = $('reg-invite-row');
+    if (row) row.classList.remove('hidden');
+  }
   if (!cfg || !cfg.needsSetup) return;
   const setup = $('setup-form');
   const login = $('login-form');
@@ -146,7 +151,10 @@ if ($('setup-form')) {
 
 $('register-form').addEventListener('submit', (e) => {
   e.preventDefault();
-  submitAuth('/api/auth/register', $('reg-name').value.trim(), $('reg-password').value, $('register-btn'), '注册并登录', $('reg-email') ? $('reg-email').value.trim() : '', { agreementAccepted: !!($('reg-agree') && $('reg-agree').checked) });
+  submitAuth('/api/auth/register', $('reg-name').value.trim(), $('reg-password').value, $('register-btn'), '注册并登录', $('reg-email') ? $('reg-email').value.trim() : '', {
+    agreementAccepted: !!($('reg-agree') && $('reg-agree').checked),
+    invite: ($('reg-invite') && $('reg-invite').value.trim()) || '',
+  });
 });
 
 $('show-register').addEventListener('click', (e) => {

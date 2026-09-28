@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '1.3.0');
+define('TC_VERSION', '1.4.0');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -113,6 +113,8 @@ $TC_SETTINGS_DEFAULTS = array(
     'announcement' => array('enabled' => false, 'text' => '', 'updatedAt' => 0),
     // OpenAI 兼容 API 出口:允许用户生成 sk- 密钥通过第三方客户端调用
     'apiKeysEnabled' => true,
+    // 注册邀请码:开启后注册必须提供有效邀请码
+    'registerInviteRequired' => false,
 );
 $TC_SETTINGS_DEFAULTS['mailTemplates'] = tc_mail_default_templates();
 
@@ -376,6 +378,7 @@ function tc_normalize_settings($raw) {
         'updatedAt' => $annChanged,
     );
     $s['apiKeysEnabled'] = !array_key_exists('apiKeysEnabled', $s) || !empty($s['apiKeysEnabled']);
+    $s['registerInviteRequired'] = !empty($s['registerInviteRequired']);
     return $s;
 }
 
@@ -519,6 +522,7 @@ function tc_empty_db() {
         'packages' => array(),
         'redemptionCodes' => array(),
         'quotaLedger' => array(),
+        'inviteCodes' => array(),
     );
 }
 
@@ -628,7 +632,7 @@ function tc_migrate_db($raw) {
     $base = tc_empty_db();
     $db = array_merge($base, is_array($raw) ? $raw : array());
     $db['version'] = TC_DB_VERSION;
-    foreach (array('users', 'providers', 'userGroups', 'accessRules', 'assistantCategories', 'assistants', 'packages', 'redemptionCodes', 'quotaLedger') as $k) {
+    foreach (array('users', 'providers', 'userGroups', 'accessRules', 'assistantCategories', 'assistants', 'packages', 'redemptionCodes', 'quotaLedger', 'inviteCodes') as $k) {
         $db[$k] = isset($db[$k]) && is_array($db[$k]) ? array_values($db[$k]) : array();
     }
     tc_migrate_provider_keys($db);

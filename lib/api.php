@@ -78,6 +78,8 @@ function tc_client_provider($p, $owner = false, $admin = false) {
         'apiFormat' => isset($p['apiFormat']) ? $p['apiFormat'] : 'chat',
         'models' => isset($p['models']) ? $p['models'] : array(),
         'costPerCall' => tc_provider_cost($p),
+        'billingMode' => isset($p['billingMode']) && $p['billingMode'] === 'token' ? 'token' : 'call',
+        'pricePer1k' => isset($p['pricePer1k']) && is_numeric($p['pricePer1k']) ? (float) $p['pricePer1k'] : 0,
         'scope' => isset($p['scope']) ? $p['scope'] : 'user',
         'enabled' => tc_provider_enabled($p),
         'ownerId' => isset($p['ownerId']) ? $p['ownerId'] : null,
@@ -169,9 +171,16 @@ function tc_normalize_provider_input($b, $base = array()) {
         $p['apiFormat'] = $b['apiFormat'];
     }
     if (array_key_exists('costPerCall', $b)) $p['costPerCall'] = max(0, min(1000, (float) $b['costPerCall']));
+    // 计费模式:call=按次(默认,costPerCall);token=按千 token(pricePer1k,用量缺失时回退按次)
+    if (array_key_exists('billingMode', $b) && in_array($b['billingMode'], array('call', 'token'), true)) {
+        $p['billingMode'] = $b['billingMode'];
+    }
+    if (array_key_exists('pricePer1k', $b)) $p['pricePer1k'] = max(0, min(1000, (float) $b['pricePer1k']));
     if (array_key_exists('models', $b)) $p['models'] = tc_normalize_models($b['models']);
     if (empty($p['apiFormat'])) $p['apiFormat'] = 'chat';
     if (!isset($p['costPerCall']) || !is_numeric($p['costPerCall'])) $p['costPerCall'] = 1;
+    if (!isset($p['billingMode']) || !in_array($p['billingMode'], array('call', 'token'), true)) $p['billingMode'] = 'call';
+    if (!isset($p['pricePer1k']) || !is_numeric($p['pricePer1k'])) $p['pricePer1k'] = 0;
     if (empty($p['name'])) $p['name'] = !empty($p['baseUrl']) ? $p['baseUrl'] : '未命名供应商';
     return $p;
 }
@@ -599,6 +608,7 @@ function tc_api_public_config($db) {
             'text' => isset($s['announcement']['text']) ? (string) $s['announcement']['text'] : '',
             'updatedAt' => (int) (isset($s['announcement']['updatedAt']) ? $s['announcement']['updatedAt'] : 0),
         ),
+        'registerInviteRequired' => !empty($s['registerInviteRequired']),
     ));
 }
 
@@ -635,6 +645,15 @@ function tc_api_register() {
         $b = tc_read_json_body();
         if (empty($db['settings']['allowRegister'])) tc_fail(403, '站点已关闭注册，请联系管理员开通账号');
         if (!empty($db['settings']['agreementEnabled']) && empty($b['agreementAccepted'])) tc_fail(400, '请先阅读并同意用户协议');
+        $invite = strtoupper(trim((string) ($b['invite'] ?? '')));
+        $inviteIndex = -1;
+        if (!empty($db['settings']['registerInviteRequired'])) {
+            if ($invite === '') tc_fail(400, '注册需要邀请码，请向管理员索取');
+            foreach ($db['inviteCodes'] as $i => $c) {
+                if ((isset($c['code']) && strtoupper((string) $c['code']) === $invite) && empty($c['usedBy'])) { $inviteIndex = $i; break; }
+            }
+            if ($inviteIndex < 0) tc_fail(400, '邀请码无效或已被使用');
+        }
         $name = trim((string) (isset($b['name']) ? $b['name'] : ''));
         $password = (string) (isset($b['password']) ? $b['password'] : '');
         $email = strtolower(trim((string) ($b['email'] ?? '')));
@@ -655,6 +674,12 @@ function tc_api_register() {
             $token = bin2hex(random_bytes(24)); $user['emailTokenHash'] = hash('sha256', $token); $user['emailTokenExpires'] = tc_now() + 86400000;
         }
         $db['users'][] = $user;
+        // 核销邀请码:绑定使用者,防止重复使用
+        if ($inviteIndex >= 0) {
+            $db['inviteCodes'][$inviteIndex]['usedBy'] = $user['id'];
+            $db['inviteCodes'][$inviteIndex]['usedByName'] = $name;
+            $db['inviteCodes'][$inviteIndex]['usedAt'] = tc_now();
+        }
         tc_add_quota($db, $user, !empty($db['settings']['freeQuotaUnlimited']) ? -1 : $db['settings']['freeQuota']);
         if (!empty($db['settings']['emailVerificationEnabled'])) { $link = tc_public_base_url() . '/login?verify=' . rawurlencode($token); [$subject,$html] = tc_render_mail_template($db['settings'], 'verify', $name, $link, '24 小时'); if (!tc_mail_send($db['settings'], $email, $subject, $html)) tc_fail(503, '验证邮件发送失败，请联系管理员'); tc_json(200, array('ok'=>true,'pendingVerification'=>true,'user'=>tc_sanitize_user($user))); }
         tc_json(200, array('token' => tc_issue_token($user, $db['settings']), 'user' => tc_sanitize_user($user)));
@@ -1392,6 +1417,79 @@ function tc_api_me_apikeys_delete($id) {
         if (count($kept) === count($list)) tc_fail(404, '密钥不存在');
         $user['apiKeys'] = $kept;
         tc_replace_user($db, $user);
+        tc_json(200, array('ok' => true));
+    });
+}
+
+// ---- 注册邀请码 ----
+function tc_api_admin_usage_export() {
+    tc_with_db(false, function ($db) {
+        tc_require_admin($db);
+        $ledger = tc_assoc(isset($db['stats']['usageLedger']) ? $db['stats']['usageLedger'] : array());
+        $names = array();
+        foreach ($db['users'] as $u) $names[(string) $u['id']] = (string) (isset($u['name']) ? $u['name'] : '');
+        $esc = function ($v) { return '"' . str_replace('"', '""', (string) $v) . '"'; };
+        $out = "用户,日期,模型,调用次数,扣费,输入tokens,输出tokens\n";
+        foreach ($ledger as $uid => $daysMap) {
+            $uname = isset($names[(string) $uid]) && $names[(string) $uid] !== '' ? $names[(string) $uid] : $uid;
+            foreach (tc_assoc($daysMap) as $day => $models) {
+                foreach (tc_assoc($models) as $model => $cell) {
+                    $cell = tc_assoc($cell);
+                    $out .= implode(',', array(
+                        $esc($uname), $esc($day), $esc($model),
+                        (int) (isset($cell['calls']) ? $cell['calls'] : 0),
+                        round((float) (isset($cell['cost']) ? $cell['cost'] : 0), 4),
+                        (int) (isset($cell['prompt']) ? $cell['prompt'] : 0),
+                        (int) (isset($cell['completion']) ? $cell['completion'] : 0),
+                    )) . "\n";
+                }
+            }
+        }
+        tc_db_commit();
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename="tinychat-usage-' . date('Ymd-His') . '.csv"');
+        header('Cache-Control: no-store');
+        echo "\xEF\xBB\xBF" . $out;
+        exit;
+    });
+}
+
+function tc_api_admin_invites_list() {
+    tc_with_db(false, function ($db) {
+        tc_require_admin($db);
+        $codes = array_values((isset($db['inviteCodes']) && is_array($db['inviteCodes']) ? $db['inviteCodes'] : array()));
+        usort($codes, function ($a, $b) { return ((int) ($b['createdAt'] ?? 0)) - ((int) ($a['createdAt'] ?? 0)); });
+        tc_json(200, array(
+            'codes' => $codes,
+            'required' => !empty($db['settings']['registerInviteRequired']),
+        ));
+    });
+}
+
+function tc_api_admin_invites_create() {
+    tc_with_db(true, function (&$db) {
+        tc_require_admin($db);
+        $b = tc_read_json_body();
+        $count = min(50, max(1, (int) (isset($b['count']) ? $b['count'] : 5) ?: 5));
+        $created = array();
+        for ($i = 0; $i < $count; $i++) {
+            $code = strtoupper(tc_uid(4));
+            $db['inviteCodes'][] = array('code' => $code, 'createdAt' => tc_now(), 'usedBy' => null, 'usedAt' => 0);
+            $created[] = $code;
+        }
+        tc_json(200, array('created' => $created));
+    });
+}
+
+function tc_api_admin_invites_delete($code) {
+    tc_with_db(true, function (&$db) use ($code) {
+        tc_require_admin($db);
+        $code = strtoupper(trim((string) $code));
+        $kept = array_values(array_filter((isset($db['inviteCodes']) && is_array($db['inviteCodes']) ? $db['inviteCodes'] : array()), function ($c) use ($code) {
+            return !is_array($c) || !isset($c['code']) || strtoupper((string) $c['code']) !== $code;
+        }));
+        if (count($kept) === count($db['inviteCodes'])) tc_fail(404, '邀请码不存在');
+        $db['inviteCodes'] = $kept;
         tc_json(200, array('ok' => true));
     });
 }
