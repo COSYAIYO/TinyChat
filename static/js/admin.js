@@ -687,9 +687,7 @@ async function saveAccessRule(groupId, providerId, modelIds, row) {
 }
 
 // ============ 供应商管理 ============
-// API Key 显示/隐藏切换
-const apKeyInput = $('ap-key');
-const toggleKeyBtn = $('ap-key-toggle');
+// ---- 多密钥编辑器:每行 = 名称 + Key(掩码/明文) + 显示/删除 ----
 function setKeyVisibility(input, button, visible) {
   if (!input || !button) return;
   input.type = visible ? 'text' : 'password';
@@ -697,33 +695,144 @@ function setKeyVisibility(input, button, visible) {
   button.title = visible ? '隐藏 Key' : '显示 Key';
   button.setAttribute('aria-label', button.title);
 }
-if (apKeyInput && toggleKeyBtn) {
-  toggleKeyBtn.addEventListener('click', async () => {
-    // 编辑模式且输入框为空:点小眼睛取回服务器上已保存的 Key(仅限勾选了「保存后保持显示」的供应商)
-    const editId = $('ap-save').dataset.editId;
-    if (editId && apKeyInput.value.trim() === '') {
-      if (!window.apEditingRevealable) {
-        toast('该 Key 保存时未勾选「保存后保持显示」，无法查看', true);
-        return;
-      }
-      try {
-        toggleKeyBtn.disabled = true;
-        const rr = await api('/api/providers/' + encodeURIComponent(editId) + '/key', { method: 'POST' });
-        const dd = await rr.json().catch(() => ({}));
-        if (!rr.ok) throw new Error((dd.error && dd.error.message) || '无法查看 Key');
-        apKeyInput.value = dd.key || '';
-        setKeyVisibility(apKeyInput, toggleKeyBtn, true);
-      } catch (err) {
-        toast(err.message || '无法查看 Key', true);
-      } finally {
-        toggleKeyBtn.disabled = false;
-      }
-      return;
-    }
-    setKeyVisibility(apKeyInput, toggleKeyBtn, apKeyInput.type !== 'text');
-    apKeyInput.focus();
+// 当前编辑中的密钥列表:[{id,name,apiKey,revealable}]
+let AP_KEYS = [];
+let AP_KEYS_EDIT_ID = null;    // 编辑模式下的供应商 id(用于小眼睛回显)
+let AP_KEYS_REVEALABLE = false;
+function apKeysBox() { return $('ap-keys'); }
+function renderApKeys() {
+  const box = apKeysBox();
+  if (!box) return;
+  // 每把 Key 需要有稳定 id 供模型绑定引用(新加的行为空 id)
+  AP_KEYS.forEach((k) => { if (!k.id) k.id = 'k' + Math.random().toString(36).slice(2, 9); });
+  box.innerHTML = AP_KEYS.map((k, i) =>
+    '<div class="ap-key-row" data-idx="' + i + '">'
+    + '<input class="ap-key-name" type="text" data-idx="' + i + '" value="' + escapeHtml(k.name || '') + '" placeholder="Key 名称（多个时必填）" maxlength="40" autocomplete="off">'
+    + '<div class="pw-wrap ap-key-pw">'
+    + '<input class="ap-key-val" type="password" data-idx="' + i + '" value="' + escapeHtml(k.apiKey || '') + '" placeholder="sk-..." autocomplete="off">'
+    + '<button class="pw-toggle ap-key-eye" type="button" data-idx="' + i + '" title="显示 Key" aria-label="显示 Key">' + window.OC.icon('eye', 14) + '</button>'
+    + '</div>'
+    + '<button class="icon-btn ap-key-del" type="button" data-del="' + i + '" title="移除该 Key" aria-label="移除该 Key">' + window.OC.icon('close', 14) + '</button>'
+    + '</div>'
+  ).join('');
+  const addBtn = $('ap-key-add');
+  if (addBtn) addBtn.disabled = AP_KEYS.length >= 20;
+  // 密钥列表变化时同步给模型清单(用于密钥列下拉);未命名的暂用「未命名 N」
+  if (apModelList && apModelList.setKeys) {
+    apModelList.setKeys(AP_KEYS.map((k, i) => ({ id: k.id, name: (k.name || '').trim() || ('未命名 ' + (i + 1)) })));
+  }
+}
+function apKeysFromProvider(p) {
+  AP_KEYS = [];
+  AP_KEYS_EDIT_ID = p && p.id ? p.id : null;
+  AP_KEYS_REVEALABLE = !!(p && p.keyRevealable);
+  const list = (p && Array.isArray(p.keys)) ? p.keys : [];
+  if (list.length) {
+    AP_KEYS = list.map((k) => ({ id: String(k.id || ''), name: String(k.name || ''), apiKey: String(k.apiKey || ''), hasKey: !!k.hasKey }));
+  } else if (p && p.hasKey) {
+    // 旧数据:单 Key
+    AP_KEYS = [{ id: 'k0', name: '', apiKey: String(p.apiKey || '••••••'), hasKey: true }];
+  }
+  if (!AP_KEYS.length) AP_KEYS = [{ id: '', name: '', apiKey: '' }];
+  renderApKeys();
+}
+function apKeysPayload() {
+  return AP_KEYS.map((k) => ({ id: k.id || '', name: String(k.name || '').trim(), apiKey: String(k.apiKey || '') }));
+}
+// 只更新模型表密钥下拉的选项文字(不重渲染,避免输入时丢焦点)
+function syncKeySelectLabels() {
+  const opts = AP_KEYS.map((k, i) => ({ id: k.id, name: (k.name || '').trim() || ('未命名 ' + (i + 1)) }));
+  document.querySelectorAll('#ap-models-list select.mkey').forEach((sel) => {
+    Array.from(sel.options).forEach((o) => {
+      if (!o.value) return;
+      const hit = opts.find((x) => String(x.id) === o.value);
+      if (hit) o.textContent = hit.name || hit.id;
+    });
   });
 }
+// 校验:多 Key 时名称必填且不可重复;返回错误信息或 ''
+function apKeysValidate() {
+  const named = AP_KEYS.filter((k) => String(k.apiKey || '').trim() !== '');
+  if (named.length < 2) return '';
+  const seen = {};
+  for (const k of named) {
+    const nm = String(k.name || '').trim();
+    if (!nm) return '配置了多个 Key 时，每个 Key 都需要填写名称';
+    const low = nm.toLowerCase();
+    if (seen[low]) return 'Key 名称不能重复：' + nm;
+    seen[low] = true;
+  }
+  return '';
+}
+(function initApKeys() {
+  const box = apKeysBox();
+  if (!box) return;
+  const addBtn = $('ap-key-add');
+  if (addBtn) addBtn.addEventListener('click', () => {
+    if (AP_KEYS.length >= 20) return;
+    AP_KEYS.push({ id: '', name: '', apiKey: '' });
+    renderApKeys();
+  });
+  box.addEventListener('input', (e) => {
+    const nameInp = e.target.closest ? e.target.closest('input.ap-key-name') : null;
+    if (nameInp) {
+      const k = AP_KEYS[Number(nameInp.dataset.idx)];
+      if (k) k.name = nameInp.value;
+      // 同步模型表的密钥下拉标签(全量重渲染会丢焦点,这里只更新选项文字)
+      syncKeySelectLabels();
+      return;
+    }
+    const valInp = e.target.closest ? e.target.closest('input.ap-key-val') : null;
+    if (valInp) { const k = AP_KEYS[Number(valInp.dataset.idx)]; if (k) { k.apiKey = valInp.value; k.hasKey = true; } return; }
+  });
+  box.addEventListener('click', async (e) => {
+    const del = e.target.closest ? e.target.closest('[data-del]') : null;
+    if (del) {
+      const i = Number(del.dataset.del);
+      const victim = AP_KEYS[i];
+      // 该密钥正被模型绑定时先提示:移除后这些模型会回退到默认密钥
+      const bound = victim && victim.id && apModelList
+        ? (apModelList.getCatalog() || []).filter((m) => String(m.keyId || '') === String(victim.id))
+        : [];
+      if (bound.length) {
+        const names = bound.slice(0, 3).map((m) => m.name || m.id).join('、');
+        const more = bound.length > 3 ? ' 等 ' + bound.length + ' 个' : '';
+        const ok = window.OCUI
+          ? await window.OCUI.confirm({ title: '移除密钥', message: '「' + (victim.name || '未命名') + '」正被模型 ' + names + more + ' 使用，移除后这些模型会改用默认密钥。确认移除？', danger: true, confirmText: '移除' })
+          : confirm('密钥「' + (victim.name || '未命名') + '」正被 ' + bound.length + ' 个模型使用，移除后它们会改用默认密钥。确认?');
+        if (!ok) return;
+      }
+      AP_KEYS.splice(i, 1);
+      if (!AP_KEYS.length) AP_KEYS.push({ id: '', name: '', apiKey: '' });
+      renderApKeys();
+      return;
+    }
+    const eye = e.target.closest ? e.target.closest('.ap-key-eye') : null;
+    if (!eye) return;
+    const i = Number(eye.dataset.idx);
+    const k = AP_KEYS[i];
+    if (!k) return;
+    const input = box.querySelector('input.ap-key-val[data-idx="' + i + '"]');
+    if (!input) return;
+    // 编辑模式 + 输入为空 + 属主勾选过「保存后保持显示」:取回服务器上保存的明文
+    if (AP_KEYS_EDIT_ID && String(k.apiKey || '').trim() === '') {
+      if (!AP_KEYS_REVEALABLE) { toast('该 Key 保存时未勾选「保存后保持显示」，无法查看', true); return; }
+      try {
+        eye.disabled = true;
+        const rr = await api('/api/providers/' + encodeURIComponent(AP_KEYS_EDIT_ID) + '/key?keyId=' + encodeURIComponent(k.id || ''), { method: 'POST' });
+        const dd = await rr.json().catch(() => ({}));
+        if (!rr.ok) throw new Error((dd.error && dd.error.message) || '无法查看 Key');
+        k.apiKey = dd.key || '';
+        input.value = k.apiKey;
+        setKeyVisibility(input, eye, true);
+      } catch (err) {
+        toast(err.message || '无法查看 Key', true);
+      } finally { eye.disabled = false; }
+      return;
+    }
+    setKeyVisibility(input, eye, input.type !== 'text');
+  });
+})();
 
 const apModelList = window.OC && window.OC.bindModelChecklist
   ? window.OC.bindModelChecklist({
@@ -831,18 +940,16 @@ async function loadProviders() {
       showAdminTab('providers');
       $('ap-name').value = target.name;
       $('ap-baseurl').value = target.baseUrl;
-      // 接口只回掩码。留空表示不改密钥，填写新值才会覆盖；默认勾选「保存后保持显示」。
-      $('ap-key').value = '';
-      $('ap-key').type = 'password';
-      toggleKeyBtn.innerHTML = window.OC.icon('eye', 14);
-      $('ap-key').placeholder = target.hasKey
-        ? (target.keyRevealable ? ('已设置 ' + (target.apiKey || '') + '，留空则保持') : '已加密保存，不可查看；更换请输入新 Key')
-        : 'sk-...';
+      // 接口只回掩码:密钥编辑器里空值表示「沿用已保存的密钥」,输入新值才覆盖
+      apKeysFromProvider(target);
       $('ap-key-keep').checked = target.keyRevealable !== false;
       window.apEditingRevealable = target.keyRevealable !== false;
       delete $('ap-save').dataset.origKey;
       if (window.__setApFormat) window.__setApFormat(target.apiFormat);
-      if (apModelList) apModelList.setEnabled(target.models || []);
+      if (apModelList) {
+        apModelList.setKeys((target.keys || []).map((k) => ({ id: k.id, name: k.name || k.id })));
+        apModelList.setEnabled(target.models || []);
+      }
       $('ap-cost').value = target.costPerCall;
       if (window.__setApBilling) window.__setApBilling(target.billingMode || 'call');
       if ($('ap-price')) $('ap-price').value = target.pricePer1k != null ? target.pricePer1k : 0;
@@ -1213,12 +1320,14 @@ function fillMineruSettings(s) {
 })();
 $('ap-fetch-models').addEventListener('click', async () => {
   const baseUrl = $('ap-baseurl').value.trim();
-  const apiKey = $('ap-key').value.trim();
   const apiFormat = $('ap-format').getAttribute('data-value') || 'chat';
   if (!baseUrl) return toast('请先填写 Base URL', true);
-  // 编辑模式 key 未填时用原 key 尝试
   const editId = $('ap-save').dataset.editId;
-  const usedKey = apiKey.indexOf('••') < 0 ? apiKey : '';
+  // 多密钥:默认用第一把已填/已保存的 Key 获取;也可在下方下拉里指定用哪把
+  const usable = AP_KEYS.filter((k) => String(k.apiKey || '').trim() !== '');
+  const pickKey = usable[0];
+  const usedKey = pickKey && pickKey.apiKey.indexOf('••') < 0 ? pickKey.apiKey.trim() : '';
+  const usedKeyId = pickKey ? pickKey.id : '';
   if (!usedKey && !editId) { toast('请先填写 API Key', true); return; }
   const btn = $('ap-fetch-models');
   btn.disabled = true;
@@ -1227,7 +1336,7 @@ $('ap-fetch-models').addEventListener('click', async () => {
     const r = await api('/api/proxy/fetch-models', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ baseUrl, apiKey: usedKey, apiFormat, providerId: editId || undefined }),
+      body: JSON.stringify({ baseUrl, apiKey: usedKey, apiFormat, keyId: usedKeyId || undefined, providerId: editId || undefined }),
     });
     const data = await readJsonSafe(r);
     if (!r.ok) return toast((data.error && data.error.message) || ('获取失败（HTTP ' + r.status + '）'), true);
@@ -1237,6 +1346,8 @@ $('ap-fetch-models').addEventListener('click', async () => {
       window.OC.openFetchedModelsModal(models, {
         title: '获取到的模型',
         existing: apModelList ? apModelList.getCatalog() : [],
+        keys: AP_KEYS.filter((k) => k.id).map((k) => ({ id: k.id, name: k.name || k.id })),
+        fetchedKeyId: usedKeyId || '',
         onApply: (picked, staleIds) => {
           resetModelTestResults();
           if (apModelList) apModelList.applyFetched(picked, staleIds);
@@ -1319,9 +1430,11 @@ function keepPassedModels() {
 }
 
 async function requestModelTest(model) {
+  const usable = AP_KEYS.filter((k) => String(k.apiKey || '').trim() !== '');
+  const pick = usable[0];
   const payload = {
     baseUrl: $('ap-baseurl').value.trim(),
-    apiKey: $('ap-key').value.trim(),
+    apiKey: pick && pick.apiKey.indexOf('••') < 0 ? pick.apiKey.trim() : '',
     apiFormat: ($('ap-format') && $('ap-format').getAttribute('data-value')) || 'chat',
     model: model,
     prompt: ($('ap-test-prompt') && $('ap-test-prompt').value.trim()) || '回复一个字：好',
@@ -1445,18 +1558,22 @@ function setModelTestBusy(on) {
 $('ap-save').addEventListener('click', async () => {
   const name = $('ap-name').value.trim();
   const baseUrl = $('ap-baseurl').value.trim();
-  const apiKey = $('ap-key').value.trim();
   const apiFormat = $('ap-format').getAttribute('data-value') || 'chat';
   const cost = Number($('ap-cost').value) || 1;
   if (!baseUrl) return toast('请填写 Base URL', true);
   const models = apModelList ? apModelList.getEnabled() : [];
   if (!models.length) return toast('请先获取模型并至少勾选一个', true);
-
+  const keyErr = apKeysValidate();
+  if (keyErr) return toast(keyErr, true);
+  const keys = apKeysPayload().filter((k) => String(k.apiKey || '').trim() !== '');
   const editId = $('ap-save').dataset.editId;
+  if (!keys.length && !editId) return toast('请至少填写一个 API Key', true);
   const url = editId ? '/api/admin/providers/' + editId : '/api/providers';
-  const payload = { name, baseUrl, apiFormat, models, costPerCall: cost, billingMode: ($('ap-billing') && $('ap-billing').getAttribute('data-value')) || 'call', pricePer1k: Math.min(1000, Math.max(0, parseFloat($('ap-price') && $('ap-price').value) || 0)), scope: 'global', keyRevealable: !!($('ap-key-keep') && $('ap-key-keep').checked) };
-  // 编辑时留空或仍是掩码，表示不改密钥；服务端会保留原值。
-  if (!(editId && (!apiKey || apiKey.includes('••')))) payload.apiKey = apiKey;
+  const payload = { name, baseUrl, apiFormat, models, keys, costPerCall: cost, billingMode: ($('ap-billing') && $('ap-billing').getAttribute('data-value')) || 'call', pricePer1k: Math.min(1000, Math.max(0, parseFloat($('ap-price') && $('ap-price').value) || 0)), scope: 'global', keyRevealable: !!($('ap-key-keep') && $('ap-key-keep').checked) };
+  // 兼容旧字段:取第一把 Key 作为主 Key(编辑时全部为掩码则不带,由服务端保留)
+  const firstPlain = keys.find((k) => k.apiKey.indexOf('••') < 0);
+  if (firstPlain) payload.apiKey = firstPlain.apiKey;
+  else if (!editId) payload.apiKey = (keys[0] && keys[0].apiKey) || '';
   const r = await api(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1469,14 +1586,13 @@ $('ap-save').addEventListener('click', async () => {
   window.apEditingRevealable = false;
   $('ap-save').textContent = '保存供应商';
   // 恢复表单到「新增」默认态；「保存后保持显示」默认勾选
-  $('ap-name').value = ''; $('ap-baseurl').value = ''; $('ap-key').value = '';
+  $('ap-name').value = ''; $('ap-baseurl').value = '';
+  apKeysFromProvider(null);
   resetModelTestResults();
-  if (apModelList) apModelList.reset();
+  if (apModelList) { apModelList.setKeys([]); apModelList.reset(); }
   // 计费模式一并回到默认「按次」，避免下次新增供应商继承上次编辑的 token 模式
   if (window.__setApBilling) window.__setApBilling('call');
   if ($('ap-price')) $('ap-price').value = 0;
-  setKeyVisibility(apKeyInput, toggleKeyBtn, false);
-  if (apKeyInput) apKeyInput.placeholder = 'sk-...';
   if ($('ap-key-keep')) $('ap-key-keep').checked = true;
   loadProviders(); loadStats();
 });

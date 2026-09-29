@@ -232,7 +232,11 @@
     return menu;
   }
 
-  function modelTableHtml(rowsHtml) {
+  function modelTableHtml(rowsHtml, opts) {
+    opts = opts || {};
+    const keyHead = opts.showKey
+      ? '<th class="col-key" title="该模型用哪把 Key 请求上游；仅在供应商配置了多个 Key 时出现">密钥</th>'
+      : '';
     return '<table class="model-table">'
       + '<thead><tr>'
       + '<th class="col-check"></th>'
@@ -241,6 +245,7 @@
       + '<th class="col-mtok" title="单次回答最多生成的 token，留空则跟随全局的单次输出上限">max_tokens</th>'
       + '<th class="col-ctx" title="该模型的上下文窗口（token），留空则不做限制">最大上下文</th>'
       + '<th class="col-cost" title="该模型单次调用扣减的额度次数；留空则跟随供应商的「每次调用扣费次数」">单次扣减</th>'
+      + keyHead
       + '<th class="col-img" title="标记为生图模型：调用对话接口时会自动改用 images/generations（未标记时按模型名自动判断）">生图</th>'
       + '<th class="col-img" title="标记为视频生成模型：调用对话接口时会自动改用 videos（未标记时按模型名自动判断）">视频</th>'
       + '</tr></thead><tbody>'
@@ -283,6 +288,25 @@
     return '<span class="mcost-static">' + (v === '' ? '<i class="muted">跟随</i>' : v) + '</span>';
   }
 
+  // 模型绑定的密钥列(仅多 Key 时渲染):下拉选择,空值表示跟随默认密钥
+  function modelKeyCell(m, opts) {
+    const keys = (opts && opts.keys) || [];
+    if (!keys.length) return '';
+    // 未显式绑定且配置了多把 Key 时,默认显示第一把(与后端「默认密钥=第一把」一致)
+    const cur = (m && m.keyId) ? String(m.keyId) : (keys.length > 1 ? String(keys[0].id) : '');
+    const optsHtml = ['<option value="">默认密钥</option>']
+      .concat(keys.map((k) => {
+        const id = escapeHtml(String(k.id));
+        const nm = escapeHtml(String(k.name || k.id));
+        return '<option value="' + id + '"' + (String(k.id) === cur ? ' selected' : '') + '>' + nm + '</option>';
+      })).join('');
+    if (opts.stale) {
+      const hit = keys.find((k) => String(k.id) === cur);
+      return '<td class="col-key">' + (hit ? escapeHtml(hit.name || hit.id) : '<i class="muted">默认</i>') + '</td>';
+    }
+    return '<td class="col-key"><select class="mkey" data-mid="' + escapeHtml(m.id) + '">' + optsHtml + '</select></td>';
+  }
+
   function modelRowHtml(m, opts) {
     opts = opts || {};
     const checked = opts.checked ? ' checked' : '';
@@ -306,6 +330,7 @@
       + '<td class="col-name">' + modelNameCell(m, !opts.stale) + '</td>'
       + numCells
       + '<td class="col-cost">' + modelCostCell(m, !opts.stale) + '</td>'
+      + modelKeyCell(m, opts)
       + imageCell
       + videoCell
       + '</tr>';
@@ -326,6 +351,8 @@
     const allEl = cfg.allId ? document.getElementById(cfg.allId) : null;
     const countEl = cfg.countId ? document.getElementById(cfg.countId) : null;
     const addBtn = cfg.addId ? document.getElementById(cfg.addId) : null;
+    // 多密钥:可选的密钥列表 [{id,name}],为空则表格不显示密钥列
+    let keyOptions = Array.isArray(cfg.keys) ? cfg.keys.slice() : [];
 
     let catalog = [];
     const selected = new Set();
@@ -354,6 +381,8 @@
         // 单次扣减:只有调用方显式携带且是数字时才更新(上游原始列表没有该字段)
         const hasCost = !!(m && Object.prototype.hasOwnProperty.call(m, 'cost') && m.cost !== '' && m.cost !== null && isFinite(Number(m.cost)));
         const incomingCost = hasCost ? Math.max(0, Math.min(1000, Number(m.cost))) : undefined;
+        const hasKey = !!(m && Object.prototype.hasOwnProperty.call(m, 'keyId') && String(m.keyId) !== '');
+        const incomingKey = hasKey ? String(m.keyId) : undefined;
         const found = catalog.find((x) => x.id === id);
         if (found) {
           if (updateName && incoming) found.name = incoming;
@@ -362,6 +391,7 @@
           if (hasImage) found.image = incomingImage;
           if (hasVideo) found.video = incomingVideo;
           if (hasCost) found.cost = incomingCost;
+          if (hasKey) found.keyId = incomingKey; else delete found.keyId;
         } else {
           const item = { id, name: incoming || id };
           NUM_FIELDS.forEach((f) => { item[f] = incomingNums[f] !== undefined ? incomingNums[f] : 0; });
@@ -370,6 +400,7 @@
           if (hasVideo) item.video = incomingVideo;
           else if (window.OC && OC.isVideoModelName) item.video = OC.isVideoModelName(id);
           if (hasCost) item.cost = incomingCost;
+          if (hasKey) item.keyId = incomingKey;
           catalog.push(item);
           if (selectNew) selected.add(id);
         }
@@ -424,8 +455,8 @@
         return;
       }
       listEl.innerHTML = modelTableHtml(vis.map((m) =>
-        modelRowHtml(m, { checked: selected.has(m.id) })
-      ).join(''));
+        modelRowHtml(m, { checked: selected.has(m.id), keys: keyOptions })
+      ).join(''), { showKey: keyOptions.length > 1 });
       updateMeta();
     }
 
@@ -440,6 +471,14 @@
       if (vidInp) {
         const item = catalog.find((x) => x.id === vidInp.dataset.mid);
         if (item) item.video = !!vidInp.checked;
+        return;
+      }
+      const keySel = e.target && e.target.closest ? e.target.closest('select.mkey[data-mid]') : null;
+      if (keySel) {
+        const item = catalog.find((x) => x.id === keySel.dataset.mid);
+        if (item) {
+          if (keySel.value) item.keyId = keySel.value; else delete item.keyId;
+        }
         return;
       }
       const inp = e.target && e.target.closest ? e.target.closest('input[type="checkbox"][data-mid]') : null;
@@ -497,7 +536,9 @@
     function addManual() {
       const id = qEl ? qEl.value.trim() : '';
       if (!id) return false;
-      addToCatalog([{ id, name: id }], true);
+      // 多密钥时,手动新增的模型默认绑定第一把密钥,避免落到「默认密钥」而与预期不符
+      const defKey = keyOptions.length > 1 ? keyOptions[0].id : '';
+      addToCatalog([{ id, name: id, keyId: defKey || undefined }], true);
       if (qEl) qEl.value = '';
       render();
       return true;
@@ -545,6 +586,7 @@
           if (Object.prototype.hasOwnProperty.call(m, 'image')) row.image = !!m.image;
           if (Object.prototype.hasOwnProperty.call(m, 'video')) row.video = !!m.video;
           if (Object.prototype.hasOwnProperty.call(m, 'cost')) row.cost = m.cost;
+          if (m.keyId) row.keyId = String(m.keyId);
           return row;
         });
       },
@@ -559,6 +601,7 @@
             if (Object.prototype.hasOwnProperty.call(m, 'image')) row.image = !!m.image;
             if (Object.prototype.hasOwnProperty.call(m, 'video')) row.video = !!m.video;
             if (Object.prototype.hasOwnProperty.call(m, 'cost')) row.cost = m.cost;
+            if (m.keyId) row.keyId = String(m.keyId);
             return row;
           });
       },
@@ -568,6 +611,10 @@
         catalog.forEach((m) => {
           if (keep.has(m.id)) selected.add(m.id);
         });
+        render();
+      },
+      setKeys(keys) {
+        keyOptions = Array.isArray(keys) ? keys.slice() : [];
         render();
       },
       reset() {
@@ -594,6 +641,12 @@
       const id = String((m && m.id) || '').trim();
       if (id) existingMap.set(id, m);
     });
+    const keyList = Array.isArray(opts.keys) ? opts.keys : [];
+    const fetchedKeyId = String(opts.fetchedKeyId || '');
+    const keyName = (kid) => {
+      const hit = keyList.find((k) => String(k.id) === String(kid));
+      return hit ? String(hit.name || hit.id) : '';
+    };
     const items = [];
     (models || []).forEach((m) => {
       const id = String((m && (m.id || m.name)) || '').trim();
@@ -608,8 +661,37 @@
       MODEL_NUM_COLS.forEach((c) => {
         item[c.field] = (prev && parseInt(prev[c.field], 10) > 0) ? parseInt(prev[c.field], 10) : 0;
       });
+      if (Object.prototype.hasOwnProperty.call(prev || {}, 'image')) item.image = !!prev.image;
+      if (Object.prototype.hasOwnProperty.call(prev || {}, 'video')) item.video = !!prev.video;
+      if (prev && Object.prototype.hasOwnProperty.call(prev, 'cost')) item.cost = prev.cost;
+      // 密钥绑定:已有模型沿用原绑定;新模型默认绑定「本次获取所用的 Key」
+      if (prev && prev.keyId) item.keyId = String(prev.keyId);
+      else if (fetchedKeyId) item.keyId = fetchedKeyId;
       items.push(item);
     });
+    // 多密钥下「同名模型」的显示名自动带上 Key 名以便区分(「模型（Key名）」)。
+    // 判定依据:同名(去掉已带后缀的基名)的模型出现在不止一把 Key 上。单个 Key 时不加后缀,
+    // 避免把普通模型名也改得冗长。
+    if (keyList.length > 1) {
+      const stripSuffix = (nm) => String(nm || '').replace(/（[^）]*）\s*$/, '').trim();
+      const baseKeyOf = (it) => (stripSuffix(it.name) || it.id) + '::' + String(it.keyId || '');
+      const baseCount = {};
+      const seen = {};
+      items.forEach((it) => {
+        const b = stripSuffix(it.name) || it.id;
+        const sig = baseKeyOf(it);
+        if (seen[sig]) return;
+        seen[sig] = true;
+        baseCount[b] = (baseCount[b] || 0) + 1;
+      });
+      items.forEach((it) => {
+        const b = stripSuffix(it.name) || it.id;
+        if ((baseCount[b] || 0) < 2) return;
+        const kn = keyName(it.keyId);
+        if (!kn) return;
+        it.name = b + '（' + kn + '）';
+      });
+    }
     items.sort((a, b) => a.id.localeCompare(b.id));
     const liveIds = new Set(items.map((m) => m.id));
     const stale = [];
@@ -627,6 +709,10 @@
 
     const mask = document.createElement('div');
     mask.className = 'modal-mask';
+    const showKey = keyList.length > 1;
+    const keyMsg = showKey
+      ? '共获取 ' + items.length + ' 个模型（使用密钥「' + escapeHtml(keyName(fetchedKeyId) || '默认密钥') + '」获取）。勾选要启用的，并修改前台显示名称、max_tokens（留空跟随全局）、最大上下文（留空不限制）与所用密钥。'
+      : '共获取 ' + items.length + ' 个模型。勾选要启用的，并修改前台显示名称、max_tokens（留空跟随全局）与最大上下文（留空不限制）。';
     mask.innerHTML =
       '<div class="modal modal-lg model-fetch-modal" role="dialog" aria-modal="true">'
       + '<div class="modal-header"><h3>' + escapeHtml(opts.title || '获取到的模型') + '</h3>'
@@ -634,7 +720,7 @@
       + (window.OC && window.OC.icon ? window.OC.icon('close', 16) : '×')
       + '</button></div>'
       + '<div class="modal-body">'
-      + '<p class="confirm-message">共获取 ' + items.length + ' 个模型。勾选要启用的，并修改前台显示名称、max_tokens（留空跟随全局）与最大上下文（留空不限制）。</p>'
+      + '<p class="confirm-message">' + keyMsg + '</p>'
       + '<div class="model-fetch-toolbar">'
       + '<label class="model-fetch-search">'
       + (window.OC && window.OC.icon ? window.OC.icon('search', 14) : '')
@@ -689,8 +775,8 @@
         listEl.innerHTML = '<div class="model-check-empty">' + (items.length ? '没有匹配的模型' : '这次上游没有返回模型') + '</div>';
       } else {
         listEl.innerHTML = modelTableHtml(vis.map((m) =>
-          modelRowHtml(m, { checked: m.enabled })
-        ).join(''));
+          modelRowHtml(m, { checked: m.enabled, keys: keyList })
+        ).join(''), { showKey: showKey });
       }
       renderStale();
     }
@@ -703,8 +789,8 @@
         staleAllEl.indeterminate = n > 0 && n < stale.length;
       }
       staleEl.innerHTML = modelTableHtml(stale.map((m) =>
-        modelRowHtml(m, { checked: m.remove, stale: true })
-      ).join(''));
+        modelRowHtml(m, { checked: m.remove, stale: true, keys: keyList })
+      ).join(''), { showKey: showKey });
     }
 
     function itemById(id) {
@@ -722,6 +808,12 @@
     }
 
     listEl.addEventListener('change', (e) => {
+      const keySel = e.target && e.target.closest ? e.target.closest('select.mkey[data-mid]') : null;
+      if (keySel) {
+        const item = itemById(keySel.dataset.mid);
+        if (item) { if (keySel.value) item.keyId = keySel.value; else delete item.keyId; }
+        return;
+      }
       const inp = e.target && e.target.closest ? e.target.closest('input[type="checkbox"][data-mid]') : null;
       if (!inp) return;
       const item = itemById(inp.dataset.mid);
@@ -788,6 +880,7 @@
             MODEL_NUM_COLS.forEach((c) => {
               row[c.field] = parseInt(m[c.field], 10) > 0 ? parseInt(m[c.field], 10) : 0;
             });
+            if (m.keyId) row.keyId = String(m.keyId);
             return row;
           }),
           stale.filter((m) => m.remove).map((m) => m.id)
