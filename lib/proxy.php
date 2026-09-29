@@ -1489,6 +1489,48 @@ function tc_model_reply_text($data, $format) {
     return tc_plain_text($content, 240);
 }
 
+// 日志用:取模型回复的完整文本(不做摘要截断,由调用方按日志上限裁剪)
+function tc_model_reply_full($data, $format) {
+    if (!is_array($data)) return is_string($data) ? $data : '';
+    if ($format === 'anthropic') {
+        $parts = array();
+        if (isset($data['content']) && is_array($data['content'])) {
+            foreach ($data['content'] as $p) {
+                if (is_array($p) && isset($p['text'])) $parts[] = $p['text'];
+            }
+        }
+        return implode("\n", $parts);
+    }
+    if ($format === 'responses') {
+        if (isset($data['output_text']) && is_string($data['output_text'])) return $data['output_text'];
+        $parts = array();
+        if (isset($data['output']) && is_array($data['output'])) {
+            foreach ($data['output'] as $o) {
+                if (!is_array($o) || !isset($o['content']) || !is_array($o['content'])) continue;
+                foreach ($o['content'] as $c) {
+                    if (is_array($c) && isset($c['text'])) $parts[] = $c['text'];
+                }
+            }
+        }
+        return implode("\n", $parts);
+    }
+    if ($format === 'completions') {
+        return isset($data['choices'][0]['text']) ? (string) $data['choices'][0]['text'] : '';
+    }
+    $choice = isset($data['choices'][0]) ? $data['choices'][0] : array();
+    $msg = isset($choice['message']) ? $choice['message'] : array();
+    $content = isset($msg['content']) ? $msg['content'] : (isset($choice['text']) ? $choice['text'] : '');
+    if (is_array($content)) {
+        $parts = array();
+        foreach ($content as $p) {
+            if (is_string($p)) $parts[] = $p;
+            elseif (is_array($p) && isset($p['text'])) $parts[] = $p['text'];
+        }
+        $content = implode("\n", $parts);
+    }
+    return is_string($content) ? $content : '';
+}
+
 // 视频模型连通性测试(管理员/个人共用):只建任务判定连通,不等待出片。
 // 成功后直接输出响应并退出。
 function tc_video_test_and_reply($baseUrl, $model, $prompt, $apiKey, $providerName, $userName, $userId, $providerId) {
@@ -2345,7 +2387,7 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
         'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
         'format' => $format, 'status' => $res['status'], 'ms' => $ms, 'cost' => $charged, 'stream' => false,
-        'reply' => tc_log_clip(is_array($jBody) ? tc_model_reply_text($jBody, $format) : (string) $res['body'], TC_LOG_TEXT_LIMIT),
+        'reply' => tc_log_clip(is_array($jBody) ? tc_model_reply_full($jBody, $format) : (string) $res['body'], TC_LOG_TEXT_LIMIT),
         'usage' => array('prompt' => (int) $bodyUsage['prompt'], 'completion' => (int) $bodyUsage['completion']),
     ), tc_log_chat_meta($body, $format)));
     tc_note_model_health($provider, $body, true);

@@ -972,7 +972,15 @@ function tc_api_login() {
         }
         $settings = $db['settings'];
     });
+    tc_log_auth_event('auth', isset($user['name']) ? $user['name'] : '', '登录成功', $seenId);
     tc_json(200, array('token' => tc_issue_token($user, $settings), 'user' => tc_sanitize_user($user)));
+}
+
+// 登录/注册/游客等认证事件的日志(便于后台审计来源 IP)
+function tc_log_auth_event($kind, $userName, $action, $userId = '') {
+    $entry = array('kind' => $kind, 'userName' => (string) $userName, 'action' => (string) $action, 'ip' => tc_client_ip());
+    if ($userId !== '') $entry['userId'] = (string) $userId;
+    tc_push_log($entry);
 }
 
 // 游客登录:为每位访客自动创建一个独立账号(归入游客组、按 guestRounds 发放额度),
@@ -1061,7 +1069,7 @@ function tc_api_reset_password() {
 function tc_api_logout() {
     tc_with_db(false, function ($db) {
         $user = tc_auth_user($db);
-        if ($user) tc_push_log(array('kind' => 'auth', 'userName' => $user['name'], 'action' => '退出登录'));
+        if ($user) tc_log_auth_event('auth', $user['name'], '退出登录', $user['id']);
         tc_json(200, array('ok' => true));
     });
 }
@@ -2936,7 +2944,8 @@ function tc_api_parse_document() {
         tc_push_log(array(
             'kind' => 'parse', 'userName' => $user['name'], 'userId' => $user['id'],
             'provider' => 'MinerU', 'model' => $mode, 'status' => 200,
-            'ms' => $ms, 'cost' => 0, 'error' => $name . ' · ' . $chars . ' 字',
+            'ms' => $ms, 'cost' => 0, 'ip' => tc_client_ip(),
+            'note' => $name . ' · ' . $chars . ' 字',
         ));
         tc_json(200, array(
             'name' => $name,

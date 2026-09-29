@@ -2102,11 +2102,17 @@ function applyFollowUp(q) {
 // 对话模型下识别「要画图」意图:出现明确的绘图口令即认为要出图。
 // 例:「画一张…」「帮我画个…」「生成一张图」「来张海报」「画个 logo」「draw …」
 function wantsDrawImage(text) {
-  const t = String(text || '');
+  const t = String(text || '').trim();
   if (!t) return false;
+  // 明显是在「问/讨论」而不是「下命令」时不触发:
+  // 以疑问收尾,或含「是什么/为什么/如何/怎么/能不能」等讨论性措辞,或过去式叙述(我画了…)
+  if (/[?？]$/.test(t) || /[吗呢]$/.test(t)) return false;
+  if (/(是什么|为什么|啥意思|什么意思|如何|怎么|怎样|能不能|可否|可不可以|是不是)/.test(t)) return false;
+  // 过去式叙述(我画了/他画了…),但「帮我画/给我画/替我画/为你画」属祈使,不算
+  if (/(^|[^帮给替为])(我|他|她|他们|她们)画了?/.test(t)) return false;
   const drawRe = /(画一张|画一幅|画一个|画个|画张|画幅|帮我画|给我画|帮忙画|替我画|画一下|画出来|绘制|重新画|再画|重画|生成图片|生成图像|生成一张|生成一幅|生成个图|生成插画|生成海报|生成头像|生成logo|生成标志|出一张图|出个图|来一张图|来张图|做个图|做一张图|设计一张|设计个logo|设计一个logo)/i;
   if (drawRe.test(t)) return true;
-  // 「画 + 数量词 + 对象」:如「画一只柯基」「画两张海报」「画个猫」(避免误伤「动画/漫画/计划/刻画」这类词)
+  // 「画 + 数量词 + 对象」:如「画一只柯基」「画两张海报」(已排除疑问/叙述)
   if (/画[一二三四五六七八九十两几]?[只个条张幅匹头朵棵盆群尾轮帧]/.test(t)) return true;
   if (/\b(draw|paint|sketch|illustrate|generate an image|create an image|make an image|generate a picture|create a picture|render an image)\b/i.test(t)) return true;
   return false;

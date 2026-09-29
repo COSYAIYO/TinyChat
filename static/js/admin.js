@@ -1723,11 +1723,18 @@ async function loadLogs() {
   logs.forEach((l) => {
     const tr = document.createElement('tr');
     const status = l.status || 0;
-    const ok = status === 0 ? l.error ? false : true : status < 400;
+    const hasStatus = typeof l.status === 'number' && l.status > 0;
+    const ok = l.error ? false : (hasStatus ? status < 400 : true);
+    // 无 HTTP 状态的条目(认证/邮件/管理等)不显示「连接失败」,统一按结果给「成功/失败」
+    const statusText = l.error ? '失败' : (hasStatus ? String(status) : (l.status === 0 ? '连接失败' : '成功'));
     const badge = l.kind === 'auth' ? '<span class="log-badge auth">认证</span>'
       : (l.kind === 'parse' ? '<span class="log-badge chat">解析</span>'
-      : (status >= 400 || l.error ? '<span class="log-badge err">错误</span>' : '<span class="log-badge chat">对话</span>'));
+      : (l.kind === 'mail' ? '<span class="log-badge auth">邮件</span>'
+      : (l.kind === 'admin' ? '<span class="log-badge auth">管理</span>'
+      : (status >= 400 || l.error ? '<span class="log-badge err">错误</span>' : '<span class="log-badge chat">对话</span>'))));
     const ms = l.ms !== undefined ? '<span title="' + l.ms + 'ms">' + (l.ms >= 1000 ? (l.ms / 1000).toFixed(1) + 's' : l.ms + 'ms') + '</span>' : '-';
+    // 信息列:失败原因 / 解析摘要(note) / 认证动作(action)
+    const infoMsg = l.error || l.note || l.action || '';
     // 完整内容:提示词 / 模型回复 / 用量 / 来源 IP;点小眼睛展开查看
     const hasDetail = !!(l.prompt || l.reply || l.usage || l.ip);
     let contentCell = '-';
@@ -1737,9 +1744,11 @@ async function loadLogs() {
         : '';
       const detail = [
         l.ip ? '来源 IP：' + l.ip : '',
+        l.action ? '动作：' + l.action : '',
         usage,
         l.prompt ? '【提示词】\n' + l.prompt : '',
         l.reply ? '【模型回复】\n' + l.reply : '',
+        l.error ? '【错误】\n' + l.error : '',
       ].filter(Boolean).join('\n\n');
       contentCell = '<button class="log-eye" type="button" data-log-eye title="查看完整内容" aria-label="查看完整内容">' + window.OC.icon('eye', 13) + '</button>';
       tr.dataset.detail = detail;
@@ -1749,10 +1758,10 @@ async function loadLogs() {
       + '<td>' + badge + '</td>'
       + '<td>' + escapeHtml(l.provider || '-') + '</td>'
       + '<td>' + escapeHtml(l.model || '-') + '</td>'
-      + '<td class="log-status ' + (ok ? 'ok' : 'fail') + '">' + (l.error ? '失败' : status + (status === 0 ? '(连接失败)' : '')) + '</td>'
+      + '<td class="log-status ' + (ok ? 'ok' : 'fail') + '">' + statusText + '</td>'
       + '<td>' + ms + '</td>'
       + '<td>' + (l.cost || 0) + '</td>'
-      + '<td class="log-msg" title="' + escapeHtml(l.error || '') + '">' + escapeHtml(l.error || '') + '</td>'
+      + '<td class="log-msg" title="' + escapeHtml(infoMsg) + '">' + escapeHtml(infoMsg) + '</td>'
       + '<td class="log-content">' + contentCell + '</td>';
     tbody.appendChild(tr);
   });

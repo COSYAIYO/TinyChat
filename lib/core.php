@@ -1754,7 +1754,8 @@ function tc_clear_login_fail($name) {
 function tc_logs_file() { return tc_data_dir() . '/logs.json'; }
 
 // 日志内容上限:提示词/回复按字符截断,避免 logs.json 过度膨胀
-if (!defined('TC_LOG_TEXT_LIMIT')) define('TC_LOG_TEXT_LIMIT', 20000);
+// (日志文件每次写入都整体重写,内容上限直接决定单次 I/O 大小)
+if (!defined('TC_LOG_TEXT_LIMIT')) define('TC_LOG_TEXT_LIMIT', 10000);
 
 function tc_log_clip($s, $n) {
     $s = (string) $s;
