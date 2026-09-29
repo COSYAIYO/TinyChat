@@ -343,6 +343,48 @@ cat > "$TMP/chain-chat.json" <<EOF
 EOF
 assert_contains "密钥链认证失败自动回退下一把" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/chain-chat.json")" 'MOCK-REPLY'
 
+# ---------- 供应商排序 ----------
+say "== 供应商排序 =="
+# 建两个供应商,把后建的排到前面,验证列表顺序随 order 变化
+for nm in OrderA OrderB; do
+  cat > "$TMP/ord-$nm.json" <<EOF
+{"name":"$nm","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiKey":"sk-ord","apiFormat":"chat","scope":"global","models":[{"id":"mock-model","name":"M"}],"costPerCall":1}
+EOF
+  curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/ord-$nm.json" > /dev/null
+done
+OA=$(curl -s "$BASE/api/providers" -H "$AUTH" | python -c "import sys,json;d=json.load(sys.stdin);print([p['id'] for p in d['providers'] if p['name']=='OrderA'][0])")
+OB=$(curl -s "$BASE/api/providers" -H "$AUTH" | python -c "import sys,json;d=json.load(sys.stdin);print([p['id'] for p in d['providers'] if p['name']=='OrderB'][0])")
+# 把 OrderB 排到 OrderA 前面
+curl -s -X POST "$BASE/api/admin/providers/$OB" -H "$AUTH" -H "Content-Type: application/json" -d '{"action":"reorder","order":["'"$OB"'","'"$OA"'"]}' > /dev/null
+ord=$(curl -s "$BASE/api/providers" -H "$AUTH" | python -c "import sys,json;d=json.load(sys.stdin);ids=[p['id'] for p in d['providers']];print(ids.index('$OB')<ids.index('$OA'))")
+assert_eq "供应商排序: OrderB 排在 OrderA 之前" "$ord" "True"
+assert_contains "供应商列表下发 order 字段" "$(curl -s "$BASE/api/providers" -H "$AUTH")" '"order"'
+
+# ---------- 运行日志:提示词/回复/用量 ----------
+say "== 运行日志细节 =="
+cat > "$TMP/log-chat.json" <<EOF
+{"model":"mock-model","providerId":"$PROV","stream":false,"messages":[{"role":"user","content":"记录一下我的日志提示词"}]}
+EOF
+curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/log-chat.json" > /dev/null
+logs=$(curl -s "$BASE/api/admin/logs?limit=20" -H "$AUTH")
+assert_contains "日志记录提示词" "$logs" '记录一下我的日志提示词'
+assert_contains "日志记录模型回复" "$logs" 'MOCK-REPLY'
+assert_contains "日志记录 token 用量" "$logs" '"usage"'
+assert_contains "日志记录来源 IP" "$logs" '"ip"'
+
+# ---------- 后台查看对话:完整不截断 ----------
+say "== 后台查看对话完整显示 =="
+# 正文超过旧上限(2000 字),末尾埋一个标记:只有不截断才能读到
+LONGTXT=$(python -c "print('填充正文' * 700 + 'TAILMARKER-完整尾部')")
+CHATUID=$(curl -s "$BASE/api/admin/users" -H "$AUTH" | python -c "import sys,json;d=json.load(sys.stdin);print([u['id'] for u in d['users'] if u['name']=='tester1'][0])")
+cat > "$TMP/long-chat.json" <<EOF
+{"chats":[{"id":"longchat1","title":"长文本对话","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"$LONGTXT","reasoning":"先想一下再回答"}]}]}
+EOF
+curl -s -X POST "$BASE/api/sync/chats" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/long-chat.json" > /dev/null
+chatsresp=$(curl -s "$BASE/api/admin/users/chats?userId=$CHATUID" -H "$AUTH")
+assert_contains "后台对话: 长正文未被截断(读到尾部标记)" "$chatsresp" 'TAILMARKER-完整尾部'
+assert_contains "后台对话: 带出思维链" "$chatsresp" '先想一下再回答'
+
 say "== 获取模型列表 ==" 
 # Git Bash 的 curl 会搅乱 UTF-8 字面量,掩码占位符用字节转义构造,确保后端收到真实的 ••••
 MASKEDKEY=$'sk-\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2'

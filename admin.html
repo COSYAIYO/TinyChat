@@ -9,12 +9,15 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./logo-icon.svg">
-<link rel="stylesheet" href="./static/css/style.css?v=20261005.2">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261005.2">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261005.2">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261005.2">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261005.2">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261005.2">
+<link rel="stylesheet" href="./static/css/style.css?v=20261005.4">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261005.4">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261005.4">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261005.4">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261005.4">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20261005.4">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261005.4">
 <script>
 (function () {
   try {
@@ -690,7 +693,7 @@
       </div>
       <div class="users-table-wrap">
       <table class="admin-table log-table">
-        <thead><tr><th>时间</th><th>用户</th><th>类型</th><th>供应商</th><th>模型</th><th>状态</th><th>耗时</th><th>扣费</th><th>信息</th></tr></thead>
+        <thead><tr><th>时间</th><th>用户</th><th>类型</th><th>供应商</th><th>模型</th><th>状态</th><th>耗时</th><th>扣费</th><th>信息</th><th>内容</th></tr></thead>
         <tbody id="logs-tbody"></tbody>
       </table>
       </div>
@@ -808,10 +811,16 @@
   </div>
 </div>
 </form>
-<script src="./static/js/config.js?v=20261005.2"></script>
-<script src="./static/js/icons.js?v=20261005.2"></script>
-<script src="./static/js/ui.js?v=20261005.2"></script>
-<script src="./static/js/components.js?v=20261005.2"></script>
-<script src="./static/js/admin.js?v=20261005.2"></script>
+<script src="./static/js/config.js?v=20261005.4"></script>
+<script src="./static/js/icons.js?v=20261005.4"></script>
+<script defer src="./vendor/markdown-it/markdown-it.min.js"></script>
+<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js"></script>
+<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js"></script>
+<script defer src="./vendor/katex/katex.min.js"></script>
+<script defer src="./vendor/highlight/highlight.min.js"></script>
+<script src="./static/js/ui.js?v=20261005.4"></script>
+<script src="./static/js/components.js?v=20261005.4"></script>
+<script src="./static/js/renderer.js?v=20261005.4"></script>
+<script src="./static/js/admin.js?v=20261005.4"></script>
 </body>
 </html>
