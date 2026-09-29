@@ -481,10 +481,17 @@ UI.toggleTheme = function () {
     root.style.setProperty('--oc-ui-zoom', String(zoom));
 
     // 2. 中文与英文/希腊字母按 unicode-range 分流,字体未就绪时由 swap 使用系统回退
+    // 后台开启「不加载内置网页字体」时跳过内置字体,直接用系统字体(避免下载 ~19MB)
+    const noWebfonts = !!(window.OC_PERF && window.OC_PERF.noWebfonts);
     const cjkValue = String(prefs.fontCjk == null || prefs.fontCjk === '' ? 'source-han-serif' : prefs.fontCjk).trim();
     const latinValue = String(prefs.fontLatin == null || prefs.fontLatin === '' ? 'alibaba-sans' : prefs.fontLatin).trim();
-    applyFontRules(cjkValue, latinValue);
-    const uiStack = '"TinyChat Text", ' + FONT_SYSTEM_STACK;
+    if (noWebfonts) {
+      const rules = document.getElementById(FONT_RULE_ID);
+      if (rules) rules.textContent = '';
+    } else {
+      applyFontRules(cjkValue, latinValue);
+    }
+    const uiStack = (noWebfonts ? '' : '"TinyChat Text", ') + FONT_SYSTEM_STACK;
     root.style.setProperty('--oc-font-family', uiStack);
     root.style.setProperty('--oc-ui-font', uiStack);
     root.style.setProperty('--oc-latin-font', uiStack);

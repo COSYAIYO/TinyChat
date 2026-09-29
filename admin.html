@@ -9,15 +9,15 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./logo-icon.svg">
-<link rel="stylesheet" href="./static/css/style.css?v=20261005.8">
+<link rel="stylesheet" href="./static/css/style.css?v=20261005.9">
 <link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
 <link rel="stylesheet" href="./vendor/katex/katex.min.css">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261005.8">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261005.8">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261005.8">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261005.8">
-<link rel="stylesheet" href="./static/css/markdown.css?v=20261005.8">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261005.8">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261005.9">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261005.9">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261005.9">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261005.9">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20261005.9">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261005.9">
 <script>
 (function () {
   try {
@@ -150,6 +150,24 @@
         <label class="field"><span>「不稳定」阈值（成功率 ≥ %）</span><input id="chat-health-warn" type="number" min="0" max="99" step="1" value="40"></label>
       </div>
       <button class="btn primary" id="chat-limits-save" type="button">保存对话设置</button>
+    </div>
+  </div>
+
+  <!-- 性能优化 -->
+  <div class="admin-panel" id="panel-perf">
+    <div class="admin-card">
+      <h2>性能优化</h2>
+      <p class="muted small">用于降低前台首屏加载体积，适合带宽受限、访客网络较慢或主要用纯文本对话的场景。<b>默认全部关闭</b>。开启后，相关资源在前台不再加载，对应能力会退化为纯文本显示（数学公式、图表、代码高亮会以源码形式呈现）。改动在用户下次访问时生效。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="perf-no-webfonts"><span class="slider"></span></span>
+        <span>不加载内置网页字体（思源宋体 / AlibabaPuHuiTi / Times New Roman / Helvetica / AlibabaSans，合计约 19MB）</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="perf-no-katex"><span class="slider"></span></span>
+        <span>不加载 KaTeX（数学公式）——公式将以源码形式显示</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="perf-no-highlight"><span class="slider"></span></span>
+        <span>不加载代码高亮 highlight.js——代码块以纯文本显示，保留「复制」按钮</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="perf-no-mermaid"><span class="slider"></span></span>
+        <span>不加载 Mermaid 图表——流程图/时序图等以源码形式显示（Mermaid 本就在出现图表时才加载）</span></label>
+      <p class="muted small" style="margin-top:12px">说明：关闭内置字体后，前台使用系统字体（Apple/微软雅黑/PingFang 等），观感更接近原生系统、加载更快；用户的「外观」自定义字体会随之不可用。</p>
+      <button class="btn primary" id="perf-save" type="button">保存性能设置</button>
     </div>
   </div>
 
@@ -811,16 +829,16 @@
   </div>
 </div>
 </form>
-<script src="./static/js/config.js?v=20261005.8"></script>
-<script src="./static/js/icons.js?v=20261005.8"></script>
+<script src="./static/js/config.js?v=20261005.9"></script>
+<script src="./static/js/icons.js?v=20261005.9"></script>
 <script defer src="./vendor/markdown-it/markdown-it.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-footnote.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-emoji.min.js"></script>
 <script defer src="./vendor/katex/katex.min.js"></script>
 <script defer src="./vendor/highlight/highlight.min.js"></script>
-<script src="./static/js/ui.js?v=20261005.8"></script>
-<script src="./static/js/components.js?v=20261005.8"></script>
-<script src="./static/js/renderer.js?v=20261005.8"></script>
-<script src="./static/js/admin.js?v=20261005.8"></script>
+<script src="./static/js/ui.js?v=20261005.9"></script>
+<script src="./static/js/components.js?v=20261005.9"></script>
+<script src="./static/js/renderer.js?v=20261005.9"></script>
+<script src="./static/js/admin.js?v=20261005.9"></script>
 </body>
 </html>

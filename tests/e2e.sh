@@ -530,6 +530,24 @@ assert_contains "清除后有移除计数" "$purge" '"removed":'
 LEFT=$(curl -s "$BASE/api/admin/users" -H "$AUTH" | grep -o '"guest":true' | wc -l | tr -d ' ')
 assert_eq "清除后无游客" "$LEFT" "0"
 
+# ---------- 性能优化开关 ----------
+say "== 性能优化开关 =="
+# 默认全关
+perfcfg=$(curl -s "$BASE/api/config")
+assert_contains "config 下发 perf 开关" "$perfcfg" '"perf"'
+assert_contains "性能开关默认不加载字体为 false" "$perfcfg" '"noWebfonts":false'
+# 打开若干开关后应下发 true,并能读回
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"perfNoWebfonts":true,"perfNoKatex":true,"perfNoHighlight":true,"perfNoMermaid":true}' > /dev/null
+perfcfg2=$(curl -s "$BASE/api/config")
+assert_contains "不加载字体生效" "$perfcfg2" '"noWebfonts":true'
+assert_contains "不加载 KaTeX 生效" "$perfcfg2" '"noKatex":true'
+assert_contains "不加载高亮生效" "$perfcfg2" '"noHighlight":true'
+assert_contains "不加载 Mermaid 生效" "$perfcfg2" '"noMermaid":true'
+assert_contains "后台设置可读回 perf" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"perfNoKatex":true'
+# 关回去(不影响后续用例)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"perfNoWebfonts":false,"perfNoKatex":false,"perfNoHighlight":false,"perfNoMermaid":false}' > /dev/null
+assert_contains "性能开关可关闭" "$(curl -s "$BASE/api/config")" '"noKatex":false'
+
 # ---------- 开放 API 对话落库 ----------
 say "== 开放 API 对话落库 =="
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"apiSaveChats":true,"persistChats":true}' > /dev/null

@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.42');
+define('TC_VERSION', '2.0.43');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -133,6 +133,13 @@ $TC_SETTINGS_DEFAULTS = array(
     'registerInviteRequired' => false,
     // 注册限流:每 IP 每小时最大注册尝试次数
     'registerLimitPerHour' => 5,
+    // 性能优化(默认关闭,开启后减少前台加载体积;改动在用户下次访问时生效)
+    // 不加载内置网页字体(思源宋体/阿里巴巴普惠体等,合计约 19MB);不加载 KaTeX 公式渲染;
+    // 不加载代码高亮 highlight.js;不加载 Mermaid 图表。
+    'perfNoWebfonts' => false,
+    'perfNoKatex' => false,
+    'perfNoHighlight' => false,
+    'perfNoMermaid' => false,
 );
 $TC_SETTINGS_DEFAULTS['mailTemplates'] = tc_mail_default_templates();
 
@@ -393,6 +400,11 @@ function tc_normalize_settings($raw) {
     );
     $s['agreementEnabled'] = !empty($s['agreementEnabled']);
     $s['agreementHtml'] = substr((string) (isset($s['agreementHtml']) ? $s['agreementHtml'] : ''), 0, 200000);
+    // 性能优化开关(默认关闭)
+    $s['perfNoWebfonts'] = !empty($s['perfNoWebfonts']);
+    $s['perfNoKatex'] = !empty($s['perfNoKatex']);
+    $s['perfNoHighlight'] = !empty($s['perfNoHighlight']);
+    $s['perfNoMermaid'] = !empty($s['perfNoMermaid']);
     $s['persistChats'] = !array_key_exists('persistChats', $s) || !empty($s['persistChats']);
     $ann = isset($s['announcement']) && is_array($s['announcement']) ? $s['announcement'] : array();
     $annText = trim((string) (isset($ann['text']) ? $ann['text'] : ''));
