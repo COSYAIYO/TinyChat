@@ -8,12 +8,12 @@
 <title>管理后台 · TinyChat</title>
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ctext x='12' y='17' text-anchor='middle' font-family='Inter,Segoe UI,Arial,sans-serif' font-size='15' font-weight='800' fill='%23232936'%3ET%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="./static/css/style.css?v=20261001.2">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261001.2">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261001.2">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261001.2">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261001.2">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261001.2">
+<link rel="stylesheet" href="./static/css/style.css?v=20261002.1">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261002.1">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261002.1">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261002.1">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261002.1">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261002.1">
 <script>
 (function () {
   try {
@@ -342,6 +342,15 @@
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="verify-reset-enabled"><span class="slider"></span></span><span>开启找回密码</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="verify-quota-unlimited"><span class="slider"></span></span><span>新注册用户默认无限额度</span></label>
       <label class="field"><span>新注册用户默认额度</span><input id="verify-free-quota" type="number" min="0" value="100"></label>
+      <h3>注册与账号安全</h3>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="register-open"><span class="slider"></span></span><span>开放注册</span></label>
+      <p class="muted small" style="margin:0 0 8px">关闭后登录页不再显示注册入口，注册接口也会直接拒绝（已有账号可正常登录）。</p>
+      <div class="pkg-form-grid">
+        <label class="field"><span>注册限流（每 IP 每小时最大尝试次数）</span><input id="register-limit" type="number" min="1" max="1000" value="5"></label>
+        <label class="field"><span>登录失败锁定（连续失败次数，0 为不锁定）</span><input id="login-max-fails" type="number" min="0" max="50" value="5"></label>
+        <label class="field"><span>登录锁定时长（秒）</span><input id="login-lock-sec" type="number" min="0" max="3600" value="60"></label>
+      </div>
+      <label class="user-form-admin" style="margin-top:8px"><span class="switch"><input type="checkbox" id="user-providers-allowed"><span class="slider"></span></span><span>允许用户添加自己的供应商（自带 Key，不计站点次数）</span></label>
       <h3>游客体验</h3>
       <p class="muted small" style="margin:0 0 8px">开启后，未登录访客访问首页即可直接对话。每位访客会自动创建一个独立游客账号（命名如「游客A1B2C」并归入「游客」用户组），便于在「用户」列表里单独管理与清理。游客额度在「模型授权」中按游客组控制，轮数在下方设置。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="guest-enabled"><span class="slider"></span></span><span>允许游客免登录体验对话</span></label>
@@ -782,10 +791,10 @@
   </div>
 </div>
 </form>
-<script src="./static/js/config.js?v=20261001.2"></script>
-<script src="./static/js/icons.js?v=20261001.2"></script>
-<script src="./static/js/ui.js?v=20261001.2"></script>
-<script src="./static/js/components.js?v=20261001.2"></script>
-<script src="./static/js/admin.js?v=20261001.2"></script>
+<script src="./static/js/config.js?v=20261002.1"></script>
+<script src="./static/js/icons.js?v=20261002.1"></script>
+<script src="./static/js/ui.js?v=20261002.1"></script>
+<script src="./static/js/components.js?v=20261002.1"></script>
+<script src="./static/js/admin.js?v=20261002.1"></script>
 </body>
 </html>

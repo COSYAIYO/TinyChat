@@ -102,6 +102,16 @@ fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
     const wrap = forgotLink ? forgotLink.closest('.auth-switch') : null;
     if (wrap) wrap.classList.add('hidden');
   }
+  // 站点关闭注册时,隐藏注册切换与注册表单(后端同样会拒绝,这里提前不给入口)
+  if (cfg && cfg.allowRegister === false) {
+    const showReg = $('show-register');
+    const regWrap = showReg ? showReg.closest('.auth-switch') : null;
+    if (regWrap) regWrap.classList.add('hidden');
+    const reg = $('register-form');
+    if (reg) { reg.classList.add('hidden'); }
+    const login = $('login-form');
+    if (login) login.classList.remove('hidden');
+  }
   // 用户协议:启用时注册页展示勾选项
   if (cfg && cfg.agreementEnabled) {
     const row = $('reg-agree-row');
