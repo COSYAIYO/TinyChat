@@ -6,6 +6,14 @@
 $uri = isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '';
 $body = json_decode((string) file_get_contents('php://input'), true);
 header('Content-Type: application/json');
+// 多密钥回退:携带 sk-fail 的请求一律 401,用于验证「第一把失败自动回退下一把」
+$authHdr = isset($_SERVER['HTTP_AUTHORIZATION']) ? (string) $_SERVER['HTTP_AUTHORIZATION'] : '';
+foreach (array('HTTP_X_API_KEY') as $hk) { if ($authHdr === '' && !empty($_SERVER[$hk])) $authHdr = (string) $_SERVER[$hk]; }
+if (strpos($authHdr, 'sk-fail') !== false) {
+    http_response_code(401);
+    echo json_encode(array('error' => array('message' => 'invalid api key')));
+    return;
+}
 // ---- 视频生成(异步任务:POST /v1/videos 建任务,GET /agnesapi 查询) ----
 // 建任务:返回 video_id;查询:首次返回 processing,之后返回 completed + url。
 if (strpos($uri, 'agnesapi') !== false) {

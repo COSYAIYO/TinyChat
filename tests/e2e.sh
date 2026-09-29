@@ -327,6 +327,22 @@ EOF
 bk=$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/mkbadkey.json")
 if printf '%s' "$bk" | grep -q '"keyId"'; then bad "无效 keyId 应被清除"; else ok "无效 keyId 被清除"; fi
 
+# 同一模型绑定多把密钥(优先级链):keyIds 应原样保存,keyId 取第一把
+cat > "$TMP/mkchain.json" <<EOF
+{"name":"ChainProv","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiFormat":"chat","scope":"global","costPerCall":1,
+ "keys":[{"id":"k1","name":"坏号","apiKey":"sk-fail"},{"id":"k2","name":"好号","apiKey":"sk-good"}],
+ "models":[{"id":"mock-model","name":"Chained","keyIds":["k1","k2"]}]}
+EOF
+chain=$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/mkchain.json")
+assert_has "模型密钥链保存" "$chain" '"keyIds":["k1","k2"]'
+assert_contains "模型密钥链首把 keyId" "$chain" '"keyId":"k1"'
+CHAINPROV=$(printf '%s' "$chain" | python -c "import sys,json;print(json.load(sys.stdin)['provider']['id'])")
+# 上游对第一把返回 401:应自动回退到第二把,请求仍然成功
+cat > "$TMP/chain-chat.json" <<EOF
+{"model":"mock-model","providerId":"$CHAINPROV","stream":false,"messages":[{"role":"user","content":"hi"}]}
+EOF
+assert_contains "密钥链认证失败自动回退下一把" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/chain-chat.json")" 'MOCK-REPLY'
+
 say "== 获取模型列表 ==" 
 # Git Bash 的 curl 会搅乱 UTF-8 字面量,掩码占位符用字节转义构造,确保后端收到真实的 ••••
 MASKEDKEY=$'sk-\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2'

@@ -726,6 +726,41 @@ function renderApKeys() {
   if (apModelList && apModelList.setKeys) {
     apModelList.setKeys(AP_KEYS.map((k, i) => ({ id: k.id, name: (k.name || '').trim() || ('未命名 ' + (i + 1)) })));
   }
+  syncFetchKeyBox();
+}
+// 「获取列表」用哪把 Key:多把密钥时显示选择器(默认第一把已填/已保存的)
+function syncFetchKeyBox() {
+  const box = $('ap-fetch-key');
+  if (!box) return;
+  const usable = AP_KEYS.filter((k) => k.hasKey || String(k.apiKey || '').trim() !== '');
+  if (usable.length < 2) { box.classList.add('hidden'); box.setAttribute('data-value', usable[0] ? usefulId(usable[0]) : ''); return; }
+  box.classList.remove('hidden');
+  let cur = box.getAttribute('data-value') || '';
+  const ids = usable.map((k) => usefulId(k));
+  if (ids.indexOf(cur) < 0) cur = ids[0];
+  box.setAttribute('data-value', cur);
+  const hit = usable.find((k) => usefulId(k) === cur);
+  const lab = box.querySelector('.sb-label');
+  if (lab) lab.textContent = (hit && (hit.name || '').trim()) || '获取用 Key';
+}
+function usefulId(k) { return String((k && k.id) || ''); }
+function bindFetchKeyBox() {
+  const box = $('ap-fetch-key');
+  if (!box || !window.OC || !OC.openSelect) return;
+  box.addEventListener('click', () => {
+    const usable = AP_KEYS.filter((k) => k.hasKey || String(k.apiKey || '').trim() !== '');
+    if (usable.length < 2) return;
+    OC.openSelect(box, usable.map((k) => ({ value: usefulId(k), label: (k.name || '').trim() || '未命名' })), {
+      selected: box.getAttribute('data-value') || '',
+      fitWidth: true,
+      onSelect: (val, item) => {
+        box.setAttribute('data-value', val);
+        const lab = box.querySelector('.sb-label');
+        if (lab) lab.textContent = (item && item.label) || val;
+      },
+    });
+  });
+  box.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); box.click(); } });
 }
 function apKeysFromProvider(p) {
   AP_KEYS = [];
@@ -790,12 +825,17 @@ function apKeysValidate() {
     if (nameInp) {
       const k = AP_KEYS[Number(nameInp.dataset.idx)];
       if (k) k.name = nameInp.value;
-      // 同步模型表的密钥下拉标签(全量重渲染会丢焦点,这里只更新选项文字)
+      // 同步模型表:密钥链芯片与下拉标签都按新名字显示
+      // (焦点在密钥名称输入框,不在模型表内,重渲染不会丢焦点)
       syncKeySelectLabels();
+      if (apModelList && apModelList.setKeys) {
+        apModelList.setKeys(AP_KEYS.map((x, i) => ({ id: x.id, name: (x.name || '').trim() || ('未命名 ' + (i + 1)) })));
+      }
+      syncFetchKeyBox();
       return;
     }
     const valInp = e.target.closest ? e.target.closest('input.ap-key-val') : null;
-    if (valInp) { const k = AP_KEYS[Number(valInp.dataset.idx)]; if (k) { k.apiKey = valInp.value; k.hasKey = true; } return; }
+    if (valInp) { const k = AP_KEYS[Number(valInp.dataset.idx)]; if (k) { k.apiKey = valInp.value; k.hasKey = true; } syncFetchKeyBox(); return; }
   });
   box.addEventListener('click', async (e) => {
     const del = e.target.closest ? e.target.closest('[data-del]') : null;
@@ -845,6 +885,8 @@ function apKeysValidate() {
     setKeyVisibility(input, eye, input.type !== 'text');
   });
 })();
+
+bindFetchKeyBox();
 
 const apModelList = window.OC && window.OC.bindModelChecklist
   ? window.OC.bindModelChecklist({
@@ -1335,12 +1377,26 @@ $('ap-fetch-models').addEventListener('click', async () => {
   const apiFormat = $('ap-format').getAttribute('data-value') || 'chat';
   if (!baseUrl) return toast('请先填写 Base URL', true);
   const editId = $('ap-save').dataset.editId;
-  // 多密钥:默认用第一把已填/已保存的 Key 获取;也可在下方下拉里指定用哪把
-  const usable = AP_KEYS.filter((k) => String(k.apiKey || '').trim() !== '');
-  const pickKey = usable[0];
-  const usedKey = pickKey && pickKey.apiKey.indexOf('••') < 0 ? pickKey.apiKey.trim() : '';
+  // 多密钥:用「获取用 Key」选择器指定的那把(默认第一把已填/已保存的)
+  const usable = AP_KEYS.filter((k) => k.hasKey || String(k.apiKey || '').trim() !== '');
+  const wantId = ($('ap-fetch-key') && $('ap-fetch-key').getAttribute('data-value')) || '';
+  const pickKey = usable.find((k) => String(k.id) === wantId) || usable[0];
+  const usedKey = pickKey && String(pickKey.apiKey || '').indexOf('••') < 0 ? String(pickKey.apiKey).trim() : '';
   const usedKeyId = pickKey ? pickKey.id : '';
-  if (!usedKey && !editId) { toast('请先填写 API Key', true); return; }
+  if (!usedKey && !usedKeyId && !editId) { toast('请先填写 API Key', true); return; }
+  // 按某个 Key 拉取模型列表:新供应商用明文字段,已保存的供应商可只传 keyId 由服务端解密
+  const fetchByKey = async (kid) => {
+    const k = AP_KEYS.find((x) => String(x.id) === String(kid));
+    const plain = k && String(k.apiKey || '').indexOf('••') < 0 ? String(k.apiKey).trim() : '';
+    const r = await api('/api/proxy/fetch-models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseUrl, apiKey: plain, apiFormat, keyId: (kid || undefined), providerId: editId || undefined }),
+    });
+    const data = await readJsonSafe(r);
+    if (!r.ok) throw new Error((data.error && data.error.message) || ('获取失败（HTTP ' + r.status + '）'));
+    return { models: data.models || [], keyId: String(kid || '') };
+  };
   const btn = $('ap-fetch-models');
   btn.disabled = true;
   btn.textContent = '获取中…';
@@ -1358,14 +1414,17 @@ $('ap-fetch-models').addEventListener('click', async () => {
       window.OC.openFetchedModelsModal(models, {
         title: '获取到的模型',
         existing: apModelList ? apModelList.getCatalog() : [],
-        keys: AP_KEYS.filter((k) => k.id).map((k) => ({ id: k.id, name: k.name || k.id })),
+        keys: AP_KEYS.map((k, i) => ({ id: k.id, name: (k.name || '').trim() || ('未命名 ' + (i + 1)) })),
         fetchedKeyId: usedKeyId || '',
+        // 弹窗内切换 Key 继续获取:再次拉取并并入当前清单
+        onRefetch: (kid) => fetchByKey(kid),
         onApply: (picked, staleIds) => {
           resetModelTestResults();
           if (apModelList) apModelList.applyFetched(picked, staleIds);
           const n = picked.filter((m) => m.enabled).length;
           const cleared = (staleIds || []).length;
           toast('已应用 ' + n + ' 个启用模型' + (cleared ? '，清除 ' + cleared + ' 个失效模型' : '') + '，保存后生效');
+          return true;
         },
       });
     } else if (apModelList) {

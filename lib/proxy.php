@@ -969,6 +969,21 @@ function tc_api_history_messages($body, $format) {
 }
 
 // 流式增量文本采集:从 SSE chunk 里累加助手输出,供 API 对话落库使用
+// 组装上游请求头(含鉴权)。密钥回退时用它按新密钥重建。
+function tc_upstream_auth_headers($format, $apiKey, $acceptStream = false) {
+    $h = array(
+        'Content-Type' => 'application/json',
+        'Accept' => $acceptStream ? 'text/event-stream, application/json' : 'application/json',
+    );
+    if ($format === 'anthropic') {
+        $h['x-api-key'] = (string) $apiKey;
+        $h['anthropic-version'] = '2023-06-01';
+    } else {
+        $h['Authorization'] = 'Bearer ' . (string) $apiKey;
+    }
+    return $h;
+}
+
 function tc_capture_stream_text(&$target, $chunk, $format) {
     if ($chunk === '' || strpos($chunk, 'data:') === false) return;
     foreach (explode("\n", $chunk) as $line) {
@@ -1989,18 +2004,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
     tc_apply_thinking_rules($body, isset($ctx['thinking']) ? $ctx['thinking'] : null);
     $url = tc_upstream_path(rtrim((string) $provider['baseUrl'], '/'), $format);
     $isStream = !empty($body['stream']);
-    $headers = array(
-        'Content-Type' => 'application/json',
-        'Accept' => 'text/event-stream, application/json',
-    );
-    // 多 Key:按请求模型选用其绑定的密钥(未绑定则用默认密钥)
-    $reqKey = tc_provider_key_for_model($provider, isset($body['model']) ? (string) $body['model'] : '');
-    if ($format === 'anthropic') {
-        $headers['x-api-key'] = $reqKey;
-        $headers['anthropic-version'] = '2023-06-01';
-    } else {
-        $headers['Authorization'] = 'Bearer ' . $reqKey;
-    }
+    // 多 Key:按模型绑定的优先级取出一串密钥,失败时依次回退(见下方 keyFallback)
+    $keyChain = tc_provider_key_chain($provider, isset($body['model']) ? (string) $body['model'] : '');
+    if (!$keyChain) $keyChain = array('');
+    $keyIdx = 0;
+    $headers = tc_upstream_auth_headers($format, $keyChain[0], true);
     $payload = tc_json_encode($body);
     $reasoningRetried = false;
     $ends = tc_endpoints();
@@ -2061,6 +2069,13 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             if (function_exists('ob_flush')) @ob_flush();
             flush();
         });
+            // 密钥回退:认证失败 / 连接失败,且还未向客户端发出任何字节时,换下一把密钥重试
+            if ($keyIdx + 1 < count($keyChain) && !$headersSent
+                && (empty($res['ok']) || in_array((int) (isset($res['status']) ? $res['status'] : 0), array(401, 403), true))) {
+                $keyIdx++;
+                $headers = tc_upstream_auth_headers($format, $keyChain[$keyIdx], true);
+                continue;
+            }
             if (!( !empty($res['ok']) && !empty($res['status']) && in_array((int) $res['status'], array(429, 500, 502, 503, 504), true) && $attempt < 2 )) break;
             sleep(1);
         } while (true);
@@ -2239,6 +2254,13 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
     do {
         $attempt++;
         $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], false);
+        // 密钥回退:认证失败 / 连接失败时换下一把密钥重试(非流式未向客户端发送任何内容,安全)
+        if ($keyIdx + 1 < count($keyChain)
+            && (empty($res['ok']) || in_array((int) (isset($res['status']) ? $res['status'] : 0), array(401, 403), true))) {
+            $keyIdx++;
+            $headers = tc_upstream_auth_headers($format, $keyChain[$keyIdx], false);
+            continue;
+        }
         if (!( !empty($res['ok']) && !empty($res['status']) && in_array((int) $res['status'], array(429, 500, 502, 503, 504), true) && $attempt < 2 )) break;
         sleep(1);
     } while (true);
