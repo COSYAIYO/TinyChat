@@ -2128,6 +2128,44 @@ function wantsEditImage(text) {
 function refersToPrevImage(text) {
   return /(上面|刚才|上一张|上张|之前|这张图|这张|那张图|那张|这个图|那个图|此图|它)/.test(String(text || ''));
 }
+// 对话中自动出图的模式:off=关闭 | rough=粗略关键词识别 | ai=让模型判定
+function autoImageMode() {
+  const v = String(uiPref('autoImageMode', 'rough') || 'rough').toLowerCase();
+  return (v === 'off' || v === 'ai' || v === 'rough') ? v : 'rough';
+}
+// AI 意图判定:让模型判断这次发言是否「要生成新图」或「要修改上面的图」。返回 {draw,edit}|null(判定失败)。
+// 用「意图判定模型」设置指定的模型,未设置则用当前对话模型。判定会额外消耗一次调用。
+async function aiJudgeImageIntent(text, hasImageRef) {
+  const aux = resolveAuxModel('autoImageModel');
+  const providerId = aux ? aux.providerId : state.currentProviderId;
+  const model = aux ? aux.model : state.currentModel;
+  const format = aux ? aux.format : providerFormat();
+  if (!providerId || !model) return null;
+  const sys = '你是意图分类器。判断用户这句话是不是在「要求生成一张图片」或「要求修改/编辑已有的图片」。'
+    + '只输出一个 JSON 对象,形如 {"action":"draw"}；draw=要生成新图，edit=要修改一张已有的图片，none=普通对话、提问或讨论。不要输出任何其他内容。';
+  const user = '上下文里是否有可修改的上一张图片：' + (hasImageRef ? '有' : '无') + '\n用户发言：' + text;
+  const body = {
+    model,
+    providerId,
+    stream: false,
+    messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
+  };
+  try {
+    const r = await api(ENDPOINT_BY_FORMAT[format] || ENDPOINT_BY_FORMAT.chat, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) return null;
+    const data = await r.json();
+    const raw = String(extractText(data, format) || '').toLowerCase();
+    const m = raw.match(/"action"\s*:\s*"(draw|edit|none)"/) || raw.match(/\b(draw|edit|none)\b/);
+    const action = m ? m[1] : 'none';
+    return { draw: action === 'draw', edit: action === 'edit' };
+  } catch (e) {
+    return null;
+  }
+}
 
 async function sendMessage() {
   if (state.streaming) return;
@@ -2183,20 +2221,40 @@ async function sendMessage() {
   }
 
   // 对话模型下:识别到「画图 / 改图」意图时,自动改用「默认生图模型」出图,
-  // 并自动带上上一张生成图或本次附件作参考图(改图)。用户无需先手动切到生图模型。
-  if (uiPref('autoImage', true)) {
+  // 并自动带上上一张生成图或本次附件作参考图(改图)。识别方式由设置决定:
+  // off=关闭 | rough=粗略关键词识别 | ai=让模型判定(更准,但多一次调用)。
+  const aim = autoImageMode();
+  if (aim !== 'off') {
     const imgAtts = attachments.filter((a) => a && a.type === 'image' && a.dataUrl).slice(0, 4);
     let prevImg = '';
     if (typeof lastImageSourceInChat === 'function') {
       const c = currentChat();
       if (c) prevImg = lastImageSourceInChat(c) || '';
     }
-    const isDraw = wantsDrawImage(text);
-    // 改图意图:必须能定位到一张图。附图即视为要改这张图;否则需本会话有上一张生成图,
-    // 且文本明确指代它(上面/这张图/它…)。避免把「把这段话改成英文」这类文本编辑误判为改图。
-    const isEdit = wantsEditImage(text) && (imgAtts.length > 0 || (!!prevImg && refersToPrevImage(text)));
+    const hasRef = imgAtts.length > 0 || !!prevImg;
+    let isDraw = false, isEdit = false;
+    if (aim === 'ai' && text) {
+      // AI 判定期间锁住发送,避免重复触发
+      state.streaming = true; updateSendBtn();
+      let verdict = null;
+      try { verdict = await aiJudgeImageIntent(text, hasRef); }
+      finally { state.streaming = false; updateSendBtn(); }
+      if (verdict) {
+        isDraw = !!verdict.draw;
+        isEdit = !!verdict.edit && hasRef;
+      } else {
+        // 判定失败时回退粗略识别,保证能力不退化
+        isDraw = wantsDrawImage(text);
+        isEdit = wantsEditImage(text) && (imgAtts.length > 0 || (!!prevImg && refersToPrevImage(text)));
+      }
+    } else {
+      isDraw = wantsDrawImage(text);
+      // 改图意图:必须能定位到一张图。附图即视为要改这张图;否则需本会话有上一张生成图,
+      // 且文本明确指代它(上面/这张图/它…)。避免把「把这段话改成英文」这类文本编辑误判为改图。
+      isEdit = wantsEditImage(text) && (imgAtts.length > 0 || (!!prevImg && refersToPrevImage(text)));
+    }
     // 参考图策略:显式编辑或明确指代上一张图时带上;全新绘图默认不带
-    const usePrevRef = imgAtts.length === 0 && (isEdit || (isDraw && refersToPrevImage(text) && !!prevImg));
+    const usePrevRef = imgAtts.length === 0 && (isEdit || (isDraw && !!prevImg));
     if (isDraw || isEdit) {
       const target = defaultImageModel();
       if (target) {
@@ -3749,7 +3807,6 @@ function syncPrefsPanel() {
     ['pref-show-api-chats', 'showApiChats'],
     ['pref-followups', 'followups'],
     ['pref-autotitle', 'autotitle'],
-    ['pref-auto-image', 'autoImage'],
     ['pref-elapsed', 'elapsed'],
     ['pref-reasoning', 'reasoning'],
   ];
@@ -3761,6 +3818,15 @@ function syncPrefsPanel() {
   syncAuxModelSelect('pref-followups-model', 'followupsModel', '');
   syncAuxModelSelect('pref-title-model', 'titleModel', '');
   syncImageModelSelect('pref-image-model', 'imageModel');
+  syncAuxModelSelect('pref-auto-image-model', 'autoImageModel', '');
+  // 对话中自动出图:三选一分段
+  const aiMode = autoImageMode();
+  document.querySelectorAll('#pref-auto-image .seg-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.autoimage === aiMode);
+  });
+  // 仅「AI 判定」需要选择判定模型
+  const aiModelRow = $('pref-auto-image-model-row');
+  if (aiModelRow) aiModelRow.style.display = (aiMode === 'ai') ? '' : 'none';
   const effortVal = reasoningEffort();
   document.querySelectorAll('#pref-reasoning-effort .seg-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.effort === effortVal);
@@ -3968,7 +4034,17 @@ async function saveToolSource(patch) {
   bindAuxModelSelect('pref-followups-model', 'followupsModel', 'followups');
   bindAuxModelSelect('pref-title-model', 'titleModel', 'title');
   bindImageModelSelect('pref-image-model', 'imageModel');
-  bindCheck('pref-auto-image', 'autoImage');
+  bindAuxModelSelect('pref-auto-image-model', 'autoImageModel', '');
+  // 对话中自动出图:三选一(关闭 / 粗略 / AI 判定)
+  const autoImgBox = $('pref-auto-image');
+  if (autoImgBox) autoImgBox.addEventListener('click', (e) => {
+    const btn = e.target.closest('.seg-btn');
+    if (!btn || !btn.dataset.autoimage) return;
+    document.querySelectorAll('#pref-auto-image .seg-btn').forEach((b) => b.classList.toggle('active', b === btn));
+    if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('autoImageMode', btn.dataset.autoimage);
+    const row = $('pref-auto-image-model-row');
+    if (row) row.style.display = (btn.dataset.autoimage === 'ai') ? '' : 'none';
+  });
   bindCheck('pref-elapsed', 'elapsed');
   bindCheck('pref-reasoning', 'reasoning');
   const effortBox = $('pref-reasoning-effort');

@@ -23,7 +23,8 @@
     autotitle: true,       // 自动生成会话标题
     titleModel: '',        // 命名方式:'' = 本地截取;'current' = AI(当前模型);否则 "providerId\nmodelId"
     imageModel: '',        // 默认生图模型:'' = 用第一个可用生图模型;否则 "providerId\nmodelId"
-    autoImage: true,       // 对话模型下说了「画一张…」等绘图/改图意图时,自动改走生图
+    autoImageMode: 'rough', // 对话中自动出图:off=关闭 | rough=粗略关键词识别 | ai=AI 判定
+    autoImageModel: '',    // AI 判定所用模型:'' = 跟随当前对话模型;否则 "providerId\nmodelId"
     elapsed: true,         // 显示生成耗时
     reasoning: true,       // 请求并展示思维链
     reasoningEffort: 'medium', // off | low | medium | high
