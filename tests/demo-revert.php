@@ -78,6 +78,69 @@ $eq('force 后基准为转换时的现值', $db3['demoSnapshot']['settings']['si
 $eq('force 后归属新的演示账号', $db3['demoSnapshot']['userId'], 'd1');
 $eq('force 后重新计时', (int) $db3['demoSnapshot']['expireAt'] >= $oldExpire, true);
 
+// 5c) 演示管理员的个人数据(对话/额度)在转换那一刻定格,到期一并恢复
+$dbp = tc_empty_db();
+$dbp['settings'] = tc_normalize_settings(array('siteName' => 'S', 'demoExpireMinutes' => 1));
+$demoUser = array('id' => 'du1', 'name' => 'demoacc', 'admin' => true, 'demo' => true, 'quota' => 100);
+$dbp['users'] = array($demoUser);
+$dbp['userChats'] = tc_object_map(array('du1' => array(array('id' => 'c0', 'title' => '旧对话', 'messages' => array()))));
+tc_demo_arm($dbp, $demoUser);
+$eq('快照记录演示账号对话', count($dbp['demoSnapshot']['demoChats']), 1);
+$eq('快照记录演示账号额度', $dbp['demoSnapshot']['demoQuota'], 100);
+// 演示期间:新增对话、花掉额度
+$map = tc_assoc($dbp['userChats']);
+$map['du1'][] = array('id' => 'c1', 'title' => '演示期间新对话', 'messages' => array());
+$dbp['userChats'] = tc_object_map($map);
+foreach ($dbp['users'] as &$u) if ($u['id'] === 'du1') $u['quota'] = 40;
+unset($u);
+$dbp['demoSnapshot']['expireAt'] = 1;   // 强制到期
+$eq('到期触发还原(含个人数据)', tc_demo_revert($dbp), true);
+$revertedChats = tc_assoc($dbp['userChats']);
+$eq('演示期间新增对话被回收', count($revertedChats['du1']), 1);
+$eq('回收后剩的是转换时那份', $revertedChats['du1'][0]['title'], '旧对话');
+foreach ($dbp['users'] as $u) if ($u['id'] === 'du1') $eq('演示期间消耗的额度被恢复', $u['quota'], 100);
+
+// 5d) 真实管理员的改动成为新的还原基准(且不固化演示管理员在途改动)
+$dbr = tc_empty_db();
+$dbr['settings'] = tc_normalize_settings(array('siteName' => 'REAL-A', 'temperature' => 0.1, 'demoExpireMinutes' => 1));
+$dbr['users'] = array(array('id' => 'du2', 'name' => 'demo2', 'admin' => true, 'demo' => true, 'quota' => 0));
+$dbr['userChats'] = new stdClass();
+$dbr['userChatRevisions'] = new stdClass();
+tc_demo_arm($dbr, array('id' => 'du2', 'admin' => true, 'demo' => true));
+$eq('基线初始 siteName', $dbr['demoSnapshot']['settings']['siteName'], 'REAL-A');
+// 演示管理员改了 siteName(在途,未到期)
+$dbr['settings']['siteName'] = 'DEMO-C';
+// 真实管理员接着只改了 temperature:记录改动前基线,再应用改动
+$before = tc_demo_capture($dbr);
+$dbr['settings']['temperature'] = 0.9;
+$rebased = tc_demo_rebaseline($dbr, $before);
+$eq('真实管理员改动触发写回基线', $rebased, true);
+$eq('基线采纳真实管理员的新值(temperature)', $dbr['demoSnapshot']['settings']['temperature'], 0.9);
+$eq('基线未被演示在途改动污染(siteName)', $dbr['demoSnapshot']['settings']['siteName'], 'REAL-A');
+// 到期还原:演示改的 siteName 被收回,真实管理员改的 temperature 保留
+$dbr['demoSnapshot']['expireAt'] = 1;
+tc_demo_revert($dbr);
+$eq('还原后演示改动被收回', $dbr['settings']['siteName'], 'REAL-A');
+$eq('还原后真实管理员改动仍在', $dbr['settings']['temperature'], 0.9);
+
+// 5e) 演示账号改为普通用户后,个人数据保留、不再被还原
+$dbn = tc_empty_db();
+$dbn['settings'] = tc_normalize_settings(array('siteName' => 'N', 'demoExpireMinutes' => 1));
+$dbn['users'] = array(array('id' => 'du3', 'name' => 'n3', 'admin' => true, 'demo' => true, 'quota' => 5));
+$dbn['userChats'] = tc_object_map(array('du3' => array()));
+tc_demo_arm($dbn, array('id' => 'du3', 'admin' => true, 'demo' => true));
+$map = tc_assoc($dbn['userChats']);
+$map['du3'][] = array('id' => 'keep1', 'title' => '改成普通用户后应保留', 'messages' => array());
+$dbn['userChats'] = tc_object_map($map);
+// 转为普通用户
+foreach ($dbn['users'] as &$u) if ($u['id'] === 'du3') unset($u['demo']);
+unset($u);
+$dbn['demoSnapshot']['expireAt'] = 1;
+tc_demo_revert($dbn);
+$kept = tc_assoc($dbn['userChats']);
+$eq('转普通用户后数据保留', count($kept['du3']), 1);
+$eq('保留的是转换后的新对话', $kept['du3'][0]['title'], '改成普通用户后应保留');
+
 // 6) 非演示管理员不参与
 $db2 = tc_empty_db();
 $db2['settings'] = tc_normalize_settings(array('siteName' => 'X'));
