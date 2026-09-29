@@ -8,12 +8,12 @@
 <title>管理后台 · TinyChat</title>
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ctext x='12' y='17' text-anchor='middle' font-family='Inter,Segoe UI,Arial,sans-serif' font-size='15' font-weight='800' fill='%23232936'%3ET%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="./static/css/style.css?v=20261002.2">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261002.2">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261002.2">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261002.2">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261002.2">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261002.2">
+<link rel="stylesheet" href="./static/css/style.css?v=20261003.1">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261003.1">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261003.1">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261003.1">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261003.1">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261003.1">
 <script>
 (function () {
   try {
@@ -422,7 +422,7 @@
       <p class="muted small">用户可在前台账户面板生成 <code>sk-tc-</code> 密钥，通过任意 OpenAI 兼容客户端调用本站模型。请求与网页端共用额度，并额外受下方频率限制与模型白名单约束。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="apikeys-enabled" checked><span class="slider"></span></span><span>允许用户生成 API 密钥</span></label>
       <div class="pkg-form-grid" style="margin-top:10px">
-        <label class="field"><span>每把密钥限流（次/分钟，0 = 不限制）</span><input id="openapi-key-limit" type="number" min="0" max="600" value="60"></label>
+        <label class="field"><span>单密钥限流（次/分钟，0 = 不限制）</span><input id="openapi-key-limit" type="number" min="0" max="600" value="60"></label>
       </div>
       <p class="muted small">站点总限流（<b id="openapi-user-limit-hint">—</b>）在「对话设置」中统一配置，两处限制需同时满足。</p>
       <div class="section-title">对外可用模型</div>
@@ -791,10 +791,10 @@
   </div>
 </div>
 </form>
-<script src="./static/js/config.js?v=20261002.2"></script>
-<script src="./static/js/icons.js?v=20261002.2"></script>
-<script src="./static/js/ui.js?v=20261002.2"></script>
-<script src="./static/js/components.js?v=20261002.2"></script>
-<script src="./static/js/admin.js?v=20261002.2"></script>
+<script src="./static/js/config.js?v=20261003.1"></script>
+<script src="./static/js/icons.js?v=20261003.1"></script>
+<script src="./static/js/ui.js?v=20261003.1"></script>
+<script src="./static/js/components.js?v=20261003.1"></script>
+<script src="./static/js/admin.js?v=20261003.1"></script>
 </body>
 </html>

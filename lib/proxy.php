@@ -1664,6 +1664,9 @@ function tc_api_fetch_models() {
             }
         }
         if ($apiKey === '') tc_fail(400, '请先填写 API Key');
+        // 掩码占位符不是真实密钥:带着它请求上游只会得到误导性的 401。
+        // 常见于「编辑供应商 + 留空 Key」但 providerId 不匹配(非本人/已删除)的场景,本地直接给出可行动的提示。
+        if (strpos($apiKey, '••') !== false) tc_fail(400, '请先填写 API Key（编辑已有供应商时留空即沿用已保存的密钥）');
         $url = tc_api_url($baseUrl, '/models');
         return array('url' => $url, 'apiKey' => $apiKey);
     });

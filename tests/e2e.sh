@@ -269,12 +269,19 @@ assert_contains "对话接口自动改走生视频" "$(curl -s -X POST "$BASE/ap
 
 # ---------- 获取模型列表 ----------
 say "== 获取模型列表 =="
+# Git Bash 的 curl 会搅乱 UTF-8 字面量,掩码占位符用字节转义构造,确保后端收到真实的 ••••
+MASKEDKEY=$'sk-\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2'
 assert_contains "获取模型: 标准 Base URL" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://127.0.0.1:'"$MOCK_PORT"'/v1","apiKey":"sk-mock","apiFormat":"chat"}')" 'mock-model'
 assert_contains "获取模型: 不带 /v1 自动补全" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://127.0.0.1:'"$MOCK_PORT"'","apiKey":"sk-mock","apiFormat":"chat"}')" 'mock-model'
 assert_contains "获取模型: 粘贴完整 /v1/models 不重复拼接" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://127.0.0.1:'"$MOCK_PORT"'/v1/models","apiKey":"sk-mock","apiFormat":"chat"}')" 'mock-model'
-assert_contains "获取模型: 掩码 Key 回退存储密钥" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://127.0.0.1:'"$MOCK_PORT"'/v1","apiKey":"sk-••••","providerId":"'"$PROV"'","apiFormat":"chat"}')" 'mock-model'
+# 真实场景是「管理员编辑全局供应商」:掩码 Key + 属主/管理员身份才回退存储密钥;
+# 普通用户传全局 providerId 不会回退(否则可借用站点密钥拉取上游模型),由下一条用例保证。
+printf '{"baseUrl":"http://127.0.0.1:%s/v1","apiKey":"%s","providerId":"%s","apiFormat":"chat"}' "$MOCK_PORT" "$MASKEDKEY" "$PROV" > "$TMP/masked.json"
+assert_contains "获取模型: 掩码 Key 回退存储密钥(管理员)" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/masked.json")" 'mock-model'
 assert_contains "获取模型: Anthropic 明确提示手填" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"https://api.anthropic.com","apiKey":"x","apiFormat":"anthropic"}')" '手动填写'
 assert_contains "获取模型: 缺 Key 且无 providerId 拒绝" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://127.0.0.1:'"$MOCK_PORT"'/v1","apiKey":"","apiFormat":"chat"}')" '请先填写 API Key'
+printf '{"baseUrl":"http://127.0.0.1:%s/v1","apiKey":"%s","providerId":"not-exist","apiFormat":"chat"}' "$MOCK_PORT" "$MASKEDKEY" > "$TMP/masked2.json"
+assert_contains "获取模型: 掩码 Key 无匹配 providerId 快速失败" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/masked2.json")" '沿用已保存的密钥'
 assert_contains "获取模型: 不可达主机可定位" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://127.0.0.1:9/nope/v1","apiKey":"x","apiFormat":"chat"}')" '无法连接上游'
 
 # ---------- 接口限流(tester2 全新窗口:3 次/分钟) ----------

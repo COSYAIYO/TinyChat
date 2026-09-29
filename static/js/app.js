@@ -38,6 +38,23 @@ function uiPref(key, def) {
 function streamEnabled() { return !!uiPref('stream', true); }
 function followUpsEnabled() { return !!uiPref('followups', false); }
 function autoTitleEnabled() { return !!uiPref('autotitle', true); }
+// 解析「辅助任务(跟进建议/命名)」指定的模型。
+// pref 形如 'providerId\nmodelId';空值返回 null(调用方回退当前模型/本地截取)。
+// 只接受对话模型(生图/生视频模型不用于文本辅助任务)。
+function resolveAuxModel(prefKey) {
+  const raw = String(uiPref(prefKey, '') || '');
+  if (!raw) return null;
+  const parts = raw.split('\n');
+  const providerId = parts[0] || '';
+  const modelId = parts.slice(1).join('\n');
+  if (!providerId || !modelId) return null;
+  const p = (state.providers || []).find((x) => x.id === providerId);
+  if (!p || p.enabled === false) return null;
+  const m = (p.models || []).find((x) => x && String(x.id) === modelId);
+  if (!m) return null;
+  if (modelIsImage(modelId) || modelIsVideo(modelId)) return null;
+  return { providerId, model: modelId, format: p.apiFormat || 'chat' };
+}
 function elapsedEnabled() { return !!uiPref('elapsed', true); }
 function reasoningEnabled() { return !!uiPref('reasoning', true); }
 function reasoningEffort() {
@@ -641,6 +658,8 @@ function renderChatList() {
     onRename: (c, item) => {
       window.OCConversations.renameInline(item, c.title, (title) => {
         c.title = title;
+        // 手动重命名后不再是「自动标题」,AI 命名完成时不得覆盖
+        c._autoTitled = false;
         c.updatedAt = Date.now();
         saveChats(); renderChatList();
       });
@@ -2098,10 +2117,11 @@ async function sendMessage() {
   if (!chat || !chat.id) {
     chat = newChat();
   }
-  // 新会话给第一个消息生成标题
+  // 新会话给第一个消息生成标题(先用本地截取,若配置了 AI 命名则在首轮回复后替换)
   if (chat.messages.length === 0 && autoTitleEnabled()) {
     const seed = text || (attachments[0] && attachments[0].name) || '新对话';
     chat.title = window.OCConversations.autoTitle(seed);
+    chat._autoTitled = true;
     renderChatList();
   }
 
@@ -2123,8 +2143,53 @@ async function sendMessage() {
   saveChats();
   renderMessages();
   await requestAssistantReply(chat, userMsg);
+  // AI 命名:配置了命名模型且标题仍是本地截取时,首轮回复后生成更贴切的标题
+  if (chat._autoTitled && String(uiPref('titleModel', '') || '')) {
+    aiGenerateTitle(chat).catch(() => {});
+  }
   await refreshMe();
   refreshModelHealth();
+}
+
+// AI 生成会话标题:用「命名方式」选择的模型(或当前模型)总结首轮对话。
+// 仅替换尚未被用户手动重命名的自动标题(_autoTitled 标记)。
+async function aiGenerateTitle(chat) {
+  if (!chat || !chat.id) return;
+  const aux = resolveAuxModel('titleModel');
+  const providerId = aux ? aux.providerId : state.currentProviderId;
+  const model = aux ? aux.model : state.currentModel;
+  const format = aux ? aux.format : providerFormat();
+  if (!providerId || !model) return;
+  const firstUser = (chat.messages || []).find((m) => m && m.role === 'user');
+  const firstReply = (chat.messages || []).find((m) => m && m.role === 'assistant' && String(m.content || '').trim());
+  const seed = String((firstUser && (firstUser.text || firstUser.content)) || '').slice(0, 800);
+  const reply = String((firstReply && firstReply.content) || '').replace(/!\[[^\]]*\]\([^)]*\)/g, '').slice(0, 600);
+  if (!seed.trim()) return;
+  const body = {
+    model,
+    stream: false,
+    providerId,
+    messages: [
+      { role: 'system', content: '你是对话助手。为一段对话生成一个简短的中文标题：不超过 14 个字、不加引号和句号、不使用「对话」「标题」等字眼，直接输出标题本身。' },
+      { role: 'user', content: '用户提问：\n' + seed + (reply ? ('\n\nAI 回复（节选）：\n' + reply) : '') },
+    ],
+  };
+  const r = await api(ENDPOINT_BY_FORMAT[format] || ENDPOINT_BY_FORMAT.chat, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) return;
+  const data = await r.json();
+  const title = String(extractText(data, format) || '').split('\n')[0].replace(/^["'「『]+|["'」』。.]+$/g, '').trim().slice(0, 24);
+  if (!title) return;
+  // 生成期间用户可能已手动改名(_autoTitled 被清),此时不再覆盖
+  if (!chat._autoTitled) return;
+  chat._autoTitled = false;
+  chat.title = title;
+  chat.updatedAt = Date.now();
+  saveChats();
+  renderChatList();
 }
 
 function providerFormat() {
@@ -2960,18 +3025,23 @@ function suggestFollowUps(content) {
 
 // 用 AI 生成跟进建议（失败时降级为启发式）
 async function aiFollowUps(content) {
-  if (!content || !state.currentProviderId || !state.currentModel) return suggestFollowUps(content);
+  // 可在设置 → 对话里指定「跟进建议模型」;未指定(或指定模型已不可用)时跟随当前对话模型
+  const aux = resolveAuxModel('followupsModel');
+  const providerId = aux ? aux.providerId : state.currentProviderId;
+  const model = aux ? aux.model : state.currentModel;
+  const format = aux ? aux.format : providerFormat();
+  if (!content || !providerId || !model) return suggestFollowUps(content);
   try {
-    const format = providerFormat();
     const body = {
-      model: state.currentModel,
+      model,
       stream: false,
+      providerId,
       messages: [
         { role: 'system', content: '你是对话助手。根据用户与 AI 的最后一条回复，生成 3 个简短、自然的追问建议。只输出 3 个短句，每行一个，不要编号，不要引号。' },
         { role: 'user', content: '最后回复内容：\n' + content.slice(0, 3000) },
       ],
     };
-    const r = await api(ENDPOINT_BY_FORMAT[format], {
+    const r = await api(ENDPOINT_BY_FORMAT[format] || ENDPOINT_BY_FORMAT.chat, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -3431,6 +3501,54 @@ function renderAccountPanel() {
   }
 }
 
+// ============ 辅助任务模型选择(跟进建议/对话命名) ============
+// 候选只含对话模型;生图/生视频模型不参与文本辅助任务。
+function auxModelItems() {
+  const items = [];
+  availableModelItems().forEach((g) => {
+    if (g.label === '生图模型' || g.label === '生视频模型') return;
+    (g.items || []).forEach((it) => items.push({ value: it.value, label: it.label, search: it.search }));
+  });
+  return items;
+}
+function auxModelLabel(val, mode) {
+  const v = String(val || '');
+  if (mode === 'title') {
+    if (v === 'current') return '跟随当前模型（AI 生成）';
+    if (!v) return '本地截取';
+  } else if (!v) return '跟随当前模型';
+  const found = auxModelItems().find((it) => it.value === v);
+  return found ? found.label : (mode === 'title' ? '本地截取' : '跟随当前模型');
+}
+function syncAuxModelSelect(id, prefKey, mode) {
+  const box = $(id);
+  if (!box) return;
+  const val = String(uiPref(prefKey, '') || '');
+  box.setAttribute('data-value', val);
+  const lab = box.querySelector('.sb-label');
+  if (lab) lab.textContent = auxModelLabel(val, mode);
+}
+function bindAuxModelSelect(id, prefKey, mode) {
+  const box = $(id);
+  if (!box || !window.OC || !OC.openSelect) return;
+  const open = () => {
+    const items = auxModelItems().slice();
+    if (mode === 'title') items.unshift({ value: 'current', label: '跟随当前模型（AI 生成）' });
+    items.unshift({ value: '', label: mode === 'title' ? '本地截取' : '跟随当前模型' });
+    OC.openSelect(box, items, {
+      selected: String(uiPref(prefKey, '') || ''),
+      searchable: items.length > 8,
+      fitWidth: true,
+      onSelect: (val, item) => {
+        if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref(prefKey, val);
+        const lab = box.querySelector('.sb-label');
+        if (lab) lab.textContent = (item && item.label) || auxModelLabel(val, mode);
+      },
+    });
+  };
+  box.addEventListener('click', open);
+  box.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+}
 function syncPrefsPanel() {
   const checks = [
     ['pref-stream', 'stream'],
@@ -3444,6 +3562,8 @@ function syncPrefsPanel() {
     if (!el) return;
     el.checked = !!uiPref(key, true);
   });
+  syncAuxModelSelect('pref-followups-model', 'followupsModel', '');
+  syncAuxModelSelect('pref-title-model', 'titleModel', '');
   const effortVal = reasoningEffort();
   document.querySelectorAll('#pref-reasoning-effort .seg-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.effort === effortVal);
@@ -3647,6 +3767,8 @@ async function saveToolSource(patch) {
   bindCheck('pref-stream', 'stream');
   bindCheck('pref-followups', 'followups');
   bindCheck('pref-autotitle', 'autotitle');
+  bindAuxModelSelect('pref-followups-model', 'followupsModel', 'followups');
+  bindAuxModelSelect('pref-title-model', 'titleModel', 'title');
   bindCheck('pref-elapsed', 'elapsed');
   bindCheck('pref-reasoning', 'reasoning');
   const effortBox = $('pref-reasoning-effort');
@@ -4698,9 +4820,9 @@ function apiKeyLimitText(d) {
   const keyLimit = Number(d && d.keyRateLimitPerMin);
   const userLimit = Number(d && d.userRateLimitPerMin);
   const maxKeys = Number(d && d.maxKeys) || 5;
-  parts.push('每把密钥 ' + (keyLimit > 0 ? keyLimit + ' 次/分钟' : '不限频率'));
+  parts.push('单密钥限流 ' + (keyLimit > 0 ? keyLimit + ' 次/分钟' : '不限'));
   if (userLimit > 0) parts.push('账号合计 ' + userLimit + ' 次/分钟');
-  parts.push('最多 ' + maxKeys + ' 把');
+  parts.push('最多 ' + maxKeys + ' 个密钥');
   if (d && d.exposeRestricted) parts.push('仅部分模型对开放接口开放');
   return parts.join(' · ');
 }
@@ -4749,9 +4871,9 @@ function resetApiKeySecret() {
       toast('创建失败: ' + e.message, true);
     } finally { create.disabled = false; }
   });
-  if ($('sp-account') && window.MutationObserver) {
-    new MutationObserver(() => { if ($('sp-account').classList.contains('active')) loadApiKeys(); })
-      .observe($('sp-account'), { attributes: true, attributeFilter: ['class'] });
+  if ($('sp-apikeys') && window.MutationObserver) {
+    new MutationObserver(() => { if ($('sp-apikeys').classList.contains('active')) loadApiKeys(); })
+      .observe($('sp-apikeys'), { attributes: true, attributeFilter: ['class'] });
   }
 })();
 
