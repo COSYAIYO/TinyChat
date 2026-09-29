@@ -2191,12 +2191,12 @@ async function sendMessage() {
       const c = currentChat();
       if (c) prevImg = lastImageSourceInChat(c) || '';
     }
-    const hasRef = imgAtts.length > 0 || !!prevImg;
     const isDraw = wantsDrawImage(text);
-    const isEditAction = wantsEditImage(text);
-    const isEdit = hasRef && isEditAction;
-    // 参考图策略:显式编辑用上一张图;全新绘图默认不带(除非明确指代上一张,如「再画一张/把上面…」)
-    const usePrevRef = hasRef && imgAtts.length === 0 && (isEdit || (isDraw && refersToPrevImage(text)));
+    // 改图意图:必须能定位到一张图。附图即视为要改这张图;否则需本会话有上一张生成图,
+    // 且文本明确指代它(上面/这张图/它…)。避免把「把这段话改成英文」这类文本编辑误判为改图。
+    const isEdit = wantsEditImage(text) && (imgAtts.length > 0 || (!!prevImg && refersToPrevImage(text)));
+    // 参考图策略:显式编辑或明确指代上一张图时带上;全新绘图默认不带
+    const usePrevRef = imgAtts.length === 0 && (isEdit || (isDraw && refersToPrevImage(text) && !!prevImg));
     if (isDraw || isEdit) {
       const target = defaultImageModel();
       if (target) {
@@ -2214,14 +2214,18 @@ async function sendMessage() {
         state.currentModel = target.modelId;
         renderProviderLabel();
         renderModelPicker();
-        toast((isEdit ? '识别到改图意图，已用生图模型「' : '识别到绘图意图，已用生图模型「') + (target.label || target.modelId) + '」' + (isEdit || imgAtts.length || prevImg ? '并带上参考图' : ''));
-        await sendImageTurn(text, imgAtts, { autoRef: usePrevRef });
-        // 恢复到用户原本的对话模型
-        state.currentProviderId = prevProviderId;
-        await loadModels({ prefer: prevModel });
-        state.currentModel = prevModel;
-        renderProviderLabel();
-        renderModelPicker();
+        const withRef = imgAtts.length > 0 || usePrevRef;
+        toast((isEdit ? '识别到改图意图，已用生图模型「' : '识别到绘图意图，已用生图模型「') + (target.label || target.modelId) + '」' + (withRef ? '并带上参考图' : ''));
+        try {
+          await sendImageTurn(text, imgAtts, { autoRef: usePrevRef });
+        } finally {
+          // 无论出图成功或失败,都恢复到用户原本的对话模型
+          state.currentProviderId = prevProviderId;
+          await loadModels({ prefer: prevModel });
+          state.currentModel = prevModel;
+          renderProviderLabel();
+          renderModelPicker();
+        }
         return;
       }
     }

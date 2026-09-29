@@ -2051,9 +2051,20 @@ function tc_api_admin_user_chats() {
         }
         $out = array();
         foreach ($targets as $u) {
-            // 完整下发:不再截断条数/正文字符,并带上推理、引用、附件、版本等字段,
-            // 让后台能像前台一样完整还原对话(复用与云同步相同的清洗规则)。
+            // 指定用户:完整下发(不截断条数/正文字符,带推理/引用/版本),
+            // 后台可像前台一样完整还原对话(复用与云同步相同的清洗规则)。
             $chats = tc_sanitize_chats(tc_chats_of($db, $u['id']));
+            if (!$userId) {
+                // 「全部用户」模式:按最近更新时间取前 20 个对话、每个最多 200 条,避免整站数据过大
+                usort($chats, function ($a, $b) {
+                    return (isset($b['updatedAt']) ? $b['updatedAt'] : 0) <=> (isset($a['updatedAt']) ? $a['updatedAt'] : 0);
+                });
+                $chats = array_slice($chats, 0, 20);
+                foreach ($chats as &$c) {
+                    if (isset($c['messages']) && count($c['messages']) > 200) $c['messages'] = array_slice($c['messages'], -200);
+                }
+                unset($c);
+            }
             if ($chats || $userId) $out[] = array('user' => tc_sanitize_user($u), 'chats' => $chats);
         }
         tc_json(200, array('total' => count($out), 'usersChats' => $out, 'single' => !!$userId));

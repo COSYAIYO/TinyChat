@@ -1715,6 +1715,24 @@
   margin-top: 5px; padding: 7px 10px; border-radius: 8px; font-size: 12px;
   background: var(--bg-hover); color: var(--text-secondary); max-height: 240px; overflow: auto;
 }
+/* 后台对话弹窗里的 Markdown 元素:markdown.css 只作用于 .msg.assistant,这里补齐通用样式 */
+#user-chats-content .md-prose pre {
+  overflow-x: auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg-hover);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+#user-chats-content .md-prose code { font-size: 0.92em; }
+#user-chats-content .md-prose table { display: block; width: max-content; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+#user-chats-content .md-prose th,
+#user-chats-content .md-prose td { border: 1px solid var(--hairline); padding: 5px 9px; }
+#user-chats-content .md-prose blockquote { margin: 8px 0; padding: 4px 12px; border-left: 3px solid var(--hairline); color: var(--text-secondary); }
+#user-chats-content .md-prose img { max-width: 100%; height: auto; border-radius: 8px; }
+#user-chats-content .chat-msg-text .katex-display { overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+#user-chats-content .chat-msg-text > :first-child { margin-top: 0; }
+#user-chats-content .chat-msg-text > :last-child { margin-bottom: 0; }
 
 /* admin 弹窗内的 select 复用 select-box 风格 */
 #user-chats-select {
