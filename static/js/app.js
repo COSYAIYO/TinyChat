@@ -3677,10 +3677,11 @@ function bindAuxModelSelect(id, prefKey, mode) {
   box.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
 }
 // 生图模型候选(跨供应商),供「默认生图模型」设置项使用
+// 生图模型候选(跨供应商,仅生图,不含生视频),供「默认生图模型」设置项使用
 function imageModelItems() {
   const items = [];
   availableModelItems().forEach((g) => {
-    if (g.label !== '生图模型' && g.label !== '生视频模型') return;
+    if (g.label !== '生图模型') return;
     (g.items || []).forEach((it) => items.push({ value: it.value, label: it.label, search: it.search }));
   });
   return items;
