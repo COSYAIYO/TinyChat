@@ -434,7 +434,16 @@ function loadChats() {
     state.chats = window.OCConversations.normalize(JSON.parse(localStorage.getItem('oc_chats_' + state.user.id) || '[]'));
     state.chats.forEach((c) => (c.messages || []).forEach((m) => { if (m && m.role === 'assistant') m._voteSent = m.vote || null; }));
   } catch (e) { state.chats = []; }
+  // 恢复本端删除墓碑(按用户隔离),防止刷新后又被云端合并回来
+  try {
+    const tombs = JSON.parse(localStorage.getItem('oc_chat_tombs_' + state.user.id) || '[]');
+    state.deletedIds = Array.isArray(tombs) ? tombs.filter((x) => typeof x === 'string') : [];
+  } catch (e) { state.deletedIds = []; }
   state.currentChatId = state.chats[0] ? state.chats[0].id : null;
+}
+function persistTombstones() {
+  if (!state.user) return;
+  try { localStorage.setItem('oc_chat_tombs_' + state.user.id, JSON.stringify(state.deletedIds || [])); } catch (e) { /* 忽略 */ }
 }
 
 // 云同步：保存到本地 + 防抖推送云端
@@ -503,11 +512,15 @@ async function pushChatsToCloud() {
       renderChatList();
       const next = (state.chats || []).find((c) => c.id === state.currentChatId) || null;
       if (state.currentChatId !== prevId || chatViewStamp(next) !== prevStamp) renderMessages();
+      // 手里还有未确认的删除:合并已排除它们,这里再推一次把服务端的也删掉
+      if ((state.deletedIds || []).length) { scheduleCloudSync(); }
       return;
     }
     if (!r.ok) throw new Error('sync failed');
     state.chatRevision = Number(data.revision) || state.chatRevision || 0;
     if (state.user) localStorage.setItem('oc_chat_rev_' + state.user.id, String(state.chatRevision));
+    // 推送成功:服务端已按本端列表落库(含删除),墓碑可清空
+    if ((state.deletedIds || []).length) { state.deletedIds = []; persistTombstones(); }
   } catch (e) {
     // 静默失败,下次修改会重试
   }
@@ -612,8 +625,11 @@ async function pullChatsFromCloud() {
 }
 
 function mergeChatLists(cloudChats, localChats) {
-  const cloud = window.OCConversations.normalize(cloudChats || []);
-  const local = window.OCConversations.normalize(localChats || []);
+  // 合并云端与本端列表:云端有、本端没有的补进来(多端同步);
+  // 但本端**主动删除**的聊天要排除(tombstone),否则删除后再次合并会被云端版本复活。
+  const deleted = new Set(state.deletedIds || []);
+  const cloud = window.OCConversations.normalize(cloudChats || []).filter((c) => !deleted.has(c.id));
+  const local = window.OCConversations.normalize(localChats || []).filter((c) => !deleted.has(c.id));
   const merged = cloud.slice();
   local.forEach((lc) => {
     const found = merged.find((c) => c.id === lc.id);
@@ -658,6 +674,9 @@ function renderChatList() {
         : confirm('确认删除此对话?');
       if (!ok) return;
       state.chats = state.chats.filter((x) => x.id !== c.id);
+      // 记墓碑:避免删除后与云端/其它页面合并时把这条又合并回来
+      if (!state.deletedIds.includes(c.id)) state.deletedIds.push(c.id);
+      persistTombstones();
       if (state.currentChatId === c.id) state.currentChatId = state.chats[0] ? state.chats[0].id : null;
       saveChats(); renderChatList(); renderMessages();
       syncNow();

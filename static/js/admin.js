@@ -250,12 +250,17 @@ async function saveUserForm() {
       if (!r.ok) return toast((data.error && data.error.message) || '创建失败', true);
       const created = data.user;
       const createdGroup = created && created.groupId ? created.groupId : '';
-      if (created && groupId !== createdGroup) {
-        await api('/api/admin/users/group', {
+      // 后端在创建管理员/演示账号时已自动归入管理员组;仅当用户特意选了别的组时才再调组接口
+      if (created && groupId && groupId !== createdGroup) {
+        const gr = await api('/api/admin/users/group', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ userId: created.id, groupId: groupId || null }),
         });
+        if (!gr.ok) {
+          const dd = await gr.json().catch(() => ({}));
+          toast((dd.error && dd.error.message) || '用户组更新失败', true);
+        }
       }
       toast('用户已创建');
     } else {
@@ -273,13 +278,24 @@ async function saveUserForm() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId: USER_FORM_ID, quota }),
       });
-      if (!qr.ok) return toast('额度更新失败', true);
-      const gr = await api('/api/admin/users/group', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: USER_FORM_ID, groupId: groupId || null }),
-      });
-      if (!gr.ok) return toast('用户组更新失败', true);
+      if (!qr.ok) {
+        const qd = await qr.json().catch(() => ({}));
+        toast((qd.error && qd.error.message) || '额度更新失败', true);
+      }
+      // 后端在设为管理员/演示时已自动归入管理员组;仅当目标组与后端结果不一致时才再调组接口,
+      // 避免「演示管理员」这类场景下多调一次反而报「用户组更新失败」。
+      const newGroup = data.user && data.user.groupId ? data.user.groupId : '';
+      if (groupId && groupId !== newGroup) {
+        const gr = await api('/api/admin/users/group', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: USER_FORM_ID, groupId: groupId || null }),
+        });
+        if (!gr.ok) {
+          const gd = await gr.json().catch(() => ({}));
+          toast((gd.error && gd.error.message) || '用户组更新失败', true);
+        }
+      }
       toast('已保存');
     }
     closeUserForm();
@@ -1155,6 +1171,8 @@ function fillChatLimits(s) {
   if ($('chat-save-api')) $('chat-save-api').checked = src.apiSaveChats !== false;
   if ($('chat-health-ok')) $('chat-health-ok').value = Math.min(100, Math.max(1, parseInt(src.healthOkMin, 10) || 75));
   if ($('chat-health-warn')) $('chat-health-warn').value = Math.min(99, Math.max(0, parseInt(src.healthWarnMin, 10) || 40));
+  if ($('chat-img-archive')) $('chat-img-archive').checked = src.imageArchiveEnabled !== false;
+  if ($('chat-img-archive-quota')) $('chat-img-archive-quota').value = Math.min(10240, Math.max(50, parseInt(src.imageArchiveQuotaMb, 10) || 500));
 }
 (function initChatLimits() {
   document.querySelectorAll('#panel-chat .stepper [data-step]').forEach((btn) => {
@@ -1185,12 +1203,14 @@ function fillChatLimits(s) {
     if (!(healthWarn < healthOk)) healthWarn = Math.max(0, healthOk - 1);
     if ($('chat-health-ok')) $('chat-health-ok').value = healthOk;
     if ($('chat-health-warn')) $('chat-health-warn').value = healthWarn;
+    const imageArchiveEnabled = !!($('chat-img-archive') && $('chat-img-archive').checked);
+    const imageArchiveQuotaMb = Math.min(10240, Math.max(50, parseInt($('chat-img-archive-quota') && $('chat-img-archive-quota').value, 10) || 500));
     save.disabled = true;
     try {
       const r = await api('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature, rateLimitPerMin: rateLimit, proxyTimeoutMs: timeoutSec * 1000, contextAutoLearn: contextLearn, persistChats, apiSaveChats, healthOkMin: healthOk, healthWarnMin: healthWarn }),
+        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature, rateLimitPerMin: rateLimit, proxyTimeoutMs: timeoutSec * 1000, contextAutoLearn: contextLearn, persistChats, apiSaveChats, healthOkMin: healthOk, healthWarnMin: healthWarn, imageArchiveEnabled, imageArchiveQuotaMb }),
       });
       const data = await r.json();
       if (!r.ok) return toast((data.error && data.error.message) || '保存失败', true);

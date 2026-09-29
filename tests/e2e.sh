@@ -148,6 +148,16 @@ PROV=$(curl -s "$BASE/api/providers" -H "$AUTH" | grep -o '"id":"[a-f0-9]*","nam
 GID1=$(curl -s "$BASE/api/admin/groups" -H "$AUTH" | grep -o '"groups":\[{"id":"[a-f0-9]*"' | head -1 | cut -d'"' -f6)
 GID2=$(curl -s "$BASE/api/admin/groups" -H "$AUTH" | grep -o '"groups":\[{"id":"[a-f0-9]*"' | head -1 | cut -d'"' -f6)
 assert_eq "用户组 ID 跨请求稳定" "$GID1" "$GID2"
+# 用户组必须下发 role(前端据此判断「管理员组」;缺失会导致改成演示管理员时误报「用户组更新失败」)
+assert_has "用户组下发 admin role" "$(curl -s "$BASE/api/admin/groups" -H "$AUTH")" '"role":"admin"'
+assert_has "用户组下发 user role" "$(curl -s "$BASE/api/admin/groups" -H "$AUTH")" '"role":"user"'
+ADMINGID=$(curl -s "$BASE/api/admin/groups" -H "$AUTH" | python -c "import sys,json;d=json.load(sys.stdin);print([g['id'] for g in d['groups'] if g.get('role')=='admin'][0])")
+# 普通用户设为演示管理员:后端应自动归入管理员组(前端因此无需再多调一次组接口)
+DEMOU=$(curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"todemo","password":"pass1234"}')
+TU=$(printf '%s' "$DEMOU" | python -c "import sys,json;print(json.load(sys.stdin)['user']['id'])")
+convert=$(curl -s -X POST "$BASE/api/admin/users/update" -H "$AUTH" -H "Content-Type: application/json" -d '{"userId":"'"$TU"'","name":"todemo","admin":true,"demo":true,"demoMinutes":10}')
+assert_contains "普通用户转演示管理员成功" "$convert" '"demo":true'
+assert_has "转演示后自动归入管理员组" "$convert" "\"groupId\":\"$ADMINGID\""
 # 新建全局供应商应默认授权给各用户组(规则里出现该供应商且为通配)
 assert_has "新供应商默认对所有分组开放" "$(curl -s "$BASE/api/admin/access" -H "$AUTH")" "\"providerId\":\"$PROV\",\"modelIds\":[\"*\"]"
 # 收窄授权后再次读取必须仍然生效
@@ -581,6 +591,21 @@ assert_contains "后台设置可读回 perf" "$(curl -s "$BASE/api/admin/setting
 # 关回去(不影响后续用例)
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"perfNoWebfonts":false,"perfNoKatex":false,"perfNoHighlight":false,"perfNoMermaid":false}' > /dev/null
 assert_contains "性能开关可关闭" "$(curl -s "$BASE/api/config")" '"noKatex":false'
+
+# ---------- 生图结果本地留存 ----------
+say "== 生图本地留存 =="
+# 默认开启
+assert_contains "生图本地留存默认开启" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"imageArchiveEnabled":true'
+assert_contains "留存配额默认 500MB" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"imageArchiveQuotaMb":500'
+# 可关闭并读回
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"imageArchiveEnabled":false,"imageArchiveQuotaMb":800}' > /dev/null
+assert_contains "留存可关闭" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"imageArchiveEnabled":false'
+assert_contains "留存配额可改" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"imageArchiveQuotaMb":800'
+# 配额越界被夹紧
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"imageArchiveQuotaMb":1}' > /dev/null
+assert_contains "留存配额下界夹紧到 50" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"imageArchiveQuotaMb":50'
+# 关回去(默认开启;网络不可达时自动回退为按需代理,不影响出图)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"imageArchiveEnabled":true,"imageArchiveQuotaMb":500}' > /dev/null
 
 # ---------- 开放 API 对话落库 ----------
 say "== 开放 API 对话落库 =="
