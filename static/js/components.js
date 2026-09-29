@@ -289,22 +289,37 @@
   }
 
   // 模型绑定的密钥列(仅多 Key 时渲染):下拉选择,空值表示跟随默认密钥
+  // 模型绑定的密钥链(仅多 Key 时渲染)。
+  // 语义:同一模型可绑定多把 Key 作为「多重保障」——上游用第一把失败(认证/连接)时
+  // 自动回退到下一把。单元格里按优先级顺序列出,可增删与调整次序(↑↓ 或删除)。
   function modelKeyCell(m, opts) {
     const keys = (opts && opts.keys) || [];
-    if (!keys.length) return '';
-    // 未显式绑定且配置了多把 Key 时,默认显示第一把(与后端「默认密钥=第一把」一致)
-    const cur = (m && m.keyId) ? String(m.keyId) : (keys.length > 1 ? String(keys[0].id) : '');
-    const optsHtml = ['<option value="">默认密钥</option>']
-      .concat(keys.map((k) => {
-        const id = escapeHtml(String(k.id));
-        const nm = escapeHtml(String(k.name || k.id));
-        return '<option value="' + id + '"' + (String(k.id) === cur ? ' selected' : '') + '>' + nm + '</option>';
-      })).join('');
+    if (keys.length < 2) return '';
+    const chain = Array.isArray(m && m.keyIds) ? m.keyIds.slice() : ((m && m.keyId) ? [m.keyId] : []);
+    const nameOf = (kid) => {
+      const hit = keys.find((k) => String(k.id) === String(kid));
+      return hit ? String(hit.name || hit.id) : String(kid);
+    };
     if (opts.stale) {
-      const hit = keys.find((k) => String(k.id) === cur);
-      return '<td class="col-key">' + (hit ? escapeHtml(hit.name || hit.id) : '<i class="muted">默认</i>') + '</td>';
+      return '<td class="col-key">' + (chain.length ? escapeHtml(chain.map(nameOf).join(' → ')) : '<i class="muted">默认</i>') + '</td>';
     }
-    return '<td class="col-key"><select class="mkey" data-mid="' + escapeHtml(m.id) + '">' + optsHtml + '</select></td>';
+    const chips = chain.map((kid, i) =>
+      '<span class="mk-chip" data-mid="' + escapeHtml(m.id) + '" data-kid="' + escapeHtml(String(kid)) + '">'
+      + '<b>' + (i + 1) + '</b>' + escapeHtml(nameOf(kid))
+      + (i > 0 ? '<button type="button" class="mk-up" title="上移(提高优先级)">↑</button>' : '')
+      + '<button type="button" class="mk-del" title="移除">×</button>'
+      + '</span>'
+    ).join('');
+    // 可添加的密钥(尚未加入链的)
+    const rest = keys.filter((k) => !chain.some((x) => String(x) === String(k.id)));
+    const add = rest.length
+      ? '<select class="mk-add" data-mid="' + escapeHtml(m.id) + '" title="添加一把备用密钥(失败时自动回退)"><option value="">+ 加备用 Key</option>'
+        + rest.map((k) => '<option value="' + escapeHtml(String(k.id)) + '">' + escapeHtml(String(k.name || k.id)) + '</option>').join('')
+        + '</select>'
+      : '';
+    return '<td class="col-key"><div class="mk-chain">'
+      + (chips || '<span class="muted small">默认密钥</span>') + add
+      + '</div></td>';
   }
 
   function modelRowHtml(m, opts) {
@@ -383,6 +398,8 @@
         const incomingCost = hasCost ? Math.max(0, Math.min(1000, Number(m.cost))) : undefined;
         const hasKey = !!(m && Object.prototype.hasOwnProperty.call(m, 'keyId') && String(m.keyId) !== '');
         const incomingKey = hasKey ? String(m.keyId) : undefined;
+        const hasChain = !!(m && Array.isArray(m.keyIds) && m.keyIds.length);
+        const incomingChain = hasChain ? m.keyIds.map((x) => String(x)).filter(Boolean) : undefined;
         const found = catalog.find((x) => x.id === id);
         if (found) {
           if (updateName && incoming) found.name = incoming;
@@ -391,7 +408,9 @@
           if (hasImage) found.image = incomingImage;
           if (hasVideo) found.video = incomingVideo;
           if (hasCost) found.cost = incomingCost;
-          if (hasKey) found.keyId = incomingKey; else delete found.keyId;
+          if (hasChain) { found.keyIds = incomingChain; found.keyId = incomingChain[0]; }
+          else if (hasKey) { found.keyId = incomingKey; found.keyIds = [incomingKey]; }
+          else { delete found.keyId; delete found.keyIds; }
         } else {
           const item = { id, name: incoming || id };
           NUM_FIELDS.forEach((f) => { item[f] = incomingNums[f] !== undefined ? incomingNums[f] : 0; });
@@ -400,7 +419,8 @@
           if (hasVideo) item.video = incomingVideo;
           else if (window.OC && OC.isVideoModelName) item.video = OC.isVideoModelName(id);
           if (hasCost) item.cost = incomingCost;
-          if (hasKey) item.keyId = incomingKey;
+          if (hasChain) { item.keyIds = incomingChain; item.keyId = incomingChain[0]; }
+          else if (hasKey) { item.keyId = incomingKey; item.keyIds = [incomingKey]; }
           catalog.push(item);
           if (selectNew) selected.add(id);
         }
@@ -473,11 +493,14 @@
         if (item) item.video = !!vidInp.checked;
         return;
       }
-      const keySel = e.target && e.target.closest ? e.target.closest('select.mkey[data-mid]') : null;
-      if (keySel) {
-        const item = catalog.find((x) => x.id === keySel.dataset.mid);
-        if (item) {
-          if (keySel.value) item.keyId = keySel.value; else delete item.keyId;
+      const addSel = e.target && e.target.closest ? e.target.closest('select.mk-add[data-mid]') : null;
+      if (addSel) {
+        const item = catalog.find((x) => x.id === addSel.dataset.mid);
+        if (item && addSel.value) {
+          const chain = Array.isArray(item.keyIds) ? item.keyIds.slice() : (item.keyId ? [item.keyId] : []);
+          if (!chain.some((x) => String(x) === addSel.value)) chain.push(addSel.value);
+          item.keyIds = chain; item.keyId = chain[0];
+          render();
         }
         return;
       }
@@ -515,6 +538,36 @@
       }
     });
 
+    // 密钥链:移除某把 / 上移提高优先级
+    listEl.addEventListener('click', (e) => {
+      const t = e.target;
+      if (!t || !t.closest) return;
+      const del = t.closest('.mk-del');
+      if (del) {
+        const chip = del.closest('.mk-chip');
+        const item = chip ? catalog.find((x) => x.id === chip.dataset.mid) : null;
+        if (item) {
+          const chain = (Array.isArray(item.keyIds) ? item.keyIds : (item.keyId ? [item.keyId] : []))
+            .filter((x) => String(x) !== chip.dataset.kid);
+          if (chain.length) { item.keyIds = chain; item.keyId = chain[0]; }
+          else { delete item.keyIds; delete item.keyId; }
+          render();
+        }
+        return;
+      }
+      const up = t.closest('.mk-up');
+      if (up) {
+        const chip = up.closest('.mk-chip');
+        const item = chip ? catalog.find((x) => x.id === chip.dataset.mid) : null;
+        if (item) {
+          const chain = (Array.isArray(item.keyIds) ? item.keyIds : (item.keyId ? [item.keyId] : [])).slice();
+          const i = chain.findIndex((x) => String(x) === chip.dataset.kid);
+          if (i > 0) { const tmp = chain[i - 1]; chain[i - 1] = chain[i]; chain[i] = tmp; item.keyIds = chain; item.keyId = chain[0]; render(); }
+        }
+        return;
+      }
+    });
+
     listEl.addEventListener('keydown', (e) => {
       const cls = e.target && e.target.classList;
       if (e.key === 'Enter' && cls && (cls.contains('mname') || cls.contains('mtokens') || cls.contains('mctx') || cls.contains('mcost'))) {
@@ -538,7 +591,7 @@
       if (!id) return false;
       // 多密钥时,手动新增的模型默认绑定第一把密钥,避免落到「默认密钥」而与预期不符
       const defKey = keyOptions.length > 1 ? keyOptions[0].id : '';
-      addToCatalog([{ id, name: id, keyId: defKey || undefined }], true);
+      addToCatalog([{ id, name: id, keyIds: defKey ? [defKey] : undefined }], true);
       if (qEl) qEl.value = '';
       render();
       return true;
@@ -586,7 +639,8 @@
           if (Object.prototype.hasOwnProperty.call(m, 'image')) row.image = !!m.image;
           if (Object.prototype.hasOwnProperty.call(m, 'video')) row.video = !!m.video;
           if (Object.prototype.hasOwnProperty.call(m, 'cost')) row.cost = m.cost;
-          if (m.keyId) row.keyId = String(m.keyId);
+          if (Array.isArray(m.keyIds) && m.keyIds.length) { row.keyIds = m.keyIds.map((x) => String(x)); row.keyId = String(m.keyIds[0]); }
+          else if (m.keyId) row.keyId = String(m.keyId);
           return row;
         });
       },
@@ -601,7 +655,8 @@
             if (Object.prototype.hasOwnProperty.call(m, 'image')) row.image = !!m.image;
             if (Object.prototype.hasOwnProperty.call(m, 'video')) row.video = !!m.video;
             if (Object.prototype.hasOwnProperty.call(m, 'cost')) row.cost = m.cost;
-            if (m.keyId) row.keyId = String(m.keyId);
+            if (Array.isArray(m.keyIds) && m.keyIds.length) { row.keyIds = m.keyIds.map((x) => String(x)); row.keyId = String(m.keyIds[0]); }
+            else if (m.keyId) row.keyId = String(m.keyId);
             return row;
           });
       },
@@ -642,76 +697,73 @@
       if (id) existingMap.set(id, m);
     });
     const keyList = Array.isArray(opts.keys) ? opts.keys : [];
-    const fetchedKeyId = String(opts.fetchedKeyId || '');
+    let fetchedKeyId = String(opts.fetchedKeyId || '');
     const keyName = (kid) => {
       const hit = keyList.find((k) => String(k.id) === String(kid));
       return hit ? String(hit.name || hit.id) : '';
     };
     const items = [];
-    (models || []).forEach((m) => {
-      const id = String((m && (m.id || m.name)) || '').trim();
-      if (!id || items.some((x) => x.id === id)) return;
-      const prev = existingMap.get(id);
-      const upstream = String((m && m.name) || '').trim();
-      const item = {
-        id,
-        name: (prev && prev.name) || upstream || id,
-        enabled: !!(prev && prev.enabled),
-      };
-      MODEL_NUM_COLS.forEach((c) => {
-        item[c.field] = (prev && parseInt(prev[c.field], 10) > 0) ? parseInt(prev[c.field], 10) : 0;
-      });
-      if (Object.prototype.hasOwnProperty.call(prev || {}, 'image')) item.image = !!prev.image;
-      if (Object.prototype.hasOwnProperty.call(prev || {}, 'video')) item.video = !!prev.video;
-      if (prev && Object.prototype.hasOwnProperty.call(prev, 'cost')) item.cost = prev.cost;
-      // 密钥绑定:已有模型沿用原绑定;新模型默认绑定「本次获取所用的 Key」
-      if (prev && prev.keyId) item.keyId = String(prev.keyId);
-      else if (fetchedKeyId) item.keyId = fetchedKeyId;
-      items.push(item);
-    });
-    // 多密钥下「同名模型」的显示名自动带上 Key 名以便区分(「模型（Key名）」)。
-    // 判定依据:同名(去掉已带后缀的基名)的模型出现在不止一把 Key 上。单个 Key 时不加后缀,
-    // 避免把普通模型名也改得冗长。
-    if (keyList.length > 1) {
-      const stripSuffix = (nm) => String(nm || '').replace(/（[^）]*）\s*$/, '').trim();
-      const baseKeyOf = (it) => (stripSuffix(it.name) || it.id) + '::' + String(it.keyId || '');
-      const baseCount = {};
-      const seen = {};
-      items.forEach((it) => {
-        const b = stripSuffix(it.name) || it.id;
-        const sig = baseKeyOf(it);
-        if (seen[sig]) return;
-        seen[sig] = true;
-        baseCount[b] = (baseCount[b] || 0) + 1;
-      });
-      items.forEach((it) => {
-        const b = stripSuffix(it.name) || it.id;
-        if ((baseCount[b] || 0) < 2) return;
-        const kn = keyName(it.keyId);
-        if (!kn) return;
-        it.name = b + '（' + kn + '）';
-      });
-    }
-    items.sort((a, b) => a.id.localeCompare(b.id));
-    const liveIds = new Set(items.map((m) => m.id));
     const stale = [];
-    existingMap.forEach((prev, id) => {
-      if (liveIds.has(id)) return;
-      stale.push({
-        id,
-        name: String((prev && prev.name) || '').trim() || id,
-        enabled: !!(prev && prev.enabled),
-        remove: true,
+    const itemById = (id) => items.find((x) => x.id === id);
+    // 逐批合并:同一模型在不同 Key 下都可用时,天然合并为一条(同 id 去重),
+    // 并把「本次获取所用的 Key」累加进该模型的「优先级链」——上游用第一把失败会自动回退下一把。
+    const mergeModels = (list, keyId) => {
+      const kid = String(keyId || '');
+      (list || []).forEach((m) => {
+        const id = String((m && (m.id || m.name)) || '').trim();
+        if (!id) return;
+        const upstream = String((m && m.name) || '').trim();
+        const prev = existingMap.get(id);
+        let item = itemById(id);
+        if (!item) {
+          item = { id, name: (prev && prev.name) || upstream || id, enabled: !!(prev && prev.enabled) };
+          MODEL_NUM_COLS.forEach((c) => {
+            item[c.field] = (prev && parseInt(prev[c.field], 10) > 0) ? parseInt(prev[c.field], 10) : 0;
+          });
+          if (Object.prototype.hasOwnProperty.call(prev || {}, 'image')) item.image = !!prev.image;
+          if (Object.prototype.hasOwnProperty.call(prev || {}, 'video')) item.video = !!prev.video;
+          if (prev && Object.prototype.hasOwnProperty.call(prev, 'cost')) item.cost = prev.cost;
+          // 已有模型沿用原链(本次的 Key 再追加);新模型从「本次获取的 Key」起链
+          if (prev && Array.isArray(prev.keyIds) && prev.keyIds.length) item.keyIds = prev.keyIds.map((x) => String(x));
+          else if (prev && prev.keyId) item.keyIds = [String(prev.keyId)];
+          items.push(item);
+        } else if (upstream && (!item.name || item.name === item.id)) {
+          item.name = upstream;
+        }
+        if (kid) {
+          const chain = Array.isArray(item.keyIds) ? item.keyIds.slice() : [];
+          // 多 Key:确保本次的 Key 在链里;单 Key:仅当尚无绑定时绑定
+          if (!chain.some((x) => String(x) === kid) && (keyList.length > 1 || !chain.length)) chain.push(kid);
+          if (chain.length) item.keyIds = chain;
+        }
+        if (Array.isArray(item.keyIds) && item.keyIds.length) item.keyId = item.keyIds[0];
       });
-    });
-    stale.sort((a, b) => a.id.localeCompare(b.id));
+    };
+    // 失效模型 = 已保存但「本次(含多次获取的并集)」都没出现的。多 Key 下按并集判定,避免误删另一把 Key 才有的模型。
+    const rebuildStale = () => {
+      stale.length = 0;
+      const live = new Set(items.map((m) => m.id));
+      existingMap.forEach((prev, id) => {
+        if (live.has(id)) return;
+        stale.push({
+          id,
+          name: String((prev && prev.name) || '').trim() || id,
+          enabled: !!(prev && prev.enabled),
+          remove: true,
+        });
+      });
+      stale.sort((a, b) => a.id.localeCompare(b.id));
+    };
+    mergeModels(models, fetchedKeyId);
+    items.sort((a, b) => a.id.localeCompare(b.id));
+    rebuildStale();
     if (!items.length && !stale.length) return null;
 
     const mask = document.createElement('div');
     mask.className = 'modal-mask';
     const showKey = keyList.length > 1;
     const keyMsg = showKey
-      ? '共获取 ' + items.length + ' 个模型（使用密钥「' + escapeHtml(keyName(fetchedKeyId) || '默认密钥') + '」获取）。勾选要启用的，并修改前台显示名称、max_tokens（留空跟随全局）、最大上下文（留空不限制）与所用密钥。'
+      ? '共获取 ' + items.length + ' 个模型（本次使用密钥「' + escapeHtml(keyName(fetchedKeyId) || '默认密钥') + '」）。勾选要启用的，并修改前台显示名称、max_tokens（留空跟随全局）、最大上下文（留空不限制）。同一模型可绑定多把密钥组成优先级链：上游用第一把失败时自动回退下一把（数字越小越优先，可 ↑ 调序、× 移除）。切换上方「获取用 Key」点「获取列表」可拉取另一批模型，点「并入并继续获取」即并入当前列表。'
       : '共获取 ' + items.length + ' 个模型。勾选要启用的，并修改前台显示名称、max_tokens（留空跟随全局）与最大上下文（留空不限制）。';
     mask.innerHTML =
       '<div class="modal modal-lg model-fetch-modal" role="dialog" aria-modal="true">'
@@ -720,26 +772,32 @@
       + (window.OC && window.OC.icon ? window.OC.icon('close', 16) : '×')
       + '</button></div>'
       + '<div class="modal-body">'
-      + '<p class="confirm-message">' + keyMsg + '</p>'
+      + '<p class="confirm-message" data-role="msg">' + keyMsg + '</p>'
       + '<div class="model-fetch-toolbar">'
       + '<label class="model-fetch-search">'
       + (window.OC && window.OC.icon ? window.OC.icon('search', 14) : '')
       + '<input type="search" data-role="q" placeholder="搜索模型 ID 或显示名称" autocomplete="off" spellcheck="false">'
       + '</label>'
+      + (showKey
+        ? '<label class="model-fetch-key"><span class="muted small">获取用 Key</span>'
+          + '<select data-role="fetchkey">'
+          + keyList.map((k) => '<option value="' + escapeHtml(String(k.id)) + '"' + (String(k.id) === fetchedKeyId ? ' selected' : '') + '>' + escapeHtml(String(k.name || k.id)) + '</option>').join('')
+          + '</select>'
+          + '<button class="btn small" type="button" data-role="refetch">切换并继续获取</button>'
+          + '</label>'
+        : '')
       + '<label class="model-check-all"><input type="checkbox" data-act="all"> 全选当前列表</label>'
       + '<span class="muted small" data-role="count"></span>'
       + '</div>'
       + '<div class="model-fetch-list" data-role="list"></div>'
-      + (stale.length
-        ? '<div class="model-stale-block">'
-          + '<div class="model-stale-head">'
-          + '<div class="model-stale-title">已失效模型 <span class="muted small">' + stale.length + '</span></div>'
-          + '<label class="model-check-all"><input type="checkbox" data-act="stale-all" checked> 全选清除</label>'
-          + '</div>'
-          + '<p class="model-stale-hint">这些模型这次没有出现在上游列表里，勾选后会从本地目录移除。</p>'
-          + '<div class="model-fetch-list model-stale-list" data-role="stale"></div>'
-          + '</div>'
-        : '')
+      + '<div class="model-stale-block" data-role="staleblock"' + (stale.length ? '' : ' hidden') + '>'
+        + '<div class="model-stale-head">'
+        + '<div class="model-stale-title">已失效模型 <span class="muted small" data-role="stalecount">' + stale.length + '</span></div>'
+        + '<label class="model-check-all"><input type="checkbox" data-act="stale-all" checked> 全选清除</label>'
+        + '</div>'
+        + '<p class="model-stale-hint">这些模型本轮获取都没出现（多个 Key 时按并集判断），勾选后会从本地目录移除。</p>'
+        + '<div class="model-fetch-list model-stale-list" data-role="stale"></div>'
+      + '</div>'
       + '</div>'
       + '<div class="modal-footer">'
       + '<button class="btn" type="button" data-act="cancel">取消</button>'
@@ -750,10 +808,22 @@
     const qEl = mask.querySelector('[data-role="q"]');
     const listEl = mask.querySelector('[data-role="list"]');
     const staleEl = mask.querySelector('[data-role="stale"]');
+    const staleBlockEl = mask.querySelector('[data-role="staleblock"]');
+    const staleCountEl = mask.querySelector('[data-role="stalecount"]');
+    const msgEl = mask.querySelector('[data-role="msg"]');
+    const fetchKeyEl = mask.querySelector('[data-role="fetchkey"]');
+    const refetchBtn = mask.querySelector('[data-role="refetch"]');
     const countEl = mask.querySelector('[data-role="count"]');
     const allEl = mask.querySelector('[data-act="all"]');
     const staleAllEl = mask.querySelector('[data-act="stale-all"]');
     let filter = '';
+
+    function updateMsg() {
+      if (!msgEl) return;
+      msgEl.textContent = showKey
+        ? '共 ' + items.length + ' 个模型（本次使用密钥「' + (keyName(fetchedKeyId) || '默认密钥') + '」）。勾选要启用的，并修改前台显示名称、max_tokens（留空跟随全局）、最大上下文（留空不限制）。同一模型可绑定多把密钥组成优先级链：上游用第一把失败时自动回退下一把（数字越小越优先，可 ↑ 调序、× 移除）。在上方可切换「获取用 Key」再点「切换并继续获取」并入另一批模型。'
+        : '共获取 ' + items.length + ' 个模型。勾选要启用的，并修改前台显示名称、max_tokens（留空跟随全局）与最大上下文（留空不限制）。';
+    }
 
     function visible() {
       const q = filter;
@@ -779,22 +849,21 @@
         ).join(''), { showKey: showKey });
       }
       renderStale();
+      updateMsg();
     }
 
     function renderStale() {
+      if (staleBlockEl) staleBlockEl.hidden = stale.length === 0;
+      if (staleCountEl) staleCountEl.textContent = stale.length;
       if (!staleEl) return;
       const n = stale.filter((m) => m.remove).length;
       if (staleAllEl) {
         staleAllEl.checked = stale.length > 0 && n === stale.length;
         staleAllEl.indeterminate = n > 0 && n < stale.length;
       }
-      staleEl.innerHTML = modelTableHtml(stale.map((m) =>
+      staleEl.innerHTML = stale.length ? modelTableHtml(stale.map((m) =>
         modelRowHtml(m, { checked: m.remove, stale: true, keys: keyList })
-      ).join(''), { showKey: showKey });
-    }
-
-    function itemById(id) {
-      return items.find((x) => x.id === id);
+      ).join(''), { showKey: showKey }) : '';
     }
 
     function updateMetaOnly() {
@@ -808,10 +877,15 @@
     }
 
     listEl.addEventListener('change', (e) => {
-      const keySel = e.target && e.target.closest ? e.target.closest('select.mkey[data-mid]') : null;
-      if (keySel) {
-        const item = itemById(keySel.dataset.mid);
-        if (item) { if (keySel.value) item.keyId = keySel.value; else delete item.keyId; }
+      const addSel = e.target && e.target.closest ? e.target.closest('select.mk-add[data-mid]') : null;
+      if (addSel) {
+        const item = itemById(addSel.dataset.mid);
+        if (item && addSel.value) {
+          const chain = Array.isArray(item.keyIds) ? item.keyIds.slice() : (item.keyId ? [item.keyId] : []);
+          if (!chain.some((x) => String(x) === addSel.value)) chain.push(addSel.value);
+          item.keyIds = chain; item.keyId = chain[0];
+          render();
+        }
         return;
       }
       const inp = e.target && e.target.closest ? e.target.closest('input[type="checkbox"][data-mid]') : null;
@@ -819,6 +893,35 @@
       const item = itemById(inp.dataset.mid);
       if (item) item.enabled = !!inp.checked;
       updateMetaOnly();
+    });
+    // 密钥链:移除某把 / 上移提高优先级(与供应商表单内的编辑器一致)
+    listEl.addEventListener('click', (e) => {
+      const t = e.target;
+      if (!t || !t.closest) return;
+      const del = t.closest('.mk-del');
+      if (del) {
+        const chip = del.closest('.mk-chip');
+        const item = chip ? itemById(chip.dataset.mid) : null;
+        if (item) {
+          const chain = (Array.isArray(item.keyIds) ? item.keyIds : (item.keyId ? [item.keyId] : []))
+            .filter((x) => String(x) !== chip.dataset.kid);
+          if (chain.length) { item.keyIds = chain; item.keyId = chain[0]; }
+          else { delete item.keyIds; delete item.keyId; }
+          render();
+        }
+        return;
+      }
+      const up = t.closest('.mk-up');
+      if (up) {
+        const chip = up.closest('.mk-chip');
+        const item = chip ? itemById(chip.dataset.mid) : null;
+        if (item) {
+          const chain = (Array.isArray(item.keyIds) ? item.keyIds : (item.keyId ? [item.keyId] : [])).slice();
+          const i = chain.findIndex((x) => String(x) === chip.dataset.kid);
+          if (i > 0) { const tmp = chain[i - 1]; chain[i - 1] = chain[i]; chain[i] = tmp; item.keyIds = chain; item.keyId = chain[0]; render(); }
+        }
+        return;
+      }
     });
     if (staleEl) {
       staleEl.addEventListener('change', (e) => {
@@ -870,21 +973,51 @@
         renderStale();
       });
     }
+    // 切换 Key 继续获取:在弹窗内直接用所选 Key 再拉一批,并入当前清单(同模型并入同一条优先级链)
+    if (refetchBtn) {
+      refetchBtn.addEventListener('click', async () => {
+        if (typeof opts.onRefetch !== 'function') { close(true, 'again'); return; }
+        const kid = fetchKeyEl ? fetchKeyEl.value : '';
+        refetchBtn.disabled = true;
+        const old = refetchBtn.textContent;
+        refetchBtn.textContent = '获取中…';
+        try {
+          const res = await opts.onRefetch(kid);
+          const list = (res && res.models) || res || [];
+          if (!list.length) { if (window.OC && OC.toast) OC.toast('该 Key 未返回模型'); return; }
+          fetchedKeyId = String((res && res.keyId) || kid || '');
+          mergeModels(list, fetchedKeyId);
+          items.sort((a, b) => a.id.localeCompare(b.id));
+          rebuildStale();
+          render();
+          if (window.OC && OC.toast) OC.toast('已并入 ' + list.length + ' 个模型（密钥「' + (keyName(fetchedKeyId) || '默认密钥') + '」）');
+        } catch (e) {
+          if (window.OC && OC.toast) OC.toast('获取失败:' + e.message, true);
+        } finally {
+          refetchBtn.disabled = false;
+          refetchBtn.textContent = old;
+        }
+      });
+    }
 
-    const close = (apply) => {
+    const close = (apply, action) => {
       if (apply && typeof opts.onApply === 'function') {
-        opts.onApply(
+        const keepOpen = opts.onApply(
           // 始终携带数字字段(可为 0),保证弹窗里清空后能覆盖旧值
           items.map((m) => {
             const row = { id: m.id, name: String(m.name || '').trim() || m.id, enabled: !!m.enabled };
             MODEL_NUM_COLS.forEach((c) => {
               row[c.field] = parseInt(m[c.field], 10) > 0 ? parseInt(m[c.field], 10) : 0;
             });
-            if (m.keyId) row.keyId = String(m.keyId);
+            if (Array.isArray(m.keyIds) && m.keyIds.length) { row.keyIds = m.keyIds.map((x) => String(x)); row.keyId = String(m.keyIds[0]); }
+            else if (m.keyId) row.keyId = String(m.keyId);
             return row;
           }),
-          stale.filter((m) => m.remove).map((m) => m.id)
+          stale.filter((m) => m.remove).map((m) => m.id),
+          action || 'apply'
         );
+        // 调用方返回 false 表示「继续获取」:保留弹窗
+        if (keepOpen === false) return;
       }
       if (window.OCUI && window.OCUI.closeModal) window.OCUI.closeModal(mask);
       else mask.remove();
@@ -896,7 +1029,7 @@
         close(false);
         return;
       }
-      if (e.target.closest('[data-act="ok"]')) close(true);
+      if (e.target.closest('[data-act="ok"]')) close(true, 'apply');
     });
 
     render();

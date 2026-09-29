@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.40');
+define('TC_VERSION', '2.0.41');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -1505,20 +1505,45 @@ function tc_provider_key_by_id($p, $keyId) {
     return $v;
 }
 
-// 按模型选用密钥:模型上绑定 keyId 优先,否则用供应商默认密钥。
+// 模型绑定的密钥 id 链(按调用优先级排序)。兼容旧的单个 keyId 字段。
+function tc_model_key_ids($p, $modelId) {
+    $id = trim((string) $modelId);
+    if ($id === '' || empty($p['models']) || !is_array($p['models'])) return array();
+    foreach ($p['models'] as $m) {
+        if (!is_array($m)) continue;
+        if ((string) (isset($m['id']) ? $m['id'] : '') !== $id) continue;
+        $out = array();
+        if (isset($m['keyIds']) && is_array($m['keyIds'])) {
+            foreach ($m['keyIds'] as $kid) {
+                $kid = trim((string) $kid);
+                if ($kid !== '' && !in_array($kid, $out, true)) $out[] = $kid;
+            }
+        }
+        if (!$out && isset($m['keyId']) && trim((string) $m['keyId']) !== '') $out[] = trim((string) $m['keyId']);
+        return $out;
+    }
+    return array();
+}
+
+// 按模型解析出「按优先级排列的明文密钥链」:依次尝试,前一把失败自动换下一把。
+// 未绑定任何密钥时返回供应商的默认(第一把)密钥,链长为 1。
+function tc_provider_key_chain($p, $modelId) {
+    $ids = tc_model_key_ids($p, $modelId);
+    $out = array();
+    foreach ($ids as $kid) {
+        $plain = tc_provider_key_by_id($p, $kid);
+        if ($plain !== '' && !in_array($plain, $out, true)) $out[] = $plain;
+    }
+    if ($out) return $out;
+    $def = tc_provider_key($p);
+    return $def === '' ? array() : array($def);
+}
+
+// 按模型选用密钥:取链中的第一把(调用方需要回退时用 tc_provider_key_chain)。
 // 这是「多 Key 下请求必须用用户设置的那把 Key」的落地点。
 function tc_provider_key_for_model($p, $modelId) {
-    $id = trim((string) $modelId);
-    $keyId = '';
-    if ($id !== '' && !empty($p['models']) && is_array($p['models'])) {
-        foreach ($p['models'] as $m) {
-            if (!is_array($m)) continue;
-            if ((string) (isset($m['id']) ? $m['id'] : '') !== $id) continue;
-            if (isset($m['keyId']) && (string) $m['keyId'] !== '') $keyId = (string) $m['keyId'];
-            break;
-        }
-    }
-    return tc_provider_key_by_id($p, $keyId);
+    $chain = tc_provider_key_chain($p, $modelId);
+    return $chain ? $chain[0] : '';
 }
 
 // Key 名称唯一性校验(多 Key 时名称不可重复且不可为空),返回错误信息或 ''

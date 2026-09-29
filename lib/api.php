@@ -187,10 +187,23 @@ function tc_normalize_models($models) {
         if (is_array($m) && isset($m['cost']) && $m['cost'] !== '' && is_numeric($m['cost'])) {
             $row['cost'] = max(0, min(1000, (float) $m['cost']));
         }
-        // 绑定的密钥 id(可选):多 Key 供应商下,该模型用哪把 Key 请求上游
-        if (is_array($m) && isset($m['keyId']) && trim((string) $m['keyId']) !== '') {
-            $row['keyId'] = substr(trim((string) $m['keyId']), 0, 40);
+        // 绑定的密钥链(可选):多 Key 供应商下,该模型按优先级依次尝试这些 Key
+        if (is_array($m) && isset($m['keyIds']) && is_array($m['keyIds'])) {
+            $chain = array();
+            foreach ($m['keyIds'] as $kid) {
+                $kid = substr(trim((string) $kid), 0, 40);
+                if ($kid !== '' && !in_array($kid, $chain, true)) $chain[] = $kid;
+            }
+            if ($chain) $row['keyIds'] = $chain;
         }
+        // 兼容单个 keyId:并入链
+        if (is_array($m) && isset($m['keyId']) && trim((string) $m['keyId']) !== '') {
+            $kid = substr(trim((string) $m['keyId']), 0, 40);
+            if (empty($row['keyIds']) || !in_array($kid, $row['keyIds'], true)) {
+                $row['keyIds'] = array_merge(isset($row['keyIds']) ? $row['keyIds'] : array(), array($kid));
+            }
+        }
+        if (!empty($row['keyIds'])) $row['keyId'] = $row['keyIds'][0];   // 主密钥=优先级最高的一把
         $out[] = $row;
         if (count($out) >= 500) break;
     }
@@ -249,11 +262,18 @@ function tc_normalize_provider_input($b, $base = array()) {
     if (array_key_exists('pricePer1k', $b)) $p['pricePer1k'] = max(0, min(1000, (float) $b['pricePer1k']));
     if (array_key_exists('models', $b)) {
         $p['models'] = tc_normalize_models($b['models']);
-        // 模型绑定的 keyId 必须存在,否则清掉(回退默认密钥)
+        // 模型绑定的密钥必须在供应商的密钥列表里,否则清掉(回退默认密钥)
         $validIds = array();
         foreach (tc_provider_keys($p) as $k) $validIds[(string) $k['id']] = true;
         foreach ($p['models'] as &$mm) {
-            if (isset($mm['keyId']) && !isset($validIds[(string) $mm['keyId']])) unset($mm['keyId']);
+            if (isset($mm['keyIds']) && is_array($mm['keyIds'])) {
+                $keep = array();
+                foreach ($mm['keyIds'] as $kid) if (isset($validIds[(string) $kid])) $keep[] = (string) $kid;
+                if ($keep) { $mm['keyIds'] = $keep; $mm['keyId'] = $keep[0]; }
+                else { unset($mm['keyIds']); unset($mm['keyId']); }
+            } elseif (isset($mm['keyId'])) {
+                if (!isset($validIds[(string) $mm['keyId']])) unset($mm['keyId']);
+            }
         }
         unset($mm);
     }
