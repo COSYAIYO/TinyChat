@@ -2626,6 +2626,8 @@ function tc_generate_images($apiKeyOwner = null) {
             'extra' => $extra,
             'images' => $editImages,
             'timeout' => $db['settings']['proxyTimeoutMs'],
+            'imageArchive' => !array_key_exists('imageArchiveEnabled', $db['settings']) || !empty($db['settings']['imageArchiveEnabled']),
+            'imageArchiveQuotaMb' => isset($db['settings']['imageArchiveQuotaMb']) ? (int) $db['settings']['imageArchiveQuotaMb'] : 500,
         );
     });
     $provider = $ctx['provider'];
@@ -2774,10 +2776,28 @@ function tc_generate_images($apiKeyOwner = null) {
     }
     // 为每个 URL 结果补一个同源代理地址:多数平台的图片在第三方对象存储域,
     // 部分网络下浏览器直连加载不到(后端却已成功出图),经本站转发即可稳定显示。
+    // 若开启「生图结果本地留存」(默认开启),则即时把图片下载到本站,
+    // 并把地址换成长期可用的本地留存地址,避免上游图床链接过期后历史图打不开。
+    $archiveEnabled = !isset($ctx['imageArchive']) || !empty($ctx['imageArchive']);
+    $archiveQuota = isset($ctx['imageArchiveQuotaMb']) ? (int) $ctx['imageArchiveQuotaMb'] : 500;
     foreach ($items as &$it) {
-        if (!empty($it['url'])) $it['display'] = tc_img_proxy_path($it['url']);
+        if (!empty($it['url'])) {
+            $storeId = '';
+            if ($archiveEnabled) {
+                try { $storeId = tc_img_store_save($it['url']); } catch (Throwable $e) { $storeId = ''; }
+            }
+            if ($storeId !== '') {
+                $it['store'] = $storeId;
+                $it['display'] = tc_img_store_path($storeId);
+            } else {
+                $it['display'] = tc_img_proxy_path($it['url']);
+            }
+        }
     }
     unset($it);
+    if ($archiveEnabled && $archiveQuota > 0) {
+        try { tc_img_store_gc(max(50, $archiveQuota) * 1048576); } catch (Throwable $e) { /* 忽略 */ }
+    }
     if (!$items) {
         tc_fail(502, '该模型未返回图片。若这是对话式生图模型，请确认 Base URL 与模型名正确；也可尝试在「设置 → 供应商」中把该模型标记为生图。');
     }
@@ -2900,9 +2920,125 @@ function tc_img_serve_cached($file) {
     return true;
 }
 
+// ---- 生图结果本地留存 ----
+// 上游图床(第三方对象存储)的链接常有时效,过期后历史图打不开。出图后即时把图片
+// 下载到本站 data/imgstore/,并把结果里的地址换成本地留存地址,从而长期可用。
+// 与 imgcache(按需代理缓存)不同:这是出图当下主动落盘、不受上游链接时效影响。
+function tc_img_store_dir() {
+    $dir = tc_data_dir() . '/imgstore';
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    return $dir;
+}
+function tc_img_store_file($id) {
+    $id = preg_replace('/[^a-f0-9]/', '', (string) $id);
+    return $id === '' ? '' : tc_img_store_dir() . '/' . $id . '.bin';
+}
+// 读取本地留存图片的二进制(id 为 sha1),返回 raw 或 false
+function tc_img_store_read($id) {
+    $f = tc_img_store_file($id);
+    if ($f === '' || !is_file($f)) return false;
+    $raw = @file_get_contents($f);
+    return ($raw === false || strlen($raw) < 2) ? false : $raw;
+}
+function tc_img_store_serve($id) {
+    $raw = tc_img_store_read($id);
+    if ($raw === false) return false;
+    $len = ord($raw[0]);
+    $ctype = substr($raw, 1, $len);
+    $body = substr($raw, 1 + $len);
+    if ($ctype === '' || strpos($ctype, 'image/') !== 0) $ctype = 'image/png';
+    header('Content-Type: ' . $ctype);
+    header('Content-Length: ' . strlen($body));
+    header('Cache-Control: public, max-age=31536000, immutable');
+    echo $body;
+    return true;
+}
+// 下载一张图片并落盘;成功返回 id(24位),失败返回 ''
+function tc_img_store_save($url, $maxBytes = 30 * 1024 * 1024) {
+    $url = (string) $url;
+    if (!preg_match('#^https?://#i', $url) || !tc_url_is_public_http($url)) return '';
+    $ch = curl_init($url);
+    curl_setopt_array($ch, array(
+        CURLOPT_RETURNTRANSFER => false,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_MAXREDIRS => 3,
+        CURLOPT_CONNECTTIMEOUT => 15,
+        CURLOPT_TIMEOUT => 90,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_USERAGENT => 'TinyChat-ImageStore/1.0',
+    ));
+    $ca = tc_cacert_path();
+    if ($ca) curl_setopt($ch, CURLOPT_CAINFO, $ca);
+    $buf = ''; $tooBig = false; $ctype = '';
+    curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($ch, $line) use (&$ctype) {
+        if (stripos($line, 'content-type:') === 0) $ctype = trim(substr($line, 13));
+        return strlen($line);
+    });
+    curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $data) use (&$buf, &$tooBig, $maxBytes) {
+        if (strlen($buf) + strlen($data) > $maxBytes) { $tooBig = true; return 0; }
+        $buf .= $data;
+        return strlen($data);
+    });
+    @curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if ($tooBig || $status < 200 || $status >= 300 || $buf === '') return '';
+    $ctype = strtolower(trim(explode(';', $ctype)[0]));
+    if (strpos($ctype, 'image/') !== 0) $ctype = 'image/png';
+    $id = substr(sha1($url . '|' . tc_secret()), 0, 24);
+    $dir = tc_img_store_dir();
+    if (!is_dir($dir) || !is_writable($dir)) return '';
+    $ct = substr($ctype, 0, 120);
+    $head = chr(strlen($ct)) . $ct;
+    if (@file_put_contents($dir . '/' . $id . '.bin', $head . $buf, LOCK_EX) === false) return '';
+    return $id;
+}
+// 本地留存地址(带签名,供 <img> 同源加载)
+function tc_img_store_path($id) {
+    return '/api/proxy/image?id=' . rawurlencode($id) . '&s=' . tc_img_store_token($id);
+}
+function tc_img_store_token($id) {
+    return substr(hash_hmac('sha256', 'store:' . (string) $id, tc_secret()), 0, 24);
+}
+// 总量清理:按最旧优先删除,超出上限为止
+function tc_img_store_gc($limitBytes) {
+    $dir = tc_img_store_dir();
+    $files = @glob($dir . '/*.bin');
+    if (!is_array($files) || !$files) return;
+    $total = 0; $rows = array();
+    foreach ($files as $f) {
+        $sz = @filesize($f); if ($sz === false) continue;
+        $total += $sz;
+        $rows[] = array('f' => $f, 't' => (int) @filemtime($f), 's' => $sz);
+    }
+    if ($total <= $limitBytes) return;
+    usort($rows, function ($a, $b) { return $a['t'] - $b['t']; });
+    foreach ($rows as $r) {
+        if ($total <= $limitBytes) break;
+        if (@unlink($r['f'])) $total -= $r['s'];
+    }
+}
+
 // GET /api/proxy/image?u=<原始图片地址>&s=<签名>
 function tc_api_image_proxy() {
     $q = tc_query();
+    // 本地留存图片:?id=<sha1>&s=<签名> 直接读本地文件,不受上游链接时效影响
+    $storeId = isset($q['id']) ? (string) $q['id'] : '';
+    if ($storeId !== '') {
+        $ssig = isset($q['s']) ? (string) $q['s'] : '';
+        if ($ssig === '' || !hash_equals(tc_img_store_token($storeId), $ssig)) {
+            http_response_code(403);
+            header('Content-Type: text/plain; charset=utf-8');
+            echo '签名无效';
+            exit;
+        }
+        if (tc_img_store_serve($storeId)) exit;
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '图片已过期';
+        exit;
+    }
     $url = isset($q['u']) ? (string) $q['u'] : '';
     $sig = isset($q['s']) ? (string) $q['s'] : '';
     if ($url === '' || $sig === '' || !hash_equals(tc_img_proxy_token($url), $sig)) {

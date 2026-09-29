@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.46');
+define('TC_VERSION', '2.0.47');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -140,6 +140,11 @@ $TC_SETTINGS_DEFAULTS = array(
     'perfNoKatex' => false,
     'perfNoHighlight' => false,
     'perfNoMermaid' => false,
+    // 生图结果本地留存(默认开启):出图后即时把图片下载并存到本站 data/,
+    // 避免上游图床链接过期导致历史图打不开。
+    'imageArchiveEnabled' => true,
+    // 本地留存总量上限(MB),超出按最旧优先清理
+    'imageArchiveQuotaMb' => 500,
 );
 $TC_SETTINGS_DEFAULTS['mailTemplates'] = tc_mail_default_templates();
 
@@ -405,6 +410,9 @@ function tc_normalize_settings($raw) {
     $s['perfNoKatex'] = !empty($s['perfNoKatex']);
     $s['perfNoHighlight'] = !empty($s['perfNoHighlight']);
     $s['perfNoMermaid'] = !empty($s['perfNoMermaid']);
+    // 生图本地留存:默认开启;总量上限限制在 50MB~10GB
+    $s['imageArchiveEnabled'] = !array_key_exists('imageArchiveEnabled', $s) || !empty($s['imageArchiveEnabled']);
+    $s['imageArchiveQuotaMb'] = min(10240, max(50, (int) (isset($s['imageArchiveQuotaMb']) ? $s['imageArchiveQuotaMb'] : 500) ?: 500));
     $s['persistChats'] = !array_key_exists('persistChats', $s) || !empty($s['persistChats']);
     $ann = isset($s['announcement']) && is_array($s['announcement']) ? $s['announcement'] : array();
     $annText = trim((string) (isset($ann['text']) ? $ann['text'] : ''));

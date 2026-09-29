@@ -2356,6 +2356,7 @@ function tc_api_admin_groups() {
                 'name' => $g['name'],
                 'createdAt' => $g['createdAt'],
                 'builtin' => !empty($g['builtin']),
+                'role' => isset($g['role']) ? (string) $g['role'] : '',
                 'memberCount' => $mc,
                 'ruleCount' => $rc,
             );
