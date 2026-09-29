@@ -927,6 +927,7 @@ function tc_api_register() {
             $token = bin2hex(random_bytes(24)); $user['emailTokenHash'] = hash('sha256', $token); $user['emailTokenExpires'] = tc_now() + 86400000;
         }
         $db['users'][] = $user;
+        tc_log_auth_event('auth', $name, '注册账号', $user['id']);
         // 核销邀请码:累加使用次数,记录最后使用者;次数用尽后不再可用
         if ($inviteIndex >= 0) {
             $db['inviteCodes'][$inviteIndex]['usedCount'] = tc_invite_used_count($db['inviteCodes'][$inviteIndex]) + 1;
