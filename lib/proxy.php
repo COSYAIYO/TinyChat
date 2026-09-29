@@ -840,11 +840,12 @@ function tc_search_needs_web($query, $provider, $format, $model) {
     $fmt = ($format === 'anthropic' || $format === 'responses' || $format === 'completions') ? 'chat' : $format;
     $url = tc_upstream_path(rtrim((string) $provider['baseUrl'], '/'), $fmt);
     $headers = array('Content-Type' => 'application/json', 'Accept' => 'application/json');
+    $testKey = tc_provider_key_for_model($provider, $model);
     if ($fmt === 'anthropic') {
-        $headers['x-api-key'] = $provider['apiKey'];
+        $headers['x-api-key'] = $testKey;
         $headers['anthropic-version'] = '2023-06-01';
     } else {
-        $headers['Authorization'] = 'Bearer ' . $provider['apiKey'];
+        $headers['Authorization'] = 'Bearer ' . $testKey;
     }
     $res = tc_http_request($url, 'POST', $headers, tc_json_encode(array(
         'model' => $model,
@@ -1726,10 +1727,12 @@ function tc_api_fetch_models() {
         if ($baseUrl === '') tc_fail(400, '请先填写 Base URL');
         if ($format === 'anthropic') tc_fail(400, 'Anthropic 不支持自动获取模型，请手动填写模型列表');
         $apiKey = trim((string) (isset($b['apiKey']) ? $b['apiKey'] : ''));
+        $wantKeyId = isset($b['keyId']) ? trim((string) $b['keyId']) : '';
         if (($apiKey === '' || strpos($apiKey, '••') !== false) && !empty($b['providerId'])) {
             foreach ($db['providers'] as $p) {
                 if ($p['id'] === (string) $b['providerId'] && ((isset($p['ownerId']) && $p['ownerId'] === $user['id']) || !empty($user['admin']))) {
-                    $apiKey = tc_provider_key($p);
+                    // 指定了 keyId 就用那把 Key,否则用默认钥匙
+                    $apiKey = $wantKeyId !== '' ? tc_provider_key_by_id($p, $wantKeyId) : tc_provider_key($p);
                     break;
                 }
             }
@@ -1990,11 +1993,13 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         'Content-Type' => 'application/json',
         'Accept' => 'text/event-stream, application/json',
     );
+    // 多 Key:按请求模型选用其绑定的密钥(未绑定则用默认密钥)
+    $reqKey = tc_provider_key_for_model($provider, isset($body['model']) ? (string) $body['model'] : '');
     if ($format === 'anthropic') {
-        $headers['x-api-key'] = $provider['apiKey'];
+        $headers['x-api-key'] = $reqKey;
         $headers['anthropic-version'] = '2023-06-01';
     } else {
-        $headers['Authorization'] = 'Bearer ' . $provider['apiKey'];
+        $headers['Authorization'] = 'Bearer ' . $reqKey;
     }
     $payload = tc_json_encode($body);
     $reasoningRetried = false;
@@ -2519,7 +2524,7 @@ function tc_generate_images($apiKeyOwner = null) {
     if ($ctx['model'] === '' || $ctx['prompt'] === '') tc_fail(400, '请填写模型和提示词');
     // 关键:生图也必须补齐 /v1(用户常按平台文档只填 https://host,不写 /v1)
     $url = tc_api_url($provider['baseUrl'], '/images/generations');
-    $headers = array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . $provider['apiKey']);
+    $headers = array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . tc_provider_key_for_model($provider, $ctx['model']));
     $body = array(
         'model' => $ctx['model'],
         'prompt' => $ctx['prompt'],
@@ -3148,7 +3153,8 @@ function tc_generate_video($apiKeyOwner = null) {
     $user = $ctx['user'];
     if ($ctx['model'] === '' || $ctx['prompt'] === '') tc_fail(400, '请填写模型和提示词');
     $url = tc_api_url($provider['baseUrl'], '/videos');
-    $headers = array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . $provider['apiKey']);
+    $videoKey = tc_provider_key_for_model($provider, $ctx['model']);
+    $headers = array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . $videoKey);
     $body = array(
         'model' => $ctx['model'],
         'prompt' => $ctx['prompt'],
@@ -3189,7 +3195,7 @@ function tc_generate_video($apiKeyOwner = null) {
         while (time() < $deadline) {
             usleep(1500000);
             $q = $pollUrl . '?video_id=' . rawurlencode($videoId) . '&model_name=' . rawurlencode($ctx['model']);
-            $pr = tc_http_request($q, 'GET', array('Authorization' => 'Bearer ' . $provider['apiKey'], 'Accept' => 'application/json'), null, 20000, false);
+            $pr = tc_http_request($q, 'GET', array('Authorization' => 'Bearer ' . $videoKey, 'Accept' => 'application/json'), null, 20000, false);
             if (empty($pr['ok']) || (int) $pr['status'] >= 400) continue; // 短暂失败不致命,继续轮询
             $pj = json_decode((string) $pr['body'], true);
             if (!is_array($pj)) continue;

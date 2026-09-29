@@ -1935,7 +1935,9 @@ body.share-page {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  table-layout: fixed;
+  /* fixed 布局在窄弹窗里会让表头文字压到相邻列(截图中「显示名称/max_tokens」重叠)。
+     改用 auto 布局并按内容分配宽度,表头超长时用省略号而非溢出。 */
+  table-layout: auto;
   font-size: 12.5px;
 }
 .model-table thead th {
@@ -1951,6 +1953,9 @@ body.share-page {
   letter-spacing: 0.02em;
   text-align: left;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
 }
 .model-table .col-check {
   width: 36px;
@@ -1959,17 +1964,36 @@ body.share-page {
   padding-right: 4px;
 }
 .model-table .col-id {
-  width: 32%;
+  min-width: 150px;
+  max-width: 260px;
 }
 .model-table .col-name {
-  width: auto;
+  min-width: 132px;
 }
 .model-table .col-mtok {
-  width: 96px;
+  width: 92px;
 }
 .model-table .col-ctx {
-  width: 112px;
+  width: 104px;
 }
+/* 多密钥:模型绑定哪把 Key(仅配置多 Key 时出现) */
+.model-table .col-key {
+  width: 120px;
+}
+/* 多密钥编辑器 */
+.ap-keys { display: flex; flex-direction: column; gap: 8px; }
+.ap-key-row { display: grid; grid-template-columns: minmax(96px, 0.9fr) minmax(140px, 1.6fr) auto; gap: 8px; align-items: center; }
+.ap-key-row input { min-width: 0; }
+.ap-key-row .ap-key-pw { min-width: 0; }
+.ap-key-row .ap-key-pw input { width: 100%; }
+.ap-key-row .ap-key-del { flex: 0 0 auto; color: var(--text-tertiary); }
+.ap-key-row .ap-key-del:hover { color: var(--danger, #e5484d); }
+.ap-keys-actions { display: flex; align-items: center; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
+@media (max-width: 560px) {
+  .ap-key-row { grid-template-columns: 1fr; }
+}
+/* 模型表:密钥下拉 */
+.model-table select.mkey { width: 100%; min-height: 30px; padding: 3px 6px; border: 1px solid var(--hairline); border-radius: 7px; background: var(--bg-surface); color: var(--text); font-size: 12.5px; }
 .model-table tbody td {
   padding: 6px 10px;
   border-bottom: 1px solid color-mix(in srgb, var(--hairline) 70%, transparent);

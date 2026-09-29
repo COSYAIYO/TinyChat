@@ -284,7 +284,41 @@ assert_contains "视频代理拒绝无效签名" "$(curl -s -o /dev/null -w '%{h
 assert_contains "对话接口自动改走生视频" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$VIDPROV"'","model":"mock-video","messages":[{"role":"user","content":"draw"}]}')" 'example.com/generated/mock-video.mp4'
 
 # ---------- 获取模型列表 ----------
-say "== 获取模型列表 =="
+say "== 多密钥供应商 =="
+cat > "$TMP/mk.json" <<EOF
+{"name":"MultiKey","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiKey":"sk-legacy","apiFormat":"chat","scope":"global","costPerCall":1,
+ "keys":[{"id":"ka","name":"主号","apiKey":"sk-key-a"},{"id":"kb","name":"副号","apiKey":"sk-key-b"}],
+ "models":[{"id":"mock-model","name":"Mock","keyId":"ka"},{"id":"mock-image","name":"Mock Image","keyId":"kb","image":true}]}
+EOF
+mk=$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/mk.json")
+assert_contains "创建多密钥供应商" "$mk" '"name":"主号"'
+assert_contains "密钥二存在" "$mk" '"name":"副号"'
+assert_contains "模型绑定密钥" "$mk" '"keyId":"ka"'
+MKPROV=$(printf '%s' "$mk" | python -c "import sys,json;print(json.load(sys.stdin)['provider']['id'])")
+# 密钥重名应被拒
+cat > "$TMP/mkdup.json" <<EOF
+{"name":"DupKey","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiFormat":"chat","scope":"global",
+ "keys":[{"id":"k1","name":"同名","apiKey":"sk-1"},{"id":"k2","name":"同名","apiKey":"sk-2"}],
+ "models":[{"id":"mock-model","name":"M"}]}
+EOF
+assert_contains "密钥重名被拒" "$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/mkdup.json")" 'Key 名称不能重复'
+# 多密钥未命名应被拒
+cat > "$TMP/mknn.json" <<EOF
+{"name":"NoName","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiFormat":"chat","scope":"global",
+ "keys":[{"id":"k1","name":"","apiKey":"sk-1"},{"id":"k2","name":"B","apiKey":"sk-2"}],
+ "models":[{"id":"mock-model","name":"M"}]}
+EOF
+assert_contains "多密钥未命名被拒" "$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/mknn.json")" '每个 Key 都需要填写名称'
+# 模型绑定的 keyId 必须存在:传一个不存在的 keyId 应被清掉(不报错)
+cat > "$TMP/mkbadkey.json" <<EOF
+{"name":"BadKeyRef","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiFormat":"chat","scope":"global",
+ "keys":[{"id":"ka","name":"A","apiKey":"sk-a"}],
+ "models":[{"id":"mock-model","name":"M","keyId":"nope"}]}
+EOF
+bk=$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/mkbadkey.json")
+if printf '%s' "$bk" | grep -q '"keyId"'; then bad "无效 keyId 应被清除"; else ok "无效 keyId 被清除"; fi
+
+say "== 获取模型列表 ==" 
 # Git Bash 的 curl 会搅乱 UTF-8 字面量,掩码占位符用字节转义构造,确保后端收到真实的 ••••
 MASKEDKEY=$'sk-\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2'
 assert_contains "获取模型: 标准 Base URL" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://127.0.0.1:'"$MOCK_PORT"'/v1","apiKey":"sk-mock","apiFormat":"chat"}')" 'mock-model'

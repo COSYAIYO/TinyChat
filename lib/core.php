@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.38');
+define('TC_VERSION', '2.0.39');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -1444,12 +1444,95 @@ function tc_decrypt_secret($blob, $aad) {
     return $plain === false ? '' : $plain;
 }
 
-// 读取供应商明文 Key:enc1. 密文按 AAD 解密,旧明文原样返回(兼容未迁移数据)
+// 读取供应商明文 Key(默认/第一把):enc1. 密文按 AAD 解密,旧明文原样返回(兼容未迁移数据)
 function tc_provider_key($p) {
     $k = isset($p['apiKey']) ? (string) $p['apiKey'] : '';
-    if ($k === '') return '';
+    if ($k === '') {
+        // 多密钥结构:退回第一把密钥
+        $keys = tc_provider_keys($p);
+        if (!$keys) return '';
+        $v = (string) $keys[0]['apiKey'];
+        if ($v === '') return '';
+        return strpos($v, 'enc1.') === 0 ? tc_decrypt_secret($v, tc_provider_key_aad($p)) : $v;
+    }
     if (strpos($k, 'enc1.') === 0) return tc_decrypt_secret($k, tc_provider_key_aad($p));
     return $k;
+}
+
+// ---- 多密钥支持:一个供应商可配置多个 Key(各自命名),模型可绑定到指定 Key ----
+// 归一化供应商的密钥列表。兼容旧的单 `apiKey` 字段:
+// 返回 [['id'=>string,'name'=>string,'apiKey'=>密文或明文], ...];无任何 Key 时返回 []。
+function tc_provider_keys($p) {
+    $out = array();
+    if (isset($p['keys']) && is_array($p['keys'])) {
+        foreach ($p['keys'] as $k) {
+            if (!is_array($k)) continue;
+            $id = substr(trim((string) (isset($k['id']) ? $k['id'] : '')), 0, 40);
+            if ($id === '') $id = 'k' . substr(hash('sha256', tc_json_encode($k)), 0, 6);
+            $out[] = array(
+                'id' => $id,
+                'name' => substr(trim((string) (isset($k['name']) ? $k['name'] : '')), 0, 40),
+                'apiKey' => isset($k['apiKey']) ? (string) $k['apiKey'] : '',
+            );
+        }
+    }
+    if (!$out && isset($p['apiKey']) && (string) $p['apiKey'] !== '') {
+        // 旧数据:单 Key 视为一个无名密钥,固定 id 便于模型引用
+        $out[] = array('id' => 'k0', 'name' => '', 'apiKey' => (string) $p['apiKey']);
+    }
+    return $out;
+}
+
+// 供应商的默认(第一个)密钥 id;无密钥返回 ''
+function tc_provider_default_key_id($p) {
+    $keys = tc_provider_keys($p);
+    return $keys ? (string) $keys[0]['id'] : '';
+}
+
+// 取指定 keyId 的明文密钥;找不到时回退默认密钥
+function tc_provider_key_by_id($p, $keyId) {
+    $keyId = trim((string) $keyId);
+    $keys = tc_provider_keys($p);
+    if (!$keys) return '';
+    $pick = null;
+    if ($keyId !== '') {
+        foreach ($keys as $k) if ((string) $k['id'] === $keyId) { $pick = $k; break; }
+    }
+    if (!$pick) $pick = $keys[0];
+    $v = (string) $pick['apiKey'];
+    if ($v === '') return '';
+    if (strpos($v, 'enc1.') === 0) return tc_decrypt_secret($v, tc_provider_key_aad($p));
+    return $v;
+}
+
+// 按模型选用密钥:模型上绑定 keyId 优先,否则用供应商默认密钥。
+// 这是「多 Key 下请求必须用用户设置的那把 Key」的落地点。
+function tc_provider_key_for_model($p, $modelId) {
+    $id = trim((string) $modelId);
+    $keyId = '';
+    if ($id !== '' && !empty($p['models']) && is_array($p['models'])) {
+        foreach ($p['models'] as $m) {
+            if (!is_array($m)) continue;
+            if ((string) (isset($m['id']) ? $m['id'] : '') !== $id) continue;
+            if (isset($m['keyId']) && (string) $m['keyId'] !== '') $keyId = (string) $m['keyId'];
+            break;
+        }
+    }
+    return tc_provider_key_by_id($p, $keyId);
+}
+
+// Key 名称唯一性校验(多 Key 时名称不可重复且不可为空),返回错误信息或 ''
+function tc_provider_keys_error($keys) {
+    if (count($keys) < 2) return '';
+    $seen = array();
+    foreach ($keys as $k) {
+        $name = trim((string) (isset($k['name']) ? $k['name'] : ''));
+        if ($name === '') return '配置了多个 Key 时，每个 Key 都需要填写名称';
+        $low = strtolower($name);
+        if (isset($seen[$low])) return 'Key 名称不能重复：' . $name;
+        $seen[$low] = true;
+    }
+    return '';
 }
 
 // 将明文 Key 加密后写入供应商记录;失败时返回 false 且不改动记录

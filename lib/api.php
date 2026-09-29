@@ -87,6 +87,16 @@ function tc_client_provider($p, $owner = false, $admin = false) {
         // 密钥只以掩码形式下发给属主或管理员;其他用户不回传任何密钥信息
         'apiKey' => $showKey && $key ? tc_mask_key($key) : '',
         'hasKey' => !!$key,
+        // 多密钥:仅属主/管理员可见(含掩码),供前端渲染密钥编辑器与模型绑定列
+        'keys' => $showKey ? array_map(function ($k) use ($p) {
+            $plain = tc_provider_key_by_id($p, (string) $k['id']);
+            return array(
+                'id' => (string) $k['id'],
+                'name' => (string) $k['name'],
+                'apiKey' => $plain !== '' ? tc_mask_key($plain) : '',
+                'hasKey' => $plain !== '',
+            );
+        }, tc_provider_keys($p)) : array(),
         'keyRevealable' => $showKey ? !empty($p['keyRevealable']) : false,
         'createdAt' => isset($p['createdAt']) ? $p['createdAt'] : null,
         'updatedAt' => isset($p['updatedAt']) ? $p['updatedAt'] : (isset($p['createdAt']) ? $p['createdAt'] : null),
@@ -137,8 +147,13 @@ function tc_resolve_provider($db, $user, $body) {
             if (!$ok) return array('error' => '当前用户组无权使用模型 ' . $reqModel);
         }
     }
-    // 代理请求需要明文 Key 访问上游;在返回给代理上下文前解密(仅服务端内存,不落库不下发)
-    if (isset($vis['apiKey'])) $vis['apiKey'] = tc_provider_key($target);
+    // 代理请求需要明文 Key 访问上游;按「本次请求的模型」选用对应密钥
+    // (多 Key 供应商下,模型可能绑定到不同的 Key),解密仅存于服务端内存。
+    if (isset($vis['apiKey'])) {
+        $keyModel = isset($body['model']) ? (string) $body['model'] : '';
+        if ($keyModel === '' && isset($vis['models'][0]['id'])) $keyModel = (string) $vis['models'][0]['id'];
+        $vis['apiKey'] = tc_provider_key_for_model($target, $keyModel);
+    }
     return array('provider' => $vis, 'providerFull' => $target);
 }
 
@@ -172,6 +187,10 @@ function tc_normalize_models($models) {
         if (is_array($m) && isset($m['cost']) && $m['cost'] !== '' && is_numeric($m['cost'])) {
             $row['cost'] = max(0, min(1000, (float) $m['cost']));
         }
+        // 绑定的密钥 id(可选):多 Key 供应商下,该模型用哪把 Key 请求上游
+        if (is_array($m) && isset($m['keyId']) && trim((string) $m['keyId']) !== '') {
+            $row['keyId'] = substr(trim((string) $m['keyId']), 0, 40);
+        }
         $out[] = $row;
         if (count($out) >= 500) break;
     }
@@ -187,6 +206,36 @@ function tc_normalize_provider_input($b, $base = array()) {
         // 留空或仍是掩码表示「不修改密钥」,保留原值(可能是密文)
         if ($key !== '' && strpos($key, '••') === false) $p['apiKey'] = $key;
     }
+    // 多密钥:keys = [{id,name,apiKey}],apiKey 留空/掩码表示沿用原有密文
+    if (array_key_exists('keys', $b) && is_array($b['keys'])) {
+        $prevKeys = array();
+        foreach (tc_provider_keys($p) as $k) $prevKeys[(string) $k['id']] = $k;
+        $next = array();
+        $usedIds = array();
+        foreach ($b['keys'] as $i => $k) {
+            if (!is_array($k)) continue;
+            $id = substr(trim((string) (isset($k['id']) ? $k['id'] : '')), 0, 40);
+            if ($id === '' || isset($usedIds[$id])) $id = 'k' . substr(hash('sha256', $id . '#' . $i . '#' . microtime(true)), 0, 8);
+            $usedIds[$id] = true;
+            $name = substr(trim((string) (isset($k['name']) ? $k['name'] : '')), 0, 40);
+            $plain = isset($k['apiKey']) ? trim((string) $k['apiKey']) : '';
+            $enc = '';
+            if ($plain !== '' && strpos($plain, '••') === false) {
+                $tmp = array('id' => isset($p['id']) ? $p['id'] : '', 'ownerId' => isset($p['ownerId']) ? $p['ownerId'] : '');
+                $enc = tc_encrypt_secret($plain, tc_provider_key_aad($tmp));
+                if ($enc === false) $enc = '';
+            } elseif (isset($prevKeys[$id])) {
+                $enc = (string) $prevKeys[$id]['apiKey'];   // 沿用旧密文
+            }
+            if ($enc === '') continue;                        // 既无新明文也无旧密文:丢弃空 Key
+            $next[] = array('id' => $id, 'name' => $name, 'apiKey' => $enc);
+        }
+        $err = tc_provider_keys_error($next);
+        if ($err !== '') tc_fail(400, $err);
+        $p['keys'] = $next;
+        // 保留一把主 Key(兼容旧字段与「未绑定模型」的默认回退)
+        $p['apiKey'] = $next ? (string) $next[0]['apiKey'] : '';
+    }
     if (array_key_exists('keyRevealable', $b)) $p['keyRevealable'] = !empty($b['keyRevealable']);
     if (array_key_exists('enabled', $b)) $p['enabled'] = !empty($b['enabled']);
     if (array_key_exists('apiFormat', $b) && in_array($b['apiFormat'], array('chat', 'responses', 'completions', 'anthropic', 'video'), true)) {
@@ -198,7 +247,16 @@ function tc_normalize_provider_input($b, $base = array()) {
         $p['billingMode'] = $b['billingMode'];
     }
     if (array_key_exists('pricePer1k', $b)) $p['pricePer1k'] = max(0, min(1000, (float) $b['pricePer1k']));
-    if (array_key_exists('models', $b)) $p['models'] = tc_normalize_models($b['models']);
+    if (array_key_exists('models', $b)) {
+        $p['models'] = tc_normalize_models($b['models']);
+        // 模型绑定的 keyId 必须存在,否则清掉(回退默认密钥)
+        $validIds = array();
+        foreach (tc_provider_keys($p) as $k) $validIds[(string) $k['id']] = true;
+        foreach ($p['models'] as &$mm) {
+            if (isset($mm['keyId']) && !isset($validIds[(string) $mm['keyId']])) unset($mm['keyId']);
+        }
+        unset($mm);
+    }
     if (empty($p['apiFormat'])) $p['apiFormat'] = 'chat';
     if (!isset($p['costPerCall']) || !is_numeric($p['costPerCall'])) $p['costPerCall'] = 1;
     if (!isset($p['billingMode']) || !in_array($p['billingMode'], array('call', 'token'), true)) $p['billingMode'] = 'call';
