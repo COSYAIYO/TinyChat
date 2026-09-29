@@ -2069,7 +2069,16 @@ function stampContext(body, msgs) {
 
 function attachWebSearchFlag(body) {
   const mode = webSearchMode();
-  if (mode === 'on' || mode === 'auto') body.webSearch = mode;
+  if (mode === 'on' || mode === 'off') { body.webSearch = mode; state._toolSearch = null; return body; }
+  if (mode === 'auto') {
+    // 智能:优先用统一 AI 工具判定给出的结果(省一次主模型判定);否则交给后端启发式
+    if (state._toolSearch === true || state._toolSearch === false) {
+      body.webSearch = state._toolSearch ? 'on' : 'off';
+    } else {
+      body.webSearch = 'auto';
+    }
+    state._toolSearch = null;
+  }
   return body;
 }
 function citationsFromResponse(resp) {
@@ -2128,28 +2137,40 @@ function wantsEditImage(text) {
 function refersToPrevImage(text) {
   return /(上面|刚才|上一张|上张|之前|这张图|这张|那张图|那张|这个图|那个图|此图|它)/.test(String(text || ''));
 }
-// 对话中自动出图的模式:off=关闭 | rough=粗略关键词识别 | ai=让模型判定
+// 对话中自动出图的模式:off=关闭 | rough=粗略关键词识别 | auto=智能判定(用统一工具判定模型)
 function autoImageMode() {
   const v = String(uiPref('autoImageMode', 'rough') || 'rough').toLowerCase();
-  return (v === 'off' || v === 'ai' || v === 'rough') ? v : 'rough';
+  if (v === 'off' || v === 'rough' || v === 'auto' || v === 'ai') return v === 'ai' ? 'auto' : v;
+  return 'rough';
 }
-// AI 意图判定:让模型判断这次发言是否「要生成新图」或「要修改上面的图」。返回 {draw,edit}|null(判定失败)。
-// 用「意图判定模型」设置指定的模型,未设置则用当前对话模型。判定会额外消耗一次调用。
-async function aiJudgeImageIntent(text, hasImageRef) {
-  const aux = resolveAuxModel('autoImageModel');
+// 统一的「AI 工具判定」:一次轻量调用判定本次发言需要启用哪些工具/功能。
+// ctx: { imageEnabled, searchEnabled, prevImage } → 返回 {draw,edit,search,title}|null(判定失败)。
+// 判定模型 = 设置里的「AI 工具判定模型」,未设置则跟随当前对话模型。判定会额外消耗一次调用。
+async function aiJudgeTools(text, ctx) {
+  ctx = ctx || {};
+  const aux = resolveAuxModel('judgeModel');
   const providerId = aux ? aux.providerId : state.currentProviderId;
   const model = aux ? aux.model : state.currentModel;
   const format = aux ? aux.format : providerFormat();
   if (!providerId || !model) return null;
-  const sys = '你是意图分类器。判断用户这句话是不是在「要求生成一张图片」或「要求修改/编辑已有的图片」。'
-    + '只输出一个 JSON 对象,形如 {"action":"draw"}；draw=要生成新图，edit=要修改一张已有的图片，none=普通对话、提问或讨论。不要输出任何其他内容。';
-  const user = '上下文里是否有可修改的上一张图片：' + (hasImageRef ? '有' : '无') + '\n用户发言：' + text;
-  const body = {
-    model,
-    providerId,
-    stream: false,
-    messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
-  };
+  const wantImage = ctx.imageEnabled !== false;
+  const wantSearch = !!ctx.searchEnabled;
+  const wantTitle = !!ctx.wantTitle;
+  let sys = '你是「AI 助手调度器」。根据用户最新一句话判断这次回答需要启用哪些能力，只输出一个 JSON 对象，不要输出任何解释或多余文字。字段：'
+    + '{"search":true|false,"draw":true|false,"edit":true|false'
+    + (wantTitle ? ',"title":"简短标题"' : '') + '}。'
+    + 'search=需要联网检索最新/实时信息（如新闻、天气、股价、当前时间、近期事件、需查证的事实）；闲聊、写作、代码、翻译、数学等不联网。';
+  if (wantImage) {
+    sys += 'draw=用户在要求生成一张新图片（如「画一只猫」「生成海报」）；edit=用户在要求修改已有的图片（上下文提供了一张可修改的图片，且用户在要求改它，如「把上面的图换成蓝色」）。'
+      + '注意：讨论、提问或解释（如「画一个圆是什么原理」）不算。';
+    if (ctx.prevImage) sys += '当前上下文里有一张可供修改的图片。';
+    else sys += '当前上下文里没有可修改的图片，edit 一律为 false。';
+  } else {
+    sys += '本回合不支持生图，draw 与 edit 一律为 false。';
+  }
+  if (wantTitle) sys += 'title=根据这句话为本次对话起一个简短中文标题（不超过 14 字、不加引号、不用「对话/标题」等字眼）。';
+  const user = '用户发言：' + text;
+  const body = { model, providerId, stream: false, messages: [{ role: 'system', content: sys }, { role: 'user', content: user }] };
   try {
     const r = await api(ENDPOINT_BY_FORMAT[format] || ENDPOINT_BY_FORMAT.chat, {
       method: 'POST',
@@ -2158,10 +2179,18 @@ async function aiJudgeImageIntent(text, hasImageRef) {
     });
     if (!r.ok) return null;
     const data = await r.json();
-    const raw = String(extractText(data, format) || '').toLowerCase();
-    const m = raw.match(/"action"\s*:\s*"(draw|edit|none)"/) || raw.match(/\b(draw|edit|none)\b/);
-    const action = m ? m[1] : 'none';
-    return { draw: action === 'draw', edit: action === 'edit' };
+    const raw = String(extractText(data, format) || '');
+    const lower = raw.toLowerCase();
+    const val = (k) => {
+      const m = lower.match(new RegExp('"' + k + '"\\s*:\\s*(true|false)'));
+      return m ? m[1] === 'true' : false;
+    };
+    let title = '';
+    if (wantTitle) {
+      const tm = raw.match(/"title"\s*:\s*"([^"]{1,40})"/);
+      if (tm) title = tm[1].replace(/^["'「『]+|["'」』。.]+$/g, '').trim().slice(0, 24);
+    }
+    return { search: val('search'), draw: wantImage && val('draw'), edit: wantImage && val('edit'), title };
   } catch (e) {
     return null;
   }
@@ -2222,9 +2251,10 @@ async function sendMessage() {
 
   // 对话模型下:识别到「画图 / 改图」意图时,自动改用「默认生图模型」出图,
   // 并自动带上上一张生成图或本次附件作参考图(改图)。识别方式由设置决定:
-  // off=关闭 | rough=粗略关键词识别 | ai=让模型判定(更准,但多一次调用)。
+  // off=关闭 | rough=粗略关键词识别 | auto=统一 AI 工具判定(更准,但多一次调用)。
+  // 「联网=智能」时也复用同一次判定,避免再用主模型多判一次、也更省 token。
   const aim = autoImageMode();
-  if (aim !== 'off') {
+  {
     const imgAtts = attachments.filter((a) => a && a.type === 'image' && a.dataUrl).slice(0, 4);
     let prevImg = '';
     if (typeof lastImageSourceInChat === 'function') {
@@ -2232,32 +2262,44 @@ async function sendMessage() {
       if (c) prevImg = lastImageSourceInChat(c) || '';
     }
     const hasRef = imgAtts.length > 0 || !!prevImg;
-    let isDraw = false, isEdit = false;
-    if (aim === 'ai' && text) {
-      // AI 判定期间锁住发送,避免重复触发
+    const hasImageModel = typeof defaultImageModel === 'function' ? !!defaultImageModel() : false;
+    const searchReady = typeof webSearchMode === 'function' && webSearchMode() === 'auto';
+    // 新对话首条消息且开启了自动命名:让判定顺带给出标题,省去单独一次命名调用
+    const curChat = currentChat();
+    const isFirstMsg = !!curChat && (!curChat.messages || curChat.messages.length === 0) && autoTitleEnabled();
+    // 需要 AI 工具判定的条件:生图设为智能判定,或联网=智能,或需要 AI 命名
+    const needJudge = text && ((aim === 'auto' && hasImageModel) || searchReady || isFirstMsg);
+    let verdict = null;
+    if (needJudge) {
+      // 判定期间锁住发送,避免重复触发
       state.streaming = true; updateSendBtn();
-      let verdict = null;
-      try { verdict = await aiJudgeImageIntent(text, hasRef); }
-      finally { state.streaming = false; updateSendBtn(); }
-      if (verdict) {
+      try {
+        verdict = await aiJudgeTools(text, { imageEnabled: hasImageModel, searchEnabled: searchReady, prevImage: hasRef, wantTitle: isFirstMsg });
+      } finally { state.streaming = false; updateSendBtn(); }
+    }
+    // 联网:判定成功则按结果显式开关;失败则回退后端启发式(body.webSearch 保持 'auto')
+    state._toolSearch = (verdict && searchReady) ? !!verdict.search : null;
+    // 判定给出的标题:建对话时先用上(本地截取作为兜底)
+    state._judgeTitle = (verdict && verdict.title) ? verdict.title : '';
+    let isDraw = false, isEdit = false;
+    if (aim !== 'off') {
+      if (aim === 'auto' && verdict) {
         isDraw = !!verdict.draw;
         isEdit = !!verdict.edit && hasRef;
       } else {
-        // 判定失败时回退粗略识别,保证能力不退化
+        // 粗略识别,或「智能判定」失败时回退
         isDraw = wantsDrawImage(text);
+        // 改图意图:必须能定位到一张图。附图即视为要改这张图;否则需本会话有上一张生成图,
+        // 且文本明确指代它(上面/这张图/它…)。避免把「把这段话改成英文」这类文本编辑误判为改图。
         isEdit = wantsEditImage(text) && (imgAtts.length > 0 || (!!prevImg && refersToPrevImage(text)));
       }
-    } else {
-      isDraw = wantsDrawImage(text);
-      // 改图意图:必须能定位到一张图。附图即视为要改这张图;否则需本会话有上一张生成图,
-      // 且文本明确指代它(上面/这张图/它…)。避免把「把这段话改成英文」这类文本编辑误判为改图。
-      isEdit = wantsEditImage(text) && (imgAtts.length > 0 || (!!prevImg && refersToPrevImage(text)));
     }
     // 参考图策略:显式编辑或明确指代上一张图时带上;全新绘图默认不带
     const usePrevRef = imgAtts.length === 0 && (isEdit || (isDraw && !!prevImg));
     if (isDraw || isEdit) {
       const target = defaultImageModel();
       if (target) {
+        state._toolSearch = null; // 本次改走生图,联网判定结果不适用于后续对话
         input.value = '';
         autosizeInput();
         state.pendingAttachments = [];
@@ -2299,13 +2341,14 @@ async function sendMessage() {
   if (!chat || !chat.id) {
     chat = newChat();
   }
-  // 新会话给第一个消息生成标题(先用本地截取,若配置了 AI 命名则在首轮回复后替换)
+  // 新会话给第一个消息生成标题:优先用统一工具判定已生成的标题(省一次调用),否则本地截取
   if (chat.messages.length === 0 && autoTitleEnabled()) {
     const seed = text || (attachments[0] && attachments[0].name) || '新对话';
-    chat.title = window.OCConversations.autoTitle(seed);
+    chat.title = (state._judgeTitle && state._judgeTitle.trim()) || window.OCConversations.autoTitle(seed);
     chat._autoTitled = true;
     renderChatList();
   }
+  state._judgeTitle = '';
 
   const displayParts = [];
   if (text) displayParts.push(text);
@@ -2325,55 +2368,11 @@ async function sendMessage() {
   saveChats();
   renderMessages();
   await requestAssistantReply(chat, userMsg);
-  // AI 命名:配置了命名模型且标题仍是本地截取时,首轮回复后生成更贴切的标题
-  if (chat._autoTitled && String(uiPref('titleModel', '') || '')) {
-    aiGenerateTitle(chat).catch(() => {});
-  }
   await refreshMe();
   refreshModelHealth();
 }
 
-// AI 生成会话标题:用「命名方式」选择的模型(或当前模型)总结首轮对话。
-// 仅替换尚未被用户手动重命名的自动标题(_autoTitled 标记)。
-async function aiGenerateTitle(chat) {
-  if (!chat || !chat.id) return;
-  const aux = resolveAuxModel('titleModel');
-  const providerId = aux ? aux.providerId : state.currentProviderId;
-  const model = aux ? aux.model : state.currentModel;
-  const format = aux ? aux.format : providerFormat();
-  if (!providerId || !model) return;
-  const firstUser = (chat.messages || []).find((m) => m && m.role === 'user');
-  const firstReply = (chat.messages || []).find((m) => m && m.role === 'assistant' && String(m.content || '').trim());
-  const seed = String((firstUser && (firstUser.text || firstUser.content)) || '').slice(0, 800);
-  const reply = String((firstReply && firstReply.content) || '').replace(/!\[[^\]]*\]\([^)]*\)/g, '').slice(0, 600);
-  if (!seed.trim()) return;
-  const body = {
-    model,
-    stream: false,
-    providerId,
-    messages: [
-      { role: 'system', content: '你是对话助手。为一段对话生成一个简短的中文标题：不超过 14 个字、不加引号和句号、不使用「对话」「标题」等字眼，直接输出标题本身。' },
-      { role: 'user', content: '用户提问：\n' + seed + (reply ? ('\n\nAI 回复（节选）：\n' + reply) : '') },
-    ],
-  };
-  const r = await api(ENDPOINT_BY_FORMAT[format] || ENDPOINT_BY_FORMAT.chat, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) return;
-  const data = await r.json();
-  const title = String(extractText(data, format) || '').split('\n')[0].replace(/^["'「『]+|["'」』。.]+$/g, '').trim().slice(0, 24);
-  if (!title) return;
-  // 生成期间用户可能已手动改名(_autoTitled 被清),此时不再覆盖
-  if (!chat._autoTitled) return;
-  chat._autoTitled = false;
-  chat.title = title;
-  chat.updatedAt = Date.now();
-  saveChats();
-  renderChatList();
-}
-
+// (AI 会话标题已并入统一的「AI 工具判定」:新建对话首条消息时由 aiJudgeTools 顺带生成,省一次调用。)
 function providerFormat() {
   const p = state.providers.find((x) => x.id === state.currentProviderId);
   return (p && p.apiFormat) || 'chat';
@@ -3816,17 +3815,13 @@ function syncPrefsPanel() {
     el.checked = !!uiPref(key, true);
   });
   syncAuxModelSelect('pref-followups-model', 'followupsModel', '');
-  syncAuxModelSelect('pref-title-model', 'titleModel', '');
+  syncAuxModelSelect('pref-judge-model', 'judgeModel', '');
   syncImageModelSelect('pref-image-model', 'imageModel');
-  syncAuxModelSelect('pref-auto-image-model', 'autoImageModel', '');
-  // 对话中自动出图:三选一分段
+  // 对话中自动出图:三选一分段(默认粗略)
   const aiMode = autoImageMode();
   document.querySelectorAll('#pref-auto-image .seg-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.autoimage === aiMode);
   });
-  // 仅「AI 判定」需要选择判定模型
-  const aiModelRow = $('pref-auto-image-model-row');
-  if (aiModelRow) aiModelRow.style.display = (aiMode === 'ai') ? '' : 'none';
   const effortVal = reasoningEffort();
   document.querySelectorAll('#pref-reasoning-effort .seg-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.effort === effortVal);
@@ -4032,18 +4027,15 @@ async function saveToolSource(patch) {
   bindCheck('pref-followups', 'followups');
   bindCheck('pref-autotitle', 'autotitle');
   bindAuxModelSelect('pref-followups-model', 'followupsModel', 'followups');
-  bindAuxModelSelect('pref-title-model', 'titleModel', 'title');
+  bindAuxModelSelect('pref-judge-model', 'judgeModel', '');
   bindImageModelSelect('pref-image-model', 'imageModel');
-  bindAuxModelSelect('pref-auto-image-model', 'autoImageModel', '');
-  // 对话中自动出图:三选一(关闭 / 粗略 / AI 判定)
+  // 对话中自动出图:三选一(关闭 / 粗略 / 智能判定)
   const autoImgBox = $('pref-auto-image');
   if (autoImgBox) autoImgBox.addEventListener('click', (e) => {
     const btn = e.target.closest('.seg-btn');
     if (!btn || !btn.dataset.autoimage) return;
     document.querySelectorAll('#pref-auto-image .seg-btn').forEach((b) => b.classList.toggle('active', b === btn));
     if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('autoImageMode', btn.dataset.autoimage);
-    const row = $('pref-auto-image-model-row');
-    if (row) row.style.display = (btn.dataset.autoimage === 'ai') ? '' : 'none';
   });
   bindCheck('pref-elapsed', 'elapsed');
   bindCheck('pref-reasoning', 'reasoning');

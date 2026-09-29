@@ -20,11 +20,12 @@
     stream: true,          // 流式输出
     followups: false,      // AI 跟进建议(会额外扣费,默认关闭)
     followupsModel: '',    // 跟进建议所用模型:'' = 跟随当前模型;否则 "providerId\nmodelId"
-    autotitle: true,       // 自动生成会话标题
-    titleModel: '',        // 命名方式:'' = 本地截取;'current' = AI(当前模型);否则 "providerId\nmodelId"
+    autotitle: true,       // 自动生成会话标题(新建对话时)
+    titleModel: '',        // [已并入 AI 工具判定] 旧字段,仅作迁移回退
+    judgeModel: '',        // AI 工具判定所用模型:'' = 跟随当前对话模型;否则 "providerId\nmodelId"
     imageModel: '',        // 默认生图模型:'' = 用第一个可用生图模型;否则 "providerId\nmodelId"
-    autoImageMode: 'rough', // 对话中自动出图:off=关闭 | rough=粗略关键词识别 | ai=AI 判定
-    autoImageModel: '',    // AI 判定所用模型:'' = 跟随当前对话模型;否则 "providerId\nmodelId"
+    autoImageMode: 'rough', // 对话中自动出图:off=关闭 | rough=粗略关键词识别 | ai=智能判定(用判定模型)
+    autoImageModel: '',    // [已并入 AI 工具判定] 旧字段,仅作迁移回退
     elapsed: true,         // 显示生成耗时
     reasoning: true,       // 请求并展示思维链
     reasoningEffort: 'medium', // off | low | medium | high
@@ -71,6 +72,14 @@
     } else if (raw.fontLatin === 'times-new-roman' && raw.fontFamily === 'source-han-serif') {
       // 仅迁移上一版的默认组合,不覆盖用户明确选择的其他字体。
       prefs.fontLatin = 'alibaba-sans';
+    }
+    // 旧版「命名方式 / 追问判定模型」并入统一的 AI 工具判定模型:
+    // 若用户曾单独指定过 (titleModel 或 autoImageModel),迁移到 judgeModel。
+    if (!raw || typeof raw !== 'object' || !Object.prototype.hasOwnProperty.call(raw, 'judgeModel')) {
+      const legacyTitle = String((raw && raw.titleModel) || '').trim();
+      const legacyAuto = String((raw && raw.autoImageModel) || '').trim();
+      if (legacyTitle && legacyTitle !== 'current') prefs.judgeModel = legacyTitle;
+      else if (legacyAuto) prefs.judgeModel = legacyAuto;
     }
     return prefs;
   }

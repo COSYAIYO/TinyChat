@@ -863,6 +863,22 @@ function tc_search_needs_web($query, $provider, $format, $model) {
     return (bool) preg_match('/^\s*YES\b/i', $text);
 }
 
+// 「智能联网」的后端回退判定:仅用本地规则,不调用模型(省一次 token)。
+// 明确带时效性/实时性关键词或较长问句含最新事实诉求时才联网;拿不准则不联网。
+function tc_search_should_auto($query) {
+    $q = trim((string) $query);
+    if ($q === '') return false;
+    $local = tc_search_local_verdict($q);
+    if ($local !== null) return $local;
+    $re = '/(今天|今日|现在|目前|最新|实时|刚刚|最近|近期|本周|上周|本月|今年|截至|新闻|头条|天气|气温|空气质量|'
+        . '股价|股市|汇率|油价|金价|比分|赛程|赛果|彩票|中奖|发布会|上市|涨价|降息|加息|政策|法规|新规|版本更新|发布了|'
+        . 'when (is|did|does)|latest|current|today|now|news|weather|price|stock|score)\b/iu';
+    if (preg_match($re, $q)) return true;
+    $len = function_exists('mb_strlen') ? mb_strlen($q, 'UTF-8') : strlen($q);
+    if ($len >= 60 && preg_match('/(是否|有没有|哪些|哪个|谁|多少钱|怎么样|如何)/u', $q)) return true;
+    return false;
+}
+
 function tc_run_web_search($settings, $query) {
     $query = trim((string) $query);
     if ($query === '') return array('ok' => false, 'error' => '没有可检索的问题');
@@ -1984,11 +2000,10 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
     if ($searchMode === 'on' || $searchMode === 'auto') {
         $query = tc_web_search_query_from_body($body, $format);
         if ($searchMode === 'auto') {
-            $judgeModel = isset($body['model']) ? $body['model'] : '';
-            try {
-                if (!tc_search_needs_web($query, $provider, $format, $judgeModel)) $query = '';
-            } catch (Throwable $e) {
-            }
+            // 智能模式的「是否联网」判定已由前端统一完成(前端会用用户的判定模型给出 on/off)。
+            // 走到这里的 auto 是未判定或判定失败的回退:用保守的本地启发式,不再调用主模型,
+            // 从而避免额外消耗一次 token。
+            $query = tc_search_should_auto($query) ? $query : '';
         }
         $found = $query === '' ? array('ok' => true, 'hits' => array()) : tc_run_web_search($ctx['settings'], $query);
         if (empty($found['ok'])) {
