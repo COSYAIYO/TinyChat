@@ -4462,14 +4462,15 @@ if (pFetchBtn) {
     const apiKey = $('p-key').value.trim();
     const apiFormat = $('p-format').getAttribute('data-value') || 'chat';
     if (!baseUrl) { toast('请先填写 Base URL', true); return; }
-    if (!apiKey) { toast('请先填写 API Key', true); return; }
+    // 编辑已有供应商时 Key 允许留空(保持原 Key):带上 providerId 让服务端回退用存储的密钥
+    if (!apiKey && !providerEditingId) { toast('请先填写 API Key', true); return; }
     pFetchBtn.disabled = true;
     pFetchBtn.textContent = '获取中…';
     try {
       const r = await api('/api/proxy/fetch-models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ baseUrl, apiKey, apiFormat }),
+        body: JSON.stringify({ baseUrl, apiKey, apiFormat, providerId: providerEditingId || undefined }),
       });
       // 上游或服务器异常时可能返回 HTML 错误页,直接 .json() 会抛 "Unexpected token '<'",
       // 这里改为先取文本再尝试解析,给出可读提示
