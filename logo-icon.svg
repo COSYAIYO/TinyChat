@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-labelledby="t">
+  <title id="t">TinyChat icon</title>
+  <defs>
+    <linearGradient id="gt">
+      <stop offset="0" stop-color="#6A5CFF"/>
+      <stop offset="1" stop-color="#2EC5FF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 根目录横向字标(TinyChat)居中放入正方形画布,上下留白 -->
+  <g transform="translate(16 177.79) scale(1.07143) translate(-4 -4)">
+    <text x="8" y="120" font-family="Inter,'Segoe UI','Helvetica Neue',Arial,sans-serif" font-size="104" font-weight="800" letter-spacing="-2">
+      <tspan fill="url(#gt)">Tiny</tspan><tspan fill="#232936">Chat</tspan>
+    </text>
+  </g>
+</svg>

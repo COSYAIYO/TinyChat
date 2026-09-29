@@ -374,6 +374,15 @@ GAUTH="Authorization: Bearer $GTOKEN"
 assert_contains "游客组可见全局模型" "$(curl -s "$BASE/api/providers" -H "$GAUTH")" 'Mock'
 # 后台用户列表展示游客标记与 IP
 assert_contains "用户列表含 IP 字段" "$(curl -s "$BASE/api/admin/users" -H "$AUTH")" '"lastIp":'
+# 游客不能领取套餐额度 / 兑换码(否则可绕过体验轮数)
+cat > "$TMP/pkg-free.json" <<'EOF'
+{"name":"FreeTrial","quota":500,"price":0,"enabled":true,"limitPerUser":1}
+EOF
+FREEPKG=$(curl -s -X POST "$BASE/api/admin/packages" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/pkg-free.json" | jget id)
+[ -n "$FREEPKG" ] && ok "创建 0 元套餐" || bad "创建 0 元套餐"
+assert_contains "游客不能领取免费套餐" "$(curl -s -X POST "$BASE/api/packages/claim" -H "$GAUTH" -H "Content-Type: application/json" -d '{"packageId":"'"$FREEPKG"'"}')" '游客不能领取套餐'
+assert_contains "游客不能兑换额度" "$(curl -s -X POST "$BASE/api/packages/redeem" -H "$GAUTH" -H "Content-Type: application/json" -d '{"code":"ANYCODE"}')" '游客不能兑换额度'
+assert_contains "游客额度未被套餐改动" "$(curl -s "$BASE/api/auth/me" -H "$GAUTH")" '"quota":4'
 
 # ---------- 无限额度(-1) ----------
 say "== 无限额度 =="
