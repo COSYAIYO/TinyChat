@@ -23,17 +23,17 @@
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"WebApplication","name":"TinyChat","url":"{{SITE_URL}}/","applicationCategory":"CommunicationApplication","operatingSystem":"Web","inLanguage":"zh-CN","description":"纯 PHP + SQLite 的自托管 AI 站点系统：多供应商多模型对话、AI 文生图与图生图、用户注册登录与用户组授权、额度计费与兑换码、助手库、联网搜索、文档解析、游客体验、OpenAI 兼容 API 与在线更新，无需独立数据库。","offers":{"@type":"Offer","price":"0","priceCurrency":"CNY"},"featureList":["多供应商多模型对话","流式输出与 Markdown/公式/图表渲染","AI 文生图与图生图","用户注册登录与邮箱验证","用户组与模型授权","额度计费与兑换码","注册邀请码","助手库","联网搜索","文档解析","游客免登录体验","全站公告","对话云同步与分享","OpenAI 兼容 API","数据备份与在线更新"]}
 </script>
-<link rel="icon" type="image/svg+xml" href="./static/logo/app-icon.svg">
-<link rel="apple-touch-icon" href="./static/logo/app-icon.svg">
-<link rel="stylesheet" href="./static/css/style.css?v=20261003.4">
+<link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
+<link rel="apple-touch-icon" href="./logo-icon.svg">
+<link rel="stylesheet" href="./static/css/style.css?v=20261004.1">
 <link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
 <link rel="stylesheet" href="./vendor/katex/katex.min.css">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261003.4">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261003.4">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261003.4">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261003.4">
-<link rel="stylesheet" href="./static/css/markdown.css?v=20261003.4">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261003.4">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261004.1">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261004.1">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261004.1">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261004.1">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20261004.1">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261004.1">
 <script>
 /* 在样式表之后立刻刷主题色,避免首屏主按钮仍是默认蓝 */
 (function () {
@@ -321,10 +321,10 @@
       </div>
       <div class="settings-shell">
       <div class="settings-tabs" id="settings-tabs" role="tablist">
-        <button class="settings-tab active" data-tab="providers" role="tab">供应商</button>
+        <button class="settings-tab active" data-tab="account" role="tab">账户</button>
+        <button class="settings-tab" data-tab="providers" role="tab">供应商</button>
         <button class="settings-tab" data-tab="plan" role="tab">套餐</button>
         <button class="settings-tab" data-tab="usage2" role="tab">用量</button>
-        <button class="settings-tab" data-tab="account" role="tab">账户</button>
         <button class="settings-tab" data-tab="apikeys" role="tab">API 密钥</button>
         <button class="settings-tab" data-tab="data" role="tab">数据</button>
         <button class="settings-tab" data-tab="chat" role="tab">对话</button>
@@ -333,7 +333,7 @@
       </div>
       <div class="modal-body">
         <!-- 供应商 -->
-        <section class="settings-panel active" id="sp-providers">
+        <section class="settings-panel" id="sp-providers">
           <p class="muted small">添加自己的 API(OpenAI / DeepSeek / 中转站等)，仅供自己使用；Key 加密存储，任何人不可查看。</p>
 
           <div class="section-title">我的供应商 <span class="muted small" id="my-provider-count"></span></div>
@@ -415,7 +415,7 @@
         </section>
 
         <!-- 账户 -->
-        <section class="settings-panel" id="sp-account">
+        <section class="settings-panel active" id="sp-account">
           <div class="acc-head">
             <div class="avatar avatar-lg" id="acc-avatar">U</div>
             <div class="acc-head-meta">
@@ -849,19 +849,19 @@
     <button class="btn small primary" id="guest-bar-login" type="button">登录 / 注册</button>
   </div>
 
-  <script src="./static/js/config.js?v=20261003.4"></script>
-  <script src="./static/js/icons.js?v=20261003.4"></script>
-  <script src="./static/js/logos.js?v=20261003.4"></script>
-  <script src="./static/js/components.js?v=20261003.4"></script>
-  <script src="./static/js/ui.js?v=20261003.4"></script>
-  <script src="./static/js/assistants.js?v=20261003.4"></script>
-  <script src="./static/js/conversations.js?v=20261003.4"></script>
-  <script src="./static/js/renderer.js?v=20261003.4"></script>
-  <script src="./static/js/reasoning.js?v=20261003.4"></script>
-  <script src="./static/js/office-formula-copy.js?v=20261003.4"></script>
-  <script src="./static/js/citations.js?v=20261003.4"></script>
-  <script src="./static/js/messages.js?v=20261003.4"></script>
-  <script src="./static/js/multimodal.js?v=20261003.4"></script>
-  <script src="./static/js/app.js?v=20261003.4"></script>
+  <script src="./static/js/config.js?v=20261004.1"></script>
+  <script src="./static/js/icons.js?v=20261004.1"></script>
+  <script src="./static/js/logos.js?v=20261004.1"></script>
+  <script src="./static/js/components.js?v=20261004.1"></script>
+  <script src="./static/js/ui.js?v=20261004.1"></script>
+  <script src="./static/js/assistants.js?v=20261004.1"></script>
+  <script src="./static/js/conversations.js?v=20261004.1"></script>
+  <script src="./static/js/renderer.js?v=20261004.1"></script>
+  <script src="./static/js/reasoning.js?v=20261004.1"></script>
+  <script src="./static/js/office-formula-copy.js?v=20261004.1"></script>
+  <script src="./static/js/citations.js?v=20261004.1"></script>
+  <script src="./static/js/messages.js?v=20261004.1"></script>
+  <script src="./static/js/multimodal.js?v=20261004.1"></script>
+  <script src="./static/js/app.js?v=20261004.1"></script>
 </body>
 </html>

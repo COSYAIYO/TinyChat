@@ -1334,6 +1334,8 @@ function tc_api_admin_save_package() {
 function tc_api_claim_package() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db); $b = tc_read_json_body();
+        // 游客仅享有体验轮数,不得领取套餐额度(否则可反复领免费套餐绕过体验限制)
+        if (!empty($user['guest'])) tc_fail(403, '游客不能领取套餐，请先注册账号');
         $pid = trim((string) (isset($b['packageId']) ? $b['packageId'] : ''));
         $pkg = null; foreach ($db['packages'] as $p) if ($p['id'] === $pid) $pkg = $p;
         if (!$pkg) tc_fail(404, '套餐不存在');
@@ -1439,7 +1441,10 @@ function tc_api_admin_create_fixed_code() {
 
 function tc_api_redeem_package() {
     tc_with_db(true, function (&$db) {
-        $user = tc_require_auth($db); $b = tc_read_json_body(); $code = preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($b['code'] ?? ''))); if ($code === '') tc_fail(400, '请输入兑换码');
+        $user = tc_require_auth($db); $b = tc_read_json_body();
+        // 游客不能兑换额度(与领取套餐同理,避免绕过体验轮数)
+        if (!empty($user['guest'])) tc_fail(403, '游客不能兑换额度，请先注册账号');
+        $code = preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($b['code'] ?? ''))); if ($code === '') tc_fail(400, '请输入兑换码');
         $hash = hash('sha256', $code); $idx = -1; foreach ($db['redemptionCodes'] as $i => $row) if ($row['codeHash'] === $hash) { $idx = $i; break; }
         if ($idx < 0) tc_fail(404, '兑换码无效'); $row = $db['redemptionCodes'][$idx];
         // 固定兑换码:不挂套餐,按码上设置的总次数/可用次数/有效期兑换

@@ -89,10 +89,24 @@ function bindPasswordToggles() {
 
 const verifyToken = new URLSearchParams(location.search).get('verify');
 const resetToken = new URLSearchParams(location.search).get('reset');
+// 游客持令牌访问登录页:不重定向,并直接展示注册表单(游客无密码,登录表单对其无用)。
+// 若这里把游客弹回首页,从游客条点「注册」就会陷入
+// 「跳转登录页 → 判定已登录 → 跳回首页」的死循环,永远进不了注册表单。
+let guestSession = false;
+function showRegisterForGuest() {
+  if (!guestSession) return;
+  const reg = $('register-form');
+  if (reg && !reg.classList.contains('hidden')) return;   // 已在注册表单
+  if ($('show-register')) switchAuthForm('register-form', 'login-form', 'reg-name');
+}
 if (!verifyToken && !resetToken && localStorage.getItem(cacheKey)) {
   fetch(apiUrl('/api/auth/me'), { headers: { Authorization: 'Bearer ' + localStorage.getItem(cacheKey) } })
-    .then((r) => r.ok ? (location.href = apiUrl('/')) : localStorage.removeItem(cacheKey))
-    .catch(() => {});
+    .then((r) => r.ok ? r.json() : Promise.reject())
+    .then((d) => {
+      if (d && d.user && d.user.guest) { guestSession = true; showRegisterForGuest(); return; }
+      location.href = apiUrl('/');
+    })
+    .catch(() => localStorage.removeItem(cacheKey));
 }
 
 fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
@@ -122,6 +136,8 @@ fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
     const row = $('reg-invite-row');
     if (row) row.classList.remove('hidden');
   }
+  // 配置就绪后再兜一次(此时注册表单的协议/邀请码等已按需显示)
+  showRegisterForGuest();
   if (!cfg || !cfg.needsSetup) return;
   showEnvGate();
 }).catch(() => {

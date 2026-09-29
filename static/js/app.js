@@ -3154,7 +3154,10 @@ async function loadAccountPackages() {
       const claimedN = Number(p.claimedCount) || 0;
       let action;
       if (price.free) {
-        if (p.claimed || (limit === 0)) {
+        if (state.isGuest) {
+          // 游客仅享有体验轮数,不参与套餐领取(与后端一致)
+          action = '<button class="btn small plan-tile-btn" disabled>注册后可领取</button>';
+        } else if (p.claimed || (limit === 0)) {
           action = '<button class="btn small plan-tile-btn" disabled>' + (limit === 0 ? '暂不可领取' : '已达领取上限') + '</button>';
         } else {
           action = '<button class="btn small primary plan-tile-btn" data-claim="' + escapeHtml(p.id) + '">立即领取</button>';
@@ -3497,8 +3500,8 @@ function openSettings(tab) {
   try { renderAccountPanel(); } catch (e) { console.error(e); }
   try { syncPrefsPanel(); } catch (e) { console.error(e); }
   try { loadAccountPackages(); } catch (e) { console.error(e); }
-  // tab 可能来自事件对象(MouseEvent),必须校验为字符串
-  if (typeof tab === 'string') switchSettingsTab(tab);
+  // tab 可能来自事件对象(MouseEvent),必须校验为字符串;不带参数时默认落在「账户」
+  switchSettingsTab(typeof tab === 'string' && tab ? tab : 'account');
 }
 function switchSettingsTab(name) {
   document.querySelectorAll('#settings-tabs .settings-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
