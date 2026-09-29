@@ -9,12 +9,12 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./logo-icon.svg">
-<link rel="stylesheet" href="./static/css/style.css?v=20261004.1">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261004.1">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261004.1">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261004.1">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261004.1">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261004.1">
+<link rel="stylesheet" href="./static/css/style.css?v=20261004.2">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261004.2">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261004.2">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261004.2">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261004.2">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261004.2">
 <script>
 (function () {
   try {
@@ -139,6 +139,7 @@
       <p class="muted small" style="margin:-6px 0 10px">调用上游 AI 接口的最长等待时间。生成长文或使用较慢的模型/平台时适当调大。<b>若上游根本连不上</b>（地址错误、网络不通），会更快返回明确提示，不受此值影响。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-context-learn" checked><span class="slider"></span></span><span>自动学习上下文窗口（从上游 context length 报错回填模型的最大上下文，不覆盖手动设置）</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-persist-chats" checked><span class="slider"></span></span><span>服务器保存对话记录（关闭后对话仅存用户浏览器本地，服务器不留存）</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-save-api" checked><span class="slider"></span></span><span>开放 API 对话记入用户对话列表（用户在「设置 → 数据」可选择是否显示到首页；需开启上一项「服务器保存对话记录」）</span></label>
       <h3>模型可用性显示</h3>
       <p class="muted small" style="margin:0 0 8px">按最近 4 小时的成功率给模型标注可用性，鼠标悬停（移动端点按）模型选择器里的状态图标即可看到，同时显示该模型单次扣减次数。默认：≥ 75% 显示「可用」、≥ 40% 显示「不稳定」、低于 40% 显示「较差」；无调用记录显示「暂无数据」。</p>
       <div class="pkg-form-grid">
@@ -210,6 +211,8 @@
           <input type="search" class="search-input" id="user-search" placeholder="搜索用户名" autocomplete="off" spellcheck="false">
         </label>
         <button class="btn small" id="search-clear" type="button" hidden>清除</button>
+        <button class="btn small danger" id="users-bulk-delete" type="button" hidden>删除所选</button>
+        <button class="btn small" id="users-purge-guests" type="button" title="一键删除全部游客账号及其对话">清除全部游客</button>
         <div class="users-filters" id="users-filters" role="tablist">
           <button class="log-filter-btn active" type="button" data-filter="all">全部</button>
           <button class="log-filter-btn" type="button" data-filter="admin">管理员</button>
@@ -221,6 +224,7 @@
         <table class="admin-table users-table">
           <thead>
             <tr>
+              <th class="col-check"><input type="checkbox" id="users-check-all" aria-label="全选"></th>
               <th>用户</th>
               <th>额度</th>
               <th>用户组</th>
@@ -798,10 +802,10 @@
   </div>
 </div>
 </form>
-<script src="./static/js/config.js?v=20261004.1"></script>
-<script src="./static/js/icons.js?v=20261004.1"></script>
-<script src="./static/js/ui.js?v=20261004.1"></script>
-<script src="./static/js/components.js?v=20261004.1"></script>
-<script src="./static/js/admin.js?v=20261004.1"></script>
+<script src="./static/js/config.js?v=20261004.2"></script>
+<script src="./static/js/icons.js?v=20261004.2"></script>
+<script src="./static/js/ui.js?v=20261004.2"></script>
+<script src="./static/js/components.js?v=20261004.2"></script>
+<script src="./static/js/admin.js?v=20261004.2"></script>
 </body>
 </html>

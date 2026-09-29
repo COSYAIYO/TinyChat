@@ -188,6 +188,8 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/admin/users/quota$#', 'tc_api_admin_set_quota'),
         array('POST', '#^/api/admin/users/group$#', 'tc_api_admin_set_user_group'),
         array('DELETE', '#^/api/admin/users/([^/]+)$#', 'tc_api_admin_delete_user'),
+        array('POST', '#^/api/admin/users/bulk-delete$#', 'tc_api_admin_bulk_delete_users'),
+        array('POST', '#^/api/admin/users/purge-guests$#', 'tc_api_admin_purge_guests'),
         array('GET', '#^/api/admin/groups$#', 'tc_api_admin_groups'),
         array('POST', '#^/api/admin/groups$#', 'tc_api_admin_create_group'),
         array('POST', '#^/api/admin/groups/default$#', 'tc_api_admin_set_default_group'),

@@ -921,6 +921,77 @@ function tc_capture_stream_usage(&$target, $chunk, $format) {
     }
 }
 
+// 从请求体提取完整的 user/assistant 消息序列(供 API 对话落库)。
+// 必须取全量历史而非最后一条:落库要按「首条用户消息」判断这是不是同一段上下文。
+function tc_api_history_messages($body, $format) {
+    $out = array();
+    $push = function ($role, $content) use (&$out) {
+        $c = '';
+        if (is_string($content)) $c = $content;
+        elseif (is_array($content)) {
+            $parts = array();
+            foreach ($content as $p) {
+                if (is_string($p)) $parts[] = $p;
+                elseif (is_array($p) && isset($p['text'])) $parts[] = (string) $p['text'];
+            }
+            $c = implode("
+", $parts);
+        }
+        $c = trim($c);
+        if ($c === '') return;
+        $orig = isset($out[0]) ? null : null; unset($orig);
+        $out[] = array('role' => $role, 'content' => substr($c, 0, 200000));
+    };
+    if ($format === 'responses') {
+        if (isset($body['instructions']) && is_string($body['instructions'])) { /* system, 不落库 */ }
+        $input = isset($body['input']) ? $body['input'] : null;
+        if (is_string($input)) $push('user', $input);
+        elseif (is_array($input)) {
+            foreach ($input as $m) {
+                if (!is_array($m)) continue;
+                $role = isset($m['role']) ? $m['role'] : 'user';
+                if ($role !== 'user' && $role !== 'assistant') continue;
+                $push($role, isset($m['content']) ? $m['content'] : '');
+            }
+        }
+    } elseif ($format === 'completions') {
+        if (isset($body['prompt']) && is_string($body['prompt'])) $push('user', $body['prompt']);
+    } elseif (isset($body['messages']) && is_array($body['messages'])) {
+        foreach ($body['messages'] as $m) {
+            if (!is_array($m)) continue;
+            $role = isset($m['role']) ? $m['role'] : '';
+            if ($role !== 'user' && $role !== 'assistant') continue;   // 跳过 system
+            $push($role, isset($m['content']) ? $m['content'] : '');
+        }
+    }
+    return $out;
+}
+
+// 流式增量文本采集:从 SSE chunk 里累加助手输出,供 API 对话落库使用
+function tc_capture_stream_text(&$target, $chunk, $format) {
+    if ($chunk === '' || strpos($chunk, 'data:') === false) return;
+    foreach (explode("\n", $chunk) as $line) {
+        $line = trim($line);
+        if (strpos($line, 'data:') !== 0) continue;
+        $payload = trim(substr($line, 5));
+        if ($payload === '' || $payload === '[DONE]') continue;
+        $j = json_decode($payload, true);
+        if (!is_array($j)) continue;
+        $piece = '';
+        if ($format === 'anthropic') {
+            if (isset($j['delta']['text'])) $piece = (string) $j['delta']['text'];
+        } elseif ($format === 'responses') {
+            if (isset($j['delta']) && is_string($j['delta'])) $piece = $j['delta'];
+            elseif (isset($j['output_text'])) $piece = (string) $j['output_text'];
+        } elseif ($format === 'completions') {
+            if (isset($j['choices'][0]['text'])) $piece = (string) $j['choices'][0]['text'];
+        } else {
+            if (isset($j['choices'][0]['delta']['content'])) $piece = (string) $j['choices'][0]['delta']['content'];
+        }
+        if ($piece !== '') $target .= $piece;
+    }
+}
+
 // SSRF 防护:校验 URL 指向公网地址 —— 拒绝内网/保留 IP(含 127.0.0.1、云元数据 169.254.169.254)、
 // localhost 类主机名、非常规端口;域名会做真实 DNS 解析,返回选定 IP 供请求固定解析结果
 function tc_url_public_host($url) {
@@ -1806,6 +1877,10 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             'thinking' => tc_normalize_thinking(isset($db['settings']['thinking']) ? $db['settings']['thinking'] : null),
             'imageGen' => $isImageModel,
             'videoGen' => $isVideoModel,
+            // 开放 API 密钥调用且站点允许时,把本次对话记入该用户的对话列表
+            'saveApiChat' => ($apiKeyOwner !== null)
+                && !empty($db['settings']['apiSaveChats'])
+                && !empty($db['settings']['persistChats']),
         );
     });
 
@@ -1938,12 +2013,14 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         $headersSent = false;
         $charged = 0;
         $streamUsage = array('prompt' => 0, 'completion' => 0);
+        $streamText = '';
         // 429/5xx 一次自动重试:错误响应不会进入 onChunk(未计费未发送),重试安全
         $attempt = 0;
         do {
             $attempt++;
-            $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage) {
+            $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage, &$streamText) {
             tc_capture_stream_usage($streamUsage, $chunk, $format);
+            tc_capture_stream_text($streamText, $chunk, $format);
             if (!$headersSent) {
                 // First successful bytes: charge then start SSE.
                 $ms = tc_now() - $started;
@@ -1986,9 +2063,16 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         // 流结束:按实际用量与首字节预扣额多退少补,并把最终费用写入台账
         if ($headersSent) {
             $modelStr = isset($body['model']) ? $body['model'] : '';
-            tc_with_db(true, function (&$db) use ($user, $modelStr, $provider, $cost, &$charged, $streamUsage) {
+            $saveApiChat = !empty($ctx['saveApiChat']);
+            tc_with_db(true, function (&$db) use ($user, $modelStr, $provider, $cost, &$charged, $streamUsage, $streamText, $body, $saveApiChat, $format) {
                 $final = tc_settle_stream_charge($db, $user['id'], $provider, $cost, $charged, $streamUsage);
                 tc_record_usage_entry($db, $user['id'], $modelStr, $final, $streamUsage['prompt'], $streamUsage['completion']);
+                if ($saveApiChat) {
+                    // 传全量历史:落库按「首条用户消息」判断是否同一段上下文,并自动去重
+                    $msgs = tc_api_history_messages($body, $format);
+                    if ($streamText !== '') $msgs[] = array('role' => 'assistant', 'content' => $streamText);
+                    tc_api_append_chat($db, $user['id'], $msgs, array('model' => $modelStr, 'usage' => $streamUsage));
+                }
             });
         }
 
@@ -2030,8 +2114,10 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                 $headersSent = false;
                 $charged = 0;
                 $streamUsage = array('prompt' => 0, 'completion' => 0);
-                $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage) {
+                $streamText = '';
+                $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage, &$streamText) {
                     tc_capture_stream_usage($streamUsage, $chunk, $format);
+                    tc_capture_stream_text($streamText, $chunk, $format);
                     if (!$headersSent) {
                         $ms = tc_now() - $started;
                         $charged = 0;
@@ -2089,9 +2175,16 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                         echo "data: [DONE]\n\n";
                     }
                     if ($headersSent) {
-                        tc_with_db(true, function (&$db) use ($user, $body, $provider, $cost, &$charged, $streamUsage) {
+                        $rModel = isset($body['model']) ? $body['model'] : '';
+                        $saveApiChat2 = !empty($ctx['saveApiChat']);
+                        tc_with_db(true, function (&$db) use ($user, $body, $provider, $cost, &$charged, $streamUsage, $rModel, $streamText, $saveApiChat2, $format) {
                             $final = tc_settle_stream_charge($db, $user['id'], $provider, $cost, $charged, $streamUsage);
-                            tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $final, $streamUsage['prompt'], $streamUsage['completion']);
+                            tc_record_usage_entry($db, $user['id'], $rModel, $final, $streamUsage['prompt'], $streamUsage['completion']);
+                            if ($saveApiChat2) {
+                                $msgs = tc_api_history_messages($body, $format);
+                                if ($streamText !== '') $msgs[] = array('role' => 'assistant', 'content' => $streamText);
+                                tc_api_append_chat($db, $user['id'], $msgs, array('model' => $rModel, 'usage' => $streamUsage));
+                            }
                         });
                         tc_task_finish($taskId, 'completed');
                     }
@@ -2192,7 +2285,7 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         $bodyUsage['prompt'] = (int) (isset($u['prompt_tokens']) ? $u['prompt_tokens'] : (isset($u['input_tokens']) ? $u['input_tokens'] : 0));
         $bodyUsage['completion'] = (int) (isset($u['completion_tokens']) ? $u['completion_tokens'] : (isset($u['output_tokens']) ? $u['output_tokens'] : 0));
     }
-    tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, &$quota, $bodyUsage, $provider) {
+    tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, &$quota, $bodyUsage, $provider, $ctx, $format, $jBody) {
         $fresh = null;
         foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
         if (!$fresh) return;
@@ -2200,6 +2293,13 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         tc_touch_user($db, $user['id']);
         $quota = isset($fresh['quota']) ? $fresh['quota'] : 0;
         tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $charged, $bodyUsage['prompt'], $bodyUsage['completion']);
+        // 开放 API 调用落库到该用户的对话列表(与流式路径共用同一归并规则)
+        if (!empty($ctx['saveApiChat'])) {
+            $msgs = tc_api_history_messages($body, $format);
+            $reply = tc_model_reply_text($jBody, $format);
+            if ($reply !== '') $msgs[] = array('role' => 'assistant', 'content' => $reply);
+            tc_api_append_chat($db, $user['id'], $msgs, array('model' => isset($body['model']) ? $body['model'] : '', 'usage' => $bodyUsage));
+        }
     });
     tc_push_log(array(
         'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],

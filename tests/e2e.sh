@@ -383,6 +383,36 @@ FREEPKG=$(curl -s -X POST "$BASE/api/admin/packages" -H "$AUTH" -H "Content-Type
 assert_contains "游客不能领取免费套餐" "$(curl -s -X POST "$BASE/api/packages/claim" -H "$GAUTH" -H "Content-Type: application/json" -d '{"packageId":"'"$FREEPKG"'"}')" '游客不能领取套餐'
 assert_contains "游客不能兑换额度" "$(curl -s -X POST "$BASE/api/packages/redeem" -H "$GAUTH" -H "Content-Type: application/json" -d '{"code":"ANYCODE"}')" '游客不能兑换额度'
 assert_contains "游客额度未被套餐改动" "$(curl -s "$BASE/api/auth/me" -H "$GAUTH")" '"quota":4'
+# 一键清除游客:普通成员保留,游客及其对话一并删除
+curl -s -X POST "$BASE/api/auth/guest" > /dev/null
+GUESTCNT=$(curl -s "$BASE/api/admin/users" -H "$AUTH" | grep -o '"guest":true' | wc -l | tr -d ' ')
+[ "$GUESTCNT" -ge 1 ] && ok "存在游客账号($GUESTCNT)" || bad "应存在游客账号"
+purge=$(curl -s -X POST "$BASE/api/admin/users/purge-guests" -H "$AUTH")
+assert_contains "一键清除游客" "$purge" '"ok":true'
+assert_contains "清除后有移除计数" "$purge" '"removed":'
+LEFT=$(curl -s "$BASE/api/admin/users" -H "$AUTH" | grep -o '"guest":true' | wc -l | tr -d ' ')
+assert_eq "清除后无游客" "$LEFT" "0"
+
+# ---------- 开放 API 对话落库 ----------
+say "== 开放 API 对话落库 =="
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"apiSaveChats":true,"persistChats":true}' > /dev/null
+# 第一次:全新上下文
+curl -s -X POST "$BASE/v1/chat/completions" -H "Authorization: Bearer $IMGKEY" -H "Content-Type: application/json" -d '{"model":"mock-model","stream":false,"messages":[{"role":"user","content":"cellar topic one"}]}' > /dev/null
+# 第二次:同一上下文(客户端带上历史) → 应追加到同一对话,不重复历史
+curl -s -X POST "$BASE/v1/chat/completions" -H "Authorization: Bearer $IMGKEY" -H "Content-Type: application/json" -d '{"model":"mock-model","stream":false,"messages":[{"role":"user","content":"cellar topic one"},{"role":"assistant","content":"MOCK-REPLY"},{"role":"user","content":"and more"}]}' > /dev/null
+# 第三次:不同上下文 → 新建对话
+curl -s -X POST "$BASE/v1/chat/completions" -H "Authorization: Bearer $IMGKEY" -H "Content-Type: application/json" -d '{"model":"mock-model","stream":false,"messages":[{"role":"user","content":"cellar topic two"}]}' > /dev/null
+CHATS=$(curl -s "$BASE/api/sync/chats" -H "$UAUTH")
+assert_contains "API 对话已落库" "$CHATS" 'cellar topic one'
+assert_contains "新上下文另建对话" "$CHATS" 'cellar topic two'
+MSGCNT=$(printf '%s' "$CHATS" | grep -o '"content":"cellar topic one"' | wc -l | tr -d ' ')
+assert_eq "同上下文历史未重复" "$MSGCNT" "1"
+# 关闭开关后不再落库
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"apiSaveChats":false}' > /dev/null
+curl -s -X POST "$BASE/v1/chat/completions" -H "Authorization: Bearer $IMGKEY" -H "Content-Type: application/json" -d '{"model":"mock-model","stream":false,"messages":[{"role":"user","content":"cellar topic three"}]}' > /dev/null
+assert_contains "关闭后不再落库" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"apiSaveChats":false'
+if curl -s "$BASE/api/sync/chats" -H "$UAUTH" | grep -q 'cellar topic three'; then bad "关闭 apiSaveChats 后仍落库"; else ok "关闭 apiSaveChats 后不落库"; fi
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"apiSaveChats":true}' > /dev/null
 
 # ---------- 无限额度(-1) ----------
 say "== 无限额度 =="

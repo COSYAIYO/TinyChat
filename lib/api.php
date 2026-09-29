@@ -375,6 +375,90 @@ function tc_set_chats(&$db, $userId, $chats) {
     $db['userChatRevisions'] = tc_object_map($revisions);
 }
 
+// 开放 API 的对话落库:把一次 /v1/chat/completions 调用记入该用户的对话列表。
+// 约定:同一段上下文归入同一对话——按「首条用户消息」生成稳定指纹,若这次请求带的
+// 历史里首条用户消息与某条已存 API 对话一致,说明客户端在续接同一段上下文,追加即可;
+// 否则(新话题、或本机从没见过这段上下文)新建一个对话。这样 API 客户端的多轮对话
+// 不会各开一屏,不同话题也不会挤在一条里。
+function tc_api_chat_title($text) {
+    $t = trim(preg_replace('/\s+/u', ' ', (string) $text));
+    if ($t === '') return 'API 对话';
+    $t = function_exists('mb_substr') ? mb_substr($t, 0, 24, 'UTF-8') : substr($t, 0, 24);
+    return 'API · ' . $t;
+}
+
+function tc_api_append_chat(&$db, $userId, $messages, $meta = array()) {
+    if (!is_array($messages) || !$messages) return '';
+    $first = '';
+    foreach ($messages as $m) {
+        if (is_array($m) && isset($m['role']) && $m['role'] === 'user') { $first = (string) (isset($m['content']) ? $m['content'] : ''); break; }
+    }
+    if ($first === '') {
+        foreach ($messages as $m) if (is_array($m)) { $first = (string) (isset($m['content']) ? $m['content'] : ''); break; }
+    }
+    $key = substr(hash('sha256', $first), 0, 16);
+    $now = tc_now();
+    $chats = tc_chats_of($db, $userId);
+    $idx = -1;
+    foreach ($chats as $i => $c) {
+        if (isset($c['apiKey']) && $c['apiKey'] === $key) { $idx = $i; break; }
+    }
+    $model = isset($meta['model']) ? (string) $meta['model'] : '';
+    $clean = array();
+    foreach ($messages as $m) {
+        if (!is_array($m)) continue;
+        $role = isset($m['role']) && in_array($m['role'], array('user', 'assistant'), true) ? $m['role'] : 'assistant';
+        $row = array('role' => $role, 'content' => (string) (isset($m['content']) ? $m['content'] : ''), 'createdAt' => $now);
+        if ($role === 'assistant' && $model !== '') $row['model'] = $model;
+        if ($role === 'assistant' && isset($meta['usage']) && is_array($meta['usage'])) {
+            $row['usage'] = array(
+                'prompt' => (int) (isset($meta['usage']['prompt']) ? $meta['usage']['prompt'] : 0),
+                'completion' => (int) (isset($meta['usage']['completion']) ? $meta['usage']['completion'] : 0),
+            );
+        }
+        $clean[] = $row;
+    }
+    if (!$clean) return '';
+    if ($idx >= 0) {
+        $chat = $chats[$idx];
+        $existing = isset($chat['messages']) && is_array($chat['messages']) ? $chat['messages'] : array();
+        // 客户端续接同一段上下文时会把历史整段带上;已存在的部分不再重复追加,
+        // 只把新增的消息接上(按 role+content 逐条对齐,从首个不匹配处截取)。
+        $cursor = 0;
+        foreach ($clean as $row) {
+            if ($cursor < count($existing) && $existing[$cursor]['role'] === $row['role'] && (string) $existing[$cursor]['content'] === (string) $row['content']) {
+                $cursor++;
+                continue;
+            }
+            break;
+        }
+        $chat['messages'] = array_merge($existing, array_slice($clean, $cursor));
+        if (count($chat['messages']) > 800) $chat['messages'] = array_slice($chat['messages'], -800);
+        if ($model !== '') $chat['model'] = $model;
+        $chat['updatedAt'] = $now;
+        $chats[$idx] = $chat;
+        $chatId = isset($chat['id']) ? $chat['id'] : '';
+    } else {
+        $chatId = 'api' . substr(hash('sha256', $userId . $key . $now), 0, 14);
+        $chats[] = array(
+            'id' => $chatId,
+            'title' => tc_api_chat_title($first),
+            'messages' => $clean,
+            'model' => $model,
+            'apiKey' => $key,
+            'pinned' => false,
+            'createdAt' => $now,
+            'updatedAt' => $now,
+        );
+    }
+    if (count($chats) > 300) {
+        usort($chats, function ($a, $b) { return (isset($b['updatedAt']) ? $b['updatedAt'] : 0) - (isset($a['updatedAt']) ? $a['updatedAt'] : 0); });
+        $chats = array_slice($chats, 0, 300);
+    }
+    tc_set_chats($db, $userId, $chats);
+    return $chatId;
+}
+
 function tc_assistant_icons() {
     return array('bot', 'spark', 'layers', 'paper', 'code', 'table', 'nodes', 'think', 'user', 'wrench', 'edit', 'calendar');
 }
@@ -2032,6 +2116,69 @@ function tc_api_admin_delete_user($id) {
         foreach ($db['providers'] as $p) if (isset($p['ownerId']) && $p['ownerId'] === $id) $ownIds[] = $p['id'];
         foreach ($ownIds as $pid) tc_remove_provider($db, $pid);
         tc_json(200, array('ok' => true, 'removedProviders' => count($ownIds)));
+    });
+}
+
+// 一键清除全部游客账号:游客是按 IP 自动创建的一次性账号,提供了后台整体清理。
+// 会一并移除其对话与自建供应商;管理员与普通成员不受影响。
+function tc_api_admin_purge_guests() {
+    tc_with_db(true, function (&$db) {
+        $admin = tc_require_admin($db);
+        if (tc_is_demo_user($admin)) tc_fail(403, '演示账号不能清除游客');
+        $keep = array();
+        $removed = 0;
+        $removedIds = array();
+        foreach ($db['users'] as $u) {
+            if (!empty($u['guest'])) { $removed++; $removedIds[] = $u['id']; continue; }
+            $keep[] = $u;
+        }
+        $db['users'] = $keep;
+        // 清理游客的对话与自建供应商
+        $map = tc_assoc($db['userChats']);
+        foreach ($removedIds as $id) unset($map[$id]);
+        $db['userChats'] = tc_object_map($map);
+        $revs = tc_assoc(isset($db['userChatRevisions']) ? $db['userChatRevisions'] : array());
+        foreach ($removedIds as $id) unset($revs[$id]);
+        $db['userChatRevisions'] = tc_object_map($revs);
+        $ownIds = array();
+        foreach ($db['providers'] as $p) {
+            if (isset($p['ownerId']) && in_array($p['ownerId'], $removedIds, true)) $ownIds[] = $p['id'];
+        }
+        foreach ($ownIds as $pid) tc_remove_provider($db, $pid);
+        tc_json(200, array('ok' => true, 'removed' => $removed, 'removedProviders' => count($ownIds)));
+    });
+}
+
+// 用户批量删除:一次多个 id,逐个等价于单个删除(含对话与自建供应商清理)。
+// 跳过当前登录管理员与不存在的 id,并在结果里回报,便于前端提示。
+function tc_api_admin_bulk_delete_users() {
+    tc_with_db(true, function (&$db) {
+        $admin = tc_require_admin($db);
+        if (tc_is_demo_user($admin)) tc_fail(403, '演示账号不能删除用户');
+        $b = tc_read_json_body();
+        $ids = isset($b['ids']) && is_array($b['ids']) ? $b['ids'] : array();
+        $ids = array_values(array_unique(array_filter(array_map(function ($v) { return substr(trim((string) $v), 0, 80); }, $ids))));
+        if (!$ids) tc_fail(400, '请先选择要删除的用户');
+        if (count($ids) > 500) tc_fail(400, '一次最多删除 500 个用户');
+        $deleted = 0; $skipped = array();
+        foreach ($ids as $id) {
+            if ($id === $admin['id']) { $skipped[] = $id; continue; }
+            $idx = -1;
+            foreach ($db['users'] as $i => $u) if ($u['id'] === $id) { $idx = $i; break; }
+            if ($idx < 0) { $skipped[] = $id; continue; }
+            array_splice($db['users'], $idx, 1);
+            $map = tc_assoc($db['userChats']);
+            unset($map[$id]);
+            $db['userChats'] = tc_object_map($map);
+            $revs = tc_assoc(isset($db['userChatRevisions']) ? $db['userChatRevisions'] : array());
+            unset($revs[$id]);
+            $db['userChatRevisions'] = tc_object_map($revs);
+            $ownIds = array();
+            foreach ($db['providers'] as $p) if (isset($p['ownerId']) && $p['ownerId'] === $id) $ownIds[] = $p['id'];
+            foreach ($ownIds as $pid) tc_remove_provider($db, $pid);
+            $deleted++;
+        }
+        tc_json(200, array('ok' => true, 'deleted' => $deleted, 'skipped' => count($skipped)));
     });
 }
 

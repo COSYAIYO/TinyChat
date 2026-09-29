@@ -123,6 +123,7 @@ async function loadStats() {
 
 let USER_FILTER = 'all';
 let USER_LIST = [];
+let USER_SELECTED = new Set();
 let USER_FORM_ID = null;
 let ME_ID = (JSON.parse(localStorage.getItem('oc_user') || '{}').id || '');
 
@@ -439,16 +440,21 @@ function renderUsers() {
       : '暂无用户';
   }
   tbody.innerHTML = '';
+  // 清理已不存在的选中项(切换筛选/删除后)
+  const aliveIds = new Set(USER_LIST.map((u) => u.id));
+  Array.from(USER_SELECTED).forEach((id) => { if (!aliveIds.has(id)) USER_SELECTED.delete(id); });
   if (!list.length) {
-    tbody.innerHTML = '<tr class="users-empty-row"><td colspan="8">' + (USER_LIST.length ? '没有匹配的用户' : '还没有用户，点右上角创建') + '</td></tr>';
+    tbody.innerHTML = '<tr class="users-empty-row"><td colspan="9">' + (USER_LIST.length ? '没有匹配的用户' : '还没有用户，点右上角创建') + '</td></tr>';
     return;
   }
   list.forEach((u) => {
     const tr = document.createElement('tr');
     const initial = String(u.name || '?').trim().charAt(0).toUpperCase();
     const gName = groupLabel(u.groupId);
+    const me = u.id === ME_ID;
     tr.innerHTML =
-      '<td class="col-user">'
+      '<td class="col-check">' + (me ? '' : '<input type="checkbox" class="user-pick" data-id="' + escapeHtml(u.id) + '"' + (USER_SELECTED.has(u.id) ? ' checked' : '') + ' aria-label="选择">') + '</td>'
+      + '<td class="col-user">'
       + '<div class="user-cell">'
       + '<span class="user-avatar' + (u.admin ? ' is-admin' : '') + '">' + escapeHtml(initial) + '</span>'
       + '<div class="user-meta">'
@@ -469,6 +475,11 @@ function renderUsers() {
       + '<button class="btn small" type="button" data-chats="' + escapeHtml(u.id) + '">对话</button>'
       + (u.id === ME_ID ? '' : '<button class="btn small danger" type="button" data-deluser="' + escapeHtml(u.id) + '">删除</button>')
       + '</div></td>';
+    const pick = tr.querySelector('.user-pick');
+    if (pick) pick.addEventListener('change', () => {
+      if (pick.checked) USER_SELECTED.add(u.id); else USER_SELECTED.delete(u.id);
+      syncUserSelection();
+    });
     tr.querySelector('[data-edit]')?.addEventListener('click', () => openUserForm(u));
     tr.querySelector('[data-chats]')?.addEventListener('click', () => openUserChats(u));
     tr.querySelector('[data-deluser]')?.addEventListener('click', async () => {
@@ -482,7 +493,73 @@ function renderUsers() {
     });
     tbody.appendChild(tr);
   });
+  syncUserSelection();
 }
+// 同步「删除所选」按钮与全选框状态
+function syncUserSelection() {
+  const btn = $('users-bulk-delete');
+  if (btn) {
+    btn.hidden = USER_SELECTED.size === 0;
+    btn.textContent = USER_SELECTED.size ? ('删除所选 (' + USER_SELECTED.size + ')') : '删除所选';
+  }
+  const all = $('users-check-all');
+  if (all) {
+    const pickable = visibleUsers().filter((u) => u.id !== ME_ID);
+    const picked = pickable.filter((u) => USER_SELECTED.has(u.id)).length;
+    all.checked = pickable.length > 0 && picked === pickable.length;
+    all.indeterminate = picked > 0 && picked < pickable.length;
+  }
+}
+
+// 用户批量操作:全选、删除所选、一键清除游客
+(function initUserBulk() {
+  const all = $('users-check-all');
+  if (all) all.addEventListener('change', () => {
+    const pickable = visibleUsers().filter((u) => u.id !== ME_ID);
+    if (all.checked) pickable.forEach((u) => USER_SELECTED.add(u.id));
+    else pickable.forEach((u) => USER_SELECTED.delete(u.id));
+    renderUsers();
+  });
+  const bulk = $('users-bulk-delete');
+  if (bulk) bulk.addEventListener('click', async () => {
+    const ids = Array.from(USER_SELECTED);
+    if (!ids.length) return;
+    const ok = window.OCUI
+      ? await window.OCUI.confirm({ title: '批量删除用户', message: '确认删除选中的 ' + ids.length + ' 个用户？其对话与自建供应商会一并清除。', danger: true, confirmText: '删除' })
+      : confirm('确认删除选中的 ' + ids.length + ' 个用户?');
+    if (!ok) return;
+    bulk.disabled = true;
+    try {
+      const r = await api('/api/admin/users/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+      const d = await r.json();
+      if (!r.ok) return toast((d.error && d.error.message) || '删除失败', true);
+      USER_SELECTED.clear();
+      toast('已删除 ' + d.deleted + ' 个用户' + (d.skipped ? '，跳过 ' + d.skipped + ' 个' : ''));
+      loadUsers(currentUserKw()); loadStats();
+    } catch (e) {
+      toast('删除失败: ' + e.message, true);
+    } finally { bulk.disabled = false; }
+  });
+  const purge = $('users-purge-guests');
+  if (purge) purge.addEventListener('click', async () => {
+    const guests = USER_LIST.filter((u) => u.guest);
+    const ok = window.OCUI
+      ? await window.OCUI.confirm({ title: '清除全部游客', message: '将删除全部 ' + guests.length + ' 个游客账号及其对话与自建供应商。管理员与普通成员不受影响。', danger: true, confirmText: '全部清除' })
+      : confirm('将删除全部 ' + guests.length + ' 个游客账号,确认?');
+    if (!ok) return;
+    purge.disabled = true;
+    try {
+      const r = await api('/api/admin/users/purge-guests', { method: 'POST' });
+      const d = await r.json();
+      if (!r.ok) return toast((d.error && d.error.message) || '清除失败', true);
+      USER_SELECTED.clear();
+      toast(d.removed ? ('已清除 ' + d.removed + ' 个游客账号') : '当前没有游客账号');
+      loadUsers(currentUserKw()); loadStats();
+    } catch (e) {
+      toast('清除失败: ' + e.message, true);
+    } finally { purge.disabled = false; }
+  });
+})();
 
 async function loadUsers(searchKw) {
   const r = await api('/api/admin/users' + (searchKw ? '?q=' + encodeURIComponent(searchKw) : ''));
@@ -849,6 +926,7 @@ function fillChatLimits(s) {
   if ($('chat-timeout')) $('chat-timeout').value = Math.min(600, Math.max(5, Math.round((parseInt(src.proxyTimeoutMs, 10) || 120000) / 1000)));
   if ($('chat-context-learn')) $('chat-context-learn').checked = src.contextAutoLearn !== false;
   if ($('chat-persist-chats')) $('chat-persist-chats').checked = src.persistChats !== false;
+  if ($('chat-save-api')) $('chat-save-api').checked = src.apiSaveChats !== false;
   if ($('chat-health-ok')) $('chat-health-ok').value = Math.min(100, Math.max(1, parseInt(src.healthOkMin, 10) || 75));
   if ($('chat-health-warn')) $('chat-health-warn').value = Math.min(99, Math.max(0, parseInt(src.healthWarnMin, 10) || 40));
 }
@@ -874,6 +952,7 @@ function fillChatLimits(s) {
     const timeoutSec = Math.min(600, Math.max(5, parseInt($('chat-timeout') && $('chat-timeout').value, 10) || 120));
     const contextLearn = !!($('chat-context-learn') && $('chat-context-learn').checked);
     const persistChats = !!($('chat-persist-chats') && $('chat-persist-chats').checked);
+    const apiSaveChats = !!($('chat-save-api') && $('chat-save-api').checked);
     // 可用性阈值:保证 okMin 严格大于 warnMin(输入颠倒时本地纠正并回写)
     let healthOk = Math.min(100, Math.max(1, parseInt($('chat-health-ok') && $('chat-health-ok').value, 10) || 75));
     let healthWarn = Math.min(99, Math.max(0, parseInt($('chat-health-warn') && $('chat-health-warn').value, 10)));
@@ -885,7 +964,7 @@ function fillChatLimits(s) {
       const r = await api('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature, rateLimitPerMin: rateLimit, proxyTimeoutMs: timeoutSec * 1000, contextAutoLearn: contextLearn, persistChats, healthOkMin: healthOk, healthWarnMin: healthWarn }),
+        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature, rateLimitPerMin: rateLimit, proxyTimeoutMs: timeoutSec * 1000, contextAutoLearn: contextLearn, persistChats, apiSaveChats, healthOkMin: healthOk, healthWarnMin: healthWarn }),
       });
       const data = await r.json();
       if (!r.ok) return toast((data.error && data.error.message) || '保存失败', true);

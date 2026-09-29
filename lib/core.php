@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.35');
+define('TC_VERSION', '2.0.36');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -112,6 +112,8 @@ $TC_SETTINGS_DEFAULTS = array(
     'agreementHtml' => '',
     // 隐私:关闭后服务器不保存对话记录(客户端仅本地留存)
     'persistChats' => true,
+    // 开放 API 调用记录到用户的对话列表(前台可见,便于集中查看与配密钥;需 persistChats 开启)
+    'apiSaveChats' => true,
     // 全站公告:enabled 且 text 非空时前台展示
     'announcement' => array('enabled' => false, 'text' => '', 'updatedAt' => 0),
     // OpenAI 兼容 API 出口:允许用户生成 sk- 密钥通过第三方客户端调用
@@ -377,6 +379,7 @@ function tc_normalize_settings($raw) {
     $s['sessionDays'] = min(30, max(1, (int) (isset($s['sessionDays']) ? $s['sessionDays'] : 7) ?: 7));
     $s['authEpoch'] = max(1, (int) (isset($s['authEpoch']) ? $s['authEpoch'] : 1));
     $s['contextAutoLearn'] = !array_key_exists('contextAutoLearn', $s) || !empty($s['contextAutoLearn']);
+    $s['apiSaveChats'] = !array_key_exists('apiSaveChats', $s) || !empty($s['apiSaveChats']);
     // 可用性阈值:两个百分比,保证 okMin > warnMin(输入颠倒时自动纠正)
     $okMin = min(100, max(1, (int) (isset($s['healthOkMin']) ? $s['healthOkMin'] : 75) ?: 75));
     $warnMin = min(99, max(0, (int) (isset($s['healthWarnMin']) ? $s['healthWarnMin'] : 40)));
