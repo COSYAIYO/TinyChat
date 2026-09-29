@@ -267,6 +267,16 @@ assert_contains "视频代理拒绝无效签名" "$(curl -s -o /dev/null -w '%{h
 # 对话接口自动改走视频(视频模型按名命中时)
 assert_contains "对话接口自动改走生视频" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$VIDPROV"'","model":"mock-video","messages":[{"role":"user","content":"draw"}]}')" 'example.com/generated/mock-video.mp4'
 
+# ---------- 获取模型列表 ----------
+say "== 获取模型列表 =="
+assert_contains "获取模型: 标准 Base URL" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://127.0.0.1:'"$MOCK_PORT"'/v1","apiKey":"sk-mock","apiFormat":"chat"}')" 'mock-model'
+assert_contains "获取模型: 不带 /v1 自动补全" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://127.0.0.1:'"$MOCK_PORT"'","apiKey":"sk-mock","apiFormat":"chat"}')" 'mock-model'
+assert_contains "获取模型: 粘贴完整 /v1/models 不重复拼接" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://127.0.0.1:'"$MOCK_PORT"'/v1/models","apiKey":"sk-mock","apiFormat":"chat"}')" 'mock-model'
+assert_contains "获取模型: 掩码 Key 回退存储密钥" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://127.0.0.1:'"$MOCK_PORT"'/v1","apiKey":"sk-••••","providerId":"'"$PROV"'","apiFormat":"chat"}')" 'mock-model'
+assert_contains "获取模型: Anthropic 明确提示手填" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"https://api.anthropic.com","apiKey":"x","apiFormat":"anthropic"}')" '手动填写'
+assert_contains "获取模型: 缺 Key 且无 providerId 拒绝" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://127.0.0.1:'"$MOCK_PORT"'/v1","apiKey":"","apiFormat":"chat"}')" '请先填写 API Key'
+assert_contains "获取模型: 不可达主机可定位" "$(curl -s -X POST "$BASE/api/proxy/fetch-models" -H "$UAUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://127.0.0.1:9/nope/v1","apiKey":"x","apiFormat":"chat"}')" '无法连接上游'
+
 # ---------- 接口限流(tester2 全新窗口:3 次/分钟) ----------
 say "== 接口限流 =="
 cat > "$TMP/reg3.json" <<EOF
