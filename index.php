@@ -5,6 +5,7 @@
  */
 define('TC_ROOT', __DIR__);
 require_once __DIR__ . '/lib/core.php';
+require_once __DIR__ . '/lib/integrity.php';
 require_once __DIR__ . '/lib/api.php';
 require_once __DIR__ . '/lib/proxy.php';
 require_once __DIR__ . '/lib/tasks.php';
@@ -34,10 +35,16 @@ if ($path === '/favicon.ico') {
     exit;
 }
 
+// 完整性校验(第一处):链接被替换/删除时暂停程序并给出提示。
+// 另一处在 lib/core.php 的数据层入口,两处独立生效。
+tc_integrity_guard();
+
 try {
     tc_with_db(true, function (&$db) {
         $changed = tc_seed_admin($db);
         $changed = tc_seed_default_assistants($db) || $changed;
+        // 演示管理员改动的设置在有效期后自动还原
+        $changed = tc_demo_revert($db) || $changed;
         tc_uptime_sec();
         if (!$changed) tc_db_skip_write();
     });
@@ -108,6 +115,7 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/setup$#', 'tc_api_setup'),
         array('POST', '#^/api/auth/register$#', 'tc_api_register'),
         array('POST', '#^/api/auth/login$#', 'tc_api_login'),
+        array('POST', '#^/api/auth/guest$#', 'tc_api_guest_login'),
         array('POST', '#^/api/auth/verify-email$#', 'tc_api_verify_email'),
         array('POST', '#^/api/auth/resend-verification$#', 'tc_api_resend_verification'),
         array('POST', '#^/api/auth/forgot-password$#', 'tc_api_forgot_password'),
@@ -180,6 +188,8 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/admin/users/quota$#', 'tc_api_admin_set_quota'),
         array('POST', '#^/api/admin/users/group$#', 'tc_api_admin_set_user_group'),
         array('DELETE', '#^/api/admin/users/([^/]+)$#', 'tc_api_admin_delete_user'),
+        array('POST', '#^/api/admin/users/bulk-delete$#', 'tc_api_admin_bulk_delete_users'),
+        array('POST', '#^/api/admin/users/purge-guests$#', 'tc_api_admin_purge_guests'),
         array('GET', '#^/api/admin/groups$#', 'tc_api_admin_groups'),
         array('POST', '#^/api/admin/groups$#', 'tc_api_admin_create_group'),
         array('POST', '#^/api/admin/groups/default$#', 'tc_api_admin_set_default_group'),
@@ -208,8 +218,15 @@ function tc_dispatch($method, $path) {
         array('GET', '#^/api/proxy/models$#', 'tc_api_list_models'),
         array('POST', '#^/api/proxy/fetch-models$#', 'tc_api_fetch_models'),
         array('POST', '#^/api/proxy/images$#', 'tc_api_proxy_images'),
+        array('POST', '#^/api/proxy/videos$#', 'tc_api_proxy_videos'),
+        // 生图结果图片代理(签名鉴权,见 lib/proxy.php;供 <img> 同源加载)
+        array('GET', '#^/api/proxy/image$#', 'tc_api_image_proxy'),
+        // 视频结果代理(签名鉴权;转发 Range,供 <video> 同源播放)
+        array('GET', '#^/api/proxy/video$#', 'tc_api_video_proxy'),
         array('POST', '#^/v1/chat/completions$#', 'tc_api_v1_chat_completions'),
         array('GET', '#^/v1/models$#', 'tc_api_v1_models'),
+        array('POST', '#^/v1/images/generations$#', 'tc_api_v1_images_generations'),
+        array('POST', '#^/v1/videos$#', 'tc_api_v1_videos'),
     );
     foreach ($routes as $r) {
         if ($r[0] !== $method) continue;
@@ -224,7 +241,39 @@ function tc_dispatch($method, $path) {
 }
 
 function tc_api_public_config_wrap() {
-    tc_with_db(false, function ($db) { tc_api_public_config($db); });
+    // 数据库不可读写(常见于 data/ 目录权限不足)时也要返回可用的最小配置,
+    // 让登录页能进入环境自检而不是停在无法注册的注册页。
+    try {
+        tc_with_db(false, function ($db) { tc_api_public_config($db); });
+    } catch (Throwable $e) {
+        tc_fail_public_config($e->getMessage());
+    }
+}
+
+function tc_fail_public_config($reason) {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    echo tc_json_encode(array(
+        'siteName' => 'TinyChat',
+        'allowRegister' => false,
+        'freeQuota' => 0,
+        'version' => TC_VERSION,
+        'hasProvider' => false,
+        'needsSetup' => true,
+        'dbError' => (string) $reason,
+        'emailVerificationEnabled' => false,
+        'passwordResetEnabled' => false,
+        'mailReady' => false,
+        'webSearch' => array('enabled' => false),
+        'mineru' => array('token' => '', 'enabled' => false),
+        'announcement' => array('enabled' => false, 'text' => '', 'updatedAt' => 0),
+        'registerInviteRequired' => false,
+        'demoMode' => false,
+        'demoExpireMinutes' => 10,
+        'guestEnabled' => false,
+        'guestRounds' => 3,
+    ));
+    exit;
 }
 
 function tc_api_proxy_task($id) {

@@ -2,26 +2,28 @@
 <html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#ffffff">
 <title>对话分享 · TinyChat</title>
-<meta name="description" content="TinyChat 对话分享页：公开的 AI 对话快照，支持 Markdown、代码高亮、公式与图表渲染。TinyChat 是纯 PHP 的自托管多模型 AI 对话应用。">
+<meta name="description" content="TinyChat 对话分享页：公开的 AI 对话快照，支持 Markdown、代码高亮、公式与图表渲染。TinyChat 是纯 PHP + SQLite 的自托管 AI 站点系统，支持多模型对话与 AI 生图。">
 <meta name="robots" content="index,follow">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="TinyChat">
 <meta property="og:title" content="对话分享 · TinyChat">
 <meta property="og:description" content="公开的 AI 对话快照，由 TinyChat 生成。">
 <meta name="twitter:card" content="summary">
-<link rel="stylesheet" href="/static/css/style.css?v=20260926.25">
+<link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
+<link rel="apple-touch-icon" href="./logo-icon.svg">
+<link rel="stylesheet" href="/static/css/style.css?v=20261005.8">
 <link rel="stylesheet" href="/vendor/highlight/github.min.css" id="hljs-theme">
 <link rel="stylesheet" href="/vendor/katex/katex.min.css">
-<link rel="stylesheet" href="/static/css/enhanced.css?v=20260926.25">
-<link rel="stylesheet" href="/static/css/refine.css?v=20260926.25">
-<link rel="stylesheet" href="/static/css/redesign.css?v=20260926.25">
-<link rel="stylesheet" href="/static/css/polish.css?v=20260926.33">
-<link rel="stylesheet" href="/static/css/markdown.css?v=20260926.25">
-<link rel="stylesheet" href="/static/css/chrome.css?v=20260928.1">
+<link rel="stylesheet" href="/static/css/enhanced.css?v=20261005.8">
+<link rel="stylesheet" href="/static/css/refine.css?v=20261005.8">
+<link rel="stylesheet" href="/static/css/redesign.css?v=20261005.8">
+<link rel="stylesheet" href="/static/css/polish.css?v=20261005.8">
+<link rel="stylesheet" href="/static/css/markdown.css?v=20261005.8">
+<link rel="stylesheet" href="/static/css/chrome.css?v=20261005.8">
 <script defer src="/vendor/markdown-it/markdown-it.min.js"></script>
 <script defer src="/vendor/markdown-it/markdown-it-footnote.min.js"></script>
 <script defer src="/vendor/markdown-it/markdown-it-emoji.min.js"></script>
@@ -40,10 +42,10 @@
   <main class="share-main" id="share-root">
     <p class="muted">正在加载分享…</p>
   </main>
-  <script src="/static/js/config.js?v=20260926.25"></script>
-  <script src="/static/js/icons.js?v=20260926.25"></script>
-  <script src="/static/js/renderer.js?v=20260928.1"></script>
-  <script src="/static/js/office-formula-copy.js?v=20260926.25"></script>
+  <script src="/static/js/config.js?v=20261005.8"></script>
+  <script src="/static/js/icons.js?v=20261005.8"></script>
+  <script src="/static/js/renderer.js?v=20261005.8"></script>
+  <script src="/static/js/office-formula-copy.js?v=20261005.8"></script>
   <script>
     (function () {
       const saved = localStorage.getItem('oc_theme');

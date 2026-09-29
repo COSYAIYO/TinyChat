@@ -2,18 +2,22 @@
 <html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#ffffff">
 <title>管理后台 · TinyChat</title>
 <meta name="robots" content="noindex,nofollow">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ctext x='12' y='17' text-anchor='middle' font-family='Inter,Segoe UI,Arial,sans-serif' font-size='15' font-weight='800' fill='%23232936'%3ET%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="./static/css/style.css?v=20260926.31">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20260926.31">
-<link rel="stylesheet" href="./static/css/refine.css?v=20260926.31">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20260926.31">
-<link rel="stylesheet" href="./static/css/polish.css?v=20260926.33">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20260928.1">
+<link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
+<link rel="apple-touch-icon" href="./logo-icon.svg">
+<link rel="stylesheet" href="./static/css/style.css?v=20261005.8">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261005.8">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261005.8">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261005.8">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261005.8">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20261005.8">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261005.8">
 <script>
 (function () {
   try {
@@ -59,6 +63,9 @@
       <button class="btn danger" id="logout-btn" type="button">退出</button>
     </div>
   </div>
+  <div class="admin-demo-banner hidden" id="admin-demo-banner" role="status">
+    <b>本站为 demo 演示站。</b>您的修改会在 <span id="admin-demo-minutes">10</span> 分钟内自动失效，请尽快体验；演示账号不可修改密码、不可删除用户或强制全站下线。
+  </div>
 
 <!-- 页签导航 -->
   <div class="admin-tabs" id="admin-tabs" role="tablist">
@@ -82,7 +89,7 @@
     </div>
     <div class="admin-card" style="margin-top:16px">
       <h2>全站公告</h2>
-      <p class="muted small">启用后所有登录用户在顶部看到公告条；用户关闭后，内容更新（重新保存）才会再次显示。纯文本，最多 2000 字。</p>
+      <p class="muted small">启用后登录用户会看到<b>居中弹窗</b>；关闭后内容更新（重新保存）才会再次自动弹出。用户可随时从右上角用户菜单的「公告」再次查看。纯文本，最多 2000 字。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="announce-enabled"><span class="slider"></span></span><span>启用公告</span></label>
       <label class="field"><span>公告内容</span><textarea id="announce-text" rows="3" maxlength="2000" placeholder="例如：系统将于周日晚 22:00–24:00 升级维护" style="resize:vertical"></textarea></label>
       <button class="btn primary" id="announce-save" type="button">保存公告</button>
@@ -121,7 +128,7 @@
         </div>
       </label>
       <label class="field"><span>单次输出上限（token，即 max_tokens）</span>
-          <input id="chat-output" type="number" min="256" max="128000" step="256" value="12800">
+          <input id="chat-output" type="number" min="256" max="128000" step="256" value="8192">
       </label>
       <label class="field"><span>温度 temperature（0–2，留空使用模型默认）</span>
           <input id="chat-temperature" type="number" min="0" max="2" step="0.1" placeholder="留空则不发送该参数">
@@ -129,8 +136,19 @@
       <label class="field"><span>接口限流（每用户每分钟请求数，0 = 不限制）</span>
           <input id="chat-ratelimit" type="number" min="0" max="600" step="1" value="30">
       </label>
+      <label class="field"><span>请求上游超时（秒，5–600）</span>
+          <input id="chat-timeout" type="number" min="5" max="600" step="5" value="120">
+      </label>
+      <p class="muted small" style="margin:-6px 0 10px">调用上游 AI 接口的最长等待时间。生成长文或使用较慢的模型/平台时适当调大。<b>若上游根本连不上</b>（地址错误、网络不通），会更快返回明确提示，不受此值影响。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-context-learn" checked><span class="slider"></span></span><span>自动学习上下文窗口（从上游 context length 报错回填模型的最大上下文，不覆盖手动设置）</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-persist-chats" checked><span class="slider"></span></span><span>服务器保存对话记录（关闭后对话仅存用户浏览器本地，服务器不留存）</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-save-api" checked><span class="slider"></span></span><span>开放 API 对话记入用户对话列表（用户在「设置 → 数据」可选择是否显示到首页；需开启上一项「服务器保存对话记录」）</span></label>
+      <h3>模型可用性显示</h3>
+      <p class="muted small" style="margin:0 0 8px">按最近 4 小时的成功率给模型标注可用性，鼠标悬停（移动端点按）模型选择器里的状态图标即可看到，同时显示该模型单次扣减次数。默认：≥ 75% 显示「可用」、≥ 40% 显示「不稳定」、低于 40% 显示「较差」；无调用记录显示「暂无数据」。</p>
+      <div class="pkg-form-grid">
+        <label class="field"><span>「可用」阈值（成功率 ≥ %）</span><input id="chat-health-ok" type="number" min="1" max="100" step="1" value="75"></label>
+        <label class="field"><span>「不稳定」阈值（成功率 ≥ %）</span><input id="chat-health-warn" type="number" min="0" max="99" step="1" value="40"></label>
+      </div>
       <button class="btn primary" id="chat-limits-save" type="button">保存对话设置</button>
     </div>
   </div>
@@ -196,22 +214,27 @@
           <input type="search" class="search-input" id="user-search" placeholder="搜索用户名" autocomplete="off" spellcheck="false">
         </label>
         <button class="btn small" id="search-clear" type="button" hidden>清除</button>
+        <button class="btn small danger" id="users-bulk-delete" type="button" hidden>删除所选</button>
+        <button class="btn small" id="users-purge-guests" type="button" title="一键删除全部游客账号及其对话">清除全部游客</button>
         <div class="users-filters" id="users-filters" role="tablist">
           <button class="log-filter-btn active" type="button" data-filter="all">全部</button>
           <button class="log-filter-btn" type="button" data-filter="admin">管理员</button>
           <button class="log-filter-btn" type="button" data-filter="member">成员</button>
+          <button class="log-filter-btn" type="button" data-filter="guest">游客</button>
         </div>
       </div>
       <div class="users-table-wrap">
         <table class="admin-table users-table">
           <thead>
             <tr>
+              <th class="col-check"><input type="checkbox" id="users-check-all" aria-label="全选"></th>
               <th>用户</th>
               <th>额度</th>
               <th>用户组</th>
               <th>对话</th>
               <th>注册</th>
               <th>最后访问</th>
+              <th>IP</th>
               <th></th>
             </tr>
           </thead>
@@ -247,7 +270,7 @@
   <div class="admin-panel" id="panel-access">
     <div class="admin-card">
       <h2>模型授权(组 → 供应商/模型)</h2>
-      <p class="small muted" style="margin-top:-6px">选择用户组和全局供应商,勾选开放给该组的模型。未勾选的模型该组成员无法使用。成员自己添加的供应商不受限制。</p>
+      <p class="small muted" style="margin-top:-6px">逐个勾选要开放给该组的模型，即可<b>只授权其中部分模型</b>；未勾选的模型该组成员无法使用。<br>勾选供应商名旁的「全部」＝开放该供应商下所有模型（含以后新增的）；取消「全部」后可再逐个挑选具体模型。成员自己添加的供应商不受限制。</p>
       <div id="access-box" style="display:flex; flex-direction:column; gap:10px"></div>
     </div>
   </div>
@@ -262,13 +285,15 @@
         <div class="add-provider-form">
           <label class="field"><span>名称</span><input id="ap-name" placeholder="默认供应商"></label>
           <label class="field"><span>Base URL *</span><input id="ap-baseurl" placeholder="https://api.openai.com/v1"></label>
-          <label class="field"><span>API Key *</span>
-            <div class="pw-wrap">
-              <input id="ap-key" type="password" placeholder="sk-..." autocomplete="off">
-              <button class="pw-toggle" id="ap-key-toggle" type="button" title="显示 Key" aria-label="显示 Key"><span>◉</span></button>
+          <div class="field" id="ap-keys-field">
+            <span>API Key *（可配置多个，各自命名；可为同一模型绑定多把 Key）</span>
+            <div class="ap-keys" id="ap-keys"></div>
+            <div class="ap-keys-actions">
+              <button class="btn small" id="ap-key-add" type="button">+ 添加 Key</button>
+              <label class="key-keep-option" title="Key 加密保存在服务器。默认勾选，保存后管理员可随时点小眼睛查看"><input id="ap-key-keep" type="checkbox" checked> 保存后保持显示</label>
             </div>
-            <label class="key-keep-option" title="Key 加密保存在服务器。默认勾选，保存后管理员可随时点小眼睛查看"><input id="ap-key-keep" type="checkbox" checked> 保存后保持显示</label>
-          </label>
+            <p class="muted small" id="ap-keys-hint" style="margin:6px 0 0">只填一个 Key 时可留空名称；配置多个 Key 时必须各自命名（不可重名）。模型列表里可给同一模型绑定多把 Key 组成优先级链：请求优先用第一把，失败自动回退下一把。</p>
+          </div>
           <label class="field"><span>API 格式</span>
             <div class="select-box" id="ap-format" data-value="chat" role="button" tabindex="0">
               <span class="sb-label">OpenAI chat/completions</span>
@@ -281,7 +306,11 @@
               <div class="model-check-toolbar">
                 <input id="ap-model-q" type="search" placeholder="搜索，或输入模型 ID 后添加" autocomplete="off">
                 <button class="btn small" id="ap-model-add" type="button">添加</button>
-                <button class="btn small" id="ap-fetch-models" type="button" title="根据 Base URL 和 Key 自动获取">获取列表</button>
+                <div class="select-box fetch-key-box hidden" id="ap-fetch-key" data-value="" role="button" tabindex="0" title="选择用哪把 Key 获取模型列表" style="min-width:120px;max-width:200px">
+                  <span class="sb-label">获取用 Key</span>
+                  <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
+                </div>
+                <button class="btn small" id="ap-fetch-models" type="button" title="根据 Base URL 与所选 Key 自动获取；可切换 Key 分次获取">获取列表</button>
               </div>
               <div class="model-check-meta">
                 <label class="model-check-all"><input type="checkbox" id="ap-models-all"> 全选当前列表</label>
@@ -333,23 +362,20 @@
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="verify-reset-enabled"><span class="slider"></span></span><span>开启找回密码</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="verify-quota-unlimited"><span class="slider"></span></span><span>新注册用户默认无限额度</span></label>
       <label class="field"><span>新注册用户默认额度</span><input id="verify-free-quota" type="number" min="0" value="100"></label>
-      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="apikeys-enabled" checked><span class="slider"></span></span><span>允许用户生成 API 密钥（OpenAI 兼容出口 /v1，计费与网页端一致）</span></label>
-      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="invite-required"><span class="slider"></span></span><span>注册需要邀请码</span></label>
-      <div class="row-between" style="gap:10px;flex-wrap:wrap;margin:6px 0">
-        <span class="row-between" style="gap:8px;flex-wrap:nowrap">
-          <input id="invite-count" type="number" min="1" max="50" value="5" style="width:70px">
-          <button class="btn small" id="invite-generate" type="button">生成邀请码</button>
-        </span>
-        <span class="muted small" id="invite-count-info"></span>
+      <h3>注册与账号安全</h3>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="register-open"><span class="slider"></span></span><span>开放注册</span></label>
+      <p class="muted small" style="margin:0 0 8px">关闭后登录页不再显示注册入口，注册接口也会直接拒绝（已有账号可正常登录）。</p>
+      <div class="pkg-form-grid">
+        <label class="field"><span>注册限流（每 IP 每小时最大尝试次数）</span><input id="register-limit" type="number" min="1" max="1000" value="5"></label>
+        <label class="field"><span>登录失败锁定（连续失败次数，0 为不锁定）</span><input id="login-max-fails" type="number" min="0" max="50" value="5"></label>
+        <label class="field"><span>登录锁定时长（秒）</span><input id="login-lock-sec" type="number" min="0" max="3600" value="60"></label>
       </div>
-      <div class="users-table-wrap" style="max-height:220px;overflow:auto">
-        <table class="admin-table">
-          <thead><tr><th>邀请码</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
-          <tbody id="invite-tbody"></tbody>
-        </table>
-      </div>
-      <p class="muted small" id="invite-empty" style="text-align:center;padding:10px 0">暂无邀请码</p>
-      <div class="row-between" style="gap:10px;flex-wrap:wrap;margin-top:6px">
+      <label class="user-form-admin" style="margin-top:8px"><span class="switch"><input type="checkbox" id="user-providers-allowed"><span class="slider"></span></span><span>允许用户添加自己的供应商（自带 Key，不计站点次数）</span></label>
+      <h3>游客体验</h3>
+      <p class="muted small" style="margin:0 0 8px">开启后，未登录访客访问首页即可直接对话。每位访客会自动创建一个独立游客账号（命名如「游客A1B2C」并归入「游客」用户组），便于在「用户」列表里单独管理与清理。游客额度在「模型授权」中按游客组控制，轮数在下方设置。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="guest-enabled"><span class="slider"></span></span><span>允许游客免登录体验对话</span></label>
+      <label class="field"><span>每位游客可进行的有效对话轮数（每轮 1 次调用）</span><input id="guest-rounds" type="number" min="1" max="1000" value="3"></label>
+      <div class="row-between" style="gap:10px;flex-wrap:wrap;margin-top:16px">
         <label class="field" style="margin:0;flex-direction:row;align-items:center;gap:8px"><span style="white-space:nowrap">会话有效期（天）</span><input id="session-days" type="number" min="1" max="30" value="7" style="width:80px"></label>
         <button class="btn danger" id="session-invalidate" type="button">强制全站下线</button>
       </div>
@@ -384,6 +410,57 @@
       <label class="field"><span>邮件预览</span><iframe id="mtpl-preview" title="邮件预览" style="width:100%;height:460px;border:1px solid var(--hairline);border-radius:12px;background:#eef1f6"></iframe></label>
     </div>
   </div>
+  <!-- 用户验证 · 邀请码 -->
+  <div class="admin-panel" id="panel-invite">
+    <div class="admin-card">
+      <h2>邀请码</h2>
+      <p class="muted small">开启后注册必须填写有效邀请码。<b>使用次数</b>可设为多次：填 <code>-1</code> 表示一张码可无限次使用（适合公开招募），填大于 1 的数字表示限量。每个注册成功都会累加使用次数。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="invite-required"><span class="slider"></span></span><span>注册需要邀请码</span></label>
+      <div class="pkg-form-grid" style="margin-top:10px">
+        <label class="field"><span>生成数量（1–50）</span><input id="invite-count" type="number" min="1" max="50" value="5"></label>
+        <label class="field"><span>每张可用次数（-1 为不限）</span><input id="invite-max-uses" type="number" min="-1" value="1"></label>
+        <label class="field"><span>码前缀（选填）</span><input id="invite-prefix" placeholder="如 DEMO" maxlength="8" autocomplete="off"></label>
+      </div>
+      <div class="row-between" style="gap:10px;flex-wrap:wrap;margin:6px 0">
+        <button class="btn primary" id="invite-generate" type="button">生成邀请码</button>
+        <span class="muted small" id="invite-count-info"></span>
+      </div>
+      <div class="users-table-wrap" style="max-height:340px;overflow:auto">
+        <table class="admin-table">
+          <thead><tr><th>邀请码</th><th>状态</th><th>使用情况</th><th style="text-align:right">操作</th></tr></thead>
+          <tbody id="invite-tbody"></tbody>
+        </table>
+      </div>
+      <p class="muted small" id="invite-empty" style="text-align:center;padding:10px 0">暂无邀请码</p>
+    </div>
+  </div>
+
+  <!-- 开放 API -->
+  <div class="admin-panel" id="panel-openapi">
+    <div class="admin-card">
+      <h2>开放 API（OpenAI 兼容出口）</h2>
+      <p class="muted small">用户可在前台账户面板生成 <code>sk-tc-</code> 密钥，通过任意 OpenAI 兼容客户端调用本站模型。请求与网页端共用额度，并额外受下方频率限制与模型白名单约束。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="apikeys-enabled" checked><span class="slider"></span></span><span>允许用户生成 API 密钥</span></label>
+      <div class="pkg-form-grid" style="margin-top:10px">
+        <label class="field"><span>单密钥限流（次/分钟，0 = 不限制）</span><input id="openapi-key-limit" type="number" min="0" max="600" value="60"></label>
+      </div>
+      <p class="muted small">站点总限流（<b id="openapi-user-limit-hint">—</b>）在「对话设置」中统一配置，两处限制需同时满足。</p>
+      <div class="section-title">对外可用模型</div>
+      <p class="muted small">默认全部可用。若只勾选部分模型，则未勾选的模型不会出现在 <code>/v1/models</code>，调用时也会被拒绝；网页端不受影响。</p>
+      <label class="user-form-admin" style="margin:6px 0 10px"><span class="switch"><input type="checkbox" id="openapi-restrict"><span class="slider"></span></span><span>仅对勾选的模型开放（关闭 = 全部模型可用）</span></label>
+      <div class="row-between" style="gap:8px;flex-wrap:wrap;margin-bottom:8px">
+        <span class="row-between" style="gap:8px;flex-wrap:wrap">
+          <button class="btn small" id="openapi-fetch" type="button">一键获取模型</button>
+          <button class="btn small" id="openapi-select-all" type="button">全选</button>
+          <button class="btn small" id="openapi-select-none" type="button">全不选</button>
+        </span>
+        <span class="muted small" id="openapi-model-count">—</span>
+      </div>
+      <div id="openapi-models" class="access-section" style="max-height:420px;overflow:auto"></div>
+      <button class="btn primary" id="openapi-save" type="button" style="margin-top:12px">保存开放 API 设置</button>
+    </div>
+  </div>
+
   <div class="admin-panel" id="panel-packages">
     <div class="admin-card">
       <h2>额度套餐</h2>
@@ -404,10 +481,11 @@
       <div id="pkg-list" class="pkg-cards"></div>
     </div>
   </div>
+  <!-- 兑换码使用情况 -->
   <div class="admin-panel" id="panel-codes">
     <div class="admin-card">
-      <h2>已生成兑换码及使用情况</h2>
-      <p class="muted small">新生成的兑换码会同时保存明文，用于按套餐导出；此前生成的旧码只有哈希，无法导出明文。固定兑换码的码面直接显示在列表中。</p>
+      <h2>兑换码使用情况</h2>
+      <p class="muted small">按套餐生成的随机兑换码与手动添加的固定兑换码都在此列出：状态、使用者与过期时间。「清理已使用」只删除已核销的记录。</p>
       <div class="row-between" style="margin:10px 0">
         <span class="muted small" id="codes-summary"></span>
         <span class="row-between" style="gap:8px">
@@ -421,25 +499,39 @@
         <span class="muted small" id="codes-page-label"></span>
         <button class="btn small" id="codes-next" type="button">下一页</button>
       </div>
-      <div class="section-title">兑换码管理 · 生成兑换码</div>
+    </div>
+  </div>
+
+  <!-- 生成兑换码 -->
+  <div class="admin-panel" id="panel-codes-gen">
+    <div class="admin-card">
+      <h2>生成兑换码</h2>
+      <p class="muted small">为某个「额度套餐」批量生成随机兑换码。新生成的码会同时保存明文，可在左侧「兑换码使用情况」中按套餐导出；旧版生成的码只有哈希，无法导出明文。</p>
       <label class="field"><span>选择套餐</span><select id="pkg-code-package"></select></label>
-      <label class="field"><span>数量</span><input id="pkg-code-count" type="number" min="1" max="500" value="10"></label>
-      <button class="btn" id="pkg-generate" type="button">生成兑换码</button>
-      <textarea id="pkg-generated-codes" rows="6" readonly placeholder="生成后仅此处显示明文兑换码"></textarea>
-      <div class="section-title">兑换码管理 · 按套餐批量操作</div>
+      <label class="field"><span>数量（1–500）</span><input id="pkg-code-count" type="number" min="1" max="500" value="10"></label>
+      <button class="btn primary" id="pkg-generate" type="button">生成兑换码</button>
+      <textarea id="pkg-generated-codes" rows="6" readonly placeholder="生成后仅此处显示明文兑换码，请及时复制保存"></textarea>
+      <div class="section-title">按套餐批量操作</div>
       <label class="field"><span>选择套餐</span><select id="codes-bulk-package"></select></label>
       <div class="row-between" style="gap:8px">
         <button class="btn" id="codes-export-unused" type="button">导出未使用</button>
         <button class="btn danger" id="codes-clear-unused" type="button">清除未使用</button>
       </div>
       <p class="muted small">导出所选套餐全部未使用兑换码的明文（一行一个，.txt 文件）；清除则删除所选套餐全部未使用的兑换码，已使用的不受影响。</p>
-      <div class="section-title">兑换码管理 · 添加固定兑换码</div>
+    </div>
+  </div>
+
+  <!-- 添加固定兑换码 -->
+  <div class="admin-panel" id="panel-codes-fixed">
+    <div class="admin-card">
+      <h2>添加固定兑换码</h2>
+      <p class="muted small">自定义码面（如 WELCOME2026），适合做活动通用码。可设置总兑换次数与每次兑换获得的额度；开启「每个用户限兑一次」后同一账号只能使用一次。</p>
       <label class="field"><span>兑换码（4-64 位字母或数字）</span><input id="fixed-code-value" placeholder="WELCOME2026" autocomplete="off"></label>
       <label class="field"><span>可兑换次数（总共可被兑换多少次）</span><input id="fixed-code-max" type="number" min="1" value="1"></label>
       <label class="field"><span>每次兑换获得的可用次数（-1 为无限）</span><input id="fixed-code-quota" type="number" min="-1" value="100"></label>
       <label class="field"><span>有效期至（留空则长期有效）</span><input id="fixed-code-expiry" type="datetime-local"></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="fixed-code-peruser" checked><span class="slider"></span></span><span>每个用户限兑一次</span></label>
-      <button class="btn" id="fixed-code-add" type="button">添加固定兑换码</button>
+      <button class="btn primary" id="fixed-code-add" type="button">添加固定兑换码</button>
     </div>
   </div>
 
@@ -601,7 +693,7 @@
       </div>
       <div class="users-table-wrap">
       <table class="admin-table log-table">
-        <thead><tr><th>时间</th><th>用户</th><th>类型</th><th>供应商</th><th>模型</th><th>状态</th><th>耗时</th><th>扣费</th><th>信息</th></tr></thead>
+        <thead><tr><th>时间</th><th>用户</th><th>类型</th><th>供应商</th><th>模型</th><th>状态</th><th>耗时</th><th>扣费</th><th>信息</th><th>内容</th></tr></thead>
         <tbody id="logs-tbody"></tbody>
       </table>
       </div>
@@ -634,6 +726,16 @@
         <span class="switch"><input type="checkbox" id="uf-admin"><span class="slider"></span></span>
         <span>设为管理员</span>
       </label>
+      <label class="user-form-admin" id="uf-demo-row">
+        <span class="switch"><input type="checkbox" id="uf-demo"><span class="slider"></span></span>
+        <span>演示管理员（可自由改设置，到期后自动还原）</span>
+      </label>
+      <div id="uf-demo-options" hidden>
+        <label class="field"><span>复原时间（分钟，到期后自动还原设置与授权）</span>
+          <input id="uf-demo-minutes" type="number" min="1" max="1440" value="10">
+        </label>
+        <p class="muted small" id="uf-demo-hint">演示管理员可修改站点设置、模型授权等大部分内容，<b>但不可修改公告、账号与密码，也不能查看用户对话</b>。<b>勾选并保存的这一刻即为计时起点</b>：此后演示管理员改动的设置，以及他名下的对话与额度，都会在到点时恢复为这一刻的状态。真实管理员的改动即时生效，并会成为新的恢复基准，不会被演示还原冲掉。额度可在创建时自定义（留空则给一个很大的演示值）。</p>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn" id="user-form-cancel" type="button">取消</button>
@@ -709,10 +811,16 @@
   </div>
 </div>
 </form>
-<script src="./static/js/config.js?v=20260926.31"></script>
-<script src="./static/js/icons.js?v=20260926.31"></script>
-<script src="./static/js/ui.js?v=20260926.31"></script>
-<script src="./static/js/components.js?v=20260928.1"></script>
-<script src="./static/js/admin.js?v=20260928.2"></script>
+<script src="./static/js/config.js?v=20261005.8"></script>
+<script src="./static/js/icons.js?v=20261005.8"></script>
+<script defer src="./vendor/markdown-it/markdown-it.min.js"></script>
+<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js"></script>
+<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js"></script>
+<script defer src="./vendor/katex/katex.min.js"></script>
+<script defer src="./vendor/highlight/highlight.min.js"></script>
+<script src="./static/js/ui.js?v=20261005.8"></script>
+<script src="./static/js/components.js?v=20261005.8"></script>
+<script src="./static/js/renderer.js?v=20261005.8"></script>
+<script src="./static/js/admin.js?v=20261005.8"></script>
 </body>
 </html>

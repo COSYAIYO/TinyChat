@@ -14,8 +14,22 @@ function tc_endpoints() {
 function tc_upstream_path($baseUrl, $format) {
     $ends = tc_endpoints();
     $endpoint = isset($ends[$format]) ? $ends[$format] : $ends['chat'];
-    if (preg_match('/\/v\d+$/', $baseUrl)) return $baseUrl . $endpoint;
-    return $baseUrl . '/v1' . $endpoint;
+    return tc_api_url($baseUrl, $endpoint);
+}
+
+// 拼一个上游接口地址:baseUrl 已带版本段(如 /v1)就直接拼,否则补上 /v1。
+// 生图、获取模型等路径都必须走这里,否则用户按平台文档填「不带 /v1 的 Base URL」时会拼错路径(404)。
+function tc_api_url($baseUrl, $path) {
+    $base = rtrim(trim((string) $baseUrl), '/');
+    if ($base === '') return (string) $path;
+    $p = '/' . ltrim((string) $path, '/');
+    // 已含版本段(/v1、/v1beta、/v2…):直接拼接
+    if (preg_match('#/v\d+[a-z]*$#i', $base)) return $base . $p;
+    // 若 base 尾部已包含要拼的路径段(如用户填了 .../v1/images/generations),不再重复
+    if (preg_match('#/images/generations$#i', $base) && stripos($p, 'images/generations') !== false) return $base;
+    if (preg_match('#/models$#i', $base) && stripos($p, 'models') !== false) return $base;
+    if (preg_match('#/chat/completions$#i', $base) && stripos($p, 'chat/completions') !== false) return $base;
+    return $base . '/v1' . $p;
 }
 
 define('TC_MINERU_LITE', 'https://mineru.net/api/v1/agent');
@@ -249,7 +263,7 @@ function tc_prepare_upstream_body($b, $provider, $format) {
     }
     $model = isset($out['model']) ? $out['model'] : (isset($provider['models'][0]['id']) ? $provider['models'][0]['id'] : null);
     if ($model) $out['model'] = $model;
-    if ($format === 'anthropic' && empty($out['max_tokens'])) $out['max_tokens'] = 12800;
+    if ($format === 'anthropic' && empty($out['max_tokens'])) $out['max_tokens'] = 8192;
     return $out;
 }
 
@@ -466,22 +480,99 @@ function tc_disable_buffers() {
     header('X-Accel-Buffering: no');
 }
 
-function tc_http_request($url, $method, $headers, $body, $timeoutMs, $stream = false, $onChunk = null, $sendExpect = true) {
+// 把 curl 失败翻译成带诊断信息的结果:区分「连不上」与「响应慢」,便于用户定位
+function tc_curl_failure($ch, $errno, $err, $status, $url, $connectSec, $timeoutSec) {
+    $connectTime = (float) curl_getinfo($ch, CURLINFO_CONNECT_TIME);
+    $totalTime = (float) curl_getinfo($ch, CURLINFO_TOTAL_TIME);
+    $host = parse_url((string) $url, PHP_URL_HOST);
+    $port = parse_url((string) $url, PHP_URL_PORT);
+    $hostLabel = $host ? ($host . ($port ? ':' . $port : '')) : (string) $url;
+    // curl 常量在不同 PHP/curl 构建里未必齐全,统一用 defined() 兜底成标准数值
+    $c = function ($name, $fallback) { return defined($name) ? constant($name) : $fallback; };
+    $errResolveHost = $c('CURLE_COULDNT_RESOLVE_HOST', 6);
+    $errResolveProxy = $c('CURLE_COULDNT_RESOLVE_PROXY', 5);
+    $errConnect = $c('CURLE_COULDNT_CONNECT', 7);
+    $errTimeout = $c('CURLE_OPERATION_TIMEDOUT', 28);
+    $tlsErrs = array(
+        $c('CURLE_SSL_CONNECT_ERROR', 35),
+        $c('CURLE_SSL_CERTPROBLEM', 58),
+        $c('CURLE_SSL_CIPHER', 59),
+        $c('CURLE_PEER_FAILED_VERIFICATION', 60),
+        $c('CURLE_SSL_CACERT', 60),
+        $c('CURLE_SSL_CACERT_BADFILE', 77),
+    );
+    $kind = 'other';
+    $code = 502;
+    if ($errno === $errResolveHost || $errno === $errResolveProxy) {
+        $kind = 'dns';
+    } elseif ($errno === $errConnect) {
+        $kind = 'connect';
+    } elseif (in_array($errno, $tlsErrs, true)) {
+        $kind = 'tls';
+    } elseif ($errno === $errTimeout) {
+        // 连接从未建立(connectTime 为 0)= 连不上/DNS 卡住;已建立则是在等响应
+        $kind = $connectTime <= 0 ? 'connect_timeout' : 'read_timeout';
+        $code = 504;
+    }
+    return array(
+        'ok' => false,
+        'error' => $err ?: '无法连接上游 API',
+        'code' => $code,
+        'status' => (int) $status,
+        'kind' => $kind,
+        'host' => $hostLabel,
+        'connect_timeout' => $connectSec,
+        'timeout' => $timeoutSec,
+        'connect_time' => round($connectTime, 2),
+        'elapsed' => round($totalTime, 2),
+    );
+}
+
+// 把上游连接失败结果翻译成可操作的中文提示(带主机名与秒数,指明该查什么)
+function tc_upstream_fail_message($res, $providerName = '') {
+    $label = ($providerName !== '' ? '「' . $providerName . '」' : '');
+    $host = (isset($res['host']) && $res['host'] !== '') ? $res['host'] : '上游地址';
+    $kind = isset($res['kind']) ? $res['kind'] : 'other';
+    $ct = isset($res['connect_timeout']) ? (int) $res['connect_timeout'] : 0;
+    $tt = isset($res['timeout']) ? (int) $res['timeout'] : 0;
+    $detail = isset($res['error']) ? (string) $res['error'] : '';
+    switch ($kind) {
+        case 'connect_timeout':
+            return $label . '连接上游超时：' . $ct . ' 秒内无法与 ' . $host . ' 建立连接。请确认该地址与端口正确、服务已启动，且服务器能访问外网（境外平台常被防火墙/网络出口拦截）。';
+        case 'read_timeout':
+            return $label . '上游响应超时：已连接 ' . $host . '，但超过 ' . $tt . ' 秒未返回内容。可在「对话设置 → 请求超时」调大该值，或改用响应更快的模型。';
+        case 'dns':
+            return $label . '无法解析上游域名 ' . $host . '。请检查 Base URL 拼写与服务器 DNS。';
+        case 'connect':
+            return $label . '无法连接上游 ' . $host . '（' . $detail . '）。请确认服务已启动、端口开放且地址可访问。';
+        case 'tls':
+            return $label . '与上游建立 HTTPS 连接失败：' . $detail . '。请检查证书链是否完整，或改用 http。';
+        default:
+            return $label . '无法连接上游 API（' . $host . '）：' . ($detail !== '' ? $detail : '未知错误');
+    }
+}
+
+function tc_http_request($url, $method, $headers, $body, $timeoutMs, $stream = false, $onChunk = null, $sendExpect = true, $connectTimeoutMs = null) {
     if (!function_exists('curl_init')) {
         return array('ok' => false, 'error' => '服务器未启用 curl 扩展，无法请求上游 API', 'code' => 0);
     }
+    // PHP 默认 max_execution_time 为 30 秒,而生图/长文等上游调用常需 30~90 秒。
+    // 不抬高这个上限,请求会被 PHP 半路掐断并返回空响应(前端表现为「点了没反应」)。
+    // 这里按本次 curl 预算给足 PHP 执行时间,每次调用都重置计时器。
+    $curlSec = $stream ? 600 : max(5, (int) ceil($timeoutMs / 1000));
+    $connSec = $connectTimeoutMs === null ? 20 : max(3, (int) ceil($connectTimeoutMs / 1000));
+    @set_time_limit(min(1200, $curlSec + $connSec + 20));
     $ch = curl_init($url);
     $hdrs = array();
     foreach ($headers as $k => $v) $hdrs[] = $k . ': ' . $v;
-    $timeoutSec = max(5, (int) ceil($timeoutMs / 1000));
     $opts = array(
         CURLOPT_CUSTOMREQUEST => $method,
         CURLOPT_HTTPHEADER => $hdrs,
         CURLOPT_RETURNTRANSFER => !$stream,
         CURLOPT_FOLLOWLOCATION => true,
         CURLOPT_MAXREDIRS => 3,
-        CURLOPT_CONNECTTIMEOUT => 20,
-        CURLOPT_TIMEOUT => $stream ? 0 : $timeoutSec,
+        CURLOPT_CONNECTTIMEOUT => $connSec,
+        CURLOPT_TIMEOUT => $stream ? 0 : $curlSec,
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_SSL_VERIFYHOST => 2,
         CURLOPT_HEADER => false,
@@ -508,11 +599,9 @@ function tc_http_request($url, $method, $headers, $body, $timeoutMs, $stream = f
         $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err = curl_error($ch);
         $errno = curl_errno($ch);
+        $fail = $ok === false ? tc_curl_failure($ch, $errno, $err, $status, $url, $connSec, 0) : null;
         curl_close($ch);
-        if ($ok === false) {
-            $code = ($errno === CURLE_OPERATION_TIMEDOUT) ? 504 : 502;
-            return array('ok' => false, 'error' => $err ?: '无法连接上游 API', 'code' => $code, 'status' => $status);
-        }
+        if ($fail !== null) return $fail;
         return array('ok' => true, 'status' => $status, 'body' => $errBody, 'ctype' => '');
     }
     $raw = curl_exec($ch);
@@ -520,11 +609,9 @@ function tc_http_request($url, $method, $headers, $body, $timeoutMs, $stream = f
     $ctype = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
     $err = curl_error($ch);
     $errno = curl_errno($ch);
+    $fail = $raw === false ? tc_curl_failure($ch, $errno, $err, $status, $url, $connSec, $curlSec) : null;
     curl_close($ch);
-    if ($raw === false) {
-        $code = ($errno === CURLE_OPERATION_TIMEDOUT) ? 504 : 502;
-        return array('ok' => false, 'error' => $err ?: '无法连接上游 API', 'code' => $code, 'status' => $status);
-    }
+    if ($fail !== null) return $fail;
     return array('ok' => true, 'status' => $status, 'body' => $raw, 'ctype' => $ctype);
 }
 
@@ -753,11 +840,12 @@ function tc_search_needs_web($query, $provider, $format, $model) {
     $fmt = ($format === 'anthropic' || $format === 'responses' || $format === 'completions') ? 'chat' : $format;
     $url = tc_upstream_path(rtrim((string) $provider['baseUrl'], '/'), $fmt);
     $headers = array('Content-Type' => 'application/json', 'Accept' => 'application/json');
+    $testKey = tc_provider_key_for_model($provider, $model);
     if ($fmt === 'anthropic') {
-        $headers['x-api-key'] = $provider['apiKey'];
+        $headers['x-api-key'] = $testKey;
         $headers['anthropic-version'] = '2023-06-01';
     } else {
-        $headers['Authorization'] = 'Bearer ' . $provider['apiKey'];
+        $headers['Authorization'] = 'Bearer ' . $testKey;
     }
     $res = tc_http_request($url, 'POST', $headers, tc_json_encode(array(
         'model' => $model,
@@ -831,6 +919,92 @@ function tc_capture_stream_usage(&$target, $chunk, $format) {
             if ($prompt > (isset($target['prompt']) ? $target['prompt'] : 0)) $target['prompt'] = $prompt;
             if ($completion > (isset($target['completion']) ? $target['completion'] : 0)) $target['completion'] = $completion;
         }
+    }
+}
+
+// 从请求体提取完整的 user/assistant 消息序列(供 API 对话落库)。
+// 必须取全量历史而非最后一条:落库要按「首条用户消息」判断这是不是同一段上下文。
+function tc_api_history_messages($body, $format) {
+    $out = array();
+    $push = function ($role, $content) use (&$out) {
+        $c = '';
+        if (is_string($content)) $c = $content;
+        elseif (is_array($content)) {
+            $parts = array();
+            foreach ($content as $p) {
+                if (is_string($p)) $parts[] = $p;
+                elseif (is_array($p) && isset($p['text'])) $parts[] = (string) $p['text'];
+            }
+            $c = implode("
+", $parts);
+        }
+        $c = trim($c);
+        if ($c === '') return;
+        $orig = isset($out[0]) ? null : null; unset($orig);
+        $out[] = array('role' => $role, 'content' => substr($c, 0, 200000));
+    };
+    if ($format === 'responses') {
+        if (isset($body['instructions']) && is_string($body['instructions'])) { /* system, 不落库 */ }
+        $input = isset($body['input']) ? $body['input'] : null;
+        if (is_string($input)) $push('user', $input);
+        elseif (is_array($input)) {
+            foreach ($input as $m) {
+                if (!is_array($m)) continue;
+                $role = isset($m['role']) ? $m['role'] : 'user';
+                if ($role !== 'user' && $role !== 'assistant') continue;
+                $push($role, isset($m['content']) ? $m['content'] : '');
+            }
+        }
+    } elseif ($format === 'completions') {
+        if (isset($body['prompt']) && is_string($body['prompt'])) $push('user', $body['prompt']);
+    } elseif (isset($body['messages']) && is_array($body['messages'])) {
+        foreach ($body['messages'] as $m) {
+            if (!is_array($m)) continue;
+            $role = isset($m['role']) ? $m['role'] : '';
+            if ($role !== 'user' && $role !== 'assistant') continue;   // 跳过 system
+            $push($role, isset($m['content']) ? $m['content'] : '');
+        }
+    }
+    return $out;
+}
+
+// 流式增量文本采集:从 SSE chunk 里累加助手输出,供 API 对话落库使用
+// 组装上游请求头(含鉴权)。密钥回退时用它按新密钥重建。
+function tc_upstream_auth_headers($format, $apiKey, $acceptStream = false) {
+    $h = array(
+        'Content-Type' => 'application/json',
+        'Accept' => $acceptStream ? 'text/event-stream, application/json' : 'application/json',
+    );
+    if ($format === 'anthropic') {
+        $h['x-api-key'] = (string) $apiKey;
+        $h['anthropic-version'] = '2023-06-01';
+    } else {
+        $h['Authorization'] = 'Bearer ' . (string) $apiKey;
+    }
+    return $h;
+}
+
+function tc_capture_stream_text(&$target, $chunk, $format) {
+    if ($chunk === '' || strpos($chunk, 'data:') === false) return;
+    foreach (explode("\n", $chunk) as $line) {
+        $line = trim($line);
+        if (strpos($line, 'data:') !== 0) continue;
+        $payload = trim(substr($line, 5));
+        if ($payload === '' || $payload === '[DONE]') continue;
+        $j = json_decode($payload, true);
+        if (!is_array($j)) continue;
+        $piece = '';
+        if ($format === 'anthropic') {
+            if (isset($j['delta']['text'])) $piece = (string) $j['delta']['text'];
+        } elseif ($format === 'responses') {
+            if (isset($j['delta']) && is_string($j['delta'])) $piece = $j['delta'];
+            elseif (isset($j['output_text'])) $piece = (string) $j['output_text'];
+        } elseif ($format === 'completions') {
+            if (isset($j['choices'][0]['text'])) $piece = (string) $j['choices'][0]['text'];
+        } else {
+            if (isset($j['choices'][0]['delta']['content'])) $piece = (string) $j['choices'][0]['delta']['content'];
+        }
+        if ($piece !== '') $target .= $piece;
     }
 }
 
@@ -1315,12 +1489,76 @@ function tc_model_reply_text($data, $format) {
     return tc_plain_text($content, 240);
 }
 
+// 日志用:取模型回复的完整文本(不做摘要截断,由调用方按日志上限裁剪)
+function tc_model_reply_full($data, $format) {
+    if (!is_array($data)) return is_string($data) ? $data : '';
+    if ($format === 'anthropic') {
+        $parts = array();
+        if (isset($data['content']) && is_array($data['content'])) {
+            foreach ($data['content'] as $p) {
+                if (is_array($p) && isset($p['text'])) $parts[] = $p['text'];
+            }
+        }
+        return implode("\n", $parts);
+    }
+    if ($format === 'responses') {
+        if (isset($data['output_text']) && is_string($data['output_text'])) return $data['output_text'];
+        $parts = array();
+        if (isset($data['output']) && is_array($data['output'])) {
+            foreach ($data['output'] as $o) {
+                if (!is_array($o) || !isset($o['content']) || !is_array($o['content'])) continue;
+                foreach ($o['content'] as $c) {
+                    if (is_array($c) && isset($c['text'])) $parts[] = $c['text'];
+                }
+            }
+        }
+        return implode("\n", $parts);
+    }
+    if ($format === 'completions') {
+        return isset($data['choices'][0]['text']) ? (string) $data['choices'][0]['text'] : '';
+    }
+    $choice = isset($data['choices'][0]) ? $data['choices'][0] : array();
+    $msg = isset($choice['message']) ? $choice['message'] : array();
+    $content = isset($msg['content']) ? $msg['content'] : (isset($choice['text']) ? $choice['text'] : '');
+    if (is_array($content)) {
+        $parts = array();
+        foreach ($content as $p) {
+            if (is_string($p)) $parts[] = $p;
+            elseif (is_array($p) && isset($p['text'])) $parts[] = $p['text'];
+        }
+        $content = implode("\n", $parts);
+    }
+    return is_string($content) ? $content : '';
+}
+
+// 视频模型连通性测试(管理员/个人共用):只建任务判定连通,不等待出片。
+// 成功后直接输出响应并退出。
+function tc_video_test_and_reply($baseUrl, $model, $prompt, $apiKey, $providerName, $userName, $userId, $providerId) {
+    $baseUrl = rtrim(trim((string) $baseUrl), '/');
+    if (!preg_match('/^https?:\/\//i', $baseUrl)) tc_fail(400, '供应商 Base URL 无效');
+    $vurl = tc_api_url($baseUrl, '/videos');
+    $vbody = array('model' => $model, 'prompt' => $prompt, 'mode' => 'text', 'seconds' => '4', 'size' => '720P', 'aspect_ratio' => '16:9', 'n' => 1);
+    $started = tc_now();
+    $vres = tc_http_request($vurl, 'POST', array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . $apiKey), tc_json_encode($vbody), 30000, false, null, true, 20000);
+    $ms = tc_now() - $started;
+    if (empty($vres['ok'])) tc_fail($vres['code'] === 504 ? 504 : 502, tc_model_test_safe_error(tc_upstream_fail_message($vres, $providerName), $apiKey));
+    if ((int) $vres['status'] >= 400) tc_fail((int) $vres['status'] >= 500 ? 502 : 400, tc_model_test_safe_error(tc_upstream_error_message($vres['body'], $vres['status']), $apiKey));
+    $vj = json_decode((string) $vres['body'], true);
+    $vid = '';
+    if (is_array($vj)) {
+        foreach (array('video_id', 'id', 'task_id') as $k) { if (!empty($vj[$k]) && is_string($vj[$k])) { $vid = $vj[$k]; break; } }
+    }
+    $reply = $vid !== '' ? ('已提交视频任务（ID：' . $vid . '）') : '上游已响应（未返回任务 ID）';
+    tc_push_log(array('kind' => 'model-test', 'userName' => $userName, 'userId' => $userId, 'provider' => $providerName, 'providerId' => $providerId, 'model' => $model, 'format' => 'video', 'status' => 200, 'ms' => $ms, 'cost' => 0, 'ok' => true));
+    tc_json(200, array('result' => array('ok' => true, 'model' => $model, 'ms' => $ms, 'reply' => $reply, 'error' => '')));
+}
+
 function tc_api_admin_test_model() {
     $ctx = tc_with_db(false, function ($db) {
         tc_require_admin($db);
         $b = tc_read_json_body();
         $baseUrl = rtrim(trim((string) (isset($b['baseUrl']) ? $b['baseUrl'] : '')), '/');
-        $format = (isset($b['apiFormat']) && in_array($b['apiFormat'], array('chat', 'responses', 'completions', 'anthropic'), true))
+        $format = (isset($b['apiFormat']) && in_array($b['apiFormat'], array('chat', 'responses', 'completions', 'anthropic', 'video'), true))
             ? $b['apiFormat'] : 'chat';
         $model = trim((string) (isset($b['model']) ? $b['model'] : ''));
         $prompt = tc_plain_text(isset($b['prompt']) ? $b['prompt'] : '回复一个字：好', 400);
@@ -1346,6 +1584,10 @@ function tc_api_admin_test_model() {
             'apiKey' => $apiKey,
         );
     });
+    // 视频模型:建任务即可判定连通(不等待出片),返回任务 ID / 状态
+    if ($ctx['format'] === 'video') {
+        tc_video_test_and_reply($ctx['baseUrl'], $ctx['model'], $ctx['prompt'], $ctx['apiKey'], '', '', '', '');
+    }
     $body = array('model' => $ctx['model'], 'stream' => false);
     if ($ctx['format'] === 'anthropic') {
         $body['max_tokens'] = 64;
@@ -1376,7 +1618,7 @@ function tc_api_admin_test_model() {
             'ok' => false,
             'model' => $ctx['model'],
             'ms' => $ms,
-            'error' => $res['code'] === 504 ? '请求上游超时' : ('无法连接上游 API: ' . $res['error']),
+            'error' => tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : ''),
         )));
     }
     if ($res['status'] >= 400) {
@@ -1435,7 +1677,7 @@ function tc_api_user_test_model() {
         return array(
             'user' => $user,
             'provider' => $provider,
-            'format' => (isset($provider['apiFormat']) && in_array($provider['apiFormat'], array('chat', 'responses', 'completions', 'anthropic'), true)) ? $provider['apiFormat'] : 'chat',
+            'format' => (isset($provider['apiFormat']) && in_array($provider['apiFormat'], array('chat', 'responses', 'completions', 'anthropic', 'video'), true)) ? $provider['apiFormat'] : 'chat',
             'model' => $model,
             'prompt' => $prompt,
             'apiKey' => $apiKey,
@@ -1443,6 +1685,18 @@ function tc_api_user_test_model() {
     });
 
     $format = $ctx['format'];
+    $provider = $ctx['provider'];
+    // 视频模型:建任务即可判定连通(不等待出片),返回任务 ID / 状态
+    if ($format === 'video') {
+        tc_video_test_and_reply(
+            isset($provider['baseUrl']) ? $provider['baseUrl'] : '',
+            $ctx['model'], $ctx['prompt'], $ctx['apiKey'],
+            isset($provider['name']) ? $provider['name'] : '',
+            isset($ctx['user']['name']) ? $ctx['user']['name'] : '',
+            isset($ctx['user']['id']) ? $ctx['user']['id'] : '',
+            isset($provider['id']) ? $provider['id'] : ''
+        );
+    }
     $body = array('model' => $ctx['model'], 'stream' => false);
     if ($format === 'anthropic') {
         $body['max_tokens'] = 64;
@@ -1485,7 +1739,7 @@ function tc_api_user_test_model() {
         'cost' => 0,
     );
     if (!$res['ok']) {
-        $msg = $res['code'] === 504 ? '请求上游超时' : ('无法连接上游 API: ' . $res['error']);
+        $msg = tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : '');
         $safeMsg = tc_model_test_safe_error($msg, $ctx['apiKey']);
         $baseLog['status'] = 0;
         $baseLog['ok'] = false;
@@ -1525,21 +1779,26 @@ function tc_api_fetch_models() {
         $user = tc_require_auth($db);
         $b = tc_read_json_body();
         $baseUrl = rtrim(trim((string) (isset($b['baseUrl']) ? $b['baseUrl'] : '')), '/');
-        $format = (isset($b['apiFormat']) && in_array($b['apiFormat'], array('chat', 'responses', 'completions', 'anthropic'), true))
+        $format = (isset($b['apiFormat']) && in_array($b['apiFormat'], array('chat', 'responses', 'completions', 'anthropic', 'video'), true))
             ? $b['apiFormat'] : 'chat';
         if ($baseUrl === '') tc_fail(400, '请先填写 Base URL');
         if ($format === 'anthropic') tc_fail(400, 'Anthropic 不支持自动获取模型，请手动填写模型列表');
         $apiKey = trim((string) (isset($b['apiKey']) ? $b['apiKey'] : ''));
+        $wantKeyId = isset($b['keyId']) ? trim((string) $b['keyId']) : '';
         if (($apiKey === '' || strpos($apiKey, '••') !== false) && !empty($b['providerId'])) {
             foreach ($db['providers'] as $p) {
                 if ($p['id'] === (string) $b['providerId'] && ((isset($p['ownerId']) && $p['ownerId'] === $user['id']) || !empty($user['admin']))) {
-                    $apiKey = tc_provider_key($p);
+                    // 指定了 keyId 就用那把 Key,否则用默认钥匙
+                    $apiKey = $wantKeyId !== '' ? tc_provider_key_by_id($p, $wantKeyId) : tc_provider_key($p);
                     break;
                 }
             }
         }
         if ($apiKey === '') tc_fail(400, '请先填写 API Key');
-        $url = preg_match('/\/v\d+$/', $baseUrl) ? $baseUrl . '/models' : $baseUrl . '/v1/models';
+        // 掩码占位符不是真实密钥:带着它请求上游只会得到误导性的 401。
+        // 常见于「编辑供应商 + 留空 Key」但 providerId 不匹配(非本人/已删除)的场景,本地直接给出可行动的提示。
+        if (strpos($apiKey, '••') !== false) tc_fail(400, '请先填写 API Key（编辑已有供应商时留空即沿用已保存的密钥）');
+        $url = tc_api_url($baseUrl, '/models');
         return array('url' => $url, 'apiKey' => $apiKey);
     });
     $res = tc_http_request($ctx['url'], 'GET', array(
@@ -1547,8 +1806,7 @@ function tc_api_fetch_models() {
         'Accept' => 'application/json',
     ), null, 20000, false);
     if (!$res['ok']) {
-        if ($res['code'] === 504) tc_fail(504, '请求上游超时');
-        tc_fail(502, '无法连接上游 API: ' . $res['error']);
+        tc_fail($res['code'] === 504 ? 504 : 502, tc_upstream_fail_message($res));
     }
     if ($res['status'] >= 400) tc_fail(400, tc_upstream_error_message($res['body'], $res['status']));
     $j = json_decode($res['body'], true);
@@ -1622,13 +1880,23 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         $resolved = tc_resolve_provider($db, $user, $b);
         if (!empty($resolved['error'])) tc_fail(400, $resolved['error']);
         $provider = $resolved['provider'];
+        // 开放接口的对外模型白名单:仅对 API 密钥调用生效,网页端不受影响
+        if ($apiKeyOwner !== null) {
+            $reqModel = isset($b['model']) ? (string) $b['model'] : '';
+            if (!tc_api_model_exposed($db['settings'], isset($provider['id']) ? $provider['id'] : '', $reqModel)) {
+                tc_fail(403, '模型 ' . $reqModel . ' 未对开放接口开放，请联系管理员');
+            }
+        }
         // 熔断:该模型近期持续全失败时快速失败,给出清晰提示(管理员豁免,便于现场排查)
         if (empty($user['admin'])) {
             $circuitModel = isset($b['model']) ? (string) $b['model'] : (isset($provider['models'][0]['id']) ? (string) $provider['models'][0]['id'] : '');
             $circuitMsg = tc_model_circuit_message($db, isset($provider['id']) ? $provider['id'] : '', $circuitModel);
             if ($circuitMsg !== '') tc_fail(503, $circuitMsg);
         }
-        $cost = tc_provider_cost($provider);
+        // 单价:模型级 cost 优先,未设置时回退供应商的 costPerCall
+        $costModel = isset($b['model']) ? (string) $b['model'] : '';
+        if ($costModel === '' && !empty($provider['models'][0]['id'])) $costModel = (string) $provider['models'][0]['id'];
+        $cost = tc_model_cost($provider, $costModel);
         // 内容审核:开启敏感词过滤时,先检查最后一条用户消息
         $modHit = tc_moderation_hit(isset($db['settings']['moderation']) && is_array($db['settings']['moderation']) ? $db['settings']['moderation'] : array(), tc_last_user_text($b, $format));
         if ($modHit !== '') tc_fail(400, '消息包含被禁止的内容，请修改后重试');
@@ -1644,6 +1912,18 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                 'need' => $cost,
             ));
         }
+        // 生图模型自动路由:调用对话接口但命中的是生图模型时,改走 images/generations。
+        // 上游对这种请求会直接报错(如 "xxx is an image model. Use /v1/images/generations"),
+        // 这里在发起对话请求前就分流,用户/客户端无需自己判断模型类型。
+        $isImageModel = false;
+        $isVideoModel = false;
+        if (in_array($format, array('chat', 'completions', 'responses'), true)) {
+            $reqModel = isset($b['model']) ? (string) $b['model'] : '';
+            if ($reqModel === '' && !empty($provider['models'][0]['id'])) $reqModel = (string) $provider['models'][0]['id'];
+            $isImageModel = tc_model_is_image($provider, $reqModel);
+            // 视频模型命中对话接口时同样自动分流(按名称启发式或视频标记),避免上游报「不支持此模型」
+            if (!$isImageModel) $isVideoModel = tc_model_is_video($provider, $reqModel);
+        }
         return array(
             'user' => $user,
             'provider' => $provider,
@@ -1652,11 +1932,47 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             'timeout' => $db['settings']['proxyTimeoutMs'],
             'wantSearch' => (!empty($b['webSearch']) && $b['webSearch'] !== 'off' && $b['webSearch'] !== false) ? (string) $b['webSearch'] : '',
             'settings' => tc_user_search_settings($user, $db['settings']),
-            'maxOutputTokens' => isset($db['settings']['maxOutputTokens']) ? (int) $db['settings']['maxOutputTokens'] : 12800,
+            'maxOutputTokens' => isset($db['settings']['maxOutputTokens']) ? (int) $db['settings']['maxOutputTokens'] : 8192,
             'temperature' => isset($db['settings']['temperature']) ? $db['settings']['temperature'] : null,
             'thinking' => tc_normalize_thinking(isset($db['settings']['thinking']) ? $db['settings']['thinking'] : null),
+            'imageGen' => $isImageModel,
+            'videoGen' => $isVideoModel,
+            // 开放 API 密钥调用且站点允许时,把本次对话记入该用户的对话列表
+            'saveApiChat' => ($apiKeyOwner !== null)
+                && !empty($db['settings']['apiSaveChats'])
+                && !empty($db['settings']['persistChats']),
         );
     });
+
+    // 视频模型自动改走视频接口(异步任务;tc_generate_video 自带鉴权/限流/额度/审核与计费)
+    if (!empty($ctx['videoGen'])) {
+        if ($apiKeyOwner !== null) {
+            $out = tc_generate_video($apiKeyOwner);
+            $data = array();
+            foreach ((isset($out['videos']) ? $out['videos'] : array()) as $v) {
+                $data[] = array('url' => isset($v['url']) ? $v['url'] : '', 'model' => isset($out['model']) ? $out['model'] : '');
+            }
+            tc_json(200, array('created' => (int) floor(tc_now() / 1000), 'data' => $data));
+        }
+        tc_json(200, tc_generate_video(null));
+    }
+
+    // 生图模型自动改走生图接口(tc_generate_images 自带鉴权/限流/额度/审核与计费)
+    if (!empty($ctx['imageGen'])) {
+        if ($apiKeyOwner !== null) {
+            $out = tc_generate_images($apiKeyOwner);
+            $data = array();
+            foreach ((isset($out['images']) ? $out['images'] : array()) as $im) {
+                $row = array();
+                if (!empty($im['url'])) $row['url'] = $im['url'];
+                elseif (!empty($im['b64_json'])) $row['b64_json'] = $im['b64_json'];
+                if (isset($im['revised_prompt'])) $row['revised_prompt'] = $im['revised_prompt'];
+                if ($row) $data[] = $row;
+            }
+            tc_json(200, array('created' => (int) floor(tc_now() / 1000), 'data' => $data));
+        }
+        tc_json(200, tc_generate_images(null));
+    }
 
     $provider = $ctx['provider'];
     $user = $ctx['user'];
@@ -1720,7 +2036,7 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         if (!empty($m['maxContext'])) $modelMaxContext = (int) $m['maxContext'];
         break;
     }
-    $outCap = $modelMaxTokens > 0 ? $modelMaxTokens : (isset($ctx['maxOutputTokens']) ? (int) $ctx['maxOutputTokens'] : 12800);
+    $outCap = $modelMaxTokens > 0 ? $modelMaxTokens : (isset($ctx['maxOutputTokens']) ? (int) $ctx['maxOutputTokens'] : 8192);
     if ($modelMaxContext > 0) {
         $promptEst = tc_estimate_body_tokens($body);
         $outCap = min($outCap, max(256, $modelMaxContext - $promptEst));
@@ -1730,16 +2046,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
     tc_apply_thinking_rules($body, isset($ctx['thinking']) ? $ctx['thinking'] : null);
     $url = tc_upstream_path(rtrim((string) $provider['baseUrl'], '/'), $format);
     $isStream = !empty($body['stream']);
-    $headers = array(
-        'Content-Type' => 'application/json',
-        'Accept' => 'text/event-stream, application/json',
-    );
-    if ($format === 'anthropic') {
-        $headers['x-api-key'] = $provider['apiKey'];
-        $headers['anthropic-version'] = '2023-06-01';
-    } else {
-        $headers['Authorization'] = 'Bearer ' . $provider['apiKey'];
-    }
+    // 多 Key:按模型绑定的优先级取出一串密钥,失败时依次回退(见下方 keyFallback)
+    $keyChain = tc_provider_key_chain($provider, isset($body['model']) ? (string) $body['model'] : '');
+    if (!$keyChain) $keyChain = array('');
+    $keyIdx = 0;
+    $headers = tc_upstream_auth_headers($format, $keyChain[0], true);
     $payload = tc_json_encode($body);
     $reasoningRetried = false;
     $ends = tc_endpoints();
@@ -1757,12 +2068,15 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         $headersSent = false;
         $charged = 0;
         $streamUsage = array('prompt' => 0, 'completion' => 0);
+        $streamText = '';
+        $streamLogId = 0;   // 首字节时先落一条日志,收尾再回填完整回复/用量
         // 429/5xx 一次自动重试:错误响应不会进入 onChunk(未计费未发送),重试安全
         $attempt = 0;
         do {
             $attempt++;
-            $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage) {
+            $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage, &$streamText, &$streamLogId) {
             tc_capture_stream_usage($streamUsage, $chunk, $format);
+            tc_capture_stream_text($streamText, $chunk, $format);
             if (!$headersSent) {
                 // First successful bytes: charge then start SSE.
                 $ms = tc_now() - $started;
@@ -1775,11 +2089,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                     tc_touch_user($db, $user['id']);
                     $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
                 });
-                tc_push_log(array(
+                $streamLogId = tc_push_log(array_merge(array(
                     'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
                     'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
                     'format' => $format, 'status' => 200, 'ms' => $ms, 'cost' => $charged, 'stream' => $isStream,
-                ));
+                ), tc_log_chat_meta($body, $format)));
                 tc_note_model_health($provider, $body, true);
                 tc_disable_buffers();
                 header('Content-Type: text/event-stream; charset=utf-8');
@@ -1798,6 +2112,13 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             if (function_exists('ob_flush')) @ob_flush();
             flush();
         });
+            // 密钥回退:认证失败 / 连接失败,且还未向客户端发出任何字节时,换下一把密钥重试
+            if ($keyIdx + 1 < count($keyChain) && !$headersSent
+                && (empty($res['ok']) || in_array((int) (isset($res['status']) ? $res['status'] : 0), array(401, 403), true))) {
+                $keyIdx++;
+                $headers = tc_upstream_auth_headers($format, $keyChain[$keyIdx], true);
+                continue;
+            }
             if (!( !empty($res['ok']) && !empty($res['status']) && in_array((int) $res['status'], array(429, 500, 502, 503, 504), true) && $attempt < 2 )) break;
             sleep(1);
         } while (true);
@@ -1805,22 +2126,35 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         // 流结束:按实际用量与首字节预扣额多退少补,并把最终费用写入台账
         if ($headersSent) {
             $modelStr = isset($body['model']) ? $body['model'] : '';
-            tc_with_db(true, function (&$db) use ($user, $modelStr, $provider, $cost, &$charged, $streamUsage) {
+            $saveApiChat = !empty($ctx['saveApiChat']);
+            tc_with_db(true, function (&$db) use ($user, $modelStr, $provider, $cost, &$charged, $streamUsage, $streamText, $body, $saveApiChat, $format) {
                 $final = tc_settle_stream_charge($db, $user['id'], $provider, $cost, $charged, $streamUsage);
                 tc_record_usage_entry($db, $user['id'], $modelStr, $final, $streamUsage['prompt'], $streamUsage['completion']);
+                if ($saveApiChat) {
+                    // 传全量历史:落库按「首条用户消息」判断是否同一段上下文,并自动去重
+                    $msgs = tc_api_history_messages($body, $format);
+                    if ($streamText !== '') $msgs[] = array('role' => 'assistant', 'content' => $streamText);
+                    tc_api_append_chat($db, $user['id'], $msgs, array('model' => $modelStr, 'usage' => $streamUsage));
+                }
             });
+            // 回填日志:流式首字节时只落了元信息,收尾补上完整回复与用量
+            if ($streamLogId) tc_update_log($streamLogId, array(
+                'reply' => tc_log_clip($streamText, TC_LOG_TEXT_LIMIT),
+                'usage' => array('prompt' => (int) $streamUsage['prompt'], 'completion' => (int) $streamUsage['completion']),
+                'cost' => $charged,
+            ));
         }
 
         if (!$res['ok']) {
             tc_task_finish($taskId, 'failed', $res['error'] ?? 'upstream_error');
             $ms = tc_now() - $started;
             $code = $res['code'] ?: 502;
-            $msg = (isset($provider['name']) && $provider['name'] !== '' ? '「' . $provider['name'] . '」' : '') . ($code === 504 ? '上游 API 响应超时' : ('无法连接上游 API: ' . $res['error']));
-            tc_push_log(array(
+            $msg = tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : '');
+            tc_push_log(array_merge(array(
                 'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
                 'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
                 'format' => $format, 'status' => 0, 'ms' => $ms, 'cost' => 0, 'stream' => $isStream, 'error' => $msg,
-            ));
+            ), tc_log_chat_meta($body, $format)));
             tc_note_model_health($provider, $body, false);
             if (!$headersSent) tc_fail($code, $msg);
             exit;
@@ -1849,8 +2183,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                 $headersSent = false;
                 $charged = 0;
                 $streamUsage = array('prompt' => 0, 'completion' => 0);
-                $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage) {
+                $streamText = '';
+                $streamLogId = 0;
+                $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage, &$streamText, &$streamLogId) {
                     tc_capture_stream_usage($streamUsage, $chunk, $format);
+                    tc_capture_stream_text($streamText, $chunk, $format);
                     if (!$headersSent) {
                         $ms = tc_now() - $started;
                         $charged = 0;
@@ -1862,11 +2199,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                             tc_touch_user($db, $user['id']);
                             $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
                         });
-                        tc_push_log(array(
+                        $streamLogId = tc_push_log(array_merge(array(
                             'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
                             'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
                             'format' => $format, 'status' => 200, 'ms' => $ms, 'cost' => $charged, 'stream' => $isStream,
-                        ));
+                        ), tc_log_chat_meta($body, $format)));
                         tc_note_model_health($provider, $body, true);
                         tc_disable_buffers();
                         header('Content-Type: text/event-stream; charset=utf-8');
@@ -1908,10 +2245,22 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                         echo "data: [DONE]\n\n";
                     }
                     if ($headersSent) {
-                        tc_with_db(true, function (&$db) use ($user, $body, $provider, $cost, &$charged, $streamUsage) {
+                        $rModel = isset($body['model']) ? $body['model'] : '';
+                        $saveApiChat2 = !empty($ctx['saveApiChat']);
+                        tc_with_db(true, function (&$db) use ($user, $body, $provider, $cost, &$charged, $streamUsage, $rModel, $streamText, $saveApiChat2, $format) {
                             $final = tc_settle_stream_charge($db, $user['id'], $provider, $cost, $charged, $streamUsage);
-                            tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $final, $streamUsage['prompt'], $streamUsage['completion']);
+                            tc_record_usage_entry($db, $user['id'], $rModel, $final, $streamUsage['prompt'], $streamUsage['completion']);
+                            if ($saveApiChat2) {
+                                $msgs = tc_api_history_messages($body, $format);
+                                if ($streamText !== '') $msgs[] = array('role' => 'assistant', 'content' => $streamText);
+                                tc_api_append_chat($db, $user['id'], $msgs, array('model' => $rModel, 'usage' => $streamUsage));
+                            }
                         });
+                        if ($streamLogId) tc_update_log($streamLogId, array(
+                            'reply' => tc_log_clip($streamText, TC_LOG_TEXT_LIMIT),
+                            'usage' => array('prompt' => (int) $streamUsage['prompt'], 'completion' => (int) $streamUsage['completion']),
+                            'cost' => $charged,
+                        ));
                         tc_task_finish($taskId, 'completed');
                     }
                     exit;
@@ -1920,12 +2269,12 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             tc_task_finish($taskId, 'failed', 'upstream_http_' . $res['status']);
             $ms = tc_now() - $started;
             $msg = (isset($provider['name']) && $provider['name'] !== '' ? '「' . $provider['name'] . '」' : '') . tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', $res['status']);
-            tc_push_log(array(
+            tc_push_log(array_merge(array(
                 'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
                 'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
                 'format' => $format, 'status' => $res['status'], 'ms' => $ms, 'cost' => 0, 'stream' => $isStream,
                 'error' => substr($msg, 0, 200),
-            ));
+            ), tc_log_chat_meta($body, $format)));
             tc_note_model_health($provider, $body, false);
             if (!$headersSent) tc_fail($res['status'], $msg);
             exit;
@@ -1960,6 +2309,13 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
     do {
         $attempt++;
         $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], false);
+        // 密钥回退:认证失败 / 连接失败时换下一把密钥重试(非流式未向客户端发送任何内容,安全)
+        if ($keyIdx + 1 < count($keyChain)
+            && (empty($res['ok']) || in_array((int) (isset($res['status']) ? $res['status'] : 0), array(401, 403), true))) {
+            $keyIdx++;
+            $headers = tc_upstream_auth_headers($format, $keyChain[$keyIdx], false);
+            continue;
+        }
         if (!( !empty($res['ok']) && !empty($res['status']) && in_array((int) $res['status'], array(429, 500, 502, 503, 504), true) && $attempt < 2 )) break;
         sleep(1);
     } while (true);
@@ -1981,23 +2337,23 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
     $ms = tc_now() - $started;
     if (!$res['ok']) {
         $code = $res['code'] ?: 502;
-        $msg = (isset($provider['name']) && $provider['name'] !== '' ? '「' . $provider['name'] . '」' : '') . ($code === 504 ? '上游 API 响应超时' : ('无法连接上游 API: ' . $res['error']));
-        tc_push_log(array(
+        $msg = tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : '');
+        tc_push_log(array_merge(array(
             'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
             'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
             'format' => $format, 'status' => 0, 'ms' => $ms, 'cost' => 0, 'stream' => false, 'error' => $msg,
-        ));
+        ), tc_log_chat_meta($body, $format)));
         tc_note_model_health($provider, $body, false);
         tc_fail($code, $msg);
     }
     if ($res['status'] >= 400) {
         $msg = (isset($provider['name']) && $provider['name'] !== '' ? '「' . $provider['name'] . '」' : '') . tc_upstream_error_message($res['body'], $res['status']);
-        tc_push_log(array(
+        tc_push_log(array_merge(array(
             'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
             'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
             'format' => $format, 'status' => $res['status'], 'ms' => $ms, 'cost' => 0, 'stream' => false,
             'error' => substr($msg, 0, 200),
-        ));
+        ), tc_log_chat_meta($body, $format)));
         tc_note_model_health($provider, $body, false);
         tc_fail($res['status'], $msg);
     }
@@ -2011,7 +2367,7 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         $bodyUsage['prompt'] = (int) (isset($u['prompt_tokens']) ? $u['prompt_tokens'] : (isset($u['input_tokens']) ? $u['input_tokens'] : 0));
         $bodyUsage['completion'] = (int) (isset($u['completion_tokens']) ? $u['completion_tokens'] : (isset($u['output_tokens']) ? $u['output_tokens'] : 0));
     }
-    tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, &$quota, $bodyUsage, $provider) {
+    tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, &$quota, $bodyUsage, $provider, $ctx, $format, $jBody) {
         $fresh = null;
         foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
         if (!$fresh) return;
@@ -2019,12 +2375,21 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         tc_touch_user($db, $user['id']);
         $quota = isset($fresh['quota']) ? $fresh['quota'] : 0;
         tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $charged, $bodyUsage['prompt'], $bodyUsage['completion']);
+        // 开放 API 调用落库到该用户的对话列表(与流式路径共用同一归并规则)
+        if (!empty($ctx['saveApiChat'])) {
+            $msgs = tc_api_history_messages($body, $format);
+            $reply = tc_model_reply_text($jBody, $format);
+            if ($reply !== '') $msgs[] = array('role' => 'assistant', 'content' => $reply);
+            tc_api_append_chat($db, $user['id'], $msgs, array('model' => isset($body['model']) ? $body['model'] : '', 'usage' => $bodyUsage));
+        }
     });
-    tc_push_log(array(
+    tc_push_log(array_merge(array(
         'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
         'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
         'format' => $format, 'status' => $res['status'], 'ms' => $ms, 'cost' => $charged, 'stream' => false,
-    ));
+        'reply' => tc_log_clip(is_array($jBody) ? tc_model_reply_full($jBody, $format) : (string) $res['body'], TC_LOG_TEXT_LIMIT),
+        'usage' => array('prompt' => (int) $bodyUsage['prompt'], 'completion' => (int) $bodyUsage['completion']),
+    ), tc_log_chat_meta($body, $format)));
     tc_note_model_health($provider, $body, true);
     $ctype = $res['ctype'];
     if (strpos($ctype, 'application/json') !== false) $ct = 'application/json; charset=utf-8';
@@ -2108,8 +2473,23 @@ function tc_context_learn($provider, $body, $errBody) {
 function tc_v1_authenticate() {
     $auth = tc_with_db(true, function (&$db) {
         if (empty($db['settings']['apiKeysEnabled'])) tc_fail(403, '管理员已关闭 API 密钥功能');
-        $owner = tc_find_api_key_owner($db, tc_bearer());
+        $token = tc_bearer();
+        $owner = tc_find_api_key_owner($db, $token);
         if (!$owner) tc_fail(401, '无效的 API 密钥');
+        // 开放接口限流:按"密钥"独立计数(与网页端按用户计数互不影响),
+        // 使后台设置的频率限制对每个 API 密钥各自生效
+        $keyLimit = isset($db['settings']['apiKeyRateLimitPerMin']) ? (int) $db['settings']['apiKeyRateLimitPerMin'] : 60;
+        if ($keyLimit > 0) {
+            $keyTag = substr(hash('sha256', $token), 0, 24);
+            if (!tc_rate_limit_check('k:' . $keyTag, $keyLimit)) {
+                tc_fail(429, '请求太频繁了，请稍后再试（当前密钥上限 ' . $keyLimit . ' 次/分钟）');
+            }
+        }
+        // 用户级限流同样生效,防止用多把密钥绕过站点总量限制
+        $userLimit = isset($db['settings']['rateLimitPerMin']) ? (int) $db['settings']['rateLimitPerMin'] : 30;
+        if ($userLimit > 0 && !tc_rate_limit_check('u:' . $owner['userId'], $userLimit)) {
+            tc_fail(429, '请求太频繁了，请稍后再试（当前账号上限 ' . $userLimit . ' 次/分钟）');
+        }
         // lastUsed 分钟级节流:避免每次 API 调用都全量重写数据库
         $changed = false;
         foreach ($db['users'] as &$u) {
@@ -2129,71 +2509,227 @@ function tc_v1_authenticate() {
     return $auth;
 }
 
+// 开放接口是否对外暴露某个 provider/model:白名单为空表示不限制
+function tc_api_model_exposed($settings, $providerId, $modelId) {
+    $list = isset($settings['apiExposedModels']) && is_array($settings['apiExposedModels']) ? $settings['apiExposedModels'] : array();
+    if (!$list) return true;
+    return in_array($providerId . '|' . $modelId, $list, true);
+}
+
 // ---- 图像生成代理:POST {baseUrl}/images/generations(OpenAI 兼容),按次计费 ----
 // 说明:图像模型不进对话模型清单,因此不做模型成员校验;鉴权/限流/额度/审核与对话一致。
-function tc_api_proxy_images() {
+// $apiKeyOwner 非 null 时走开放接口(密钥)路径,并额外校验对外模型白名单。
+function tc_generate_images($apiKeyOwner = null) {
     $started = tc_now();
-    $ctx = tc_with_db(false, function ($db) {
-        $user = tc_require_auth($db);
+    $authUserId = $apiKeyOwner !== null ? (string) $apiKeyOwner['userId'] : '';
+    $ctx = tc_with_db(false, function ($db) use ($apiKeyOwner, $authUserId) {
+        if ($apiKeyOwner !== null) {
+            $user = null;
+            foreach ($db['users'] as $u) {
+                if ((string) $u['id'] === $authUserId) { $user = $u; break; }
+            }
+            if (!$user) tc_fail(401, 'API 密钥对应的用户不存在');
+        } else {
+            $user = tc_require_auth($db);
+        }
         $rateLimit = isset($db['settings']['rateLimitPerMin']) ? (int) $db['settings']['rateLimitPerMin'] : 30;
         if (!tc_rate_limit_check('u:' . $user['id'], $rateLimit)) {
             tc_fail(429, '请求太频繁了，请稍后再试（当前上限 ' . $rateLimit . ' 次/分钟）');
         }
-        $b = tc_read_json_body(1024 * 1024);
-        $modHit = tc_moderation_hit(isset($db['settings']['moderation']) && is_array($db['settings']['moderation']) ? $db['settings']['moderation'] : array(), (string) (isset($b['prompt']) ? $b['prompt'] : ''));
+        // 图生图/改图需要携带参考图(data URL),给足请求体上限(约 4 张 8MB 图)
+        $b = tc_read_json_body(48 * 1024 * 1024);
+        // 支持两种入参:原生 {prompt} 与 OpenAI 对话格式 {messages/input}(生图模型自动路由时会用到)
+        $promptText = isset($b['prompt']) ? (string) $b['prompt'] : '';
+        if (trim($promptText) === '' && (isset($b['messages']) || isset($b['input']))) {
+            $promptText = tc_last_user_text($b, isset($b['messages']) ? 'chat' : 'responses');
+        }
+        $modHit = tc_moderation_hit(isset($db['settings']['moderation']) && is_array($db['settings']['moderation']) ? $db['settings']['moderation'] : array(), $promptText);
         if ($modHit !== '') tc_fail(400, '提示词包含被禁止的内容，请修改后重试');
-        $resolved = tc_resolve_provider($db, $user, array('providerId' => isset($b['providerId']) ? $b['providerId'] : null));
+        $model = substr(trim((string) (isset($b['model']) ? $b['model'] : '')), 0, 120);
+        // 解析供应商:显式指定 providerId 优先;开放接口/未指定时按模型归属查找
+        $resolved = tc_resolve_provider($db, $user, array(
+            'providerId' => isset($b['providerId']) ? $b['providerId'] : null,
+            'model' => $model,
+        ));
         if (!empty($resolved['error'])) tc_fail(400, $resolved['error']);
         $provider = $resolved['provider'];
         if ((isset($provider['apiFormat']) ? $provider['apiFormat'] : 'chat') === 'anthropic') {
             tc_fail(400, '该供应商为 Anthropic 格式，暂不支持图像生成');
         }
-        $cost = tc_provider_cost($provider);
+        if ($apiKeyOwner !== null && !tc_api_model_exposed($db['settings'], isset($provider['id']) ? $provider['id'] : '', $model)) {
+            tc_fail(403, '模型 ' . $model . ' 未对开放接口开放，请联系管理员');
+        }
+        $cost = tc_model_cost($provider, $model);
         if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
         if (!tc_is_unlimited_quota($user) && (isset($user['quota']) ? (float) $user['quota'] : 0) < $cost) {
             tc_fail(402, '剩余次数不足，请联系管理员充值');
         }
+        // 透传常见可选参数(仅白名单键,避免污染上游请求)
+        $extra = array();
+        foreach (array('quality', 'style', 'response_format', 'background') as $k) {
+            if (isset($b[$k]) && is_string($b[$k]) && $b[$k] !== '') $extra[$k] = substr($b[$k], 0, 40);
+        }
+        // 尺寸:接受「1024x1024」这类精确值,也接受「1K/2K/3K/4K」这类档位(部分平台推荐用档位)
+        $size = '1024x1024';
+        $sizeExplicit = false;
+        if (isset($b['size']) && is_string($b['size'])) {
+            $s = trim($b['size']);
+            if (preg_match('/^\d{3,4}x\d{3,4}$/i', $s) || preg_match('/^[1-4]K$/i', $s)) { $size = $s; $sizeExplicit = true; }
+        }
+        // 宽高比(部分平台如 Agnes 用 ratio 而非 size 表达构图)
+        $ratio = '';
+        if (isset($b['ratio']) && is_string($b['ratio']) && preg_match('#^\d{1,2}:\d{1,2}$#', trim($b['ratio']))) $ratio = trim($b['ratio']);
+        // 用户只给了宽高比、没给尺寸时,首轮只发 ratio(两者同发部分平台会冲突);
+        // 降级阶梯里仍会用默认尺寸兜底,兼容只认 size 的平台。
+        if ($ratio !== '' && !$sizeExplicit) $size = '';
+        // 图生图/修改图:允许用户上传 1~4 张待修改图片(data URL 或公网 URL)
+        $editImages = tc_edit_image_refs(isset($b['images']) ? $b['images'] : null);
         return array(
             'user' => $user,
             'provider' => $provider,
             'cost' => $cost,
-            'model' => substr(trim((string) (isset($b['model']) ? $b['model'] : '')), 0, 120),
-            'prompt' => substr(trim((string) (isset($b['prompt']) ? $b['prompt'] : '')), 0, 4000),
-            'size' => isset($b['size']) && preg_match('/^\d{3,4}x\d{3,4}$/', (string) $b['size']) ? (string) $b['size'] : '1024x1024',
+            'model' => $model,
+            'prompt' => substr(trim($promptText), 0, 4000),
+            'size' => $size,
+            'ratio' => $ratio,
             'n' => min(4, max(1, (int) (isset($b['n']) ? $b['n'] : 1) ?: 1)),
+            'extra' => $extra,
+            'images' => $editImages,
             'timeout' => $db['settings']['proxyTimeoutMs'],
         );
     });
     $provider = $ctx['provider'];
     $user = $ctx['user'];
     if ($ctx['model'] === '' || $ctx['prompt'] === '') tc_fail(400, '请填写模型和提示词');
-    $url = rtrim((string) $provider['baseUrl'], '/') . '/images/generations';
-    $headers = array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . $provider['apiKey']);
-    $payload = tc_json_encode(array(
+    // 关键:生图也必须补齐 /v1(用户常按平台文档只填 https://host,不写 /v1)
+    $url = tc_api_url($provider['baseUrl'], '/images/generations');
+    $headers = array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . tc_provider_key_for_model($provider, $ctx['model']));
+    $body = array(
         'model' => $ctx['model'],
         'prompt' => $ctx['prompt'],
         'n' => $ctx['n'],
-        'size' => $ctx['size'],
-    ));
-    $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], false);
-    if (empty($res['ok'])) {
-        tc_fail(502, '无法连接上游 API: ' . (isset($res['error']) ? $res['error'] : '未知错误'));
+    );
+    if ($ctx['size'] !== '') $body['size'] = $ctx['size'];
+    if (!empty($ctx['ratio'])) $body['ratio'] = $ctx['ratio'];
+    // 图生图/修改图:部分平台(如 Agnes)用 image 数组接收待修改图片
+    if (!empty($ctx['images'])) $body['image'] = array_values($ctx['images']);
+    // 透传常见可选参数(如 quality / style / response_format);仅收录白名单键,避免污染上游请求
+    foreach (array('quality', 'style', 'response_format', 'background') as $k) {
+        if (isset($ctx['extra'][$k])) $body[$k] = $ctx['extra'][$k];
     }
-    $status = (int) (isset($res['status']) ? $res['status'] : 0);
-    if ($status >= 400) {
-        tc_fail($status, tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', $status));
+    // 不同平台对可选参数的容忍度差异很大(有的拒绝 response_format,有的拒绝 size/style;
+    // 还有的(如 Agnes)要求把 response_format 放进 extra_body 而不是顶层)。
+    // 先按完整参数请求,若被上游以 4xx 拒绝,则逐级降级/换形态重试。
+    // 降级顺序刻意「先丢冷门可选参数、最后才丢 size」——因为 size 是很多平台的必填项。
+    // 允许「网络类连接错误」重试一次(提高网络抖动/冷启动的成功率),但参数类错误不重试。
+    $attempts = array();
+    $attempts[] = $body;                                                    // 0. 完整参数
+    if (isset($body['response_format'])) {                                  // 1. response_format 挪进 extra_body
+        $alt = $body;
+        unset($alt['response_format']);
+        $alt['extra_body'] = array('response_format' => $body['response_format']);
+        $attempts[] = $alt;
     }
-    $j = json_decode((string) (isset($res['body']) ? $res['body'] : ''), true);
-    $images = array();
-    foreach ((isset($j['data']) && is_array($j['data']) ? $j['data'] : array()) as $d) {
-        if (!is_array($d)) continue;
-        if (!empty($d['url'])) $images[] = array('url' => (string) $d['url']);
-        elseif (!empty($d['b64_json'])) $images[] = array('url' => 'data:image/png;base64,' . (string) $d['b64_json']);
-        if (count($images) >= $ctx['n']) break;
+    $strip = function ($src, $keys) {                                        // 去掉指定键,保留其余
+        $out = $src;
+        foreach ($keys as $k) unset($out[$k]);
+        return $out;
+    };
+    // 只给宽高比、没给尺寸时:补一个「只认 size 的平台」能接受的默认尺寸版本,
+    // 避免降级到去掉 ratio 后既没有 ratio 也没有 size。
+    if (empty($body['size']) && !empty($body['ratio'])) {
+        $withSize = $body;
+        $withSize['size'] = '1024x1024';
+        $attempts[] = $withSize;
     }
-    if (!$images) tc_fail(502, '上游未返回图像，请稍后重试或更换模型');
+    $optional = array('quality', 'style', 'background', 'response_format', 'extra_body', 'ratio');
+    $attempts[] = $strip($body, $optional);                                  // 2. 去可选参数,保留 size/n
+    $attempts[] = $strip($body, array_merge($optional, array('n')));         // 3. 再去 n,保留 size
+    $attempts[] = array('model' => $ctx['model'], 'prompt' => $ctx['prompt']); // 4. 最后只剩必填(极端平台)
+    $seen = array();
+    $res = null;
+    $status = 0;
+    $lastMsg = '';
+    foreach ($attempts as $idx => $b) {
+        $sig = tc_json_encode($b);
+        if (isset($seen[$sig])) continue;
+        $seen[$sig] = true;
+        $res = tc_http_request($url, 'POST', $headers, $sig, $ctx['timeout'], false, null, true, 30000);
+        if (empty($res['ok'])) {
+            // 连接层失败:网络类(超时/连接)重试一次,其余直接报错
+            $retryable = in_array(isset($res['kind']) ? $res['kind'] : '', array('connect_timeout', 'read_timeout', 'connect'), true);
+            if ($retryable && $idx < 2) { sleep(1); continue; }
+            tc_fail(isset($res['code']) && $res['code'] ? $res['code'] : 502, tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : ''));
+        }
+        $status = (int) (isset($res['status']) ? $res['status'] : 0);
+        if ($status < 400) break;
+        $lastMsg = tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', $status);
+        // 认证 / 限流 / 余额类错误:对话接口同样会失败,直接返回原样错误
+        if (in_array($status, array(401, 402, 403, 429), true)) tc_fail($status, $lastMsg);
+        // 「该模型不支持此路径」的提示可能伴随各种状态码(实测 400 / 503 都出现过)。
+        // 命中这类语义时不必再降级参数(参数再少也不行),直接跳出走对话接口兜底。
+        if (tc_error_means_path_unsupported($lastMsg, $status)) break;
+        // 参数类错误(400/422):继续用下一组更精简的参数重试
+        if (!in_array($status, array(400, 422), true)) break; // 其它状态:路径/服务不可用,改走对话兜底
+    }
+    // ---- 兜底:改走 chat/completions ----
+    // 不少平台(如 api.apilio.ai 的 gemini / gpt-4o-image / nano-banana 等)根本没有
+    // images/generations 路径,而是用对话接口出图、把图片放进 message.content。
+    // 因此当该路径不可用或响应里取不到图片时,自动改用对话接口重试一次。
+    $items = array();
+    $usedChat = false;
+    if ($status < 400) {
+        $j = json_decode((string) (isset($res['body']) ? $res['body'] : ''), true);
+        $chatText = '';
+        $items = tc_image_results_from_payload($j, $ctx['n']);
+        // 响应体里可能直接是对话结构(Markdown 图片),一并尝试抽取
+        if (!$items) {
+            $fromChat = tc_images_from_chat_response($j, $ctx['n'], $chatText);
+            if ($fromChat) { $items = $fromChat; $usedChat = true; }
+        }
+    }
+    if (!$items) {
+        // 无论前一步是路径不可用还是响应里没找到图,都尝试对话接口。
+        // 对话式出图没有 size/ratio 参数,把规格拼进提示词,让模型按构图要求出图。
+        $chatPrompt = $ctx['prompt'];
+        if (!empty($ctx['ratio'])) $chatPrompt .= '（图片宽高比 ' . $ctx['ratio'] . '）';
+        elseif (!empty($ctx['size'])) $chatPrompt .= '（图片尺寸 ' . $ctx['size'] . '）';
+        $chatBody = array(
+            'model' => $ctx['model'],
+            'stream' => false,
+            'messages' => array(array('role' => 'user', 'content' => tc_image_edit_message_content($chatPrompt, $ctx['images']))),
+        );
+        $chatRes = tc_http_request(tc_api_url($provider['baseUrl'], '/chat/completions'), 'POST', $headers, tc_json_encode($chatBody), $ctx['timeout'], false, null, true, 30000);
+        if (!empty($chatRes['ok']) && (int) $chatRes['status'] < 400) {
+            $cj = json_decode((string) (isset($chatRes['body']) ? $chatRes['body'] : ''), true);
+            $ctext = '';
+            $chatItems = tc_images_from_chat_response($cj, $ctx['n'], $ctext);
+            if ($chatItems) {
+                $items = $chatItems;
+                $res = $chatRes;
+                $status = (int) $chatRes['status'];
+                $usedChat = true;
+            } elseif ($ctext !== '') {
+                // 对话接口回复了文字但没出图:多为上游拒绝或需要更明确的指令,回传原文便于定位
+                tc_fail(502, '该模型未返回图片，上游回复：' . substr($ctext, 0, 200));
+            }
+        }
+    }
+    if (!$items && $status >= 400) {
+        // 两条路径都没成功,返回上游原始错误
+        tc_fail($status, $lastMsg !== '' ? $lastMsg : ('上游 API 错误 (HTTP ' . $status . ')'));
+    }
+    // 为每个 URL 结果补一个同源代理地址:多数平台的图片在第三方对象存储域,
+    // 部分网络下浏览器直连加载不到(后端却已成功出图),经本站转发即可稳定显示。
+    foreach ($items as &$it) {
+        if (!empty($it['url'])) $it['display'] = tc_img_proxy_path($it['url']);
+    }
+    unset($it);
+    if (!$items) {
+        tc_fail(502, '该模型未返回图片。若这是对话式生图模型，请确认 Base URL 与模型名正确；也可尝试在「设置 → 供应商」中把该模型标记为生图。');
+    }
     $usage = array('prompt' => 0, 'completion' => 0);
-    tc_with_db(true, function (&$db) use ($user, $provider, $ctx, $usage, $started) {
+    tc_with_db(true, function (&$db) use ($user, $provider, $ctx, $usage, $started, $items) {
         $fresh = null;
         foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
         if (!$fresh) return;
@@ -2201,9 +2737,683 @@ function tc_api_proxy_images() {
         tc_touch_user($db, $user['id']);
         $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
         tc_record_usage_entry($db, $user['id'], $ctx['model'] . ' (图像)', $charged, 0, 0);
-        tc_push_log(array('kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'], 'provider' => $provider['name'], 'model' => $ctx['model'] . ' (图像)', 'format' => 'images', 'status' => 200, 'ms' => tc_now() - $started, 'cost' => $charged, 'stream' => false));
+        tc_push_log(array('kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'], 'provider' => $provider['name'], 'model' => $ctx['model'] . ' (图像)', 'format' => 'images', 'status' => 200, 'ms' => tc_now() - $started, 'cost' => $charged, 'stream' => false,
+            'prompt' => tc_log_clip(isset($ctx['prompt']) ? $ctx['prompt'] : '', 4000),
+            'reply' => tc_log_clip(count($items) . ' 张图片：' . implode("\n", array_map(function ($im) { return isset($im['url']) ? $im['url'] : (isset($im['display']) ? $im['display'] : ($im['b64_json'] ?? '' ? '[b64 图片]' : '')); }, $items)), 4000),
+            'ip' => tc_client_ip()));
     });
-    tc_json(200, array('ok' => true, 'model' => $ctx['model'], 'images' => $images));
+    return array('ok' => true, 'model' => $ctx['model'], 'images' => $items);
+}
+
+// ---- 生图结果图片代理 ----
+// 多数生图平台把图片放在第三方对象存储(如 Google Cloud Storage 域),在部分网络下
+// 浏览器加载不到,表现为「后端出图了但页面上看不到图」。这里把图片经由本站转发,
+// 让 <img> 始终从同源加载。
+//
+// 鉴权方式:签名而非 Bearer——<img> 请求不会带 Authorization 头。服务器生成带 HMAC
+// 的地址,因此代理不会被当成任意 URL 的开放转发。
+function tc_img_proxy_token($url) {
+    return substr(hash_hmac('sha256', (string) $url, tc_secret()), 0, 24);
+}
+function tc_img_proxy_path($url) {
+    $u = (string) $url;
+    if (!preg_match('#^https?://#i', $u)) return $u; // data: 等无需代理
+    return '/api/proxy/image?u=' . rawurlencode($u) . '&s=' . tc_img_proxy_token($u);
+}
+
+// SSRF 防护:只允许指向公网地址的 http(s) URL
+function tc_url_is_public_http($url) {
+    $p = parse_url((string) $url);
+    if (!is_array($p) || empty($p['host'])) return false;
+    $scheme = strtolower(isset($p['scheme']) ? $p['scheme'] : '');
+    if ($scheme !== 'http' && $scheme !== 'https') return false;
+    $host = $p['host'];
+    $ips = array();
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        $ips[] = $host;
+    } else {
+        $recs = @dns_get_record($host, DNS_A | DNS_AAAA);
+        if (is_array($recs)) {
+            foreach ($recs as $r) {
+                if (!empty($r['ip'])) $ips[] = $r['ip'];
+                elseif (!empty($r['ipv6'])) $ips[] = $r['ipv6'];
+            }
+        }
+        if (!$ips) {
+            $one = @gethostbyname($host);
+            if ($one && $one !== $host) $ips[] = $one;
+        }
+    }
+    if (!$ips) return false;
+    foreach ($ips as $ip) {
+        // 拒绝私有/保留网段(含回环、链路本地 169.254、内网等)
+        if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) return false;
+    }
+    return true;
+}
+
+function tc_img_cache_dir() {
+    $dir = tc_data_dir() . '/imgcache';
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    return $dir;
+}
+
+// 缓存落盘(按 URL 哈希),并做总量清理;返回缓存文件路径或 ''
+function tc_img_cache_lookup($url) {
+    $file = tc_img_cache_dir() . '/' . hash('sha256', (string) $url) . '.bin';
+    if (!is_file($file)) return '';
+    if (filesize($file) < 8) { @unlink($file); return ''; }
+    return $file;
+}
+function tc_img_cache_store($url, $bytes, $ctype) {
+    $dir = tc_img_cache_dir();
+    if (!is_dir($dir) || !is_writable($dir)) return;
+    // 头部 1 字节长度 + 内容类型,再存图片字节
+    $ct = substr((string) $ctype, 0, 120);
+    $head = chr(strlen($ct)) . $ct;
+    @file_put_contents($dir . '/' . hash('sha256', (string) $url) . '.bin', $head . $bytes, LOCK_EX);
+    tc_img_cache_gc($dir);
+}
+// 缓存总量上限 300MB,超出按修改时间从旧到新删除
+function tc_img_cache_gc($dir, $limitBytes = 314572800) {
+    $files = @glob($dir . '/*.bin');
+    if (!is_array($files) || count($files) < 2) return;
+    $total = 0; $rows = array();
+    foreach ($files as $f) {
+        $sz = @filesize($f); if ($sz === false) continue;
+        $total += $sz;
+        $rows[] = array('f' => $f, 't' => (int) @filemtime($f), 's' => $sz);
+    }
+    if ($total <= $limitBytes) return;
+    usort($rows, function ($a, $b) { return $a['t'] - $b['t']; });
+    foreach ($rows as $r) {
+        if ($total <= $limitBytes) break;
+        if (@unlink($r['f'])) $total -= $r['s'];
+    }
+}
+
+// 输出缓存文件(带长缓存头)
+function tc_img_serve_cached($file) {
+    $raw = @file_get_contents($file);
+    if ($raw === false || strlen($raw) < 2) return false;
+    $len = ord($raw[0]);
+    $ctype = substr($raw, 1, $len);
+    $body = substr($raw, 1 + $len);
+    if ($ctype === '' || strpos($ctype, 'image/') !== 0) $ctype = 'image/png';
+    header('Content-Type: ' . $ctype);
+    header('Content-Length: ' . strlen($body));
+    header('Cache-Control: public, max-age=86400');
+    echo $body;
+    return true;
+}
+
+// GET /api/proxy/image?u=<原始图片地址>&s=<签名>
+function tc_api_image_proxy() {
+    $q = tc_query();
+    $url = isset($q['u']) ? (string) $q['u'] : '';
+    $sig = isset($q['s']) ? (string) $q['s'] : '';
+    if ($url === '' || $sig === '' || !hash_equals(tc_img_proxy_token($url), $sig)) {
+        http_response_code(403);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '签名无效';
+        exit;
+    }
+    // 每 IP 限流,避免被当作图片转发器刷带宽
+    if (!tc_rate_limit_check('imgpx:' . tc_client_ip(), 300)) {
+        http_response_code(429);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '请求过于频繁';
+        exit;
+    }
+    // 命中缓存直接返回
+    $cached = tc_img_cache_lookup($url);
+    if ($cached !== '' && tc_img_serve_cached($cached)) exit;
+    // 安全校验:必须是公网 http(s)
+    if (!tc_url_is_public_http($url)) {
+        http_response_code(400);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '图片地址不被允许';
+        exit;
+    }
+    // 拉取图片,限制体积(25MB)与超时;跟随少量重定向
+    $max = 25 * 1024 * 1024;
+    $ch = curl_init($url);
+    curl_setopt_array($ch, array(
+        CURLOPT_RETURNTRANSFER => false,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_MAXREDIRS => 2,
+        CURLOPT_CONNECTTIMEOUT => 15,
+        CURLOPT_TIMEOUT => 60,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_USERAGENT => 'TinyChat-ImageProxy/1.0',
+    ));
+    $ca = tc_cacert_path();
+    if ($ca) curl_setopt($ch, CURLOPT_CAINFO, $ca);
+    $buf = '';
+    $tooBig = false;
+    $ctype = '';
+    curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($ch, $line) use (&$ctype) {
+        if (stripos($line, 'content-type:') === 0) $ctype = trim(substr($line, 13));
+        return strlen($line);
+    });
+    curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $data) use (&$buf, &$tooBig, $max) {
+        if (strlen($buf) + strlen($data) > $max) { $tooBig = true; return 0; }
+        $buf .= $data;
+        return strlen($data);
+    });
+    @curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if ($tooBig || $status < 200 || $status >= 300 || $buf === '') {
+        // 代理失败时回退:302 到原始地址(用户浏览器直连,或许能打开)
+        header('Location: ' . $url, true, 302);
+        exit;
+    }
+    $ctype = strtolower(trim(explode(';', $ctype)[0]));
+    if (strpos($ctype, 'image/') !== 0) $ctype = 'image/png';
+    tc_img_cache_store($url, $buf, $ctype);
+    header('Content-Type: ' . $ctype);
+    header('Content-Length: ' . strlen($buf));
+    header('Cache-Control: public, max-age=86400');
+    echo $buf;
+    exit;
+}
+
+// 从对话式图像响应里提取图片:不少平台(如 api.apilio.ai 的 gemini / gpt-4o-image /
+// nano-banana)把出图放在 chat/completions 的 message.content 里,形如
+//   "Here you go: ![image](https://.../x.png)"
+// 或 content 为多模态数组 [{type:'image_url', image_url:{url}}, ...]。
+// $textOut 回填纯文本部分(用于判断上游是「拒绝/反问」还是真的出了图)。
+function tc_images_from_chat_response($j, $limit = 1, &$textOut = '') {
+    $items = array();
+    $textOut = '';
+    if (!is_array($j)) return $items;
+    $limit = max(1, (int) $limit);
+    $content = null;
+    if (isset($j['choices'][0]['message']['content'])) $content = $j['choices'][0]['message']['content'];
+    elseif (isset($j['choices'][0]['text'])) $content = $j['choices'][0]['text'];
+    elseif (isset($j['output_text'])) $content = $j['output_text'];
+    if ($content === null) return $items;
+    $nodes = is_array($content) ? $content : array(array('type' => 'text', 'text' => (string) $content));
+    $pushUrl = function ($u) use (&$items, $limit) {
+        if (count($items) >= $limit) return;
+        $u = trim((string) $u);
+        if ($u === '') return;
+        if (strpos($u, 'data:image/') === 0) {
+            $pos = strpos($u, 'base64,');
+            if ($pos !== false) $items[] = array('b64_json' => substr($u, $pos + 7));
+            return;
+        }
+        if (preg_match('#^https?://#i', $u)) $items[] = array('url' => $u);
+    };
+    foreach ($nodes as $part) {
+        if (is_string($part)) { $textOut .= $part . "\n"; $part = array('type' => 'text', 'text' => $part); }
+        if (!is_array($part)) continue;
+        $type = isset($part['type']) ? (string) $part['type'] : '';
+        // 结构化图片分片
+        if ($type === 'image_url' || $type === 'output_image' || $type === 'image') {
+            $u = '';
+            if (isset($part['image_url']['url'])) $u = $part['image_url']['url'];
+            elseif (isset($part['image_url']) && is_string($part['image_url'])) $u = $part['image_url'];
+            elseif (isset($part['url'])) $u = $part['url'];
+            elseif (isset($part['image']) && is_string($part['image'])) $u = $part['image'];
+            elseif (isset($part['source']['data'])) $u = 'data:image/png;base64,' . $part['source']['data'];
+            if ($u !== '') { $pushUrl($u); continue; }
+        }
+        if (isset($part['url']) && is_string($part['url'])) { $pushUrl($part['url']); continue; }
+        // 文本里内嵌的 Markdown 图片 ![](url)、HTML <img src>、裸 data URL
+        $t = isset($part['text']) ? (string) $part['text'] : '';
+        if ($t !== '') $textOut .= $t . "\n";
+    }
+    if (count($items) < $limit) {
+        // 从整段文本里兜底抽取图片地址
+        $allText = $textOut;
+        if (preg_match_all('#!\[[^\]]*\]\(\s*([^)\s]+)\s*\)#i', $allText, $m)) {
+            foreach ($m[1] as $u) $pushUrl($u);
+        }
+        if (count($items) < $limit && preg_match_all('#<img[^>]+src=["\']([^"\']+)["\']#i', $allText, $m2)) {
+            foreach ($m2[1] as $u) $pushUrl($u);
+        }
+        if (count($items) < $limit && preg_match_all('#(data:image/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+)#i', $allText, $m3)) {
+            foreach ($m3[1] as $u) $pushUrl($u);
+        }
+    }
+    $textOut = trim($textOut);
+    return $items;
+}
+
+// 判断上游错误是否表示「这个模型/接口路径不支持」——这类错误应改走对话接口兜底,
+// 而不是当成参数问题反复降级或直接失败。
+function tc_error_means_path_unsupported($msg, $status = 0) {
+    $s = strtolower((string) $msg);
+    if ($status === 404 || $status === 405 || $status === 415) return true;
+    foreach (array('不支持此 api 路径', '不支持该', '更换请求路径', 'not support', 'unsupported', 'does not support',
+                   'no such', 'not found', 'invalid url', 'unknown endpoint', 'no route') as $kw) {
+        if (strpos($s, $kw) !== false) return true;
+    }
+    return false;
+}
+
+// 轻量公网判断:用于「只是转交给上游、由上游去拉取」的地址(如改图参考图)。
+// 不要求本地能解析该域名(那样会误杀临时不可解析但合法的公网地址),只拦截
+// 明确的内网目标:字面量私有/保留 IP、localhost 与常见内网后缀。
+function tc_url_looks_public($url) {
+    $p = parse_url((string) $url);
+    if (!is_array($p) || empty($p['host'])) return false;
+    $scheme = strtolower(isset($p['scheme']) ? $p['scheme'] : '');
+    if ($scheme !== 'http' && $scheme !== 'https') return false;
+    $host = strtolower($p['host']);
+    if ($host === 'localhost' || substr($host, -6) === '.local' || substr($host, -9) === '.internal') return false;
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        return (bool) filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE);
+    }
+    return true; // 域名交给上游解析
+}
+
+// 组装对话式生图/改图的消息内容:有参考图时用多模态数组(text + image_url),
+// 无参考图时用纯文本字符串(兼容性最好)。
+function tc_image_edit_message_content($prompt, $images) {
+    $prompt = (string) $prompt;
+    if (!is_array($images) || !$images) return $prompt;
+    $content = array(array('type' => 'text', 'text' => $prompt));
+    foreach ($images as $u) {
+        $content[] = array('type' => 'image_url', 'image_url' => array('url' => $u));
+    }
+    return $content;
+}
+
+// 把输入的图片整理成对话编辑请求可用的 image_url 列表(默认最多 4 张)
+function tc_edit_image_refs($images, $max = 4) {
+    $refs = array();
+    if (!is_array($images)) return $refs;
+    foreach ($images as $im) {
+        $v = '';
+        if (is_string($im)) $v = trim($im);
+        elseif (is_array($im)) {
+            if (isset($im['dataUrl']) && is_string($im['dataUrl'])) $v = trim($im['dataUrl']);
+            elseif (isset($im['data']) && is_string($im['data'])) $v = trim($im['data']);
+            elseif (isset($im['url']) && is_string($im['url'])) $v = trim($im['url']);
+        }
+        if ($v === '') continue;
+        // data:image/... 直接用;远程 URL 只做轻量公网校验,避免把内网地址转发给上游
+        if (strpos($v, 'data:image/') === 0) $refs[] = $v;
+        elseif (preg_match('#^https?://#i', $v) && tc_url_looks_public($v)) $refs[] = $v;
+        if (count($refs) >= max(1, (int) $max)) break;
+    }
+    return $refs;
+}
+
+function tc_image_results_from_payload($j, $limit = 1) {
+    $items = array();
+    $limit = max(1, (int) $limit);
+    $push = function ($node) use (&$items, $limit) {
+        if (count($items) >= $limit) return;
+        if (is_string($node)) {
+            $s = trim($node);
+            if ($s === '') return;
+            if (strpos($s, 'data:image/') === 0) {
+                $pos = strpos($s, 'base64,');
+                if ($pos !== false) { $items[] = array('b64_json' => substr($s, $pos + 7)); return; }
+            }
+            if (preg_match('#^https?://#i', $s)) { $items[] = array('url' => $s); return; }
+            return;
+        }
+        if (!is_array($node)) return;
+        $item = array();
+        if (!empty($node['url']) && is_string($node['url'])) $item['url'] = $node['url'];
+        elseif (!empty($node['b64_json'])) $item['b64_json'] = (string) $node['b64_json'];
+        elseif (!empty($node['image_url']) && is_string($node['image_url'])) $item['url'] = $node['image_url'];
+        elseif (!empty($node['image']) && is_string($node['image'])) {
+            // image 字段可能是裸 base64 或 data URL
+            $v = $node['image'];
+            if (strpos($v, 'data:image/') === 0) {
+                $pos = strpos($v, 'base64,');
+                if ($pos !== false) $item['b64_json'] = substr($v, $pos + 7);
+            } elseif (preg_match('#^https?://#i', $v)) {
+                $item['url'] = $v;
+            } else {
+                $item['b64_json'] = $v;
+            }
+        }
+        if (isset($node['revised_prompt']) && is_string($node['revised_prompt'])) $item['revised_prompt'] = $node['revised_prompt'];
+        if ($item) $items[] = $item;
+    };
+    if (!is_array($j)) return $items;
+    foreach (array('data', 'images', 'output', 'artifacts', 'results', 'image') as $key) {
+        if (!array_key_exists($key, $j)) continue;
+        $v = $j[$key];
+        if (is_array($v)) {
+            // 关联数组且自身带 url/b64_json,视为单个对象
+            if (isset($v['url']) || isset($v['b64_json']) || isset($v['image']) || isset($v['image_url'])) $push($v);
+            else foreach ($v as $one) $push($one);
+        } else {
+            $push($v);
+        }
+        if (count($items) >= $limit) break;
+    }
+    // 顶层直接是单张图片
+    if (!$items && (isset($j['url']) || isset($j['b64_json']) || isset($j['image']))) $push($j);
+    return $items;
+}
+
+// 网页端入口:返回 {ok, model, images:[{url|b64_json}]}
+function tc_api_proxy_images() {
+    tc_json(200, tc_generate_images(null));
+}
+
+// 开放接口入口:POST /v1/images/generations,返回 OpenAI 规范形状
+function tc_api_v1_images_generations() {
+    $auth = tc_v1_authenticate();
+    $out = tc_generate_images($auth);
+    $data = array();
+    foreach ((isset($out['images']) ? $out['images'] : array()) as $im) {
+        $row = array();
+        if (!empty($im['url'])) $row['url'] = $im['url'];
+        elseif (!empty($im['b64_json'])) $row['b64_json'] = $im['b64_json'];
+        if (isset($im['revised_prompt'])) $row['revised_prompt'] = $im['revised_prompt'];
+        if ($row) $data[] = $row;
+    }
+    tc_json(200, array('created' => (int) floor(tc_now() / 1000), 'data' => $data));
+}
+
+// ============ 视频生成(异步任务:建任务 + 轮询) ============
+// 视频模型名启发式(供前后台默认判断;仍以后台显式 video 标记 / apiFormat=video 为准)
+function tc_video_model_name_hint($id) {
+    $s = strtolower(trim((string) $id));
+    if ($s === '') return false;
+    if (strpos($s, 'agnes-video') !== false) return true;
+    return (bool) preg_match('/(^|[^a-z0-9])(videos?|text-to-video|image-to-video|t2v|i2v|kling|sora|veo|runway|pika|seedance|hailuo|vidu|wan-?video)([^a-z0-9]|$)/', $s);
+}
+// 模型是否视频模型:供应商 apiFormat=video 或模型 video 标记优先,否则按名称启发式
+function tc_model_is_video($provider, $modelId) {
+    $id = trim((string) $modelId);
+    if ($id === '') return false;
+    $fmt = isset($provider['apiFormat']) ? (string) $provider['apiFormat'] : 'chat';
+    if ($fmt === 'video') return true;
+    foreach ((isset($provider['models']) && is_array($provider['models'])) ? $provider['models'] : array() as $m) {
+        if (!is_array($m)) continue;
+        if ((string) (isset($m['id']) ? $m['id'] : '') !== $id) continue;
+        if (array_key_exists('video', $m)) return !empty($m['video']);
+        break;
+    }
+    return tc_video_model_name_hint($id);
+}
+// 任务查询地址:Agnes 的查询端点在站点根(/agnesapi),不在 /v1 下;从 Base URL 去掉版本段再拼
+function tc_video_poll_url($baseUrl) {
+    $base = rtrim(trim((string) $baseUrl), '/');
+    return preg_replace('#/v\d+[a-z]*$#i', '', $base) . '/agnesapi';
+}
+
+function tc_generate_video($apiKeyOwner = null) {
+    $started = tc_now();
+    $authUserId = $apiKeyOwner !== null ? (string) $apiKeyOwner['userId'] : '';
+    $ctx = tc_with_db(false, function ($db) use ($apiKeyOwner, $authUserId) {
+        if ($apiKeyOwner !== null) {
+            $user = null;
+            foreach ($db['users'] as $u) {
+                if ((string) $u['id'] === $authUserId) { $user = $u; break; }
+            }
+            if (!$user) tc_fail(401, 'API 密钥对应的用户不存在');
+        } else {
+            $user = tc_require_auth($db);
+        }
+        $rateLimit = isset($db['settings']['rateLimitPerMin']) ? (int) $db['settings']['rateLimitPerMin'] : 30;
+        if (!tc_rate_limit_check('u:' . $user['id'], $rateLimit)) {
+            tc_fail(429, '请求太频繁了，请稍后再试（当前上限 ' . $rateLimit . ' 次/分钟）');
+        }
+        // 参考图 / 首尾帧都可能是 data URL,给足请求体上限
+        $b = tc_read_json_body(48 * 1024 * 1024);
+        $promptText = isset($b['prompt']) ? (string) $b['prompt'] : '';
+        if (trim($promptText) === '' && (isset($b['messages']) || isset($b['input']))) {
+            $promptText = tc_last_user_text($b, isset($b['messages']) ? 'chat' : 'responses');
+        }
+        $modHit = tc_moderation_hit(isset($db['settings']['moderation']) && is_array($db['settings']['moderation']) ? $db['settings']['moderation'] : array(), $promptText);
+        if ($modHit !== '') tc_fail(400, '提示词包含被禁止的内容，请修改后重试');
+        $model = substr(trim((string) (isset($b['model']) ? $b['model'] : '')), 0, 120);
+        $resolved = tc_resolve_provider($db, $user, array(
+            'providerId' => isset($b['providerId']) ? $b['providerId'] : null,
+            'model' => $model,
+        ));
+        if (!empty($resolved['error'])) tc_fail(400, $resolved['error']);
+        $provider = $resolved['provider'];
+        $fmt = isset($provider['apiFormat']) ? (string) $provider['apiFormat'] : 'chat';
+        if ($fmt === 'anthropic') tc_fail(400, '该供应商为 Anthropic 格式，暂不支持视频生成');
+        if ($apiKeyOwner !== null && !tc_api_model_exposed($db['settings'], isset($provider['id']) ? $provider['id'] : '', $model)) {
+            tc_fail(403, '模型 ' . $model . ' 未对开放接口开放，请联系管理员');
+        }
+        $cost = tc_model_cost($provider, $model);
+        if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
+        if (!tc_is_unlimited_quota($user) && (isset($user['quota']) ? (float) $user['quota'] : 0) < $cost) {
+            tc_fail(402, '剩余次数不足，请联系管理员充值');
+        }
+        // 模式:文字生成 / 首尾帧 / 参考图
+        $mode = isset($b['mode']) && in_array($b['mode'], array('text', 'keyframe', 'reference'), true) ? $b['mode'] : 'text';
+        // 时长:4~12 秒(字符串)
+        $seconds = '5';
+        if (isset($b['seconds'])) {
+            $sec = is_numeric($b['seconds']) ? (int) $b['seconds'] : 0;
+            if ($sec >= 4 && $sec <= 12) $seconds = (string) $sec;
+        }
+        // 画面比例
+        $ratio = '16:9';
+        $allowedRatios = array('21:9', '16:9', '4:3', '1:1', '3:4', '9:16');
+        if (isset($b['aspect_ratio']) && is_string($b['aspect_ratio']) && in_array(trim($b['aspect_ratio']), $allowedRatios, true)) {
+            $ratio = trim($b['aspect_ratio']);
+        }
+        $seed = null;
+        if (isset($b['seed']) && is_numeric($b['seed'])) { $s = (int) $b['seed']; if ($s >= 0) $seed = $s; }
+        // 参考图(最多 5)/ 音频(最多 3)/ 首尾帧
+        $images = $mode === 'reference' ? tc_edit_image_refs(isset($b['images']) ? $b['images'] : null, 5) : array();
+        $audios = $mode === 'reference' ? tc_edit_image_refs(isset($b['audios']) ? $b['audios'] : null, 3) : array();
+        $firstFrame = '';
+        $lastFrame = '';
+        if ($mode === 'keyframe') {
+            $f = tc_edit_image_refs(isset($b['first_frame']) ? array($b['first_frame']) : null, 1);
+            $l = tc_edit_image_refs(isset($b['last_frame']) ? array($b['last_frame']) : null, 1);
+            $firstFrame = $f ? $f[0] : '';
+            $lastFrame = $l ? $l[0] : '';
+            if ($firstFrame === '' && $lastFrame === '') tc_fail(400, '首尾帧模式至少需要上传首帧或尾帧');
+        }
+        return array(
+            'user' => $user,
+            'provider' => $provider,
+            'cost' => $cost,
+            'model' => $model,
+            'prompt' => substr(trim($promptText), 0, 4000),
+            'mode' => $mode,
+            'seconds' => $seconds,
+            'ratio' => $ratio,
+            'seed' => $seed,
+            'images' => $images,
+            'audios' => $audios,
+            'first_frame' => $firstFrame,
+            'last_frame' => $lastFrame,
+        );
+    });
+    $provider = $ctx['provider'];
+    $user = $ctx['user'];
+    if ($ctx['model'] === '' || $ctx['prompt'] === '') tc_fail(400, '请填写模型和提示词');
+    $url = tc_api_url($provider['baseUrl'], '/videos');
+    $videoKey = tc_provider_key_for_model($provider, $ctx['model']);
+    $headers = array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . $videoKey);
+    $body = array(
+        'model' => $ctx['model'],
+        'prompt' => $ctx['prompt'],
+        'mode' => $ctx['mode'],
+        'seconds' => $ctx['seconds'],
+        'size' => '720P',
+        'aspect_ratio' => $ctx['ratio'],
+        'n' => 1,
+    );
+    if ($ctx['seed'] !== null) $body['seed'] = $ctx['seed'];
+    if (!empty($ctx['images'])) $body['images'] = array_values($ctx['images']);
+    if (!empty($ctx['audios'])) $body['audios'] = array_values($ctx['audios']);
+    if ($ctx['first_frame'] !== '') $body['first_frame'] = $ctx['first_frame'];
+    if ($ctx['last_frame'] !== '') $body['last_frame'] = $ctx['last_frame'];
+    $res = tc_http_request($url, 'POST', $headers, tc_json_encode($body), 60000, false, null, true, 30000);
+    if (empty($res['ok'])) {
+        tc_fail(isset($res['code']) && $res['code'] ? $res['code'] : 502, tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : ''));
+    }
+    $status = (int) (isset($res['status']) ? $res['status'] : 0);
+    if ($status >= 400) {
+        tc_fail($status, tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', $status));
+    }
+    $j = json_decode((string) (isset($res['body']) ? $res['body'] : ''), true);
+    if (!is_array($j)) $j = array();
+    $videoUrl = '';
+    if (!empty($j['url']) && is_string($j['url'])) $videoUrl = $j['url'];
+    $videoId = '';
+    foreach (array('video_id', 'id', 'task_id') as $k) {
+        if (!empty($j[$k]) && is_string($j[$k])) { $videoId = $j[$k]; break; }
+    }
+    // 部分平台同步返回视频地址;否则轮询任务直到完成(failed/timeout 报错)。
+    if ($videoUrl === '') {
+        if ($videoId === '') tc_fail(502, '上游未返回视频地址或任务 ID');
+        @set_time_limit(0);
+        $pollUrl = tc_video_poll_url($provider['baseUrl']);
+        $deadline = time() + 300;
+        $lastProgress = -1;
+        while (time() < $deadline) {
+            usleep(1500000);
+            $q = $pollUrl . '?video_id=' . rawurlencode($videoId) . '&model_name=' . rawurlencode($ctx['model']);
+            $pr = tc_http_request($q, 'GET', array('Authorization' => 'Bearer ' . $videoKey, 'Accept' => 'application/json'), null, 20000, false);
+            if (empty($pr['ok']) || (int) $pr['status'] >= 400) continue; // 短暂失败不致命,继续轮询
+            $pj = json_decode((string) $pr['body'], true);
+            if (!is_array($pj)) continue;
+            $pstatus = strtolower(trim((string) (isset($pj['status']) ? $pj['status'] : '')));
+            if (isset($pj['progress']) && is_numeric($pj['progress'])) $lastProgress = (int) $pj['progress'];
+            if (!empty($pj['url']) && is_string($pj['url'])) { $videoUrl = $pj['url']; break; }
+            if (in_array($pstatus, array('failed', 'error', 'canceled', 'cancelled'), true)) {
+                $err = '';
+                if (isset($pj['error']) && is_string($pj['error'])) $err = $pj['error'];
+                elseif (isset($pj['error']['message'])) $err = (string) $pj['error']['message'];
+                elseif (isset($pj['message']) && is_string($pj['message'])) $err = $pj['message'];
+                tc_fail(502, '视频生成失败' . ($err !== '' ? '：' . substr($err, 0, 200) : ''));
+            }
+            if (in_array($pstatus, array('completed', 'success', 'succeeded', 'finished'), true) && $videoUrl === '') {
+                // 已完成但没给 url:再取一次原始响应里的常见字段
+                foreach (array('video_url', 'output', 'result') as $k) {
+                    if (!empty($pj[$k]) && is_string($pj[$k])) { $videoUrl = $pj[$k]; break; }
+                }
+                if ($videoUrl !== '') break;
+            }
+        }
+        if ($videoUrl === '') tc_fail(504, '视频生成超时，请稍后重试（任务 ID：' . $videoId . '）');
+    }
+    $video = array(
+        'url' => $videoUrl,
+        'display' => tc_video_proxy_path($videoUrl),
+        'seconds' => $ctx['seconds'],
+        'size' => '720P',
+        'aspect_ratio' => $ctx['ratio'],
+        'mode' => $ctx['mode'],
+    );
+    $usage = array('prompt' => 0, 'completion' => 0);
+    tc_with_db(true, function (&$db) use ($user, $provider, $ctx, $usage, $started, $video) {
+        $fresh = null;
+        foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
+        if (!$fresh) return;
+        $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $ctx['cost'], $usage), $ctx['model'] . ' (视频)');
+        tc_touch_user($db, $user['id']);
+        $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
+        tc_record_usage_entry($db, $user['id'], $ctx['model'] . ' (视频)', $charged, 0, 0);
+        tc_push_log(array('kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'], 'provider' => $provider['name'], 'model' => $ctx['model'] . ' (视频)', 'format' => 'videos', 'status' => 200, 'ms' => tc_now() - $started, 'cost' => $charged, 'stream' => false,
+            'prompt' => tc_log_clip(isset($ctx['prompt']) ? $ctx['prompt'] : '', 4000),
+            'reply' => tc_log_clip('视频：' . (isset($video['url']) ? $video['url'] : (isset($video['display']) ? $video['display'] : '')), 4000),
+            'ip' => tc_client_ip()));
+    });
+    return array('ok' => true, 'model' => $ctx['model'], 'videos' => array($video));
+}
+
+// ---- 视频结果代理 ----
+// 视频托管在第三方域时浏览器可能加载不到;同时 <video> 需要 Range 才能拖动进度,
+// 因此视频代理转发浏览器的 Range 头并原样流式回传(不缓存整文件)。
+function tc_video_proxy_token($url) {
+    return substr(hash_hmac('sha256', 'video:' . (string) $url, tc_secret()), 0, 24);
+}
+function tc_video_proxy_path($url) {
+    $u = (string) $url;
+    if (!preg_match('#^https?://#i', $u)) return $u;
+    return '/api/proxy/video?u=' . rawurlencode($u) . '&s=' . tc_video_proxy_token($u);
+}
+function tc_api_video_proxy() {
+    $q = tc_query();
+    $url = isset($q['u']) ? (string) $q['u'] : '';
+    $sig = isset($q['s']) ? (string) $q['s'] : '';
+    if ($url === '' || $sig === '' || !hash_equals(tc_video_proxy_token($url), $sig)) {
+        http_response_code(403); header('Content-Type: text/plain; charset=utf-8'); echo '签名无效'; exit;
+    }
+    if (!tc_rate_limit_check('vidpx:' . tc_client_ip(), 240)) {
+        http_response_code(429); header('Content-Type: text/plain; charset=utf-8'); echo '请求过于频繁'; exit;
+    }
+    if (!tc_url_is_public_http($url)) {
+        http_response_code(400); header('Content-Type: text/plain; charset=utf-8'); echo '视频地址不被允许'; exit;
+    }
+    while (ob_get_level()) { @ob_end_clean(); }
+    @ini_set('zlib.output_compression', '0');
+    @set_time_limit(0);
+    $range = isset($_SERVER['HTTP_RANGE']) ? trim((string) $_SERVER['HTTP_RANGE']) : '';
+    $hdrs = array('User-Agent: TinyChat-VideoProxy/1.0');
+    if ($range !== '') $hdrs[] = 'Range: ' . $range;
+    $ch = curl_init($url);
+    curl_setopt_array($ch, array(
+        CURLOPT_HTTPHEADER => $hdrs,
+        CURLOPT_RETURNTRANSFER => false,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_MAXREDIRS => 2,
+        CURLOPT_CONNECTTIMEOUT => 15,
+        CURLOPT_TIMEOUT => 0,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+    ));
+    $ca = tc_cacert_path();
+    if ($ca) curl_setopt($ch, CURLOPT_CAINFO, $ca);
+    $up = array();
+    curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($ch, $line) use (&$up) {
+        $t = trim($line);
+        $pos = strpos($t, ':');
+        if ($pos !== false) $up[strtolower(substr($t, 0, $pos))] = trim(substr($t, $pos + 1));
+        return strlen($line);
+    });
+    $sent = false;
+    curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $data) use (&$sent, &$up) {
+        if (!$sent) {
+            $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            if ($code >= 400) { http_response_code($code); $sent = true; return strlen($data); }
+            http_response_code($code === 206 ? 206 : 200);
+            header('Content-Type: ' . (isset($up['content-type']) ? $up['content-type'] : 'video/mp4'));
+            header('Accept-Ranges: bytes');
+            if (isset($up['content-length'])) header('Content-Length: ' . $up['content-length']);
+            if (isset($up['content-range'])) header('Content-Range: ' . $up['content-range']);
+            header('Cache-Control: public, max-age=3600');
+            $sent = true;
+        }
+        echo $data;
+        return strlen($data);
+    });
+    @curl_exec($ch);
+    curl_close($ch);
+    exit;
+}
+
+// 网页端入口:返回 {ok, model, videos:[{url, display, seconds, size, aspect_ratio}]}
+function tc_api_proxy_videos() {
+    tc_json(200, tc_generate_video(null));
+}
+// 开放接口入口:POST /v1/videos(同步返回最终结果;内部完成轮询)
+function tc_api_v1_videos() {
+    $auth = tc_v1_authenticate();
+    $out = tc_generate_video($auth);
+    $data = array();
+    foreach ((isset($out['videos']) ? $out['videos'] : array()) as $v) {
+        $row = array('url' => isset($v['url']) ? $v['url'] : '', 'model' => isset($out['model']) ? $out['model'] : '');
+        if (isset($v['seconds'])) $row['seconds'] = $v['seconds'];
+        if (isset($v['size'])) $row['size'] = $v['size'];
+        if (isset($v['aspect_ratio'])) $row['aspect_ratio'] = $v['aspect_ratio'];
+        $data[] = $row;
+    }
+    tc_json(200, array('created' => (int) floor(tc_now() / 1000), 'data' => $data));
 }
 
 function tc_api_v1_chat_completions() {
@@ -2227,6 +3437,8 @@ function tc_api_v1_models() {
             $ownerName = (isset($p['name']) && $p['name'] !== '' ? $p['name'] : 'tinychat');
             foreach ((isset($vis['models']) ? $vis['models'] : array()) as $m) {
                 if (!is_array($m) || !isset($m['id']) || $m['id'] === '') continue;
+                // 对外模型白名单:未开放的模型不出现在 /v1/models 里
+                if (!tc_api_model_exposed($db['settings'], isset($p['id']) ? $p['id'] : '', (string) $m['id'])) continue;
                 $data[] = array('id' => (string) $m['id'], 'object' => 'model', 'created' => 0, 'owned_by' => $ownerName);
             }
         }

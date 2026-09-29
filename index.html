@@ -2,37 +2,38 @@
 <html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#ffffff">
 <link rel="manifest" href="./manifest.json">
-<title>TinyChat - 自托管多模型 AI 对话应用（PHP，无需数据库）</title>
-<meta name="description" content="TinyChat 是开源的自托管（私有部署）AI 对话应用：纯 PHP、无需数据库，上传虚拟主机即可运行。支持 OpenAI、Anthropic 及各类兼容接口的多模型切换，内置用户注册登录、额度计费、兑换码、助手库、联网搜索、文件解析与在线更新，适合个人和团队搭建自己的 AI 站点。">
-<meta name="keywords" content="TinyChat,AI对话应用,自托管AI,私有部署,ChatGPT界面,PHP聊天程序,OpenAI,Anthropic,多模型,大模型前端,用户系统,兑换码计费,无需数据库">
+<title>TinyChat — 自托管 AI 对话与生图站点系统（纯 PHP / SQLite，免独立数据库）</title>
+<meta name="description" content="TinyChat 是开源的自托管 AI 站点系统：纯 PHP + SQLite，无需 MySQL、Composer 或常驻进程，上传虚拟主机即可运行。一站式提供多模型对话（OpenAI / Anthropic 及各类兼容接口）、AI 文生图与图生图、流式输出与 Markdown 渲染、用户注册登录、用户组与模型授权、额度计费与兑换码、助手库、联网搜索、文档解析、游客免登录体验、全站公告、OpenAI 兼容 API 与在线更新，数据全部留在自己的服务器。">
+<meta name="keywords" content="TinyChat,自托管AI,AI对话站点,私有部署AI,AI生图,文生图,图生图,OpenAI兼容,PHP聊天程序,ChatGPT风格,多模型,大模型前端,SQLite,用户系统,额度计费,兑换码,免数据库">
 <meta name="robots" content="index,follow">
 <link rel="canonical" href="{{SITE_URL}}/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="TinyChat">
-<meta property="og:title" content="TinyChat - 自托管多模型 AI 对话应用">
-<meta property="og:description" content="纯 PHP 自托管的 AI 对话应用，无需数据库，虚拟主机即可部署。多模型切换、用户与额度管理、助手库、联网搜索，开箱即用。">
+<meta property="og:title" content="TinyChat — 自托管 AI 对话与生图站点系统（纯 PHP / SQLite）">
+<meta property="og:description" content="纯 PHP + SQLite 的自托管 AI 站点：多模型对话、AI 生图与改图、用户与额度计费、助手库、联网搜索、OpenAI 兼容 API，上传虚拟主机即可运行。">
 <meta property="og:url" content="{{SITE_URL}}/">
 <meta property="og:image" content="{{SITE_URL}}/logo.svg">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="TinyChat - 自托管多模型 AI 对话应用">
-<meta name="twitter:description" content="纯 PHP 自托管的 AI 对话应用，无需数据库，虚拟主机即可部署。">
+<meta name="twitter:title" content="TinyChat — 自托管 AI 对话与生图站点系统（纯 PHP / SQLite）">
+<meta name="twitter:description" content="纯 PHP + SQLite 的自托管 AI 站点：多模型对话、AI 生图与改图、用户与额度计费、OpenAI 兼容 API，虚拟主机即可部署。">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"WebApplication","name":"TinyChat","url":"{{SITE_URL}}/","applicationCategory":"CommunicationApplication","operatingSystem":"Web","inLanguage":"zh-CN","description":"自托管多模型 AI 对话应用：纯 PHP、无需数据库，支持 OpenAI、Anthropic 及兼容接口，内置用户系统与额度计费。","offers":{"@type":"Offer","price":"0","priceCurrency":"CNY"},"featureList":["多供应商多模型对话","流式输出与 Markdown 渲染","用户注册登录与邮箱验证","额度计费与兑换码","用户组与模型授权","助手库","联网搜索","文档解析","对话云同步与分享","在线更新"]}
+{"@context":"https://schema.org","@type":"WebApplication","name":"TinyChat","url":"{{SITE_URL}}/","applicationCategory":"CommunicationApplication","operatingSystem":"Web","inLanguage":"zh-CN","description":"纯 PHP + SQLite 的自托管 AI 站点系统：多供应商多模型对话、AI 文生图与图生图、用户注册登录与用户组授权、额度计费与兑换码、助手库、联网搜索、文档解析、游客体验、OpenAI 兼容 API 与在线更新，无需独立数据库。","offers":{"@type":"Offer","price":"0","priceCurrency":"CNY"},"featureList":["多供应商多模型对话","流式输出与 Markdown/公式/图表渲染","AI 文生图与图生图","用户注册登录与邮箱验证","用户组与模型授权","额度计费与兑换码","注册邀请码","助手库","联网搜索","文档解析","游客免登录体验","全站公告","对话云同步与分享","OpenAI 兼容 API","数据备份与在线更新"]}
 </script>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ctext x='12' y='17' text-anchor='middle' font-family='Inter,Segoe UI,Arial,sans-serif' font-size='15' font-weight='800' fill='%23232936'%3ET%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="./static/css/style.css?v=20260926.32">
+<link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
+<link rel="apple-touch-icon" href="./logo-icon.svg">
+<link rel="stylesheet" href="./static/css/style.css?v=20261005.8">
 <link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
 <link rel="stylesheet" href="./vendor/katex/katex.min.css">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20260926.31">
-<link rel="stylesheet" href="./static/css/refine.css?v=20260926.31">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20260926.31">
-<link rel="stylesheet" href="./static/css/polish.css?v=20260926.33">
-<link rel="stylesheet" href="./static/css/markdown.css?v=20260926.31">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20260928.1">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261005.8">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261005.8">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261005.8">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261005.8">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20261005.8">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261005.8">
 <script>
 /* 在样式表之后立刻刷主题色,避免首屏主按钮仍是默认蓝 */
 (function () {
@@ -136,6 +137,10 @@
           <svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="12" cy="12" r="2.6"/><path d="M19.2 13.4a1.4 1.4 0 00.3 1.5l.1.1a1.7 1.7 0 11-2.4 2.4l-.1-.1a1.4 1.4 0 00-1.5-.3 1.4 1.4 0 00-.9 1.3V19a1.7 1.7 0 11-3.4 0v-.1a1.4 1.4 0 00-.9-1.3 1.4 1.4 0 00-1.5.3l-.1.1a1.7 1.7 0 11-2.4-2.4l.1-.1a1.4 1.4 0 00.3-1.5 1.4 1.4 0 00-1.3-.9H5a1.7 1.7 0 110-3.4h.1a1.4 1.4 0 001.3-.9 1.4 1.4 0 00-.3-1.5l-.1-.1a1.7 1.7 0 112.4-2.4l.1.1a1.4 1.4 0 001.5.3h.1A1.4 1.4 0 0011 5.1V5a1.7 1.7 0 113.4 0v.1a1.4 1.4 0 00.9 1.3h.1a1.4 1.4 0 001.5-.3l.1-.1a1.7 1.7 0 112.4 2.4l-.1.1a1.4 1.4 0 00-.3 1.5v.1a1.4 1.4 0 001.3.9H19a1.7 1.7 0 110 3.4h-.1a1.4 1.4 0 00-1.3.9z" stroke-linecap="round" stroke-linejoin="round"/></svg>
           设置
         </button>
+        <button class="user-menu-item hidden" id="user-menu-announce" role="menuitem" hidden>
+          <svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4 10v4a2 2 0 002 2h1.5L12 19.5V4.5L7.5 8H6a2 2 0 00-2 2z" stroke-linecap="round" stroke-linejoin="round"/><path d="M15.5 9.2a4 4 0 010 5.6M18 6.8a7.4 7.4 0 010 10.4" stroke-linecap="round"/></svg>
+          公告
+        </button>
         <a class="user-menu-item" id="user-menu-github" role="menuitem" href="https://github.com/HCARX/TinyChat" target="_blank" rel="noopener noreferrer">
           <svg class="oc-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
           开源地址
@@ -156,12 +161,6 @@
 
   <!-- 主区域 -->
   <main class="main">
-    <div class="announce-bar hidden" id="announce-bar">
-      <span class="announce-text" id="announce-text"></span>
-      <button class="icon-btn announce-close" id="announce-close" type="button" aria-label="关闭公告">
-        <svg class="oc-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>
-      </button>
-    </div>
     <button class="icon-btn hamburger-btn" id="mobile-menu-btn" title="菜单" aria-label="打开菜单">
       <svg class="oc-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4.5 7h15M4.5 12h15M4.5 17h15" stroke-linecap="round"/></svg>
     </button>
@@ -241,6 +240,10 @@
                 <span class="composer-tool-name">绘画</span>
                 <span class="composer-tool-val">生成图片</span>
               </button>
+              <button type="button" class="composer-tool" id="composer-tool-video">
+                <span class="composer-tool-name">生视频</span>
+                <span class="composer-tool-val">生成视频</span>
+              </button>
               <button type="button" class="composer-tool" id="composer-tool-compare">
                 <span class="composer-tool-name">模型对比</span>
                 <span class="composer-tool-val">多模型并答</span>
@@ -318,10 +321,11 @@
       </div>
       <div class="settings-shell">
       <div class="settings-tabs" id="settings-tabs" role="tablist">
-        <button class="settings-tab active" data-tab="providers" role="tab">供应商</button>
+        <button class="settings-tab active" data-tab="account" role="tab">账户</button>
+        <button class="settings-tab" data-tab="providers" role="tab">供应商</button>
         <button class="settings-tab" data-tab="plan" role="tab">套餐</button>
         <button class="settings-tab" data-tab="usage2" role="tab">用量</button>
-        <button class="settings-tab" data-tab="account" role="tab">账户</button>
+        <button class="settings-tab" data-tab="apikeys" role="tab">API 密钥</button>
         <button class="settings-tab" data-tab="data" role="tab">数据</button>
         <button class="settings-tab" data-tab="chat" role="tab">对话</button>
         <button class="settings-tab" data-tab="look" role="tab">外观</button>
@@ -329,7 +333,7 @@
       </div>
       <div class="modal-body">
         <!-- 供应商 -->
-        <section class="settings-panel active" id="sp-providers">
+        <section class="settings-panel" id="sp-providers">
           <p class="muted small">添加自己的 API(OpenAI / DeepSeek / 中转站等)，仅供自己使用；Key 加密存储，任何人不可查看。</p>
 
           <div class="section-title">我的供应商 <span class="muted small" id="my-provider-count"></span></div>
@@ -411,7 +415,7 @@
         </section>
 
         <!-- 账户 -->
-        <section class="settings-panel" id="sp-account">
+        <section class="settings-panel active" id="sp-account">
           <div class="acc-head">
             <div class="avatar avatar-lg" id="acc-avatar">U</div>
             <div class="acc-head-meta">
@@ -424,20 +428,6 @@
           <div class="row-between" style="margin:10px 0">
             <div><div>需要充值额度？</div><div class="muted small">前往套餐页购买或使用兑换码</div></div>
             <button class="btn small" id="acc-go-plan" type="button">去购买</button>
-          </div>
-
-          <div class="section-title">API 密钥</div>
-          <p class="muted small" style="margin:0 0 8px">生成 <code>sk-tc-</code> 密钥后，可在任何 OpenAI 兼容客户端里把 Base URL 设为 <code id="acc-api-base">本站地址</code> 直接调用，计费与网页端一致。密钥仅创建时完整显示一次。</p>
-          <div class="add-provider-form">
-            <label class="field"><span>备注名称</span><input id="apikey-name" placeholder="例如：我的脚本" maxlength="40" autocomplete="off"></label>
-            <div class="form-actions">
-              <button class="btn primary small" id="apikey-create" type="button">生成密钥</button>
-            </div>
-            <div id="apikey-list" class="apikey-list"></div>
-            <div class="hidden" id="apikey-new-box" style="background:color-mix(in srgb,var(--brand) 8%,transparent);border:1px solid var(--hairline);border-radius:10px;padding:10px 12px;margin-top:8px">
-              <div class="muted small">请立即复制保存（仅显示一次）：</div>
-              <code id="apikey-new-value" style="word-break:break-all;font-size:12.5px"></code>
-            </div>
           </div>
 
           <div class="section-title">修改密码</div>
@@ -453,7 +443,32 @@
 
         </section>
 
+        <section class="settings-panel" id="sp-apikeys">
+          <div class="section-title">API 密钥</div>
+          <p class="muted small" style="margin:0 0 8px">生成 <code>sk-tc-</code> 密钥后，可在任何 OpenAI 兼容客户端里把 Base URL 设为 <code id="acc-api-base">本站地址</code> 直接调用，计费与网页端一致。密钥仅创建时完整显示一次。</p>
+          <div class="add-provider-form">
+            <label class="field"><span>备注名称</span><input id="apikey-name" placeholder="例如：我的脚本" maxlength="40" autocomplete="off"></label>
+            <div class="form-actions">
+              <button class="btn primary small" id="apikey-create" type="button">生成密钥</button>
+            </div>
+            <p class="muted small" id="apikey-limit-note" style="margin:6px 0 0"></p>
+            <div id="apikey-list" class="apikey-list"></div>
+            <div class="hidden" id="apikey-new-box" style="background:color-mix(in srgb,var(--brand) 8%,transparent);border:1px solid var(--hairline);border-radius:10px;padding:10px 12px;margin-top:8px">
+              <div class="muted small">请立即复制保存（仅显示一次，关闭设置后不再显示）：</div>
+              <code id="apikey-new-value" style="word-break:break-all;font-size:12.5px"></code>
+            </div>
+          </div>
+        </section>
+
         <section class="settings-panel" id="sp-data">
+          <div class="section-title">API 对话</div>
+          <label class="pref-row" for="pref-show-api-chats">
+            <div class="pref-info">
+              <div class="pref-name">在对话列表显示 API 对话</div>
+              <div class="pref-desc">用 API 密钥调用产生的对话会记入本站；开启后与网页端对话一起显示，便于集中查看</div>
+            </div>
+            <div class="switch"><input type="checkbox" id="pref-show-api-chats" checked><span class="slider"></span></div>
+          </label>
           <div class="section-title">当前对话</div>
           <div class="row-between">
             <div><div>导出当前对话</div><div class="muted small">只导出正在看的这一段，Markdown</div></div>
@@ -554,12 +569,49 @@
             </div>
             <div class="switch"><input type="checkbox" id="pref-followups"><span class="slider"></span></div>
           </label>
+          <div class="pref-row pref-sub-row" id="pref-followups-model-row">
+            <div class="pref-info">
+              <div class="pref-name">跟进建议模型</div>
+              <div class="pref-desc">生成建议所用的模型，默认跟随当前对话模型</div>
+            </div>
+            <div class="select-box pref-model-select" id="pref-followups-model" data-value="" role="button" tabindex="0" aria-haspopup="listbox">
+              <span class="sb-label">跟随当前模型</span>
+              <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
+            </div>
+          </div>
           <label class="pref-row" for="pref-autotitle">
             <div class="pref-info">
               <div class="pref-name">自动生成会话标题</div>
               <div class="pref-desc">新对话根据首条消息自动命名</div>
             </div>
             <div class="switch"><input type="checkbox" id="pref-autotitle" checked><span class="slider"></span></div>
+          </label>
+          <div class="pref-row pref-sub-row" id="pref-title-model-row">
+            <div class="pref-info">
+              <div class="pref-name">命名方式</div>
+              <div class="pref-desc">默认截取首条消息；选择模型后由 AI 生成更贴切的标题(每次命名消耗一次额度)</div>
+            </div>
+            <div class="select-box pref-model-select" id="pref-title-model" data-value="" role="button" tabindex="0" aria-haspopup="listbox">
+              <span class="sb-label">本地截取</span>
+              <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
+            </div>
+          </div>
+          <div class="pref-row pref-sub-row" id="pref-image-model-row">
+            <div class="pref-info">
+              <div class="pref-name">默认生图模型</div>
+              <div class="pref-desc">对话中说「画一张…」或对上一张图说「改成…」时,自动调用此模型出图/改图；不选则用第一个可用生图模型</div>
+            </div>
+            <div class="select-box pref-model-select" id="pref-image-model" data-value="" role="button" tabindex="0" aria-haspopup="listbox">
+              <span class="sb-label">第一个生图模型</span>
+              <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
+            </div>
+          </div>
+          <label class="pref-row pref-sub-row" for="pref-auto-image">
+            <div class="pref-info">
+              <div class="pref-name">对话中自动改走生图</div>
+              <div class="pref-desc">在对话模型下识别到绘图/改图意图时，自动用默认生图模型出图并带上上一张图作参考</div>
+            </div>
+            <div class="switch"><input type="checkbox" id="pref-auto-image" checked><span class="slider"></span></div>
           </label>
           <div class="pref-row" id="pref-context-row">
             <div class="pref-info">
@@ -777,19 +829,64 @@
     </div>
   </div>
 
-  <script src="./static/js/config.js?v=20260926.31"></script>
-  <script src="./static/js/icons.js?v=20260926.31"></script>
-  <script src="./static/js/logos.js?v=20260926.32"></script>
-  <script src="./static/js/components.js?v=20260928.1"></script>
-  <script src="./static/js/ui.js?v=20260926.31"></script>
-  <script src="./static/js/assistants.js?v=20260926.31"></script>
-  <script src="./static/js/conversations.js?v=20260926.34"></script>
-  <script src="./static/js/renderer.js?v=20260928.1"></script>
-  <script src="./static/js/reasoning.js?v=20260926.31"></script>
-  <script src="./static/js/office-formula-copy.js?v=20260926.31"></script>
-  <script src="./static/js/citations.js?v=20260926.31"></script>
-  <script src="./static/js/messages.js?v=20260927.22"></script>
-  <script src="./static/js/multimodal.js?v=20260927.1"></script>
-  <script src="./static/js/app.js?v=20260928.1"></script>
+  <!-- 全站公告:居中弹窗 -->
+  <div class="modal-mask hidden" id="announce-modal" role="dialog" aria-modal="true" aria-labelledby="announce-title">
+    <div class="modal modal-sm announce-modal">
+      <div class="modal-header">
+        <h3 id="announce-title">公告</h3>
+        <button class="icon-btn" id="announce-close" type="button" aria-label="关闭">
+          <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="announce-text" id="announce-text"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn primary" id="announce-ok" type="button" data-no-autofocus>我知道了</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 游客登录/注册弹窗:未登录访客点击输入框或额度用尽时弹出 -->
+  <div class="modal-mask hidden" id="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h3 id="auth-modal-title">登录后继续对话</h3>
+        <button class="icon-btn" id="auth-modal-close" type="button" aria-label="关闭">
+          <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="auth-error hidden" id="auth-modal-error" role="alert"></div>
+        <form id="auth-modal-login" autocomplete="on">
+          <label class="field"><span>用户名</span><input type="text" id="am-name" autocomplete="username"></label>
+          <label class="field"><span>密码</span><input type="password" id="am-pass" autocomplete="current-password"></label>
+          <button type="submit" class="btn primary w-full" id="am-login-btn">登录</button>
+          <p class="auth-switch" id="am-register-hint">还没有账号？<a href="#" id="am-go-register">立即注册</a></p>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- 游客顶部提示条 -->
+  <div class="guest-bar hidden" id="guest-bar">
+    <span id="guest-bar-text">您正在以游客身份体验</span>
+    <button class="btn small primary" id="guest-bar-login" type="button">登录 / 注册</button>
+  </div>
+
+  <script src="./static/js/config.js?v=20261005.8"></script>
+  <script src="./static/js/icons.js?v=20261005.8"></script>
+  <script src="./static/js/logos.js?v=20261005.8"></script>
+  <script src="./static/js/components.js?v=20261005.8"></script>
+  <script src="./static/js/ui.js?v=20261005.8"></script>
+  <script src="./static/js/assistants.js?v=20261005.8"></script>
+  <script src="./static/js/conversations.js?v=20261005.8"></script>
+  <script src="./static/js/renderer.js?v=20261005.8"></script>
+  <script src="./static/js/reasoning.js?v=20261005.8"></script>
+  <script src="./static/js/office-formula-copy.js?v=20261005.8"></script>
+  <script src="./static/js/citations.js?v=20261005.8"></script>
+  <script src="./static/js/messages.js?v=20261005.8"></script>
+  <script src="./static/js/multimodal.js?v=20261005.8"></script>
+  <script src="./static/js/app.js?v=20261005.8"></script>
 </body>
 </html>

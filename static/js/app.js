@@ -26,7 +26,7 @@ const state = {
   webSearchAvailable: false,
   tools: null,
   mineru: { enabled: true, mode: 'lite' },
-  chatLimits: { contextMessages: 40, maxContextMessages: 200, maxOutputTokens: 12800 },
+  chatLimits: { contextMessages: 40, maxContextMessages: 200, maxOutputTokens: 8192 },
 };
 
 window.OCState = state;
@@ -38,6 +38,23 @@ function uiPref(key, def) {
 function streamEnabled() { return !!uiPref('stream', true); }
 function followUpsEnabled() { return !!uiPref('followups', false); }
 function autoTitleEnabled() { return !!uiPref('autotitle', true); }
+// 解析「辅助任务(跟进建议/命名)」指定的模型。
+// pref 形如 'providerId\nmodelId';空值返回 null(调用方回退当前模型/本地截取)。
+// 只接受对话模型(生图/生视频模型不用于文本辅助任务)。
+function resolveAuxModel(prefKey) {
+  const raw = String(uiPref(prefKey, '') || '');
+  if (!raw) return null;
+  const parts = raw.split('\n');
+  const providerId = parts[0] || '';
+  const modelId = parts.slice(1).join('\n');
+  if (!providerId || !modelId) return null;
+  const p = (state.providers || []).find((x) => x.id === providerId);
+  if (!p || p.enabled === false) return null;
+  const m = (p.models || []).find((x) => x && String(x.id) === modelId);
+  if (!m) return null;
+  if (modelIsImage(modelId) || modelIsVideo(modelId)) return null;
+  return { providerId, model: modelId, format: p.apiFormat || 'chat' };
+}
 function elapsedEnabled() { return !!uiPref('elapsed', true); }
 function reasoningEnabled() { return !!uiPref('reasoning', true); }
 function reasoningEffort() {
@@ -94,6 +111,9 @@ function syncComposerWebSearch() {
   document.querySelectorAll('#websearch-pop [data-websearch], #composer-tool-search [data-websearch]').forEach((b) => {
     b.classList.toggle('active', b.dataset.websearch === mode);
   });
+  // 「≡」菜单按钮上加圆点:联网已开启(始终)时提示,收起菜单后也能一眼看出状态
+  const more = $('composer-more');
+  if (more) more.classList.toggle('flag-on', ready && mode === 'on');
 }
 function setEffortMode(mode) {
   const next = (mode === 'off' || mode === 'low' || mode === 'high') ? mode : 'medium';
@@ -237,6 +257,18 @@ function api(path, opts = {}) {
   });
 }
 
+// 容错解析 JSON:响应不是 JSON(常见于服务器返回 HTML 错误页)时返回带提示的对象,而不是抛解析异常
+async function readJsonSafe(res) {
+  let text = '';
+  try { text = await res.text(); } catch (e) { text = ''; }
+  const trimmed = text.trim();
+  if (!trimmed) return {};
+  if (trimmed.charAt(0) === '{' || trimmed.charAt(0) === '[') {
+    try { return JSON.parse(trimmed); } catch (e) { /* 落到下面统一处理 */ }
+  }
+  return { error: { message: '服务器返回了非预期内容（HTTP ' + res.status + '），请检查站点配置或稍后重试' } };
+}
+
 function toast(msg, isError = false) {
   if (window.OCUI) return window.OCUI.toast(msg, isError ? 'error' : undefined);
   const t = document.createElement('div');
@@ -255,11 +287,135 @@ const LOGO_AVATAR_HTML = '<img src="./logo.svg" class="brand-logo-light avatar-l
   + '<img src="./logo-dark.svg" class="brand-logo-dark avatar-logo-img" alt="">';
 const USER_AVATAR_SVG = LOGO_AVATAR_HTML;
 const AI_AVATAR_SVG = LOGO_AVATAR_HTML;
-// 助手头像按消息所属模型匹配厂商 logo(DeepSeek/Kimi/Qwen 等),未命中回退站点 logo
+// 生图模型判定:优先用供应商配置里的显式 image 标记,缺省时按模型名启发式
+function modelIsImage(modelId) {
+  const id = String(modelId || '').trim();
+  if (!id) return false;
+  const hint = (window.OC && OC.isImageModelName) ? OC.isImageModelName : () => false;
+  for (const p of state.providers || []) {
+    for (const m of p.models || []) {
+      if (m && String(m.id) === id) {
+        if (Object.prototype.hasOwnProperty.call(m, 'image')) return !!m.image;
+        return hint(id);
+      }
+    }
+  }
+  return hint(id);
+}
+function imageModelLogo() {
+  return (window.OC && OC.imageLogo) ? OC.imageLogo() : 'static/logo/picture.svg';
+}
+// 视频模型判定:优先用供应商配置里的显式 video 标记,缺省时按模型名启发式;
+// 若供应商接口格式本身就是 video,该供应商下模型一律视为视频模型。
+function modelIsVideo(modelId) {
+  const id = String(modelId || '').trim();
+  if (!id) return false;
+  const hint = (window.OC && OC.isVideoModelName) ? OC.isVideoModelName : () => false;
+  for (const p of state.providers || []) {
+    if (p && p.apiFormat === 'video') {
+      for (const m of p.models || []) {
+        if (m && String(m.id) === id) return true;
+      }
+    }
+    for (const m of p.models || []) {
+      if (m && String(m.id) === id) {
+        if (Object.prototype.hasOwnProperty.call(m, 'video')) return !!m.video;
+        return hint(id);
+      }
+    }
+  }
+  return hint(id);
+}
+// 当前供应商下被判定为视频生成的模型
+function videoModelsOfCurrentProvider() {
+  const p = (state.providers || []).find((x) => x.id === state.currentProviderId);
+  if (!p || !Array.isArray(p.models)) return [];
+  return p.models.filter((m) => m && m.id && modelIsVideo(m.id));
+}
+function videoModelLogo() {
+  return 'static/logo/picture.svg';
+}
+// 生图 / 生视频都「不使用助手」,也不参与 @助手 候选
+function modelIsVisual(modelId) {
+  return modelIsImage(modelId) || modelIsVideo(modelId);
+}
+// 读取本地图片为 data URL(供改图参考图使用)
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result || ''));
+    fr.onerror = reject;
+    fr.readAsDataURL(file);
+  });
+}
+// 压缩参考图:长边不超过 1536px、JPEG 质量 0.9。
+// 参考图只用于给上游做编辑依据,无需原图分辨率;压缩能显著减小请求体与上游处理开销。
+// 输入既可以是 File,也可以是 data URL(输入框附件保存的就是 data URL),
+// 这样「输入框上传图片」与「绘图弹窗添加参考图」走同一套压缩逻辑,发给上游的结果一致。
+function compressImageRef(source, maxEdge = 1536) {
+  return new Promise((resolve) => {
+    const finishFromDataUrl = (dataUrl) => {
+      if (!dataUrl) return resolve('');
+      const img = new Image();
+      img.onload = () => {
+        try {
+          let w = img.naturalWidth, h = img.naturalHeight;
+          const scale = Math.min(1, maxEdge / Math.max(w, h));
+          w = Math.max(1, Math.round(w * scale));
+          h = Math.max(1, Math.round(h * scale));
+          const c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          const ctx = c.getContext('2d');
+          // JPEG 无透明通道:先铺白底,避免透明 PNG 转出黑块
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+          const out = c.toDataURL('image/jpeg', 0.9);
+          resolve(out || dataUrl);
+        } catch (e) { resolve(dataUrl); }
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    };
+    if (typeof source === 'string') return finishFromDataUrl(source);
+    if (!source) return resolve('');
+    readFileAsDataUrl(source).then(finishFromDataUrl).catch(() => resolve(''));
+  });
+}
+function readImageRefCompressed(file, maxEdge = 1536) {
+  return compressImageRef(file, maxEdge);
+}
+// 图片规格解析:支持像素尺寸(1024x1024)、档位(2K/4K)与宽高比(16:9)。
+// 上游对「尺寸」与「宽高比」是两个不同参数,这里按形态分派,非法值一律回退默认尺寸。
+function parseImageSpec(raw) {
+  const s = String(raw || '').trim().toLowerCase().replace(/[×*]/g, 'x');
+  if (/^\d{3,4}x\d{3,4}$/.test(s)) return { size: s, ratio: '' };
+  if (/^[1-4]k$/.test(s)) return { size: s.toUpperCase(), ratio: '' };
+  if (/^\d{1,2}:\d{1,2}$/.test(s)) return { size: '', ratio: s };
+  return { size: '1024x1024', ratio: '' };
+}
+// 视频规格:时长(4~12 秒)与画面比例,沿用生视频弹窗最近一次的选择
+const VIDEO_RATIOS = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'];
+function parseVideoSpec() {
+  const rawSec = parseInt(localStorage.getItem('oc_video_seconds') || '', 10);
+  const seconds = (rawSec >= 4 && rawSec <= 12) ? rawSec : 5;
+  const rawRatio = String(localStorage.getItem('oc_video_ratio') || '').trim();
+  const ratio = VIDEO_RATIOS.indexOf(rawRatio) >= 0 ? rawRatio : '16:9';
+  return { seconds, ratio };
+}
+// 助手头像按消息所属模型匹配图标:生图/生视频模型统一用 picture.svg,其余匹配厂商 logo,未命中回退站点 logo
 function aiAvatarHtml(modelText) {
-  const t = String(modelText || '').trim();
-  if (t && window.OC && window.OC.logoImg && window.OC.modelLogo) {
-    const html = window.OC.logoImg(window.OC.modelLogo(t), 'avatar-logo-img');
+  const raw = String(modelText || '').trim();
+  // 生图结果的消息模型名形如 "xxx (图像)",生视频形如 "xxx (视频)"
+  const isImageMsg = /\(图像\)\s*$/.test(raw);
+  const isVideoMsg = /\(视频\)\s*$/.test(raw);
+  const modelId = raw.replace(/\s*\((图像|视频)\)\s*$/, '');
+  if (window.OC && window.OC.logoImg && (isImageMsg || isVideoMsg || (modelId && (modelIsImage(modelId) || modelIsVideo(modelId))))) {
+    const html = window.OC.logoImg(imageModelLogo(), 'avatar-logo-img');
+    if (html) return html;
+  }
+  if (raw && window.OC && window.OC.logoImg && window.OC.modelLogo) {
+    const html = window.OC.logoImg(window.OC.modelLogo(raw), 'avatar-logo-img');
     if (html) return html;
   }
   return AI_AVATAR_SVG;
@@ -476,11 +632,18 @@ function mergeChatLists(cloudChats, localChats) {
 function currentChat() {
   return state.chats.find((c) => c.id === state.currentChatId) || null;
 }
+// API 对话是否显示在列表:用户偏好(默认开启),关闭后列表只显示网页端对话
+function showApiChats() { return !!uiPref('showApiChats', true); }
+function isApiChat(c) { return !!(c && c.apiKey); }
+function visibleChats() {
+  const all = state.chats || [];
+  return showApiChats() ? all : all.filter((c) => !isApiChat(c));
+}
 function renderChatList() {
   const list = $('chat-list');
   list.innerHTML = '';
   if (!window.OCConversations || !list) { renderChatListSimple(list); return; }
-  window.OCConversations.renderList(list, state.chats, {
+  window.OCConversations.renderList(list, visibleChats(), {
     currentId: state.currentChatId,
     onSelect: (c) => {
       if (state.streaming) { stopStreaming(); }
@@ -502,6 +665,8 @@ function renderChatList() {
     onRename: (c, item) => {
       window.OCConversations.renameInline(item, c.title, (title) => {
         c.title = title;
+        // 手动重命名后不再是「自动标题」,AI 命名完成时不得覆盖
+        c._autoTitled = false;
         c.updatedAt = Date.now();
         saveChats(); renderChatList();
       });
@@ -535,7 +700,7 @@ function renderChatList() {
 }
 function renderChatListSimple(list) {
   // 兜底：无 OCConversations 时的旧版渲染
-  state.chats.forEach((c) => {
+  visibleChats().forEach((c) => {
     const item = document.createElement('div');
     item.className = 'chat-item' + (c.id === state.currentChatId ? ' active' : '');
     item.textContent = c.title;
@@ -685,6 +850,19 @@ function useAssistantOnChat(assistant, opts) {
     toast(assistant ? '已选用「' + (assistant.name || '助手') + '」' : '已取消助手');
   }
   return chat;
+}
+// 选用生图模型时自动去除当前对话的 @助手:
+// 助手注入的是对话系统提示词,对生图请求没有意义,反而可能干扰生图平台。
+function enforceImageModelAssistant(opts) {
+  const chat = currentChat();
+  if (!chat || !chat.assistantId) return false;
+  const name = chat.assistantName || '助手';
+  applyAssistantToChat(chat, null);
+  chat.updatedAt = Date.now();
+  saveChats();
+  updateAssistantChip();
+  if (!(opts && opts.silent)) toast('生图模型不使用助手，已自动取消「' + name + '」');
+  return true;
 }
 function startAssistantChat(assistant) {
   if (!assistant) {
@@ -1268,6 +1446,13 @@ function buildMsgNode(m, chat, idx) {
       contentDiv.appendChild(retryRow);
     }
   } else if (role === 'assistant') {
+    if (m.imagePending && !m.content) {
+      // 生图/生视频占位:出图通常要 10–60 秒,出视频更久,给出明确的等待提示而不是空白气泡
+      const waiting = m.pendingKind === 'video' ? '正在生成视频（可能需要 1–5 分钟）…' : '正在生成图片…';
+      contentDiv.innerHTML = '<div class="phase-indicator"><span class="phase-spinner"></span><span class="phase-text">' + waiting + '</span></div>';
+      div.appendChild(contentDiv);
+      return div;
+    }
     if (!m.createdAt && typeof idx === 'number' && chat && chat.messages) {
       for (let j = idx - 1; j >= 0; j--) {
         const prev = chat.messages[j];
@@ -1417,7 +1602,7 @@ async function loadProviders() {
     state.chatLimits = {
       contextMessages: Math.min(500, Math.max(2, Number(data.chatLimits.contextMessages) || 40)),
       maxContextMessages: Math.min(500, Math.max(2, Number(data.chatLimits.maxContextMessages) || 200)),
-      maxOutputTokens: Math.min(128000, Math.max(256, Number(data.chatLimits.maxOutputTokens) || 12800)),
+      maxOutputTokens: Math.min(128000, Math.max(256, Number(data.chatLimits.maxOutputTokens) || 8192)),
     };
   }
   if (!state.tools) {
@@ -1453,6 +1638,7 @@ async function loadModels(opts) {
   const prov = state.providers.find((p) => p.id === state.currentProviderId);
   state.models = data.models || [];
   state.modelHealth = data.health && typeof data.health === 'object' ? data.health : {};
+  state.modelCosts = data.costs && typeof data.costs === 'object' ? data.costs : {};
   const prefer = opts.prefer || pinnedModelId() || uiPref('lastModel', null);
   const found = prefer && state.models.find((x) => x.id === prefer);
   if (found) state.currentModel = found.id;
@@ -1460,24 +1646,58 @@ async function loadModels(opts) {
   else if (state.models.length) state.currentModel = state.models[0].id;
   persistCurrentModel();
   renderModelPicker();
+  // 切换后若当前模型是生图/生视频模型,自动取消 @助手
+  if (modelIsVisual(state.currentModel)) enforceImageModelAssistant({ silent: true });
 }
-function modelHealthOf(id) {
+// 当前供应商下某模型的单次扣减次数:模型级 cost 优先(costs 映射),否则用供应商价
+function modelCostOf(id, providerId) {
+  const pid = providerId || state.currentProviderId;
+  const prov = (state.providers || []).find((p) => p.id === pid);
+  if (!prov) return null;
+  const m = (prov.models || []).find((x) => x && String(x.id) === String(id));
+  if (m && Object.prototype.hasOwnProperty.call(m, 'cost')) {
+    const c = Number(m.cost);
+    if (isFinite(c) && c >= 0) return c;
+  }
+  if (pid === state.currentProviderId && state.modelCosts && Object.prototype.hasOwnProperty.call(state.modelCosts, String(id))) {
+    const c = Number(state.modelCosts[String(id)]);
+    if (isFinite(c) && c >= 0) return c;
+  }
+  // 属主自己的供应商不计费
+  if (state.user && ((prov.ownerId && String(prov.ownerId) === String(state.user.id)) || prov.mine)) return 0;
+  const pc = Number(prov.costPerCall);
+  return isFinite(pc) && pc >= 0 ? pc : null;
+}
+function costTextOf(id, providerId) {
+  const c = modelCostOf(id, providerId);
+  if (c === null) return '';
+  return c === 0 ? '免费（不计站点次数）' : ('每次调用扣 ' + c + ' 次');
+}
+// 可用性分级:阈值由后台「对话设置 → 模型可用性显示」配置
+function healthLabelOf(stateName) {
+  if (stateName === 'ok') return '可用';
+  if (stateName === 'warn') return '不稳定';
+  if (stateName === 'bad') return '较差';
+  return '暂无数据';
+}
+function modelHealthOf(id, providerId) {
   const row = id && state.modelHealth ? state.modelHealth[id] : null;
-  const stateName = row && (row.state === 'ok' || row.state === 'bad') ? row.state : 'idle';
+  const allowed = ['ok', 'warn', 'bad'];
+  const stateName = row && allowed.indexOf(row.state) >= 0 ? row.state : 'idle';
   const calls = row && Number(row.calls) > 0 ? Number(row.calls) : 0;
   const rate = row && isFinite(Number(row.rate)) ? Math.round(Number(row.rate) * 100) : 0;
-  if (stateName === 'ok') {
-    return { state: 'ok', title: '最近 4 小时 ' + calls + ' 次调用，成功率 ' + rate + '%' };
-  }
-  if (stateName === 'bad') {
-    return { state: 'bad', title: '最近 4 小时 ' + calls + ' 次调用，成功率 ' + rate + '%' };
-  }
-  return { state: 'idle', title: '最近 4 小时无人调用' };
+  const cost = costTextOf(id, providerId);
+  const costLine = cost ? String.fromCharCode(10) + cost : '';
+  if (stateName === 'idle') return { state: 'idle', title: '最近 4 小时无人调用' + costLine };
+  return {
+    state: stateName,
+    title: healthLabelOf(stateName) + '：最近 4 小时 ' + calls + ' 次调用，成功率 ' + rate + '%' + costLine,
+  };
 }
 function healthIconName(stateName) {
   if (stateName === 'ok') return 'healthOk';
   if (stateName === 'bad') return 'healthBad';
-  return 'healthIdle';
+  return 'healthIdle';   // idle 与 warn 共用省略号图标(warn 由文字与颜色区分)
 }
 function modelDisplayName(model) {
   const provider = state.providers.find((x) => x.id === state.currentProviderId);
@@ -1513,6 +1733,21 @@ function renderModelPicker() {
     mark.classList.toggle('hidden', !pinned);
     mark.classList.toggle('solo', !state.currentModel);
   }
+  syncComposerTools();
+}
+// 后台是否有任何可用的生图 / 生视频模型:决定「≡」菜单里的「绘画」「生视频」入口是否显示。
+// 一个都没有时(纯对话站)不显示对应入口,避免点开才发现没有模型。
+function hasAnyImageModel() {
+  return (state.providers || []).some((p) => (p.models || []).some((m) => m && m.id && modelIsImage(m.id)));
+}
+function hasAnyVideoModel() {
+  return (state.providers || []).some((p) => (p.models || []).some((m) => m && m.id && modelIsVideo(m.id)));
+}
+function syncComposerTools() {
+  const imgTool = $('composer-tool-image');
+  const vidTool = $('composer-tool-video');
+  if (imgTool) imgTool.classList.toggle('hidden', !hasAnyImageModel());
+  if (vidTool) vidTool.classList.toggle('hidden', !hasAnyVideoModel());
 }
 function renderProviderLabel() {
   const p = state.providers.find((x) => x.id === state.currentProviderId);
@@ -1528,19 +1763,51 @@ function renderProviderLabel() {
 }
 
 // 自定义模型选择器：汇总所有有权限的供应商模型
+// 模型选择器的分组:对话模型在前,生图模型自动归入末尾的「生图模型」分组。
+// openSelect 检测 groups[0].label !== undefined 时按分组渲染。
 function availableModelItems() {
-  const items = [];
+  const chat = [];
+  const image = [];
+  const video = [];
   (state.providers || []).forEach((provider) => {
     (provider.models || []).forEach((m) => {
       const id = m && m.id ? String(m.id) : '';
       if (!id) return;
       const name = m.name || id;
-      const health = provider.id === state.currentProviderId ? modelHealthOf(id) : { state: 'idle', title: '最近 4 小时无人调用' };
-      const logo = window.OC && OC.modelLogo ? OC.modelLogo(id + ' ' + name + ' ' + (provider.name || '')) : '';
-      items.push({ value: provider.id + '\n' + id, providerId: provider.id, modelId: id, label: provider.name + '@' + name, search: provider.name + ' ' + id + ' ' + name, health: health.state, healthTitle: health.title, icon: logo });
+      const health = provider.id === state.currentProviderId
+        ? modelHealthOf(id, provider.id)
+        : (function () {
+            // 非当前供应商没有健康数据,但仍显示价格(提示里最有用的信息)
+            const c = modelCostOf(id, provider.id);
+            const costLine = (c === null) ? '' : (String.fromCharCode(10) + (c === 0 ? '免费（不计站点次数）' : ('每次调用扣 ' + c + ' 次')));
+            return { state: 'idle', title: '最近 4 小时无人调用' + costLine };
+          })();
+      const isVideo = provider.apiFormat === 'video'
+        || (Object.prototype.hasOwnProperty.call(m, 'video')
+          ? !!m.video
+          : !!((window.OC && OC.isVideoModelName) ? OC.isVideoModelName(id) : false));
+      const isImage = !isVideo && (Object.prototype.hasOwnProperty.call(m, 'image')
+        ? !!m.image
+        : !!((window.OC && OC.isImageModelName) ? OC.isImageModelName(id) : false));
+      const logo = (window.OC && OC.modelIcon)
+        ? OC.modelIcon(id + ' ' + name, provider.name, isImage || isVideo)
+        : '';
+      const item = {
+        value: provider.id + '\n' + id, providerId: provider.id, modelId: id,
+        label: provider.name + '@' + name, search: provider.name + ' ' + id + ' ' + name,
+        health: health.state, healthTitle: health.title, icon: logo, isImage, isVideo,
+      };
+      (isVideo ? video : (isImage ? image : chat)).push(item);
     });
   });
-  return items.sort((a, b) => a.label.localeCompare(b.label, 'zh'));
+  // 后台可排序:供应商顺序(接口按 order 升序下发)与各供应商内的模型顺序(数组原序)原样保留。
+  // 不再按名称重排,否则后台调整的供应商顺序在前台会被打乱。
+  const groups = [];
+  const hasVisual = image.length || video.length;
+  if (chat.length) groups.push({ label: hasVisual ? '对话模型' : '', items: chat });
+  if (image.length) groups.push({ label: '生图模型', items: image });
+  if (video.length) groups.push({ label: '生视频模型', items: video });
+  return groups;
 }
 function togglePinnedSelection(value) {
   const parts = String(value || '').split('\n'); const providerId = parts[0], modelId = parts.slice(1).join('\n');
@@ -1554,23 +1821,25 @@ function togglePinnedSelection(value) {
 const modelPickerEl = $('model-picker');
 if (modelPickerEl) {
   modelPickerEl.addEventListener('click', () => {
-    const items = availableModelItems();
-    if (!items.length) { toast('暂无可用模型', true); return; }
+    const groups = availableModelItems();
+    const total = groups.reduce((n, g) => n + g.items.length, 0);
+    if (!total) { toast('暂无可用模型', true); return; }
     const selected = state.currentProviderId && state.currentModel ? state.currentProviderId + '\n' + state.currentModel : null;
-    OC.openSelect(modelPickerEl, items, {
+    OC.openSelect(modelPickerEl, groups, {
       menuClass: 'oc-model-menu',
       fitWidth: true,
       selected,
       pinned: pinnedProviderId() && pinnedModelId() ? pinnedProviderId() + '\n' + pinnedModelId() : null,
-      searchable: items.length > 8,
+      searchable: total > 8,
       searchPlaceholder: '搜索供应商或模型…',
       chips: (state.providers || []).length > 1 ? state.providers.map((p) => ({ value: p.id, label: p.name || p.id, icon: window.OC && OC.providerLogo ? OC.providerLogo(p.models, p.name) : '' })) : null,
-      onSelect: async (val) => {
+      onSelect: async (val, item) => {
         const parts = String(val).split('\n');
         state.currentProviderId = parts[0];
         await loadModels({ prefer: parts.slice(1).join('\n') });
         renderProviderLabel();
         renderModelPicker();
+        if (item && (item.isImage || item.isVideo)) enforceImageModelAssistant();
       },
       onPin: (val) => togglePinnedSelection(val),
     });
@@ -1634,7 +1903,7 @@ function outgoingMessages(chatMessages, chat) {
   const spec = currentModelSpec();
   const maxCtx = spec && parseInt(spec.maxContext, 10) > 0 ? parseInt(spec.maxContext, 10) : 0;
   if (maxCtx > 0 && kept.length) {
-    const outCap = spec && parseInt(spec.maxTokens, 10) > 0 ? parseInt(spec.maxTokens, 10) : (Number((state.chatLimits || {}).maxOutputTokens) || 12800);
+    const outCap = spec && parseInt(spec.maxTokens, 10) > 0 ? parseInt(spec.maxTokens, 10) : (Number((state.chatLimits || {}).maxOutputTokens) || 8192);
     const reserve = Math.min(outCap, Math.max(256, Math.floor(maxCtx / 2)));
     const budget = maxCtx - reserve;
     const sysTokens = estimateTextTokens(chatSystemPrompt(chat));
@@ -1733,7 +2002,7 @@ function applyReasoningToBody(body, format) {
 }
 function buildRequestBody(chatMessages, format, chat, extra) {
   const msgs = outgoingMessages(chatMessages, chat);
-  const cap = Math.min(128000, Math.max(256, Number((state.chatLimits || {}).maxOutputTokens) || 12800));
+  const cap = Math.min(128000, Math.max(256, Number((state.chatLimits || {}).maxOutputTokens) || 8192));
   const system = chatSystemPrompt(chat);
   if (format === 'anthropic') {
     const body = {
@@ -1830,6 +2099,36 @@ function applyFollowUp(q) {
   updateSendBtn();
   sendMessage();
 }
+// 对话模型下识别「要画图」意图:出现明确的绘图口令即认为要出图。
+// 例:「画一张…」「帮我画个…」「生成一张图」「来张海报」「画个 logo」「draw …」
+function wantsDrawImage(text) {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  // 明显是在「问/讨论」而不是「下命令」时不触发:
+  // 以疑问收尾,或含「是什么/为什么/如何/怎么/能不能」等讨论性措辞,或过去式叙述(我画了…)
+  if (/[?？]$/.test(t) || /[吗呢]$/.test(t)) return false;
+  if (/(是什么|为什么|啥意思|什么意思|如何|怎么|怎样|能不能|可否|可不可以|是不是)/.test(t)) return false;
+  // 过去式叙述(我画了/他画了…),但「帮我画/给我画/替我画/为你画」属祈使,不算
+  if (/(^|[^帮给替为])(我|他|她|他们|她们)画了?/.test(t)) return false;
+  const drawRe = /(画一张|画一幅|画一个|画个|画张|画幅|帮我画|给我画|帮忙画|替我画|画一下|画出来|绘制|重新画|再画|重画|生成图片|生成图像|生成一张|生成一幅|生成个图|生成插画|生成海报|生成头像|生成logo|生成标志|出一张图|出个图|来一张图|来张图|做个图|做一张图|设计一张|设计个logo|设计一个logo)/i;
+  if (drawRe.test(t)) return true;
+  // 「画 + 数量词 + 对象」:如「画一只柯基」「画两张海报」(已排除疑问/叙述)
+  if (/画[一二三四五六七八九十两几]?[只个条张幅匹头朵棵盆群尾轮帧]/.test(t)) return true;
+  if (/\b(draw|paint|sketch|illustrate|generate an image|create an image|make an image|generate a picture|create a picture|render an image)\b/i.test(t)) return true;
+  return false;
+}
+// 「编辑已有图片」意图:必须有可用的参考图(本次附件或本会话上一张生成图),且有明确编辑动词。
+// 单独的「这张图是什么」这类看图问题不应命中。
+function wantsEditImage(text) {
+  const t = String(text || '');
+  if (!t) return false;
+  return /(改成|换成|修改|改一下|改变|调整成|调整一下|变成|变为|去掉|删除掉|删掉|加个|加上|添加|添个|换个|替换成|替换|重新画|再画|重画)/.test(t);
+}
+// 文本是否明确指代「上一张图」(决定追问是否把它作为参考图)
+function refersToPrevImage(text) {
+  return /(上面|刚才|上一张|上张|之前|这张图|这张|那张图|那张|这个图|那个图|此图|它)/.test(String(text || ''));
+}
+
 async function sendMessage() {
   if (state.streaming) return;
   const input = $('input');
@@ -1841,13 +2140,95 @@ async function sendMessage() {
   }
   if (!text && !attachments.length) return;
 
-  if (!state.currentProviderId || !state.currentModel) {
-    toast('请先在顶部选择供应商和模型', true);
+  if (!state.user || !state.currentProviderId || !state.currentModel) {
+    openAuthModal();
     return;
   }
-  if (!state.user || (!quotaIsUnlimited(state.user.quota) && state.user.quota <= 0)) {
-    toast('剩余次数不足，请联系管理员', true);
+  if (!quotaIsUnlimited(state.user.quota) && state.user.quota <= 0) {
+    // 游客额度用尽:引导登录;普通用户则提示充值
+    if (state.isGuest) {
+      state.isGuestExpired = true;
+      showGuestBar();
+      openAuthModal('游客体验次数已用完，注册或登录后可继续对话');
+    } else {
+      toast('剩余次数不足，请联系管理员', true);
+    }
     return;
+  }
+
+  // 生图模型:纯文本=文生图,带图=图生图,都走生图接口。
+  // 之前只处理「带图」的情况,纯文本会被当成普通对话发出去:后端虽然会自动改走生图接口,
+  // 但返回的是 {images:[...]} 结构,对话渲染按 choices 取文本取不到,于是表现为「不出图」。
+  if (modelIsImage(state.currentModel)) {
+    const imageAtts = attachments.filter((a) => a && a.type === 'image' && a.dataUrl).slice(0, 4);
+    input.value = '';
+    autosizeInput();
+    state.pendingAttachments = [];
+    renderAttachments();
+    updateSendBtn();
+    await sendImageTurn(text, imageAtts);
+    return;
+  }
+
+  // 视频模型:纯文本=文生视频,带图=以图为参考生视频,都走视频接口(异步任务)。
+  if (modelIsVideo(state.currentModel)) {
+    const imageAtts = attachments.filter((a) => a && a.type === 'image' && a.dataUrl).slice(0, 5);
+    input.value = '';
+    autosizeInput();
+    state.pendingAttachments = [];
+    renderAttachments();
+    updateSendBtn();
+    await sendVideoTurn(text, imageAtts);
+    return;
+  }
+
+  // 对话模型下:识别到「画图 / 改图」意图时,自动改用「默认生图模型」出图,
+  // 并自动带上上一张生成图或本次附件作参考图(改图)。用户无需先手动切到生图模型。
+  if (uiPref('autoImage', true)) {
+    const imgAtts = attachments.filter((a) => a && a.type === 'image' && a.dataUrl).slice(0, 4);
+    let prevImg = '';
+    if (typeof lastImageSourceInChat === 'function') {
+      const c = currentChat();
+      if (c) prevImg = lastImageSourceInChat(c) || '';
+    }
+    const isDraw = wantsDrawImage(text);
+    // 改图意图:必须能定位到一张图。附图即视为要改这张图;否则需本会话有上一张生成图,
+    // 且文本明确指代它(上面/这张图/它…)。避免把「把这段话改成英文」这类文本编辑误判为改图。
+    const isEdit = wantsEditImage(text) && (imgAtts.length > 0 || (!!prevImg && refersToPrevImage(text)));
+    // 参考图策略:显式编辑或明确指代上一张图时带上;全新绘图默认不带
+    const usePrevRef = imgAtts.length === 0 && (isEdit || (isDraw && refersToPrevImage(text) && !!prevImg));
+    if (isDraw || isEdit) {
+      const target = defaultImageModel();
+      if (target) {
+        input.value = '';
+        autosizeInput();
+        state.pendingAttachments = [];
+        renderAttachments();
+        updateSendBtn();
+        // 记住用户原本的对话模型,出图后恢复,让用户继续留在对话模型里
+        const prevProviderId = state.currentProviderId;
+        const prevModel = state.currentModel;
+        // 临时切到默认生图模型(仅本次出图,不改变用户的置顶/上次使用偏好)
+        state.currentProviderId = target.providerId;
+        await loadModels({ prefer: target.modelId });
+        state.currentModel = target.modelId;
+        renderProviderLabel();
+        renderModelPicker();
+        const withRef = imgAtts.length > 0 || usePrevRef;
+        toast((isEdit ? '识别到改图意图，已用生图模型「' : '识别到绘图意图，已用生图模型「') + (target.label || target.modelId) + '」' + (withRef ? '并带上参考图' : ''));
+        try {
+          await sendImageTurn(text, imgAtts, { autoRef: usePrevRef });
+        } finally {
+          // 无论出图成功或失败,都恢复到用户原本的对话模型
+          state.currentProviderId = prevProviderId;
+          await loadModels({ prefer: prevModel });
+          state.currentModel = prevModel;
+          renderProviderLabel();
+          renderModelPicker();
+        }
+        return;
+      }
+    }
   }
 
   input.value = '';
@@ -1860,10 +2241,11 @@ async function sendMessage() {
   if (!chat || !chat.id) {
     chat = newChat();
   }
-  // 新会话给第一个消息生成标题
+  // 新会话给第一个消息生成标题(先用本地截取,若配置了 AI 命名则在首轮回复后替换)
   if (chat.messages.length === 0 && autoTitleEnabled()) {
     const seed = text || (attachments[0] && attachments[0].name) || '新对话';
     chat.title = window.OCConversations.autoTitle(seed);
+    chat._autoTitled = true;
     renderChatList();
   }
 
@@ -1885,8 +2267,53 @@ async function sendMessage() {
   saveChats();
   renderMessages();
   await requestAssistantReply(chat, userMsg);
+  // AI 命名:配置了命名模型且标题仍是本地截取时,首轮回复后生成更贴切的标题
+  if (chat._autoTitled && String(uiPref('titleModel', '') || '')) {
+    aiGenerateTitle(chat).catch(() => {});
+  }
   await refreshMe();
   refreshModelHealth();
+}
+
+// AI 生成会话标题:用「命名方式」选择的模型(或当前模型)总结首轮对话。
+// 仅替换尚未被用户手动重命名的自动标题(_autoTitled 标记)。
+async function aiGenerateTitle(chat) {
+  if (!chat || !chat.id) return;
+  const aux = resolveAuxModel('titleModel');
+  const providerId = aux ? aux.providerId : state.currentProviderId;
+  const model = aux ? aux.model : state.currentModel;
+  const format = aux ? aux.format : providerFormat();
+  if (!providerId || !model) return;
+  const firstUser = (chat.messages || []).find((m) => m && m.role === 'user');
+  const firstReply = (chat.messages || []).find((m) => m && m.role === 'assistant' && String(m.content || '').trim());
+  const seed = String((firstUser && (firstUser.text || firstUser.content)) || '').slice(0, 800);
+  const reply = String((firstReply && firstReply.content) || '').replace(/!\[[^\]]*\]\([^)]*\)/g, '').slice(0, 600);
+  if (!seed.trim()) return;
+  const body = {
+    model,
+    stream: false,
+    providerId,
+    messages: [
+      { role: 'system', content: '你是对话助手。为一段对话生成一个简短的中文标题：不超过 14 个字、不加引号和句号、不使用「对话」「标题」等字眼，直接输出标题本身。' },
+      { role: 'user', content: '用户提问：\n' + seed + (reply ? ('\n\nAI 回复（节选）：\n' + reply) : '') },
+    ],
+  };
+  const r = await api(ENDPOINT_BY_FORMAT[format] || ENDPOINT_BY_FORMAT.chat, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) return;
+  const data = await r.json();
+  const title = String(extractText(data, format) || '').split('\n')[0].replace(/^["'「『]+|["'」』。.]+$/g, '').trim().slice(0, 24);
+  if (!title) return;
+  // 生成期间用户可能已手动改名(_autoTitled 被清),此时不再覆盖
+  if (!chat._autoTitled) return;
+  chat._autoTitled = false;
+  chat.title = title;
+  chat.updatedAt = Date.now();
+  saveChats();
+  renderChatList();
 }
 
 function providerFormat() {
@@ -2513,11 +2940,13 @@ function openReaskDialog() {
   if (!models.length) return toast('没有可选的模型', true);
   const mask = document.createElement('div');
   mask.className = 'modal-mask';
-  const options = models.map((item) => {
-    const on = item.providerId === state.currentProviderId && item.model === state.currentModel;
-    return '<option value="' + escapeHtml(item.providerId + '\n' + item.model) + '"' + (on ? ' selected' : '') + '>'
-      + escapeHtml(item.provider + '@' + item.model) + '</option>';
-  }).join('');
+  // 自定义下拉的候选项(替代原生 select)
+  const reaskItems = models.map((item) => ({
+    value: item.providerId + '\n' + item.model,
+    label: item.provider + '@' + item.model,
+  }));
+  const cur = models.find((item) => item.providerId === state.currentProviderId && item.model === state.currentModel) || models[0];
+  const curValue = cur ? cur.providerId + '\n' + cur.model : '';
   const rows = messages.map((x) => {
     const text = stripInterruptMarks(x.m.content).replace(/\s+/g, ' ');
     const who = x.m.role === 'user' ? '用户' : 'AI';
@@ -2528,7 +2957,8 @@ function openReaskDialog() {
     + '<div class="modal-header"><h3>换模型重答</h3>'
     + '<button class="icon-btn" data-act="close" aria-label="关闭">' + (window.OC ? window.OC.icon('close', 16) : '×') + '</button></div>'
     + '<div class="modal-body">'
-    + '<label class="field"><span>用这个模型重新回答</span><select id="reask-model">' + options + '</select></label>'
+    + '<div class="field"><span>用这个模型重新回答</span>'
+    + selectBoxHtml('reask-model', cur ? cur.provider + '@' + cur.model : '请选择模型', curValue) + '</div>'
     + '<div class="reask-list">' + rows + '</div>'
     + '<div class="form-actions"><button class="btn primary" data-act="go" type="button">生成新回答</button></div>'
     + '</div></div>';
@@ -2538,12 +2968,14 @@ function openReaskDialog() {
     else mask.remove();
     setTimeout(() => mask.remove(), 360);
   };
+  const reaskBox = mask.querySelector('#reask-model');
+  bindModalSelect(reaskBox, reaskItems);
   mask.addEventListener('click', async (e) => {
     if (e.target === mask || e.target.closest('[data-act="close"]')) return close();
     if (!e.target.closest('[data-act="go"]')) return;
     const picked = Array.from(mask.querySelectorAll('.reask-row input:checked')).map((el) => Number(el.dataset.idx));
     if (!picked.length) return toast('请至少勾选一条消息', true);
-    const chosen = String((mask.querySelector('#reask-model') || {}).value || '').split('\n');
+    const chosen = String(reaskBox ? (reaskBox.getAttribute('data-value') || '') : '').split('\n');
     const providerId = chosen[0] || '';
     const model = chosen[1] || '';
     if (!providerId || !model) return toast('请选择模型', true);
@@ -2717,18 +3149,23 @@ function suggestFollowUps(content) {
 
 // 用 AI 生成跟进建议（失败时降级为启发式）
 async function aiFollowUps(content) {
-  if (!content || !state.currentProviderId || !state.currentModel) return suggestFollowUps(content);
+  // 可在设置 → 对话里指定「跟进建议模型」;未指定(或指定模型已不可用)时跟随当前对话模型
+  const aux = resolveAuxModel('followupsModel');
+  const providerId = aux ? aux.providerId : state.currentProviderId;
+  const model = aux ? aux.model : state.currentModel;
+  const format = aux ? aux.format : providerFormat();
+  if (!content || !providerId || !model) return suggestFollowUps(content);
   try {
-    const format = providerFormat();
     const body = {
-      model: state.currentModel,
+      model,
       stream: false,
+      providerId,
       messages: [
         { role: 'system', content: '你是对话助手。根据用户与 AI 的最后一条回复，生成 3 个简短、自然的追问建议。只输出 3 个短句，每行一个，不要编号，不要引号。' },
         { role: 'user', content: '最后回复内容：\n' + content.slice(0, 3000) },
       ],
     };
-    const r = await api(ENDPOINT_BY_FORMAT[format], {
+    const r = await api(ENDPOINT_BY_FORMAT[format] || ENDPOINT_BY_FORMAT.chat, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -2801,7 +3238,10 @@ async function loadAccountPackages() {
       const claimedN = Number(p.claimedCount) || 0;
       let action;
       if (price.free) {
-        if (p.claimed || (limit === 0)) {
+        if (state.isGuest) {
+          // 游客仅享有体验轮数,不参与套餐领取(与后端一致)
+          action = '<button class="btn small plan-tile-btn" disabled>注册后可领取</button>';
+        } else if (p.claimed || (limit === 0)) {
           action = '<button class="btn small plan-tile-btn" disabled>' + (limit === 0 ? '暂不可领取' : '已达领取上限') + '</button>';
         } else {
           action = '<button class="btn small primary plan-tile-btn" data-claim="' + escapeHtml(p.id) + '">立即领取</button>';
@@ -2929,10 +3369,14 @@ function renderUsageLedger() {
     box.innerHTML = '<p class="muted small">近 14 天还没有用量记录。</p>';
     return;
   }
+  // 注意:-1 表示无限额度,不能当作「已用完」(此前误把 -1 <= 0 判为耗尽)
+  const unlimited = state.user ? quotaIsUnlimited(state.user.quota) : false;
   const left = state.user ? state.user.quota : 0;
-  const head = left <= 0
-    ? '<p class="usage-empty">剩余次数已用完。近 14 天的消耗如下，需要管理员充值后才能继续。</p>'
-    : '<p class="muted small">近 14 天按模型和日期的消耗。今天剩余 ' + left + ' 次。</p>';
+  const head = unlimited
+    ? '<p class="muted small">近 14 天按模型和日期的消耗。您当前为无限额度。</p>'
+    : (left <= 0
+      ? '<p class="usage-empty">剩余次数已用完。近 14 天的消耗如下，需要管理员充值后才能继续。</p>'
+      : '<p class="muted small">近 14 天按模型和日期的消耗。今天剩余 ' + left + ' 次。</p>');
   box.innerHTML = head + rows.map((row) => {
     const models = (row.models || []).map((m) => escapeHtml(m.model) + ' ' + (m.calls || 0) + ' 次').join('，');
     return '<div class="usage-row"><span class="usage-name">' + escapeHtml(String(row.day || '').slice(5)) + '</span>'
@@ -3120,8 +3564,15 @@ $('user-menu-settings').addEventListener('click', () => {
 });
 const githubLink = $('user-menu-github');
 if (githubLink) githubLink.addEventListener('click', () => closeUserMenu());
+const announceMenuBtn = $('user-menu-announce');
+if (announceMenuBtn) announceMenuBtn.addEventListener('click', () => {
+  closeUserMenu();
+  if (window.OCShowAnnouncement) window.OCShowAnnouncement();
+});
 const modal = $('settings-modal');
 function openSettings(tab) {
+  // 每次打开都从干净状态开始:上次生成的密钥明文不再保留在 DOM 中
+  if (typeof resetApiKeySecret === 'function') resetApiKeySecret();
   if (window.OCUI && window.OCUI.openModal) {
     window.OCUI.openModal(modal);
   } else {
@@ -3133,8 +3584,8 @@ function openSettings(tab) {
   try { renderAccountPanel(); } catch (e) { console.error(e); }
   try { syncPrefsPanel(); } catch (e) { console.error(e); }
   try { loadAccountPackages(); } catch (e) { console.error(e); }
-  // tab 可能来自事件对象(MouseEvent),必须校验为字符串
-  if (typeof tab === 'string') switchSettingsTab(tab);
+  // tab 可能来自事件对象(MouseEvent),必须校验为字符串;不带参数时默认落在「账户」
+  switchSettingsTab(typeof tab === 'string' && tab ? tab : 'account');
 }
 function switchSettingsTab(name) {
   document.querySelectorAll('#settings-tabs .settings-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
@@ -3142,6 +3593,8 @@ function switchSettingsTab(name) {
   if (name === 'usage2') { usage2Limit = USAGE2_PAGE_SIZE; try { renderUsagePanel(); } catch (e) { console.error(e); } }
 }
 function closeSettings() {
+  // 关闭即清除已生成密钥明文,避免重新打开设置仍能看到
+  if (typeof resetApiKeySecret === 'function') resetApiKeySecret();
   if (window.OCUI && window.OCUI.closeModal) {
     window.OCUI.closeModal(modal);
   } else {
@@ -3175,11 +3628,128 @@ function renderAccountPanel() {
   }
 }
 
+// ============ 辅助任务模型选择(跟进建议/对话命名) ============
+// 候选只含对话模型;生图/生视频模型不参与文本辅助任务。
+function auxModelItems() {
+  const items = [];
+  availableModelItems().forEach((g) => {
+    if (g.label === '生图模型' || g.label === '生视频模型') return;
+    (g.items || []).forEach((it) => items.push({ value: it.value, label: it.label, search: it.search }));
+  });
+  return items;
+}
+function auxModelLabel(val, mode) {
+  const v = String(val || '');
+  if (mode === 'title') {
+    if (v === 'current') return '跟随当前模型（AI 生成）';
+    if (!v) return '本地截取';
+  } else if (!v) return '跟随当前模型';
+  const found = auxModelItems().find((it) => it.value === v);
+  return found ? found.label : (mode === 'title' ? '本地截取' : '跟随当前模型');
+}
+function syncAuxModelSelect(id, prefKey, mode) {
+  const box = $(id);
+  if (!box) return;
+  const val = String(uiPref(prefKey, '') || '');
+  box.setAttribute('data-value', val);
+  const lab = box.querySelector('.sb-label');
+  if (lab) lab.textContent = auxModelLabel(val, mode);
+}
+function bindAuxModelSelect(id, prefKey, mode) {
+  const box = $(id);
+  if (!box || !window.OC || !OC.openSelect) return;
+  const open = () => {
+    const items = auxModelItems().slice();
+    if (mode === 'title') items.unshift({ value: 'current', label: '跟随当前模型（AI 生成）' });
+    items.unshift({ value: '', label: mode === 'title' ? '本地截取' : '跟随当前模型' });
+    OC.openSelect(box, items, {
+      selected: String(uiPref(prefKey, '') || ''),
+      searchable: items.length > 8,
+      fitWidth: true,
+      onSelect: (val, item) => {
+        if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref(prefKey, val);
+        const lab = box.querySelector('.sb-label');
+        if (lab) lab.textContent = (item && item.label) || auxModelLabel(val, mode);
+      },
+    });
+  };
+  box.addEventListener('click', open);
+  box.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+}
+// 生图模型候选(跨供应商),供「默认生图模型」设置项使用
+// 生图模型候选(跨供应商,仅生图,不含生视频),供「默认生图模型」设置项使用
+function imageModelItems() {
+  const items = [];
+  availableModelItems().forEach((g) => {
+    if (g.label !== '生图模型') return;
+    (g.items || []).forEach((it) => items.push({ value: it.value, label: it.label, search: it.search }));
+  });
+  return items;
+}
+function imageModelLabel(val) {
+  const v = String(val || '');
+  if (!v) return '第一个生图模型';
+  const found = imageModelItems().find((it) => it.value === v);
+  return found ? found.label : '第一个生图模型';
+}
+function syncImageModelSelect(id, prefKey) {
+  const box = $(id);
+  if (!box) return;
+  const val = String(uiPref(prefKey, '') || '');
+  box.setAttribute('data-value', val);
+  const lab = box.querySelector('.sb-label');
+  if (lab) lab.textContent = imageModelLabel(val);
+}
+function bindImageModelSelect(id, prefKey) {
+  const box = $(id);
+  if (!box || !window.OC || !OC.openSelect) return;
+  const open = () => {
+    const items = imageModelItems().slice();
+    items.unshift({ value: '', label: '第一个生图模型' });
+    OC.openSelect(box, items, {
+      selected: String(uiPref(prefKey, '') || ''),
+      searchable: items.length > 8,
+      fitWidth: true,
+      onSelect: (val, item) => {
+        if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref(prefKey, val);
+        const lab = box.querySelector('.sb-label');
+        if (lab) lab.textContent = (item && item.label) || imageModelLabel(val);
+      },
+    });
+  };
+  box.addEventListener('click', open);
+  box.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+}
+// 全站可用的生图模型 [{providerId, modelId, value, label}]（后台「默认生图模型」与自动改走生图都用到）
+function allImageModels() {
+  const out = [];
+  (state.providers || []).forEach((p) => {
+    (p.models || []).forEach((m) => {
+      if (!m || !m.id) return;
+      if (!modelIsImage(m.id)) return;
+      out.push({ providerId: p.id, modelId: String(m.id), value: p.id + '\n' + m.id, label: (p.name || p.id) + '@' + (m.name || m.id) });
+    });
+  });
+  return out;
+}
+// 解析「默认生图模型」:优先用户设置,否则第一个可用生图模型
+function defaultImageModel() {
+  const list = allImageModels();
+  if (!list.length) return null;
+  const pref = String(uiPref('imageModel', '') || '');
+  if (pref) {
+    const hit = list.find((x) => x.value === pref);
+    if (hit) return hit;
+  }
+  return list[0];
+}
 function syncPrefsPanel() {
   const checks = [
     ['pref-stream', 'stream'],
+    ['pref-show-api-chats', 'showApiChats'],
     ['pref-followups', 'followups'],
     ['pref-autotitle', 'autotitle'],
+    ['pref-auto-image', 'autoImage'],
     ['pref-elapsed', 'elapsed'],
     ['pref-reasoning', 'reasoning'],
   ];
@@ -3188,6 +3758,9 @@ function syncPrefsPanel() {
     if (!el) return;
     el.checked = !!uiPref(key, true);
   });
+  syncAuxModelSelect('pref-followups-model', 'followupsModel', '');
+  syncAuxModelSelect('pref-title-model', 'titleModel', '');
+  syncImageModelSelect('pref-image-model', 'imageModel');
   const effortVal = reasoningEffort();
   document.querySelectorAll('#pref-reasoning-effort .seg-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.effort === effortVal);
@@ -3389,8 +3962,13 @@ async function saveToolSource(patch) {
     });
   };
   bindCheck('pref-stream', 'stream');
+  bindCheck('pref-show-api-chats', 'showApiChats');
   bindCheck('pref-followups', 'followups');
   bindCheck('pref-autotitle', 'autotitle');
+  bindAuxModelSelect('pref-followups-model', 'followupsModel', 'followups');
+  bindAuxModelSelect('pref-title-model', 'titleModel', 'title');
+  bindImageModelSelect('pref-image-model', 'imageModel');
+  bindCheck('pref-auto-image', 'autoImage');
   bindCheck('pref-elapsed', 'elapsed');
   bindCheck('pref-reasoning', 'reasoning');
   const effortBox = $('pref-reasoning-effort');
@@ -3852,7 +4430,7 @@ function renderProviderList() {
     const showUrl = isOwner || isAdmin;
     const urlText = showUrl ? p.baseUrl : '';
     // 只有平台计费的全局供应商才需要展示扣费;自己的 Key 不扣次数,不必说明
-    const costText = isOwner ? '' : '扣 ' + p.costPerCall + ' 次/次调用';
+    const costText = isOwner ? '' : '每次调用扣 ' + p.costPerCall + ' 次';
     const urlParts = [urlText, p.apiFormat, costText].filter(Boolean).map((x) => escapeHtml(x));
     const urlHtml = urlParts.length ? '<div class="pc-url">' + urlParts.join(' · ') + '</div>' : '';
     let keyHtml = '';
@@ -4206,17 +4784,20 @@ if (pFetchBtn) {
     const apiKey = $('p-key').value.trim();
     const apiFormat = $('p-format').getAttribute('data-value') || 'chat';
     if (!baseUrl) { toast('请先填写 Base URL', true); return; }
-    if (!apiKey) { toast('请先填写 API Key', true); return; }
+    // 编辑已有供应商时 Key 允许留空(保持原 Key):带上 providerId 让服务端回退用存储的密钥
+    if (!apiKey && !providerEditingId) { toast('请先填写 API Key', true); return; }
     pFetchBtn.disabled = true;
     pFetchBtn.textContent = '获取中…';
     try {
       const r = await api('/api/proxy/fetch-models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ baseUrl, apiKey, apiFormat }),
+        body: JSON.stringify({ baseUrl, apiKey, apiFormat, providerId: providerEditingId || undefined }),
       });
-      const data = await r.json();
-      if (!r.ok) { toast((data.error && data.error.message) || '获取失败', true); return; }
+      // 上游或服务器异常时可能返回 HTML 错误页,直接 .json() 会抛 "Unexpected token '<'",
+      // 这里改为先取文本再尝试解析,给出可读提示
+      const data = await readJsonSafe(r);
+      if (!r.ok) { toast((data.error && data.error.message) || ('获取失败（HTTP ' + r.status + '）'), true); return; }
       const models = data.models || [];
       if (!models.length) { toast('上游未返回模型', true); return; }
       if (window.OC && window.OC.openFetchedModelsModal) {
@@ -4342,21 +4923,68 @@ $('admin-link').addEventListener('click', () => location.href = apiUrl('/admin')
       navigator.serviceWorker.register(apiUrl('sw.js')).catch(() => {});
     });
   }
-  const bar = $('announce-bar');
-  if (!bar) return;
+  const modal = $('announce-modal');
+  if (!modal) return;
+  let current = null;
+  function markSeen() {
+    const t = current && current.updatedAt ? current.updatedAt : Date.now();
+    try { localStorage.setItem('oc_announcement_seen', String(t)); } catch (e) {}
+  }
+  function showAnnouncement(ann) {
+    if (!ann || !ann.text) return;
+    current = ann;
+    const txt = $('announce-text');
+    if (txt) {
+      // 公告支持 Markdown 与内联 HTML(经渲染器统一清洗),便于富文本排版
+      const raw = String(ann.text);
+      let html = '';
+      if (window.OCRenderer && window.OCRenderer.render) {
+        try { html = window.OCRenderer.render(raw); } catch (e) { html = ''; }
+      }
+      if (!html) html = escapeHtml(raw).replace(/\n/g, '<br>');
+      txt.innerHTML = html;
+    }
+    const title = $('announce-title');
+    if (title) title.textContent = ann.title || '公告';
+    if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(modal);
+    else modal.classList.remove('hidden');
+  }
+  function closeAnnouncement() {
+    if (window.OCUI && window.OCUI.closeModal) window.OCUI.closeModal(modal);
+    else modal.classList.add('hidden');
+  }
+  if (window.OCUI && window.OCUI.bindModal) {
+    window.OCUI.bindModal(modal, {
+      closeId: 'announce-close',
+      closeSelector: '#announce-ok',
+      onClose: markSeen,
+    });
+  } else {
+    $('announce-close') && $('announce-close').addEventListener('click', () => { closeAnnouncement(); markSeen(); });
+    $('announce-ok') && $('announce-ok').addEventListener('click', () => { closeAnnouncement(); markSeen(); });
+    modal.addEventListener('click', (e) => { if (e.target === modal) { closeAnnouncement(); markSeen(); } });
+  }
+  window.OCShowAnnouncement = () => {
+    // 用户菜单里的「公告」入口:总是展示最新公告,不写已读
+    showAnnouncement(current || { text: '', updatedAt: 0 });
+    if (current) return true;
+    return false;
+  };
+  window.OCGetAnnouncement = () => current;
   fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
     const ann = cfg && cfg.announcement;
-    if (!ann || !ann.enabled || !ann.text) return;
+    // 自动弹出:公告启用且内容比上次已读更新时
+    if (!ann || !ann.enabled || !ann.text) {
+      const menuBtn = $('user-menu-announce');
+      if (menuBtn) { menuBtn.hidden = true; menuBtn.classList.add('hidden'); }
+      return;
+    }
+    current = ann;
+    const menuBtn = $('user-menu-announce');
+    if (menuBtn) { menuBtn.hidden = false; menuBtn.classList.remove('hidden'); }
     const seen = Number(localStorage.getItem('oc_announcement_seen')) || 0;
     if (ann.updatedAt && ann.updatedAt <= seen) return;
-    const txt = $('announce-text');
-    if (txt) txt.textContent = ann.text;
-    bar.classList.remove('hidden');
-    const close = $('announce-close');
-    if (close) close.addEventListener('click', () => {
-      bar.classList.add('hidden');
-      localStorage.setItem('oc_announcement_seen', String(ann.updatedAt || Date.now()));
-    });
+    showAnnouncement(ann);
   }).catch(() => {});
 })();
 
@@ -4387,13 +5015,37 @@ function renderApiKeys(keys) {
     });
   });
 }
+function apiKeyLimitText(d) {
+  const parts = [];
+  const keyLimit = Number(d && d.keyRateLimitPerMin);
+  const userLimit = Number(d && d.userRateLimitPerMin);
+  const maxKeys = Number(d && d.maxKeys) || 5;
+  parts.push('单密钥限流 ' + (keyLimit > 0 ? keyLimit + ' 次/分钟' : '不限'));
+  if (userLimit > 0) parts.push('账号合计 ' + userLimit + ' 次/分钟');
+  parts.push('最多 ' + maxKeys + ' 个密钥');
+  if (d && d.exposeRestricted) parts.push('仅部分模型对开放接口开放');
+  return parts.join(' · ');
+}
 function loadApiKeys() {
   const box = $('apikey-list');
   if (!box) return;
   api('/api/me/apikeys').then((r) => r.json()).then((d) => {
-    renderApiKeys(d.keys || []);
+    const note = $('apikey-limit-note');
+    const enabled = d.enabled !== false;
+    if (note) {
+      note.textContent = enabled ? ('本站限制：' + apiKeyLimitText(d)) : '管理员已关闭 API 密钥功能';
+    }
+    if ($('apikey-create')) $('apikey-create').disabled = !enabled;
+    renderApiKeys(enabled ? (d.keys || []) : []);
     if ($('acc-api-base')) $('acc-api-base').textContent = location.origin + '/v1';
   }).catch(() => {});
+}
+// 关闭设置弹窗时清空"仅显示一次"的密钥框,避免下次打开仍能看到明文
+function resetApiKeySecret() {
+  const val = $('apikey-new-value');
+  const box = $('apikey-new-box');
+  if (val) val.textContent = '';
+  if (box) box.classList.add('hidden');
 }
 (function initApiKeysUI() {
   const create = $('apikey-create');
@@ -4419,9 +5071,9 @@ function loadApiKeys() {
       toast('创建失败: ' + e.message, true);
     } finally { create.disabled = false; }
   });
-  if ($('sp-account') && window.MutationObserver) {
-    new MutationObserver(() => { if ($('sp-account').classList.contains('active')) loadApiKeys(); })
-      .observe($('sp-account'), { attributes: true, attributeFilter: ['class'] });
+  if ($('sp-apikeys') && window.MutationObserver) {
+    new MutationObserver(() => { if ($('sp-apikeys').classList.contains('active')) loadApiKeys(); })
+      .observe($('sp-apikeys'), { attributes: true, attributeFilter: ['class'] });
   }
 })();
 
@@ -4464,8 +5116,9 @@ function renderAttachments() {
       const meta = a.meta || {};
       const size = window.OCMultimodal.formatSize(a.size);
       const status = a.parsing ? (a.parseLabel || '正在解析') : size;
+      const fileName = String(a.name || '未命名文件');
       el.innerHTML = '<span class="fc-icon" style="background:' + (meta.color || '#94a3b8') + '22">' + (meta.svg || window.OC.icon('file', 15)) + '</span>'
-        + '<span class="fc-info"><span class="fc-name">' + escapeHtml(a.name) + '</span><span class="fc-size">' + escapeHtml(status) + '</span>'
+        + '<span class="fc-info"><span class="fc-name" title="' + escapeHtml(fileName) + '">' + escapeHtml(fileName) + '</span><span class="fc-size">' + escapeHtml(status) + '</span>'
         + (a.parsing ? '<span class="fc-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + (a.parsePct || 0) + '"><span style="width:' + (a.parsePct || 8) + '%"></span></span>' : '')
         + '</span>'
         + '<button class="fc-remove">' + window.OC.icon('close', 10) + '</button>';
@@ -4579,6 +5232,8 @@ async function attachDocument(file, attach) {
   const isImage = attach.type === 'image';
   // 多模态模型:图片直接发送,不解析
   if (isImage && modelSupportsVision()) return attach;
+  // 生图模型:图片是「参考图」(图生图),保留原图直接发送,不能送去 OCR 解析成文字
+  if (isImage && modelIsImage(state.currentModel)) return attach;
   // 文本类等本地可读文件:无需解析
   if (!isImage && !(mm && mm.needsMineru && mm.needsMineru(file))) return attach;
   if (mm.mineruTooBig(file)) {
@@ -4734,71 +5389,697 @@ async function attachDocument(file, attach) {
       closeTools();
       openImageDialog();
     });
+    const videoTool = $('composer-tool-video');
+    if (videoTool) videoTool.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      closeTools();
+      openVideoDialog();
+    });
   }
 })();
 
 // ============ 图像生成 ============
+// 当前供应商下被判定为生图的模型:显式 image 标记优先,否则按模型名启发式判断
+function imageModelsOfCurrentProvider() {
+  const p = (state.providers || []).find((x) => x.id === state.currentProviderId);
+  if (!p || !Array.isArray(p.models)) return [];
+  return p.models.filter((m) => m && m.id && modelIsImage(m.id));
+}
+// 在动态弹窗里挂一个自定义下拉,替代原生 <select>:样式与全站统一,且支持搜索。
+function bindModalSelect(box, getItems, onSelect) {
+  if (!box || !window.OC || !OC.openSelect) return;
+  const open = () => {
+    const items = typeof getItems === 'function' ? getItems() : (getItems || []);
+    if (!items.length) return;
+    OC.openSelect(box, items, {
+      selected: box.getAttribute('data-value') || '',
+      searchable: items.length > 8,
+      fitWidth: true,
+      onSelect: (val, item) => {
+        box.setAttribute('data-value', val);
+        const lab = box.querySelector('.sb-label');
+        if (lab) lab.textContent = (item && item.label) || val;
+        if (onSelect) onSelect(val, item);
+      },
+    });
+  };
+  box.addEventListener('click', open);
+  box.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+  });
+}
+// 自定义下拉的 HTML 骨架(与全站 .select-box 同款)
+function selectBoxHtml(id, label, value) {
+  return '<div class="select-box" id="' + id + '" data-value="' + escapeHtml(value || '') + '" role="button" tabindex="0" aria-haspopup="listbox">'
+    + '<span class="sb-label">' + escapeHtml(label || '请选择') + '</span>'
+    + '<span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>'
+    + '</div>';
+}
+
 function openImageDialog() {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
   if (!state.currentProviderId) { toast('请先在顶部选择供应商', true); return; }
+  if (document.querySelector('.img-modal')) return; // 已打开时不重复弹出
+  const lastModel = localStorage.getItem('oc_image_model') || '';
+  // 常用尺寸快捷项;具体规格可在下方输入框自定义(像素 1024x1024 / 档位 2K / 宽高比 16:9)
+  const IMG_SIZE_PRESETS = ['1024x1024', '1792x1024', '1024x1792', '512x512', '2K', '4K', '16:9', '9:16'];
+  const storedSize = (localStorage.getItem('oc_image_size') || '').trim();
+  const lastSize = storedSize || IMG_SIZE_PRESETS[0];
+  // 当前供应商里可用的生图模型(显式标记优先,其次按模型名判断)
+  const imageModels = imageModelsOfCurrentProvider();
+  const hasModelList = imageModels.length > 0;
+  // 默认模型优先级:用户设置的「默认生图模型」(若在本供应商) > 上次使用 > 第一个
+  const prefImg = defaultImageModel();
+  const prefModelHere = (prefImg && prefImg.providerId === state.currentProviderId && imageModels.some((m) => m.id === prefImg.modelId)) ? prefImg.modelId : '';
+  const defaultModel = prefModelHere
+    || (imageModels.some((m) => m.id === lastModel) ? lastModel : (imageModels[0] ? imageModels[0].id : ''));
+
   const mask = document.createElement('div');
   mask.className = 'modal-mask';
-  const lastModel = localStorage.getItem('oc_image_model') || '';
-  const lastSize = localStorage.getItem('oc_image_size') || '1024x1024';
+  const iconHtml = (window.OC && OC.logoImg) ? OC.logoImg(imageModelLogo(), 'img-dialog-logo') : '';
+  const modelBlock = hasModelList
+    ? '<div class="field"><span>图像模型</span>' + selectBoxHtml('img-model-box', '选择生图模型', defaultModel) + '</div>'
+      + '<label class="field" id="img-model-custom-row" style="display:none"><span>模型 ID</span>'
+      + '<input id="img-model" placeholder="手动输入模型 ID" autocomplete="off"></label>'
+    : '<div class="field"><span>图像模型</span>'
+      + '<input id="img-model" placeholder="例如 dall-e-3 / gpt-image-1" value="' + escapeHtml(lastModel) + '" autocomplete="off"></div>';
+
   mask.innerHTML =
-    '<div class="modal modal-sm" role="dialog" aria-modal="true">'
-    + '<div class="modal-header"><h3>生成图片</h3>'
-    + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + (window.OC ? OC.icon('close', 16) : '×') + '</button></div>'
+    '<div class="modal img-modal" role="dialog" aria-modal="true" aria-labelledby="img-dialog-title">'
+    + '<div class="modal-header">'
+    + '<h3 id="img-dialog-title">' + iconHtml + 'AI 生图</h3>'
+    + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + (window.OC ? OC.icon('close', 16) : '×') + '</button>'
+    + '</div>'
     + '<div class="modal-body">'
-    + '<p class="muted small">调用当前供应商的 <code>images/generations</code> 接口，按一次对话扣费。生成后插入当前对话。</p>'
-    + '<label class="field"><span>提示词</span><textarea id="img-prompt" rows="3" placeholder="描述想要的画面，例如：一只戴墨镜的柯基在冲浪，扁平插画风" style="resize:vertical"></textarea></label>'
-    + '<label class="field"><span>图像模型</span><input id="img-model" placeholder="例如 dall-e-3 / gpt-image-1 / sd3" value="' + escapeHtml(lastModel) + '" autocomplete="off"></label>'
-    + '<label class="field"><span>尺寸</span><select id="img-size">'
-    + ['1024x1024', '1792x1024', '1024x1792', '512x512'].map((s) => '<option value="' + s + '"' + (s === lastSize ? ' selected' : '') + '>' + s + '</option>').join('')
-    + '</select></label>'
-    + '<div class="form-actions"><button class="btn primary" id="img-run" type="button">生成</button><span class="muted small" id="img-status"></span></div>'
-    + '</div></div>';
+    + '<p class="img-modal-tip">描述你想要的画面；上传参考图即可<b>修改图片</b>。结果会插入当前对话，每次按一次调用计费。</p>'
+    + '<label class="field"><span>提示词</span>'
+    + '<textarea id="img-prompt" rows="3" placeholder="例如：一只戴墨镜的柯基在冲浪，扁平插画风" style="resize:vertical"></textarea>'
+    + '</label>'
+    + '<div class="img-modal-grid">'
+    + modelBlock
+    + '<div class="field"><span>图片规格</span>'
+    + selectBoxHtml('img-size-box', lastSize, lastSize)
+    + '<input class="img-size-input" id="img-size-custom" type="text" placeholder="自定义，如 1024x1024 / 2K / 16:9" autocomplete="off">'
+    + '</div>'
+    + '</div>'
+    + '<div class="field"><span>参考图（选填，最多 4 张；上传后按提示词修改图片）</span>'
+    + '<div class="img-refs" id="img-refs"></div>'
+    + '<input type="file" id="img-ref-input" accept="image/*" multiple hidden>'
+    + '<button class="btn small img-ref-add-btn" id="img-ref-add" type="button">'
+    + (window.OC && OC.icon ? OC.icon('plus', 13) : '') + '<span>添加图片</span></button>'
+    + '</div>'
+    + '</div>'
+    + '<div class="modal-footer img-modal-footer">'
+    + '<span class="img-status" id="img-status" role="status" aria-live="polite"></span>'
+    + '<button class="btn primary img-run-btn" id="img-run" type="button">生成图片</button>'
+    + '</div>'
+    + '</div>';
   document.body.appendChild(mask);
   const close = () => mask.remove();
   mask.addEventListener('click', (e) => { if (e.target === mask || e.target.closest('[data-act="close"]')) close(); });
+
+  // 自定义下拉:模型 + 尺寸
+  const modelBox = mask.querySelector('#img-model-box');
+  const customRow = mask.querySelector('#img-model-custom-row');
+  const sizeBox = mask.querySelector('#img-size-box');
+  const syncCustom = () => {
+    if (!customRow || !modelBox) return;
+    const custom = modelBox.getAttribute('data-value') === '__custom__';
+    customRow.style.display = custom ? '' : 'none';
+    if (custom) { const inp = mask.querySelector('#img-model'); if (inp) inp.focus(); }
+  };
+  if (modelBox) {
+    const items = imageModels.map((m) => ({ value: m.id, label: m.name || m.id }))
+      .concat([{ value: '__custom__', label: '其他（手动输入）' }]);
+    bindModalSelect(modelBox, items, () => syncCustom());
+    syncCustom();
+  }
+  // 图片规格:下拉选预设;也可在输入框里自定义。两者联动(改一边同步另一边),
+  // readSizeInput 以输入框为准,输入框为空时才用下拉的预设值。
+  const sizeInput = mask.querySelector('#img-size-custom');
+  if (sizeBox) {
+    bindModalSelect(sizeBox, IMG_SIZE_PRESETS.map((s) => ({ value: s, label: s })), (val) => {
+      if (sizeInput) sizeInput.value = val === IMG_SIZE_PRESETS[0] ? '' : val;
+    });
+  }
+  if (sizeInput) {
+    sizeInput.addEventListener('input', () => {
+      const v = sizeInput.value.trim();
+      const label = sizeBox && sizeBox.querySelector('.sb-label');
+      if (!label) return;
+      label.textContent = v || '选择预设';
+    });
+  }
+  const readImageModel = () => {
+    if (modelBox) {
+      const v = modelBox.getAttribute('data-value') || '';
+      if (v && v !== '__custom__') return v;
+    }
+    return (mask.querySelector('#img-model') && mask.querySelector('#img-model').value.trim()) || '';
+  };
+  const readSize = () => {
+    const typed = sizeInput ? sizeInput.value.trim() : '';
+    if (typed) return typed;
+    return (sizeBox && sizeBox.getAttribute('data-value')) || lastSize;
+  };
+  // 参考图(改图用):保存 data URL 列表并渲染缩略图
+  const imgRefs = [];
+  const refsBox = mask.querySelector('#img-refs');
+  const refInput = mask.querySelector('#img-ref-input');
+  const IMG_REF_MAX = 4;
+  function renderImgRefs() {
+    if (!refsBox) return;
+    refsBox.innerHTML = imgRefs.map((r, i) =>
+      '<span class="img-ref"><img src="' + r + '" alt="">'
+      + '<button type="button" class="img-ref-del" data-idx="' + i + '" aria-label="移除">×</button></span>'
+    ).join('');
+    refsBox.querySelectorAll('[data-idx]').forEach((b) => b.addEventListener('click', () => {
+      imgRefs.splice(Number(b.dataset.idx), 1);
+      renderImgRefs();
+    }));
+  }
+  const refAdd = mask.querySelector('#img-ref-add');
+  if (refAdd && refInput) {
+    refAdd.addEventListener('click', () => refInput.click());
+    refInput.addEventListener('change', async () => {
+      const files = Array.from(refInput.files || []);
+      for (const f of files) {
+        if (imgRefs.length >= IMG_REF_MAX) { toast('最多 ' + IMG_REF_MAX + ' 张参考图', true); break; }
+        if (!/^image\//.test(f.type)) continue;
+        if (f.size > 15 * 1024 * 1024) { toast('单张参考图请小于 15MB', true); continue; }
+        try { imgRefs.push(await readImageRefCompressed(f)); } catch (e) { /* 跳过读失败的文件 */ }
+      }
+      refInput.value = '';
+      renderImgRefs();
+    });
+  }
   const run = mask.querySelector('#img-run');
   run.addEventListener('click', async () => {
     const prompt = (mask.querySelector('#img-prompt') && mask.querySelector('#img-prompt').value.trim()) || '';
-    const model = (mask.querySelector('#img-model') && mask.querySelector('#img-model').value.trim()) || '';
-    const size = (mask.querySelector('#img-size') && mask.querySelector('#img-size').value) || '1024x1024';
+    const model = readImageModel();
+    const spec = parseImageSpec(readSize());
     const status = mask.querySelector('#img-status');
     if (!prompt) return toast('请输入提示词', true);
     if (!model) return toast('请填写图像模型', true);
     localStorage.setItem('oc_image_model', model);
-    localStorage.setItem('oc_image_size', size);
+    // 记住「用户实际表达」的规格:像素/档位存 size,宽高比存 ratio,两条入口据此还原
+    localStorage.setItem('oc_image_size', spec.ratio || spec.size);
     run.disabled = true;
     status.textContent = '生成中，通常需要 10–60 秒…';
     try {
       const r = await api('/api/proxy/images', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providerId: state.currentProviderId, model, prompt, size, n: 1 }),
+        body: JSON.stringify({ providerId: state.currentProviderId, model, prompt, size: spec.size, ratio: spec.ratio, n: 1, images: imgRefs.slice() }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error((d.error && d.error.message) || ('HTTP ' + r.status));
-      const md = (d.images || []).map((im) => '![' + prompt.replace(/[\[\]]/g, '').slice(0, 60) + '](' + im.url + ')').join('\n\n');
-      let chat = currentChat();
-      if (!chat || !chat.id) chat = newChat();
-      if (!chat.messages.length) { chat.title = '绘画 · ' + prompt.slice(0, 18); renderChatList(); }
-      const reply = { role: 'assistant', content: '**提示词：** ' + prompt + '\n\n' + md, model: model + ' (图像)', createdAt: Date.now() };
-      chat.messages.push(reply);
-      chat.updatedAt = Date.now();
-      state.currentChatId = chat.id;
-      saveChats(); renderMessages();
+      // url / display(同源代理) / b64_json 三种形态统一交给 insertImageResult
+      insertImageResult(model, prompt, d.images, imgRefs.length ? '修改要求' : '', imgRefs.slice());
       close();
-      toast('已生成并插入对话');
+      toast(imgRefs.length ? '已改图并插入对话' : '已生成并插入对话');
       await refreshMe();
     } catch (e) {
-      status.textContent = '';
-      toast('生成失败: ' + (e && e.message) || '未知错误', true);
+      // 失败原因同时显示在弹窗内(常驻,不会被 toast 错过)与 toast
+      const msg = (e && e.message) ? e.message : '未知错误';
+      if (status) {
+        status.textContent = '生成失败：' + msg;
+        status.classList.add('img-status-error');
+      }
+      toast('生成失败: ' + msg, true);
     } finally { run.disabled = false; }
   });
   setTimeout(() => { const p = mask.querySelector('#img-prompt'); if (p) p.focus(); }, 60);
+}
+
+// ============ 视频生成 ============
+// 生视频弹窗:提示词 + 模式(文字/首尾帧/参考图) + 时长 + 画面比例 + 参考图。
+// 后端建任务并轮询到出片,结果插入当前对话。
+function openVideoDialog() {
+  if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+  if (!state.currentProviderId) { toast('请先在顶部选择供应商', true); return; }
+  if (document.querySelector('.vid-modal')) return;
+  const videoModels = videoModelsOfCurrentProvider();
+  const lastModel = localStorage.getItem('oc_video_model') || '';
+  const hasModelList = videoModels.length > 0;
+  const defaultModel = videoModels.some((m) => m.id === lastModel) ? lastModel : (videoModels[0] ? videoModels[0].id : '');
+  const spec = parseVideoSpec();
+  const SECONDS = ['4', '5', '6', '8', '10', '12'];
+
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask';
+  const iconHtml = (window.OC && OC.logoImg) ? OC.logoImg(videoModelLogo(), 'img-dialog-logo') : '';
+  const modelBlock = hasModelList
+    ? '<div class="field"><span>视频模型</span>' + selectBoxHtml('vid-model-box', '选择视频模型', defaultModel) + '</div>'
+      + '<label class="field" id="vid-model-custom-row" style="display:none"><span>模型 ID</span>'
+      + '<input id="vid-model" placeholder="手动输入模型 ID" autocomplete="off"></label>'
+    : '<div class="field"><span>视频模型</span>'
+      + '<input id="vid-model" placeholder="例如 agnes-video-2.5-flash" value="' + escapeHtml(lastModel) + '" autocomplete="off"></div>';
+
+  mask.innerHTML =
+    '<div class="modal img-modal vid-modal" role="dialog" aria-modal="true" aria-labelledby="vid-dialog-title">'
+    + '<div class="modal-header">'
+    + '<h3 id="vid-dialog-title">' + iconHtml + 'AI 生视频</h3>'
+    + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + (window.OC ? OC.icon('close', 16) : '×') + '</button>'
+    + '</div>'
+    + '<div class="modal-body">'
+    + '<p class="img-modal-tip">描述你想要的画面与运镜；<b>首尾帧模式</b>上传首帧/尾帧，<b>参考图模式</b>可上传最多 5 张参考图。生成较慢（约 1–5 分钟），完成后插入当前对话，每次按一次调用计费。</p>'
+    + '<label class="field"><span>提示词</span>'
+    + '<textarea id="vid-prompt" rows="3" placeholder="例如：雨后的未来城市街道，镜头缓慢推进，霓虹倒影" style="resize:vertical"></textarea>'
+    + '</label>'
+    + '<div class="img-modal-grid">'
+    + modelBlock
+    + '<div class="field"><span>生成模式</span>' + selectBoxHtml('vid-mode-box', '文字生成', 'text') + '</div>'
+    + '</div>'
+    + '<div class="img-modal-grid">'
+    + '<div class="field"><span>时长（秒）</span>' + selectBoxHtml('vid-sec-box', String(spec.seconds), String(spec.seconds)) + '</div>'
+    + '<div class="field"><span>画面比例</span>' + selectBoxHtml('vid-ratio-box', spec.ratio, spec.ratio) + '</div>'
+    + '</div>'
+    + '<div class="field" id="vid-first-last" style="display:none"><span>首帧 / 尾帧（至少一张）</span>'
+    + '<div class="vid-two">'
+    + '<div class="vid-slot" data-slot="first_frame"><div class="img-refs" id="vid-first-refs"></div>'
+    + '<input type="file" id="vid-first-input" accept="image/*" hidden>'
+    + '<button class="btn small img-ref-add-btn" id="vid-first-add" type="button">' + (window.OC && OC.icon ? OC.icon('plus', 13) : '') + '<span>首帧</span></button></div>'
+    + '<div class="vid-slot" data-slot="last_frame"><div class="img-refs" id="vid-last-refs"></div>'
+    + '<input type="file" id="vid-last-input" accept="image/*" hidden>'
+    + '<button class="btn small img-ref-add-btn" id="vid-last-add" type="button">' + (window.OC && OC.icon ? OC.icon('plus', 13) : '') + '<span>尾帧</span></button></div>'
+    + '</div>'
+    + '</div>'
+    + '<div class="field" id="vid-refs-field" style="display:none"><span>参考图（最多 5 张）</span>'
+    + '<div class="img-refs" id="vid-refs"></div>'
+    + '<input type="file" id="vid-ref-input" accept="image/*" multiple hidden>'
+    + '<button class="btn small img-ref-add-btn" id="vid-ref-add" type="button">'
+    + (window.OC && OC.icon ? OC.icon('plus', 13) : '') + '<span>添加图片</span></button>'
+    + '</div>'
+    + '</div>'
+    + '<div class="modal-footer img-modal-footer">'
+    + '<span class="img-status" id="vid-status" role="status" aria-live="polite"></span>'
+    + '<button class="btn primary img-run-btn" id="vid-run" type="button">生成视频</button>'
+    + '</div>'
+    + '</div>';
+  document.body.appendChild(mask);
+  const close = () => mask.remove();
+  mask.addEventListener('click', (e) => { if (e.target === mask || e.target.closest('[data-act="close"]')) close(); });
+
+  // 自定义下拉:模型 / 模式 / 时长 / 比例
+  const modelBox = mask.querySelector('#vid-model-box');
+  const customRow = mask.querySelector('#vid-model-custom-row');
+  const modeBox = mask.querySelector('#vid-mode-box');
+  const secBox = mask.querySelector('#vid-sec-box');
+  const ratioBox = mask.querySelector('#vid-ratio-box');
+  const MODES = [
+    { value: 'text', label: '文字生成', sub: '纯文本生成视频' },
+    { value: 'keyframe', label: '首尾帧', sub: '给定首帧/尾帧生成过渡' },
+    { value: 'reference', label: '参考图', sub: '以图片/音频为参考' },
+  ];
+  const syncMode = (val) => {
+    const m = val || (modeBox && modeBox.getAttribute('data-value')) || 'text';
+    const fl = mask.querySelector('#vid-first-last');
+    const rf = mask.querySelector('#vid-refs-field');
+    if (fl) fl.style.display = m === 'keyframe' ? '' : 'none';
+    if (rf) rf.style.display = m === 'reference' ? '' : 'none';
+  };
+  const syncCustom = () => {
+    if (!customRow || !modelBox) return;
+    const custom = modelBox.getAttribute('data-value') === '__custom__';
+    customRow.style.display = custom ? '' : 'none';
+    if (custom) { const inp = mask.querySelector('#vid-model'); if (inp) inp.focus(); }
+  };
+  if (modelBox) {
+    const items = videoModels.map((m) => ({ value: m.id, label: m.name || m.id }))
+      .concat([{ value: '__custom__', label: '其他（手动输入）' }]);
+    bindModalSelect(modelBox, items, () => syncCustom());
+    syncCustom();
+  }
+  if (modeBox) bindModalSelect(modeBox, MODES.map((m) => ({ value: m.value, label: m.label, sub: m.sub })), (v) => syncMode(v));
+  if (secBox) bindModalSelect(secBox, SECONDS.map((s) => ({ value: s, label: s + ' 秒' })));
+  if (ratioBox) bindModalSelect(ratioBox, VIDEO_RATIOS.map((r) => ({ value: r, label: r })));
+  syncMode('text');
+  const readVideoModel = () => {
+    if (modelBox) {
+      const v = modelBox.getAttribute('data-value') || '';
+      if (v && v !== '__custom__') return v;
+    }
+    return (mask.querySelector('#vid-model') && mask.querySelector('#vid-model').value.trim()) || '';
+  };
+  const readVal = (box, fallback) => (box && box.getAttribute('data-value')) || fallback;
+
+  // 参考图:refs(参考图模式)/ first/last(首尾帧模式)
+  const refs = [];
+  const firstRef = [];
+  const lastRef = [];
+  const renderRefs = (box, arr, onDel) => {
+    if (!box) return;
+    box.innerHTML = arr.map((r, i) =>
+      '<span class="img-ref"><img src="' + r + '" alt="">'
+      + '<button type="button" class="img-ref-del" data-idx="' + i + '" aria-label="移除">×</button></span>'
+    ).join('');
+    box.querySelectorAll('[data-idx]').forEach((b) => b.addEventListener('click', () => { onDel(Number(b.dataset.idx)); }));
+  };
+  const bindRefInput = (addId, inputId, paneId, arr, max) => {
+    const add = mask.querySelector(addId), input = mask.querySelector(inputId), pane = mask.querySelector(paneId);
+    if (!add || !input || !pane) return;
+    const redraw = () => renderRefs(pane, arr, (i) => { arr.splice(i, 1); redraw(); });
+    add.addEventListener('click', () => input.click());
+    input.addEventListener('change', async () => {
+      const files = Array.from(input.files || []);
+      for (const f of files) {
+        if (arr.length >= max) { toast('最多 ' + max + ' 张', true); break; }
+        if (!/^image\//.test(f.type)) continue;
+        if (f.size > 15 * 1024 * 1024) { toast('单张图片请小于 15MB', true); continue; }
+        try { arr.push(await readImageRefCompressed(f)); } catch (e) { /* 跳过读失败的文件 */ }
+      }
+      input.value = '';
+      redraw();
+    });
+  };
+  bindRefInput('#vid-ref-add', '#vid-ref-input', '#vid-refs', refs, 5);
+  bindRefInput('#vid-first-add', '#vid-first-input', '#vid-first-refs', firstRef, 1);
+  bindRefInput('#vid-last-add', '#vid-last-input', '#vid-last-refs', lastRef, 1);
+
+  const run = mask.querySelector('#vid-run');
+  run.addEventListener('click', async () => {
+    const prompt = (mask.querySelector('#vid-prompt') && mask.querySelector('#vid-prompt').value.trim()) || '';
+    const model = readVideoModel();
+    const mode = readVal(modeBox, 'text');
+    const seconds = parseInt(readVal(secBox, '5'), 10) || 5;
+    const ratio = readVal(ratioBox, '16:9');
+    const status = mask.querySelector('#vid-status');
+    if (!prompt) return toast('请输入提示词', true);
+    if (!model) return toast('请填写视频模型', true);
+    if (mode === 'keyframe' && !firstRef.length && !lastRef.length) return toast('首尾帧模式至少上传首帧或尾帧', true);
+    localStorage.setItem('oc_video_model', model);
+    localStorage.setItem('oc_video_seconds', String(seconds));
+    localStorage.setItem('oc_video_ratio', ratio);
+    run.disabled = true;
+    status.textContent = '生成中，通常需要 1–5 分钟，请勿关闭页面…';
+    try {
+      const payload = { providerId: state.currentProviderId, model, prompt, mode, seconds, aspect_ratio: ratio, n: 1 };
+      if (mode === 'reference') payload.images = refs.slice();
+      if (mode === 'keyframe') {
+        if (firstRef[0]) payload.first_frame = firstRef[0];
+        if (lastRef[0]) payload.last_frame = lastRef[0];
+      }
+      const r = await api('/api/proxy/videos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error((d.error && d.error.message) || ('HTTP ' + r.status));
+      insertVideoResult(model, prompt, d.videos, mode);
+      close();
+      toast('已生成视频并插入对话');
+      await refreshMe();
+    } catch (e) {
+      const msg = (e && e.message) ? e.message : '未知错误';
+      if (status) { status.textContent = '生成失败：' + msg; status.classList.add('img-status-error'); }
+      toast('生成失败: ' + msg, true);
+    } finally { run.disabled = false; }
+  });
+  setTimeout(() => { const p = mask.querySelector('#vid-prompt'); if (p) p.focus(); }, 60);
+}
+// 把生视频结果插入当前对话
+function insertVideoResult(model, prompt, videos, mode) {
+  const links = videoLinksFromResults(videos, prompt);
+  if (!links) throw new Error('未返回可用的视频数据');
+  let chat = currentChat();
+  if (!chat || !chat.id) chat = newChat();
+  if (chat.assistantId) enforceImageModelAssistant({ silent: true });
+  const userMsg = { role: 'user', content: prompt || '（视频）', text: prompt, attachments: [], createdAt: Date.now() };
+  chat.messages.push(userMsg);
+  if (chat.messages.filter((m) => m.role === 'user').length === 1) {
+    chat.title = '视频 · ' + String(prompt || '生成视频').slice(0, 18);
+    renderChatList();
+  }
+  const modes = { text: '提示词', keyframe: '首尾帧', reference: '参考图' };
+  const head = '**' + (modes[mode] || '提示词') + '：** ' + prompt;
+  const reply = { role: 'assistant', content: head + '\n\n' + links, model: model + ' (视频)', createdAt: Date.now() };
+  chat.messages.push(reply);
+  chat.updatedAt = Date.now();
+  state.currentChatId = chat.id;
+  saveChats();
+  renderMessages();
+  return links;
+}
+
+// 把生图结果插入当前对话(绘图弹窗路径)。与输入框路径一样,先落用户消息再落结果,
+// 保证两条入口在对话里的呈现一致;refUrls 为参考图(改图时)的 data URL 列表。
+function insertImageResult(model, prompt, images, kindLabel, refUrls) {
+  const links = imageLinksFromResults(images, prompt);
+  if (!links) throw new Error('未返回可用的图像数据');
+  let chat = currentChat();
+  if (!chat || !chat.id) chat = newChat();
+  if (chat.assistantId) enforceImageModelAssistant({ silent: true });
+  const refs = (refUrls || []).filter(Boolean).slice(0, 4);
+  const parts = [];
+  if (prompt) parts.push(prompt);
+  refs.forEach((u, i) => parts.push('![参考图' + (i + 1) + '](' + u + ')'));
+  const userMsg = {
+    role: 'user',
+    content: parts.join('\n\n') || '（参考图）',
+    text: prompt,
+    attachments: refs.map((u, i) => ({ type: 'image', name: '参考图' + (i + 1), dataUrl: u })),
+    createdAt: Date.now(),
+  };
+  chat.messages.push(userMsg);
+  if (chat.messages.filter((m) => m.role === 'user').length === 1) {
+    chat.title = (kindLabel || '绘画') + ' · ' + String(prompt || '参考图').slice(0, 18);
+    renderChatList();
+  }
+  const head = kindLabel ? '**' + kindLabel + '：** ' + (prompt || '参考图') : '**提示词：** ' + prompt;
+  const reply = { role: 'assistant', content: head + '\n\n' + links, model: model + ' (图像)', createdAt: Date.now() };
+  chat.messages.push(reply);
+  chat.updatedAt = Date.now();
+  state.currentChatId = chat.id;
+  saveChats();
+  renderMessages();
+  return links;
+}
+
+// 对话内生图:生图模型下在输入框发指令(纯文本=文生图,带图=图生图)。
+// 与绘图弹窗共用同一接口与时序:先落一条用户消息(带附件则在气泡里显示参考图),
+// 再放一个占位的助手消息,拿到图片后替换为结果。
+async function sendImageTurn(prompt, imageAtts, opts) {
+  opts = opts || {};
+  if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+  const model = state.currentModel;
+  const providerId = state.currentProviderId;
+  const text = String(prompt || '').trim();
+  const atts = (imageAtts || []).slice(0, 4);
+  if (!text && !atts.length) return;
+
+  // 落用户消息,让输入框里的提示词与参考图和弹窗路径表现一致
+  let chat = currentChat();
+  if (!chat || !chat.id) chat = newChat();
+
+  // 参考图:优先用本次附的图;用户没附图时,追问自动把本会话上一张生成图作为参考图(改图)。
+  // 取到后统一压缩(长边 1536 / JPEG),与绘图弹窗走同一逻辑,发给上游的图片一致。
+  // opts.autoRef === false 时不做「自动带上上一张图」(用于纯文生图的新画,避免误当作改图)。
+  let refUrls = (await Promise.all(atts.map((a) => compressImageRef(a.dataUrl || a)))).filter(Boolean);
+  let autoRef = false;
+  if (!refUrls.length && text && opts.autoRef !== false) {
+    const prev = lastImageSourceInChat(chat);
+    if (prev) {
+      const dataUrl = await imageSourceToDataUrl(prev);
+      const comp = dataUrl ? await compressImageRef(dataUrl) : '';
+      // 只有确实拿到可用的图片才作为参考图;取不到(过期/跨域失败/非图片)就静默回退为纯文生图
+      if (comp && /^data:image\//i.test(comp)) { refUrls = [comp]; autoRef = true; }
+    }
+  }
+  const hasRefs = refUrls.length > 0;
+  if (!hasRefs && !text) { toast('请输入画面描述', true); return; }
+
+  // 展示用附件:用户附图沿用其文件名;自动参考的上一张图给一个可读名字
+  const refAtts = autoRef
+    ? [{ type: 'image', name: '上一张图', size: 0, meta: {}, dataUrl: refUrls[0] }]
+    : atts.map((a, i) => Object.assign({}, a, { dataUrl: refUrls[i] || a.dataUrl }));
+
+  const parts = [];
+  if (text) parts.push(text);
+  if (refAtts.length && window.OCMultimodal) refAtts.forEach((a) => parts.push(window.OCMultimodal.toMarkdown(a)));
+  const userMsg = { role: 'user', content: parts.join('\n\n') || '（参考图）', text, attachments: refAtts, createdAt: Date.now() };
+  chat.messages.push(userMsg);
+  const placeholder = { role: 'assistant', content: '', imagePending: true, model, providerId, createdAt: Date.now() };
+  chat.messages.push(placeholder);
+  if (chat.messages.filter((m) => m.role === 'user').length === 1) {
+    chat.title = (hasRefs ? '改图' : '绘画') + ' · ' + String(text || '参考图').slice(0, 18);
+    renderChatList();
+  }
+  chat.updatedAt = Date.now();
+  state.currentChatId = chat.id;
+  saveChats();
+  renderMessages();
+  if (chat.assistantId) enforceImageModelAssistant({ silent: true });
+  if (autoRef) toast('已把上一张图作为参考图，可直接描述要修改的地方');
+
+  // 图片规格沿用「绘图弹窗」里最近一次的选择(尺寸或宽高比),两条入口共用同一偏好
+  const spec = parseImageSpec(localStorage.getItem('oc_image_size') || '');
+  state.streaming = true;
+  updateSendBtn();
+  try {
+    const r = await api('/api/proxy/images', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providerId, model, prompt: text, n: 1, size: spec.size, ratio: spec.ratio, images: refUrls }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error((d.error && d.error.message) || ('HTTP ' + r.status));
+    // 解析图片地址(display 同源代理 / url / b64_json 三种形态)
+    const links = imageLinksFromResults(d.images, text);
+    if (!links) throw new Error('未返回可用的图像数据');
+    const head = '**' + (hasRefs ? '修改要求' : '提示词') + '：** ' + (text || '参考图');
+    placeholder.content = head + '\n\n' + links;
+    placeholder.imagePending = false;
+    placeholder.createdAt = Date.now();
+    saveChats();
+    renderMessages();
+    toast(hasRefs ? '已改图并插入对话' : '已生成并插入对话');
+    await refreshMe();
+  } catch (e) {
+    placeholder.imagePending = false;
+    placeholder.error = true;
+    placeholder.content = '生图失败：' + ((e && e.message) || '未知错误');
+    saveChats();
+    renderMessages();
+    toast('生图失败: ' + ((e && e.message) || '未知错误'), true);
+  } finally {
+    state.streaming = false;
+    updateSendBtn();
+    refreshModelHealth();
+  }
+}
+// 从生图接口返回项里取出可用的 Markdown 图片链接(url / 同源代理 display / b64)
+function imageLinksFromResults(images, prompt) {
+  const alt = String(prompt || '').replace(/[\[\]]/g, '').slice(0, 60);
+  return (images || []).map((im) => {
+    const src = imageSourceOf(im);
+    return src ? '![' + alt + '](' + src + ')' : '';
+  }).filter(Boolean).join('\n\n');
+}
+// 视频结果 → Markdown 链接(渲染端识别 .mp4/.webm/.mov 后缀渲染为 <video>)
+function videoSourceOf(v) {
+  if (!v) return '';
+  return v.display || v.url || '';
+}
+function videoLinksFromResults(videos, prompt) {
+  const alt = String(prompt || '').replace(/[()\[\]]/g, '').slice(0, 60) || '生成视频';
+  return (videos || []).map((v) => {
+    const src = videoSourceOf(v);
+    return src ? '[' + alt + '](' + src + ')' : '';
+  }).filter(Boolean).join('\n\n');
+}
+// 对话内生视频:视频模型下在输入框发指令(纯文本=文生视频,带图=以图生视频)。
+// 后端建任务并轮询到出片后返回视频地址;期间显示「正在生成视频…」占位。
+async function sendVideoTurn(prompt, imageAtts) {
+  if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+  const model = state.currentModel;
+  const providerId = state.currentProviderId;
+  const text = String(prompt || '').trim();
+  const atts = (imageAtts || []).slice(0, 5);
+  if (!text && !atts.length) return;
+
+  let chat = currentChat();
+  if (!chat || !chat.id) chat = newChat();
+
+  const refUrls = (await Promise.all(atts.map((a) => compressImageRef(a.dataUrl || a)))).filter(Boolean);
+  const refAtts = atts.map((a, i) => Object.assign({}, a, { dataUrl: refUrls[i] || a.dataUrl }));
+  const hasRefs = refUrls.length > 0;
+  if (!text && !hasRefs) { toast('请输入画面描述', true); return; }
+  if (!hasRefs && !text) { toast('请输入画面描述', true); return; }
+
+  const parts = [];
+  if (text) parts.push(text);
+  if (refAtts.length && window.OCMultimodal) refAtts.forEach((a) => parts.push(window.OCMultimodal.toMarkdown(a)));
+  const userMsg = { role: 'user', content: parts.join('\n\n') || '（参考图）', text, attachments: refAtts, createdAt: Date.now() };
+  chat.messages.push(userMsg);
+  const placeholder = { role: 'assistant', content: '', imagePending: true, pendingKind: 'video', model, providerId, createdAt: Date.now() };
+  chat.messages.push(placeholder);
+  if (chat.messages.filter((m) => m.role === 'user').length === 1) {
+    chat.title = '视频 · ' + String(text || '参考图').slice(0, 18);
+    renderChatList();
+  }
+  chat.updatedAt = Date.now();
+  state.currentChatId = chat.id;
+  saveChats();
+  renderMessages();
+  if (chat.assistantId) enforceImageModelAssistant({ silent: true });
+
+  // 视频规格沿用绘图弹窗里最近一次的选择(时长 / 比例)
+  const spec = parseVideoSpec();
+  state.streaming = true;
+  updateSendBtn();
+  try {
+    const r = await api('/api/proxy/videos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providerId, model, prompt: text, mode: hasRefs ? 'reference' : 'text', seconds: spec.seconds, aspect_ratio: spec.ratio, images: refUrls }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error((d.error && d.error.message) || ('HTTP ' + r.status));
+    const links = videoLinksFromResults(d.videos, text);
+    if (!links) throw new Error('未返回可用的视频数据');
+    const head = '**' + (hasRefs ? '参考图视频' : '提示词') + '：** ' + (text || '参考图');
+    placeholder.content = head + '\n\n' + links;
+    placeholder.imagePending = false;
+    placeholder.createdAt = Date.now();
+    saveChats();
+    renderMessages();
+    toast('已生成视频并插入对话');
+    await refreshMe();
+  } catch (e) {
+    placeholder.imagePending = false;
+    placeholder.error = true;
+    placeholder.content = '生视频失败：' + ((e && e.message) || '未知错误');
+    saveChats();
+    renderMessages();
+    toast('生视频失败: ' + ((e && e.message) || '未知错误'), true);
+  } finally {
+    state.streaming = false;
+    updateSendBtn();
+    refreshModelHealth();
+  }
+}
+function imageSourceOf(im) {
+  if (!im) return '';
+  if (im.display) return im.display;                       // 同源代理地址(优先:fetch 不受跨域限制)
+  if (im.url) return im.url;
+  if (im.b64_json) return 'data:image/png;base64,' + im.b64_json;
+  return '';
+}
+// 找本会话最近一张生成图的地址:从最新的助手消息往前找,取消息里的最后一张图。
+// 追问改图时用它作为参考图(用户没另外附图时)。
+function lastImageSourceInChat(chat) {
+  const msgs = (chat && chat.messages) || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (!m || m.role !== 'assistant' || typeof m.content !== 'string') continue;
+    const re = /!\[[^\]]*\]\(([^)]+)\)/g;
+    let hit = '';
+    let match;
+    while ((match = re.exec(m.content))) hit = match[1];
+    if (hit) return hit;
+  }
+  return '';
+}
+// 把图片来源转成 data URL:data: 直接用;同源代理地址 / 公网地址则 fetch 回来。
+// 失败返回 '',调用方据此回退为「纯文生图」,不会因参考图取不到而中断。
+function imageSourceToDataUrl(src) {
+  const s = String(src || '');
+  if (!s) return Promise.resolve('');
+  if (/^data:image\//i.test(s)) return Promise.resolve(s);
+  return new Promise((resolve) => {
+    fetch(s, { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.blob() : Promise.reject(new Error('HTTP ' + r.status))))
+      .then((blob) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result || ''));
+        fr.onerror = () => resolve('');
+        fr.readAsDataURL(blob);
+      })
+      .catch(() => resolve(''));
+  });
 }
 
 // ============ 多模型并答对比 ============
@@ -4852,7 +6133,7 @@ function openCompareDialog() {
       '<div class="compare-card" data-ci="' + i + '"><div class="compare-card-head"><b>' + escapeHtml(p.model) + '</b><span class="muted small" data-el="' + i + '">生成中…</span></div><div class="compare-card-body muted">…</div>'
       + '<div class="compare-card-actions hidden"><button class="btn small" data-vote="up" type="button">👍 这个更好</button><button class="btn small" data-copy type="button">复制</button></div></div>'
     ).join('');
-    const cap = Math.min(128000, Math.max(256, Number((state.chatLimits || {}).maxOutputTokens) || 12800));
+    const cap = Math.min(128000, Math.max(256, Number((state.chatLimits || {}).maxOutputTokens) || 8192));
     const started = Date.now();
     const answers = picks.map((p) => {
       const prov = (state.providers || []).find((x) => x.id === p.providerId);
@@ -5205,6 +6486,8 @@ function assistantCatName(id) {
 function mentionQuery() {
   const el = inputEl;
   if (!el) return null;
+  // 生图/生视频模型不使用助手,选中时不再弹出 @助手 候选
+  if (modelIsVisual(state.currentModel)) return null;
   const pos = typeof el.selectionStart === 'number' ? el.selectionStart : String(el.value || '').length;
   const before = String(el.value || '').slice(0, pos);
   const at = before.lastIndexOf('@');
@@ -5383,15 +6666,124 @@ function autosizeInput() {
   inputEl.style.height = Math.min(inputEl.scrollHeight, 180) + 'px';
 }
 
+// ============ 游客 / 未登录 ============
+let AUTH_MODAL_BOUND = false;
+function openAuthModal(message) {
+  const modal = $('auth-modal');
+  if (!modal) { location.href = apiUrl('/login'); return; }
+  const err = $('auth-modal-error');
+  if (err) {
+    err.textContent = message || '';
+    err.classList.toggle('hidden', !message);
+  }
+  if (!AUTH_MODAL_BOUND && window.OCUI) {
+    AUTH_MODAL_BOUND = true;
+    window.OCUI.bindModal(modal, { closeId: 'auth-modal-close' });
+    const form = $('auth-modal-login');
+    if (form) form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = ($('am-name') && $('am-name').value.trim()) || '';
+      const pass = ($('am-pass') && $('am-pass').value) || '';
+      if (!name || !pass) { if (err) { err.textContent = '请输入用户名和密码'; err.classList.remove('hidden'); } return; }
+      const btn = $('am-login-btn');
+      if (btn) btn.disabled = true;
+      try {
+        const r = await fetch(apiUrl('/api/auth/login'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, password: pass }),
+        });
+        const d = await readJsonSafe(r);
+        if (!r.ok) throw new Error((d.error && d.error.message) || '登录失败');
+        localStorage.setItem('oc_token', d.token);
+        localStorage.setItem('oc_user', JSON.stringify(d.user || {}));
+        location.reload();
+      } catch (ex) {
+        if (err) { err.textContent = ex.message; err.classList.remove('hidden'); }
+        if (btn) btn.disabled = false;
+      }
+    });
+    const goReg = $('am-go-register');
+    if (goReg) goReg.addEventListener('click', (e) => { e.preventDefault(); location.href = apiUrl('/login'); });
+  }
+  if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(modal);
+  else modal.classList.remove('hidden');
+}
+function showGuestBar() {
+  const bar = $('guest-bar');
+  if (!bar) return;
+  const txt = $('guest-bar-text');
+  const left = state.user ? state.user.quota : 0;
+  if (txt) {
+    txt.textContent = (state.isGuestExpired || (Number.isFinite(left) && left <= 0))
+      ? '游客体验次数已用完，登录后可继续对话'
+      : '您正在以游客身份体验，剩余 ' + left + ' 轮'
+        + (state.guestRounds ? '（开通账号可无限使用）' : '');
+  }
+  bar.classList.remove('hidden');
+  const btn = $('guest-bar-login');
+  if (btn && !btn.dataset.bound) {
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', () => openAuthModal());
+  }
+}
+// 未登录且未开启游客模式:正常显示对话主页(只读),点击输入框/发送弹出登录弹窗
+function enterReadonlyHome() {
+  state.readonlyGuest = true;
+  document.body.classList.add('readonly-guest');
+  const composer = document.querySelector('.composer-wrap') || document.querySelector('.composer');
+  if (composer) {
+    composer.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openAuthModal();
+    }, true);
+  }
+  const input = $('input');
+  if (input) {
+    input.setAttribute('readonly', 'readonly');
+    input.addEventListener('focus', (e) => { input.blur(); openAuthModal(); });
+  }
+  const send = $('send-btn');
+  if (send) send.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openAuthModal(); }, true);
+  document.querySelectorAll('#new-chat, #assistant-lib-btn, #account-chip').forEach((el) => {
+    el.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openAuthModal(); }, true);
+  });
+}
+
 // ============ 启动 ============
 (async function init() {
-  if (!state.token) { location.href = apiUrl('/login'); return; }
   initTheme();
+  if (!state.token) {
+    let cfg = null;
+    try {
+      const cr = await fetch(apiUrl('/api/config'));
+      cfg = await readJsonSafe(cr);
+    } catch (e) { cfg = null; }
+    if (cfg && cfg.guestEnabled) {
+      // 开启游客模式:为本次访客自动创建一个独立游客账号,便于后台管理
+      try {
+        const gr = await fetch(apiUrl('/api/auth/guest'), { method: 'POST' });
+        const gd = await readJsonSafe(gr);
+        if (gr.ok && gd.token) {
+          state.token = gd.token;
+          localStorage.setItem('oc_token', gd.token);
+          state.isGuest = true;
+          state.guestRounds = gd.rounds || 0;
+        }
+      } catch (e) { /* 落到只读首页 */ }
+    }
+    if (!state.token) {
+      // 未开启游客:直接显示对话主页(不再强制跳转登录页),点击输入框再弹登录
+      enterReadonlyHome();
+      return;
+    }
+  }
   try {
     const r = await api('/api/auth/me');
     const data = await r.json();
     if (!r.ok) throw new Error('invalid');
     state.user = data.user;
+    if (state.user && state.user.guest) { state.isGuest = true; state.guestRounds = state.guestRounds || 0; }
     if (data.tools) state.tools = data.tools;
     // 启动时必须带上用量数据,否则设置→用量/账户面板在首次刷新前显示为 0
     state.usage = Array.isArray(data.usage) ? data.usage : [];
@@ -5418,7 +6810,14 @@ function autosizeInput() {
     updateSendBtn();
     if (typeof syncComposerEffort === 'function') syncComposerEffort();
     if (typeof syncComposerWebSearch === 'function') syncComposerWebSearch();
+    if (state.isGuest) showGuestBar();
   } catch (e) {
-    logout();
+    // 令牌失效或接口异常:清掉令牌回到只读首页并提示登录,而不是硬跳转到独立登录页
+    localStorage.removeItem('oc_token');
+    localStorage.removeItem('oc_user');
+    state.token = '';
+    state.user = null;
+    enterReadonlyHome();
+    openAuthModal('登录状态已失效，请重新登录');
   }
 })();

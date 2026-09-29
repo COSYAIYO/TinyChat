@@ -1,7 +1,12 @@
 .usage-ledger { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .usage-row { display: grid; grid-template-columns: minmax(72px, 120px) minmax(96px, 160px) 1fr; gap: 8px 12px; align-items: baseline; font-size: 13px; }
 .usage-name { font-weight: 600; }
-.usage-models { min-width: 0; }
+.usage-models { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  /* 窄屏三列挤成一窄条:改为「日期 + 汇总」一行,模型明细独占整行 */
+  .usage-row { grid-template-columns: auto 1fr; gap: 2px 10px; }
+  .usage-models { grid-column: 1 / -1; color: var(--text-tertiary); }
+}
 .usage-empty { margin: 0; color: var(--danger); font-size: 13px; }
 .reply-fail {
   color: var(--danger);
@@ -219,6 +224,7 @@
   color: var(--text-tertiary);
 }
 .oc-menu-health.ok { color: #16a34a; }
+.oc-menu-health.warn { color: #d97706; }
 .oc-menu-health.bad { color: #f0a8a8; }
 .oc-menu-health.idle { color: #a3aab6; }
 .oc-menu-health .oc-icon {
@@ -568,7 +574,20 @@
   border-radius: 10px;
 }
 .file-card.is-parsing { max-width: 260px; }
-.file-card .fc-info { flex: 1; }
+.file-card .fc-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+.file-card .fc-name {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .file-card .fc-progress {
   display: block;
   height: 3px;
@@ -647,103 +666,103 @@
   flex-shrink: 0;
   gap: 4px;
 }
-.composer-more,
-.composer-tools { display: none; }
-@media (max-width: 768px) {
-  .composer-more {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 36px;
-    height: 36px;
-    padding: 0;
-    border: none;
-    border-radius: 999px;
-    background: transparent;
-    color: var(--text-secondary);
-    cursor: pointer;
-  }
-  .composer-more:hover,
-  .composer-more[aria-expanded="true"] {
-    background: var(--bg-hover);
-    color: var(--text);
-  }
-  .composer-left { position: relative; }
-  .composer-tools {
-    display: none;
-    position: absolute;
-    left: 0;
-    bottom: calc(100% + 8px);
-    z-index: 46;
-    min-width: 196px;
-    padding: 4px;
-    border: 1px solid var(--hairline);
-    border-radius: 12px;
-    background: var(--bg-surface);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
-  }
-  .composer-tools:not(.hidden) { display: flex; flex-direction: column; }
-  .composer-tool {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    width: 100%;
-    padding: 9px 12px;
-    border: none;
-    border-radius: 8px;
-    background: transparent;
-    color: var(--text);
-    font: inherit;
-    font-size: 14px;
-    cursor: pointer;
-    text-align: left;
-  }
-  .composer-tool:hover { background: var(--bg-hover); }
-  .composer-tool-val { color: var(--text-tertiary); font-size: 13px; }
-  .composer-tool-group {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 8px 10px;
-  }
-  .composer-tool-choices {
-    display: flex;
-    gap: 4px;
-  }
-  .composer-tool-choices button {
-    flex: 1;
-    min-width: 0;
-    padding: 6px 0;
-    border: none;
-    border-radius: 8px;
-    background: var(--bg-hover);
-    color: var(--text-secondary);
-    font: inherit;
-    font-size: 13px;
-    cursor: pointer;
-  }
-  .composer-tool-choices button.active {
-    background: var(--brand-soft);
-    color: var(--brand);
-    font-weight: 650;
-  }
-  .composer-left .attach-btn,
-  .websearch-wrap,
-  .effort-wrap { display: none !important; }
-  .composer-tools:not(.hidden) ~ .websearch-wrap,
-  .composer-tools:not(.hidden) ~ .effort-wrap,
-  .composer-tools:not(.hidden) ~ .attach-btn { display: block !important; }
-  .composer-tools:not(.hidden) ~ .websearch-wrap .websearch-btn,
-  .composer-tools:not(.hidden) ~ .effort-wrap .effort-btn,
-  .composer-tools:not(.hidden) ~ .attach-btn {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-  }
+/* 输入框左侧「≡」菜单:PC 与移动端统一的控制入口(绘画 / 模型对比 / 文件 / 联网 / 思考)。
+   原先只在窄屏出现,PC 上另有独立的附件、联网、思考按钮;现统一为这一个菜单,两端一致。 */
+.composer-left { position: relative; }
+.composer-more {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
 }
+.composer-more:hover,
+.composer-more[aria-expanded="true"] {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+/* 菜单按钮上的小圆点:联网处于「始终」等非默认状态时提示,避免入口收进菜单后看不出来 */
+.composer-more.flag-on::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--brand);
+}
+.composer-tools {
+  display: none;
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 46;
+  min-width: 232px;
+  padding: 4px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--bg-surface);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+}
+.composer-tools:not(.hidden) { display: flex; flex-direction: column; }
+.composer-tool {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+}
+.composer-tool:hover { background: var(--bg-hover); }
+.composer-tool-val { color: var(--text-tertiary); font-size: 13px; }
+.composer-tool-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+}
+.composer-tool-choices {
+  display: flex;
+  gap: 4px;
+}
+.composer-tool-choices button {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 0;
+  border: none;
+  border-radius: 8px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.composer-tool-choices button.active {
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-weight: 650;
+}
+/* 附件 / 联网 / 思考已并入上面的「≡」菜单,独立按钮在所有尺寸下都隐藏 */
+.composer-left .attach-btn,
+.websearch-wrap,
+.effort-wrap { display: none !important; }
 .effort-wrap { position: relative; flex-shrink: 0; }
 .effort-btn {
   height: 36px;
@@ -1110,11 +1129,13 @@ a.user-menu-item { color: inherit; }
 
 /* ---------- 12. 偏好:整页缩放 + 本机字体 ---------- */
 /* zoom 作用在 html 上会连 100vh 一起放大,底栏被挤出窗口。
-   外壳按缩放反算宽高,视觉上始终铺满视口;左下角账户栏再反缩放,钉住不动. */
+   外壳按缩放反算宽高,视觉上始终铺满视口;左下角账户栏再反缩放,钉住不动。
+   移动端用 dvh(动态视口),避免地址栏收起时底部输入区被顶出屏幕。 */
 html {
   zoom: var(--oc-ui-zoom, 1);
   width: calc(100vw / var(--oc-ui-zoom, 1));
   height: calc(100vh / var(--oc-ui-zoom, 1));
+  height: calc(100dvh / var(--oc-ui-zoom, 1));
   overflow: hidden;
 }
 body {
@@ -1700,6 +1721,7 @@ body.chat-resizing * { cursor: col-resize !important; }
 .share-page {
   display: block !important;
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--bg-app);
   color: var(--text);
 }
@@ -1776,6 +1798,28 @@ body.share-page {
 }
 
 /* ---------- 19. 获取模型弹窗：勾选 + 改前台显示名 ---------- */
+/* 获取模型弹窗比通用 lg 更宽:列多(含密钥/生图/视频)时不被挤到横向滚动 */
+.model-fetch-modal.modal { width: min(1040px, 96vw); }
+
+/* 模型表:密钥链单元格 */
+.model-table .mk-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.model-table .mk-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 1px 6px 1px 4px; border-radius: 999px;
+  background: color-mix(in srgb, var(--brand, var(--accent)) 12%, transparent);
+  color: var(--text); font-size: 11.5px; white-space: nowrap;
+}
+.model-table .mk-chip b { font-weight: 700; color: var(--brand, var(--accent)); }
+.model-table .mk-chip button {
+  border: 0; background: transparent; color: var(--text-tertiary); cursor: pointer;
+  padding: 0 1px; font-size: 12px; line-height: 1;
+}
+.model-table .mk-chip button:hover { color: var(--danger, #e5484d); }
+.model-table select.mk-add {
+  min-height: 24px; padding: 0 4px; border: 1px dashed var(--hairline); border-radius: 7px;
+  background: transparent; color: var(--text-tertiary); font-size: 11.5px; cursor: pointer;
+}
+
 .model-fetch-modal .modal-body {
   display: flex;
   flex-direction: column;
@@ -1837,6 +1881,15 @@ body.share-page {
   color: var(--text-secondary);
 }
 .model-fetch-toolbar .muted { flex-shrink: 0; white-space: nowrap; }
+/* 弹窗内切换获取用 Key(多 Key 时) */
+.model-fetch-key {
+  display: flex; align-items: center; gap: 6px; flex: 0 0 auto;
+}
+.model-fetch-key select {
+  height: 36px; padding: 0 8px; border: 1px solid var(--hairline); border-radius: 10px;
+  background: var(--bg-hover); color: var(--text); font: inherit; font-size: 13px; cursor: pointer;
+  max-width: 200px;
+}
 .model-fetch-list {
   max-height: min(52vh, 460px);
   overflow: auto;
@@ -1906,38 +1959,16 @@ body.share-page {
   flex-wrap: wrap;
 }
 
-/* 全站公告条 */
-.announce-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 14px;
-  margin: 8px 10px 0;
-  border: 1px solid color-mix(in srgb, var(--brand) 35%, var(--hairline));
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--brand) 8%, var(--bg-surface));
-  color: var(--text);
-  font-size: 13px;
-  line-height: 1.6;
-}
-.announce-bar .announce-text {
-  flex: 1;
-  min-width: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.announce-bar .announce-close {
-  flex-shrink: 0;
-  opacity: .6;
-}
-.announce-bar .announce-close:hover { opacity: 1; }
+/* 全站公告已改为居中弹窗,样式见文件末尾 .announce-modal */
 
 /* 模型列表表格：勾选 | 模型 ID | 显示名称 | max_tokens | 最大上下文 */
 .model-table {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  table-layout: fixed;
+  /* fixed 布局在窄弹窗里会让表头文字压到相邻列(截图中「显示名称/max_tokens」重叠)。
+     改用 auto 布局并按内容分配宽度,表头超长时用省略号而非溢出。 */
+  table-layout: auto;
   font-size: 12.5px;
 }
 .model-table thead th {
@@ -1953,6 +1984,9 @@ body.share-page {
   letter-spacing: 0.02em;
   text-align: left;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
 }
 .model-table .col-check {
   width: 36px;
@@ -1961,17 +1995,37 @@ body.share-page {
   padding-right: 4px;
 }
 .model-table .col-id {
-  width: 32%;
+  min-width: 150px;
+  max-width: 260px;
 }
 .model-table .col-name {
-  width: auto;
+  min-width: 132px;
 }
 .model-table .col-mtok {
-  width: 96px;
+  width: 92px;
 }
 .model-table .col-ctx {
-  width: 112px;
+  width: 104px;
 }
+/* 多密钥:模型绑定哪把 Key(仅配置多 Key 时出现) */
+.model-table .col-key {
+  width: 168px;
+  min-width: 140px;
+}
+/* 多密钥编辑器 */
+.ap-keys { display: flex; flex-direction: column; gap: 8px; }
+.ap-key-row { display: grid; grid-template-columns: minmax(96px, 0.9fr) minmax(140px, 1.6fr) auto; gap: 8px; align-items: center; }
+.ap-key-row input { min-width: 0; }
+.ap-key-row .ap-key-pw { min-width: 0; }
+.ap-key-row .ap-key-pw input { width: 100%; }
+.ap-key-row .ap-key-del { flex: 0 0 auto; color: var(--text-tertiary); }
+.ap-key-row .ap-key-del:hover { color: var(--danger, #e5484d); }
+.ap-keys-actions { display: flex; align-items: center; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
+@media (max-width: 560px) {
+  .ap-key-row { grid-template-columns: 1fr; }
+}
+/* 模型表:密钥下拉 */
+.model-table select.mkey { width: 100%; min-height: 30px; padding: 3px 6px; border: 1px solid var(--hairline); border-radius: 7px; background: var(--bg-surface); color: var(--text); font-size: 12.5px; }
 .model-table tbody td {
   padding: 6px 10px;
   border-bottom: 1px solid color-mix(in srgb, var(--hairline) 70%, transparent);
@@ -2155,6 +2209,9 @@ body.share-page {
 .users-table .col-chats { width: 72px; white-space: nowrap; }
 .users-table .col-time { white-space: nowrap; font-size: 12.5px; }
 .users-table .col-actions { width: 1%; white-space: nowrap; }
+/* 批量管理:首列勾选框(与类表头对齐,窄屏也不换行) */
+.users-table .col-check { width: 34px; text-align: center; }
+.users-table .col-check input { cursor: pointer; }
 .users-table .admin-row-actions { justify-content: flex-end; }
 .user-cell {
   display: flex;
@@ -2687,6 +2744,7 @@ select,
 /* ---------- 22. 登录页:字标,不再套方块图标 ---------- */
 .auth-body {
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--bg-app);
 }
 .auth-card {
@@ -3353,6 +3411,7 @@ select,
 /* 分享页错误/空状态:视口垂直居中 + 柔和图标 */
 .share-error, .share-empty {
   min-height: calc(100vh - 64px);
+  min-height: calc(100dvh - 64px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -3448,3 +3507,356 @@ a.btn { text-decoration: none !important; }
 }
 .usage-model-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--text-secondary); }
 .usage-model-tokens { font-variant-numeric: tabular-nums; color: var(--text-tertiary); white-space: nowrap; }
+
+/* ---------- 下拉框文字垂直居中 ----------
+   body 的 line-height:1.6 会被原生 select 继承,在固定高度的控件里造成文字偏上;
+   这里统一把触发器与原生 select 的行高归位为 1,并显式居中内容。 */
+.select-box,
+.font-select-trigger,
+.oc-select-trigger {
+  line-height: 1.25;
+  align-items: center;
+}
+.select-box .sb-label,
+.font-select-label,
+.oc-select-trigger .sb-label {
+  line-height: 1.25;
+  display: block;
+  padding: 0;
+}
+select {
+  line-height: 1.25;
+  vertical-align: middle;
+}
+.field select,
+.admin-card select {
+  height: auto;
+  min-height: 38px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  line-height: 1.25;
+}
+.user-form-grid .field input,
+.user-form-grid .select-box {
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: 42px;
+}
+.user-form-grid .select-box .sb-label { line-height: 42px; }
+
+/* 下拉框内文字真正垂直居中:
+   .field span 的 margin-bottom:6px 会被 .sb-label 继承,把居中文字整体上推 3px。
+   这里清掉触发器内部所有元素的默认边距,并让行盒高度与内容一致。 */
+.select-box > *,
+.select-box .sb-label,
+.select-box span,
+.font-select-trigger > *,
+.font-select-label,
+.oc-select-trigger > * {
+  margin: 0 !important;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.select-box .sb-label,
+.font-select-label {
+  display: flex;
+  align-items: center;
+  min-height: 1.25em;
+  line-height: 1.25;
+}
+/* 触发器里的嵌套 span(如 .muted 占位符)不应再撑高 */
+.select-box .sb-label span { display: inline; }
+
+/* 公告弹窗:支持 Markdown / HTML 富文本 */
+.announce-modal { width: min(520px, 92vw); }
+.announce-modal .announce-text {
+  word-break: break-word;
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--text);
+  max-height: 62vh;
+  overflow: auto;
+}
+.announce-modal .announce-text > :first-child { margin-top: 0; }
+.announce-modal .announce-text > :last-child { margin-bottom: 0; }
+.announce-modal .announce-text p { margin: 0 0 10px; }
+.announce-modal .announce-text h1,
+.announce-modal .announce-text h2,
+.announce-modal .announce-text h3 { margin: 14px 0 8px; line-height: 1.4; }
+.announce-modal .announce-text h1 { font-size: 19px; }
+.announce-modal .announce-text h2 { font-size: 17px; }
+.announce-modal .announce-text h3 { font-size: 15px; }
+.announce-modal .announce-text ul,
+.announce-modal .announce-text ol { margin: 0 0 10px; padding-left: 22px; }
+.announce-modal .announce-text li { margin: 3px 0; }
+.announce-modal .announce-text a { color: var(--brand, var(--accent)); text-decoration: underline; }
+.announce-modal .announce-text img { max-width: 100%; height: auto; border-radius: 8px; }
+.announce-modal .announce-text code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg-hover);
+  font-size: .92em;
+}
+.announce-modal .announce-text pre {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--bg-code, var(--bg-hover));
+  overflow: auto;
+}
+.announce-modal .announce-text pre code { background: none; padding: 0; }
+.announce-modal .announce-text blockquote {
+  margin: 0 0 10px;
+  padding: 2px 0 2px 12px;
+  border-left: 3px solid var(--hairline-strong, var(--hairline));
+  color: var(--text-secondary);
+}
+.announce-modal .announce-text hr { border: 0; border-top: 1px solid var(--hairline); margin: 14px 0; }
+.announce-modal .announce-text table { border-collapse: collapse; width: 100%; margin: 0 0 10px; }
+.announce-modal .announce-text th,
+.announce-modal .announce-text td { border: 1px solid var(--hairline); padding: 6px 9px; text-align: left; }
+
+/* 后台演示模式提示条 */
+.admin-demo-banner {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--brand, var(--accent)) 30%, transparent);
+  background: color-mix(in srgb, var(--brand, var(--accent)) 10%, transparent);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.admin-demo-banner.hidden { display: none; }
+
+/* ---------- 游客模式 ---------- */
+.guest-bar {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 7px 10px 7px 16px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--brand, var(--accent)) 32%, transparent);
+  background: color-mix(in srgb, var(--brand, var(--accent)) 12%, var(--bg-surface, #fff));
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  box-shadow: var(--shadow-sm, 0 2px 10px rgba(0,0,0,.08));
+  max-width: calc(100vw - 24px);
+}
+.guest-bar.hidden { display: none; }
+.guest-bar #guest-bar-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.guest-bar .btn { flex-shrink: 0; }
+
+/* 只读游客:提示输入区需要登录,保留页面观感 */
+.readonly-guest .composer { cursor: pointer; }
+.readonly-guest #input { cursor: pointer; }
+
+/* 演示管理员:隐藏不可用的敏感操作入口,并给出不可用样式 */
+body.is-demo-admin #user-create-btn,
+body.is-demo-admin .admin-card [id$="-add"],
+body.is-demo-admin #g-add,
+body.is-demo-admin #invite-generate,
+body.is-demo-admin #session-invalidate { display: none !important; }
+body.is-demo-admin [data-edituser],
+body.is-demo-admin [data-deluser],
+body.is-demo-admin [data-chats] { display: none !important; }
+
+/* 模型清单:生图标记列 */
+.model-table .col-img { width: 56px; text-align: center; }
+.model-table input.mimg,
+.model-table input.mvideo { cursor: pointer; }
+.model-table .img-flag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.6;
+  background: color-mix(in srgb, var(--brand, var(--accent)) 14%, transparent);
+  color: var(--brand, var(--accent));
+}
+.model-table .img-flag.video-flag {
+  background: color-mix(in srgb, #8b5cf6 16%, transparent);
+  color: #7c3aed;
+}
+
+/* ============================================================
+   AI 生图弹窗
+   ============================================================ */
+.img-modal { width: min(520px, 94vw); }
+/* 标题:图标包在品牌色圆角块里,比单纯贴图更精致 */
+.img-dialog-logo {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+.img-modal .modal-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.img-modal .modal-header h3 .img-dialog-logo { flex: 0 0 auto; }
+.img-modal .modal-header h3 img.img-dialog-logo { box-sizing: content-box; }
+.img-modal-tip {
+  margin: 0 0 16px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--brand, var(--accent)) 7%, transparent);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+.img-modal-tip b { color: var(--text); }
+/* 模型 / 尺寸并排,窄屏自动堆叠 */
+.img-modal-grid {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 480px) {
+  .img-modal-grid { grid-template-columns: 1fr; }
+}
+.img-modal .field > .select-box { width: 100%; }
+.img-modal .field > textarea { min-height: 76px; }
+/* 图片规格:预设下拉 + 自定义输入框(像素尺寸 / 档位 / 宽高比) */
+.img-modal .field > .img-size-input { width: 100%; margin-top: 8px; }
+
+/* 参考图:虚线投放框 + 缩略图 */
+.img-ref-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-style: dashed;
+}
+.img-ref-add-btn .oc-icon { flex: 0 0 auto; }
+.img-refs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.img-refs:empty { display: none; }
+.img-ref {
+  position: relative;
+  width: 62px;
+  height: 62px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  background: var(--bg-hover);
+}
+.img-ref img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.img-ref-del {
+  position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; line-height: 16px;
+  border: none; border-radius: 50%; background: rgba(0,0,0,.58); color: #fff; cursor: pointer;
+  font-size: 13px; padding: 0; text-align: center; opacity: .9;
+  transition: opacity .15s, background .15s;
+}
+.img-ref-del:hover { opacity: 1; background: var(--danger, #e5484d); }
+/* 生视频:首帧/尾帧并排两栏 */
+.vid-two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.vid-slot {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px dashed var(--hairline);
+  border-radius: 10px;
+  min-width: 0;
+}
+.vid-slot .img-ref-add-btn { align-self: flex-start; }
+@media (max-width: 480px) { .vid-two { grid-template-columns: 1fr; } }
+
+/* 底部:状态与主按钮同排,状态常驻(不再一闪而过) */
+.img-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.img-run-btn { flex: 0 0 auto; min-width: 116px; }
+.img-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+  word-break: break-word;
+}
+.img-status-error { color: var(--danger, #e5484d); }
+
+/* ============================================================
+   移动端适配加固
+   ------------------------------------------------------------
+   1) 视口高度统一走 dvh(见上方 html/body),避免 Chrome 移动端
+      地址栏收起时底部输入区被顶出屏幕;
+   2) 输入区与弹窗底部留出 safe-area,全面屏手势条不遮挡;
+   3) 弹窗在矮屏上可滚动,键盘弹出时内容不被裁掉。
+   ============================================================ */
+@media (max-width: 768px) {
+  /* 输入区:底部让出安全区,并保证最小可点高度 */
+  .composer-area {
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    padding-left: max(12px, env(safe-area-inset-left, 0px));
+    padding-right: max(12px, env(safe-area-inset-right, 0px));
+  }
+  /* 消息区:给底部输入区留出滚动余量,最后一条消息不被遮挡 */
+  .messages { padding-bottom: 16px; }
+  .chat-area { overscroll-behavior: contain; }
+
+  /* 弹窗:矮屏/键盘弹出时整体可滚动,底部让出安全区 */
+  .modal-mask { padding: 12px; align-items: flex-start; overflow-y: auto; }
+  .modal-mask .modal {
+    max-height: calc(100dvh - 24px);
+    margin: auto;
+  }
+  .modal-footer {
+    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+  /* 大弹窗(设置):整屏铺开,内部滚动 */
+  #settings-modal .modal.modal-lg {
+    width: 100%;
+    max-height: calc(100dvh - 24px);
+  }
+  /* 生图弹窗底部按钮:整行更好点 */
+  .img-modal-footer { flex-wrap: wrap; }
+  .img-run-btn { flex: 1 1 auto; }
+}
+@media (max-width: 420px) {
+  .composer-area { padding-left: 10px; padding-right: 10px; }
+  .img-ref { width: 54px; height: 54px; }
+}
+
+/* ---------- 移动端:字体设置行允许换行 ----------
+   该行是「说明 + 字体下拉 + 自定义输入(固定 150px) + 选择本机字体按钮」的横向布局,
+   窄屏放不下会顶破弹窗右边界。改为整行换行、控件占满可用宽度。 */
+@media (max-width: 560px) {
+  .pref-row {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .pref-row > .pref-info { flex: 1 1 100%; }
+  /* 说明 + 按钮行(数据/账户页签的「导出」「挑选」等):保持单行,
+     左侧文字可收缩换行,按钮不换行不变形 */
+  .modal .row-between { gap: 10px; }
+  .modal .row-between > div { flex: 1 1 auto; min-width: 0; }
+  .modal .row-between > .btn { flex: 0 0 auto; white-space: nowrap; }
+  /* 子行设置(跟进建议模型/命名方式):标题整行,选择器整行 */
+  .pref-sub-row { flex-wrap: wrap; gap: 8px; }
+  .pref-sub-row > .pref-info { flex: 1 1 100%; }
+  .pref-sub-row > .pref-model-select { flex: 1 1 100%; }
+  .font-family-control {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .font-family-control > .font-select-trigger { flex: 1 1 auto; }
+  .font-family-control > .font-family-input {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+  .font-family-control > .btn {
+    flex: 0 0 auto;
+  }
+}

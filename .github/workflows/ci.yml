@@ -32,6 +32,20 @@ jobs:
             node --check "$f" || fail=1
           done < <(git ls-files '*.js')
           exit $fail
+      - name: 图标匹配自检(规则目标文件必须存在 + 关键模型命中)
+        run: node tests/logos-check.js
+      - name: 演示管理员还原自检(拍摄/到期还原/反复还原)
+        run: php tests/demo-revert.php
+      - name: 生图响应解析自检(各平台返回形态)
+        run: php tests/image-parse.php
+      - name: 上游地址拼接自检(补 /v1 / 不重复)
+        run: php tests/upstream-url.php
+      - name: 署名完整性守卫自检(篡改拦截 / 合法放行)
+        run: php tests/attribution.php
+      - name: 生图图片代理自检(签名 / SSRF 防护)
+        run: php tests/image-proxy.php
+      - name: 对话式生图/改图自检(抽图 / 参考图 / 兜底识别)
+        run: php tests/image-chat.php
 
   e2e:
     name: E2E(PHP ${{ matrix.php }})

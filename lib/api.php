@@ -5,6 +5,35 @@ function tc_provider_enabled($p) {
     return !isset($p['enabled']) || !empty($p['enabled']);
 }
 
+// 供应商排序:显式 order 优先,缺失/相同时按数组原始顺序稳定排列。
+// 前台模型选择器、供应商列表都按这个顺序展示。
+function tc_provider_order($p) {
+    return (isset($p['order']) && is_numeric($p['order'])) ? (int) $p['order'] : PHP_INT_MAX;
+}
+function tc_sort_providers($list) {
+    // 用带原始下标的稳定排序:order 相同时保持原顺序
+    $pairs = array();
+    foreach (array_values($list) as $i => $p) $pairs[] = array($i, $p);
+    usort($pairs, function ($a, $b) {
+        $oa = tc_provider_order($a[1]);
+        $ob = tc_provider_order($b[1]);
+        if ($oa === $ob) return $a[0] - $b[0];
+        return $oa < $ob ? -1 : 1;
+    });
+    $out = array();
+    foreach ($pairs as $pr) $out[] = $pr[1];
+    return $out;
+}
+// 下一个可用排序值(新增供应商时排到末尾)
+function tc_next_provider_order($db) {
+    $max = -1;
+    foreach ((isset($db['providers']) ? $db['providers'] : array()) as $p) {
+        $o = tc_provider_order($p);
+        if ($o !== PHP_INT_MAX && $o > $max) $max = $o;
+    }
+    return $max + 1;
+}
+
 function tc_visible_providers_of($db, $user) {
     $out = array();
     foreach ($db['providers'] as $p) {
@@ -14,7 +43,7 @@ function tc_visible_providers_of($db, $user) {
             $out[] = $p;
         }
     }
-    return $out;
+    return tc_sort_providers($out);
 }
 
 function tc_effective_group_id($db, $user) {
@@ -84,9 +113,20 @@ function tc_client_provider($p, $owner = false, $admin = false) {
         'enabled' => tc_provider_enabled($p),
         'ownerId' => isset($p['ownerId']) ? $p['ownerId'] : null,
         'mine' => $owner,
+        'order' => isset($p['order']) && is_numeric($p['order']) ? (int) $p['order'] : 0,
         // 密钥只以掩码形式下发给属主或管理员;其他用户不回传任何密钥信息
         'apiKey' => $showKey && $key ? tc_mask_key($key) : '',
         'hasKey' => !!$key,
+        // 多密钥:仅属主/管理员可见(含掩码),供前端渲染密钥编辑器与模型绑定列
+        'keys' => $showKey ? array_map(function ($k) use ($p) {
+            $plain = tc_provider_key_by_id($p, (string) $k['id']);
+            return array(
+                'id' => (string) $k['id'],
+                'name' => (string) $k['name'],
+                'apiKey' => $plain !== '' ? tc_mask_key($plain) : '',
+                'hasKey' => $plain !== '',
+            );
+        }, tc_provider_keys($p)) : array(),
         'keyRevealable' => $showKey ? !empty($p['keyRevealable']) : false,
         'createdAt' => isset($p['createdAt']) ? $p['createdAt'] : null,
         'updatedAt' => isset($p['updatedAt']) ? $p['updatedAt'] : (isset($p['createdAt']) ? $p['createdAt'] : null),
@@ -104,6 +144,7 @@ function tc_get_default_provider($db, $user, $list) {
 
 function tc_resolve_provider($db, $user, $body) {
     $providerId = isset($body['providerId']) ? $body['providerId'] : null;
+    $wantModel = trim((string) (isset($body['model']) ? $body['model'] : ''));
     $list = tc_visible_providers_of($db, $user);
     $allowed = tc_user_access($db, $user);
     $target = null;
@@ -113,6 +154,15 @@ function tc_resolve_provider($db, $user, $body) {
             foreach ($db['providers'] as $x) if ($x['id'] === $providerId) { if (!tc_provider_enabled($x)) return array('error' => '该供应商已被管理员停用'); break; }
             return array('error' => '指定的供应商不存在或无权访问');
         }
+    } elseif ($wantModel !== '') {
+        // 未指定供应商但给了模型:优先挑出确实拥有该模型的可见供应商。
+        // 生图/开放接口调用常只带 model,靠这一步才能命中正确的供应商而不是默认那一个。
+        foreach ($list as $x) {
+            foreach ((isset($x['models']) ? $x['models'] : array()) as $m) {
+                if (is_array($m) && isset($m['id']) && (string) $m['id'] === $wantModel) { $target = $x; break 2; }
+            }
+        }
+        if (!$target) $target = tc_get_default_provider($db, $user, $list);
     } else {
         $target = tc_get_default_provider($db, $user, $list);
     }
@@ -127,8 +177,13 @@ function tc_resolve_provider($db, $user, $body) {
             if (!$ok) return array('error' => '当前用户组无权使用模型 ' . $reqModel);
         }
     }
-    // 代理请求需要明文 Key 访问上游;在返回给代理上下文前解密(仅服务端内存,不落库不下发)
-    if (isset($vis['apiKey'])) $vis['apiKey'] = tc_provider_key($target);
+    // 代理请求需要明文 Key 访问上游;按「本次请求的模型」选用对应密钥
+    // (多 Key 供应商下,模型可能绑定到不同的 Key),解密仅存于服务端内存。
+    if (isset($vis['apiKey'])) {
+        $keyModel = isset($body['model']) ? (string) $body['model'] : '';
+        if ($keyModel === '' && isset($vis['models'][0]['id'])) $keyModel = (string) $vis['models'][0]['id'];
+        $vis['apiKey'] = tc_provider_key_for_model($target, $keyModel);
+    }
     return array('provider' => $vis, 'providerFull' => $target);
 }
 
@@ -150,6 +205,35 @@ function tc_normalize_models($models) {
         if (is_array($m) && isset($m['maxContext']) && (int) $m['maxContext'] > 0) {
             $row['maxContext'] = min(2000000, max(256, (int) $m['maxContext']));
         }
+        // 生图模型标记(可选):true/false 显式声明;缺省时由模型名启发式判断(tc_model_is_image)
+        if (is_array($m) && array_key_exists('image', $m)) {
+            $row['image'] = !empty($m['image']);
+        }
+        // 视频模型标记(可选):true/false 显式声明;缺省时由模型名启发式判断(tc_model_is_video)
+        if (is_array($m) && array_key_exists('video', $m)) {
+            $row['video'] = !empty($m['video']);
+        }
+        // 单次调用扣减次数(可选):留空表示跟随供应商的「每次调用扣费次数」
+        if (is_array($m) && isset($m['cost']) && $m['cost'] !== '' && is_numeric($m['cost'])) {
+            $row['cost'] = max(0, min(1000, (float) $m['cost']));
+        }
+        // 绑定的密钥链(可选):多 Key 供应商下,该模型按优先级依次尝试这些 Key
+        if (is_array($m) && isset($m['keyIds']) && is_array($m['keyIds'])) {
+            $chain = array();
+            foreach ($m['keyIds'] as $kid) {
+                $kid = substr(trim((string) $kid), 0, 40);
+                if ($kid !== '' && !in_array($kid, $chain, true)) $chain[] = $kid;
+            }
+            if ($chain) $row['keyIds'] = $chain;
+        }
+        // 兼容单个 keyId:并入链
+        if (is_array($m) && isset($m['keyId']) && trim((string) $m['keyId']) !== '') {
+            $kid = substr(trim((string) $m['keyId']), 0, 40);
+            if (empty($row['keyIds']) || !in_array($kid, $row['keyIds'], true)) {
+                $row['keyIds'] = array_merge(isset($row['keyIds']) ? $row['keyIds'] : array(), array($kid));
+            }
+        }
+        if (!empty($row['keyIds'])) $row['keyId'] = $row['keyIds'][0];   // 主密钥=优先级最高的一把
         $out[] = $row;
         if (count($out) >= 500) break;
     }
@@ -165,9 +249,39 @@ function tc_normalize_provider_input($b, $base = array()) {
         // 留空或仍是掩码表示「不修改密钥」,保留原值(可能是密文)
         if ($key !== '' && strpos($key, '••') === false) $p['apiKey'] = $key;
     }
+    // 多密钥:keys = [{id,name,apiKey}],apiKey 留空/掩码表示沿用原有密文
+    if (array_key_exists('keys', $b) && is_array($b['keys'])) {
+        $prevKeys = array();
+        foreach (tc_provider_keys($p) as $k) $prevKeys[(string) $k['id']] = $k;
+        $next = array();
+        $usedIds = array();
+        foreach ($b['keys'] as $i => $k) {
+            if (!is_array($k)) continue;
+            $id = substr(trim((string) (isset($k['id']) ? $k['id'] : '')), 0, 40);
+            if ($id === '' || isset($usedIds[$id])) $id = 'k' . substr(hash('sha256', $id . '#' . $i . '#' . microtime(true)), 0, 8);
+            $usedIds[$id] = true;
+            $name = substr(trim((string) (isset($k['name']) ? $k['name'] : '')), 0, 40);
+            $plain = isset($k['apiKey']) ? trim((string) $k['apiKey']) : '';
+            $enc = '';
+            if ($plain !== '' && strpos($plain, '••') === false) {
+                $tmp = array('id' => isset($p['id']) ? $p['id'] : '', 'ownerId' => isset($p['ownerId']) ? $p['ownerId'] : '');
+                $enc = tc_encrypt_secret($plain, tc_provider_key_aad($tmp));
+                if ($enc === false) $enc = '';
+            } elseif (isset($prevKeys[$id])) {
+                $enc = (string) $prevKeys[$id]['apiKey'];   // 沿用旧密文
+            }
+            if ($enc === '') continue;                        // 既无新明文也无旧密文:丢弃空 Key
+            $next[] = array('id' => $id, 'name' => $name, 'apiKey' => $enc);
+        }
+        $err = tc_provider_keys_error($next);
+        if ($err !== '') tc_fail(400, $err);
+        $p['keys'] = $next;
+        // 保留一把主 Key(兼容旧字段与「未绑定模型」的默认回退)
+        $p['apiKey'] = $next ? (string) $next[0]['apiKey'] : '';
+    }
     if (array_key_exists('keyRevealable', $b)) $p['keyRevealable'] = !empty($b['keyRevealable']);
     if (array_key_exists('enabled', $b)) $p['enabled'] = !empty($b['enabled']);
-    if (array_key_exists('apiFormat', $b) && in_array($b['apiFormat'], array('chat', 'responses', 'completions', 'anthropic'), true)) {
+    if (array_key_exists('apiFormat', $b) && in_array($b['apiFormat'], array('chat', 'responses', 'completions', 'anthropic', 'video'), true)) {
         $p['apiFormat'] = $b['apiFormat'];
     }
     if (array_key_exists('costPerCall', $b)) $p['costPerCall'] = max(0, min(1000, (float) $b['costPerCall']));
@@ -176,7 +290,25 @@ function tc_normalize_provider_input($b, $base = array()) {
         $p['billingMode'] = $b['billingMode'];
     }
     if (array_key_exists('pricePer1k', $b)) $p['pricePer1k'] = max(0, min(1000, (float) $b['pricePer1k']));
-    if (array_key_exists('models', $b)) $p['models'] = tc_normalize_models($b['models']);
+    // 排序值:前台供应商/模型列表按此升序展示;不传则保持原值(新增时由调用方补末尾值)
+    if (array_key_exists('order', $b) && is_numeric($b['order'])) $p['order'] = (int) $b['order'];
+    if (array_key_exists('models', $b)) {
+        $p['models'] = tc_normalize_models($b['models']);
+        // 模型绑定的密钥必须在供应商的密钥列表里,否则清掉(回退默认密钥)
+        $validIds = array();
+        foreach (tc_provider_keys($p) as $k) $validIds[(string) $k['id']] = true;
+        foreach ($p['models'] as &$mm) {
+            if (isset($mm['keyIds']) && is_array($mm['keyIds'])) {
+                $keep = array();
+                foreach ($mm['keyIds'] as $kid) if (isset($validIds[(string) $kid])) $keep[] = (string) $kid;
+                if ($keep) { $mm['keyIds'] = $keep; $mm['keyId'] = $keep[0]; }
+                else { unset($mm['keyIds']); unset($mm['keyId']); }
+            } elseif (isset($mm['keyId'])) {
+                if (!isset($validIds[(string) $mm['keyId']])) unset($mm['keyId']);
+            }
+        }
+        unset($mm);
+    }
     if (empty($p['apiFormat'])) $p['apiFormat'] = 'chat';
     if (!isset($p['costPerCall']) || !is_numeric($p['costPerCall'])) $p['costPerCall'] = 1;
     if (!isset($p['billingMode']) || !in_array($p['billingMode'], array('call', 'token'), true)) $p['billingMode'] = 'call';
@@ -351,6 +483,90 @@ function tc_set_chats(&$db, $userId, $chats) {
     $revisions = tc_assoc(isset($db['userChatRevisions']) ? $db['userChatRevisions'] : array());
     $revisions[$userId] = tc_chat_revision_of($db, $userId) + 1;
     $db['userChatRevisions'] = tc_object_map($revisions);
+}
+
+// 开放 API 的对话落库:把一次 /v1/chat/completions 调用记入该用户的对话列表。
+// 约定:同一段上下文归入同一对话——按「首条用户消息」生成稳定指纹,若这次请求带的
+// 历史里首条用户消息与某条已存 API 对话一致,说明客户端在续接同一段上下文,追加即可;
+// 否则(新话题、或本机从没见过这段上下文)新建一个对话。这样 API 客户端的多轮对话
+// 不会各开一屏,不同话题也不会挤在一条里。
+function tc_api_chat_title($text) {
+    $t = trim(preg_replace('/\s+/u', ' ', (string) $text));
+    if ($t === '') return 'API 对话';
+    $t = function_exists('mb_substr') ? mb_substr($t, 0, 24, 'UTF-8') : substr($t, 0, 24);
+    return 'API · ' . $t;
+}
+
+function tc_api_append_chat(&$db, $userId, $messages, $meta = array()) {
+    if (!is_array($messages) || !$messages) return '';
+    $first = '';
+    foreach ($messages as $m) {
+        if (is_array($m) && isset($m['role']) && $m['role'] === 'user') { $first = (string) (isset($m['content']) ? $m['content'] : ''); break; }
+    }
+    if ($first === '') {
+        foreach ($messages as $m) if (is_array($m)) { $first = (string) (isset($m['content']) ? $m['content'] : ''); break; }
+    }
+    $key = substr(hash('sha256', $first), 0, 16);
+    $now = tc_now();
+    $chats = tc_chats_of($db, $userId);
+    $idx = -1;
+    foreach ($chats as $i => $c) {
+        if (isset($c['apiKey']) && $c['apiKey'] === $key) { $idx = $i; break; }
+    }
+    $model = isset($meta['model']) ? (string) $meta['model'] : '';
+    $clean = array();
+    foreach ($messages as $m) {
+        if (!is_array($m)) continue;
+        $role = isset($m['role']) && in_array($m['role'], array('user', 'assistant'), true) ? $m['role'] : 'assistant';
+        $row = array('role' => $role, 'content' => (string) (isset($m['content']) ? $m['content'] : ''), 'createdAt' => $now);
+        if ($role === 'assistant' && $model !== '') $row['model'] = $model;
+        if ($role === 'assistant' && isset($meta['usage']) && is_array($meta['usage'])) {
+            $row['usage'] = array(
+                'prompt' => (int) (isset($meta['usage']['prompt']) ? $meta['usage']['prompt'] : 0),
+                'completion' => (int) (isset($meta['usage']['completion']) ? $meta['usage']['completion'] : 0),
+            );
+        }
+        $clean[] = $row;
+    }
+    if (!$clean) return '';
+    if ($idx >= 0) {
+        $chat = $chats[$idx];
+        $existing = isset($chat['messages']) && is_array($chat['messages']) ? $chat['messages'] : array();
+        // 客户端续接同一段上下文时会把历史整段带上;已存在的部分不再重复追加,
+        // 只把新增的消息接上(按 role+content 逐条对齐,从首个不匹配处截取)。
+        $cursor = 0;
+        foreach ($clean as $row) {
+            if ($cursor < count($existing) && $existing[$cursor]['role'] === $row['role'] && (string) $existing[$cursor]['content'] === (string) $row['content']) {
+                $cursor++;
+                continue;
+            }
+            break;
+        }
+        $chat['messages'] = array_merge($existing, array_slice($clean, $cursor));
+        if (count($chat['messages']) > 800) $chat['messages'] = array_slice($chat['messages'], -800);
+        if ($model !== '') $chat['model'] = $model;
+        $chat['updatedAt'] = $now;
+        $chats[$idx] = $chat;
+        $chatId = isset($chat['id']) ? $chat['id'] : '';
+    } else {
+        $chatId = 'api' . substr(hash('sha256', $userId . $key . $now), 0, 14);
+        $chats[] = array(
+            'id' => $chatId,
+            'title' => tc_api_chat_title($first),
+            'messages' => $clean,
+            'model' => $model,
+            'apiKey' => $key,
+            'pinned' => false,
+            'createdAt' => $now,
+            'updatedAt' => $now,
+        );
+    }
+    if (count($chats) > 300) {
+        usort($chats, function ($a, $b) { return (isset($b['updatedAt']) ? $b['updatedAt'] : 0) - (isset($a['updatedAt']) ? $a['updatedAt'] : 0); });
+        $chats = array_slice($chats, 0, 300);
+    }
+    tc_set_chats($db, $userId, $chats);
+    return $chatId;
 }
 
 function tc_assistant_icons() {
@@ -635,6 +851,12 @@ function tc_api_public_config($db) {
             'updatedAt' => (int) (isset($s['announcement']['updatedAt']) ? $s['announcement']['updatedAt'] : 0),
         ),
         'registerInviteRequired' => !empty($s['registerInviteRequired']),
+        // 演示模式:管理员的改动会在有效期后自动还原,前台据此提示
+        'demoMode' => !empty($s['demoMode']),
+        'demoExpireMinutes' => isset($s['demoExpireMinutes']) ? (int) $s['demoExpireMinutes'] : 10,
+        // 游客模式:允许未登录访客直接体验对话
+        'guestEnabled' => !empty($s['guestEnabled']),
+        'guestRounds' => isset($s['guestRounds']) ? (int) $s['guestRounds'] : 3,
     ));
 }
 
@@ -681,7 +903,7 @@ function tc_api_register() {
         if (!empty($db['settings']['registerInviteRequired'])) {
             if ($invite === '') tc_fail(400, '注册需要邀请码，请向管理员索取');
             foreach ($db['inviteCodes'] as $i => $c) {
-                if ((isset($c['code']) && strtoupper((string) $c['code']) === $invite) && empty($c['usedBy'])) { $inviteIndex = $i; break; }
+                if (isset($c['code']) && strtoupper((string) $c['code']) === $invite && tc_invite_is_usable($c)) { $inviteIndex = $i; break; }
             }
             if ($inviteIndex < 0) tc_fail(400, '邀请码无效或已被使用');
         }
@@ -705,8 +927,10 @@ function tc_api_register() {
             $token = bin2hex(random_bytes(24)); $user['emailTokenHash'] = hash('sha256', $token); $user['emailTokenExpires'] = tc_now() + 86400000;
         }
         $db['users'][] = $user;
-        // 核销邀请码:绑定使用者,防止重复使用
+        tc_log_auth_event('auth', $name, '注册账号', $user['id']);
+        // 核销邀请码:累加使用次数,记录最后使用者;次数用尽后不再可用
         if ($inviteIndex >= 0) {
+            $db['inviteCodes'][$inviteIndex]['usedCount'] = tc_invite_used_count($db['inviteCodes'][$inviteIndex]) + 1;
             $db['inviteCodes'][$inviteIndex]['usedBy'] = $user['id'];
             $db['inviteCodes'][$inviteIndex]['usedByName'] = $name;
             $db['inviteCodes'][$inviteIndex]['usedAt'] = tc_now();
@@ -749,7 +973,60 @@ function tc_api_login() {
         }
         $settings = $db['settings'];
     });
+    tc_log_auth_event('auth', isset($user['name']) ? $user['name'] : '', '登录成功', $seenId);
     tc_json(200, array('token' => tc_issue_token($user, $settings), 'user' => tc_sanitize_user($user)));
+}
+
+// 登录/注册/游客等认证事件的日志(便于后台审计来源 IP)
+function tc_log_auth_event($kind, $userName, $action, $userId = '') {
+    $entry = array('kind' => $kind, 'userName' => (string) $userName, 'action' => (string) $action, 'ip' => tc_client_ip());
+    if ($userId !== '') $entry['userId'] = (string) $userId;
+    tc_push_log($entry);
+}
+
+// 游客登录:为每位访客自动创建一个独立账号(归入游客组、按 guestRounds 发放额度),
+// 便于后台按用户维度管理、限轮与统计,而不是所有人共用一个匿名身份。
+function tc_api_guest_login() {
+    $GLOBALS['_tc_guest_new'] = false;
+    $ctx = tc_with_db(true, function (&$db) {
+        if (empty($db['settings']['guestEnabled'])) tc_fail(403, '游客体验已关闭，请注册或登录后使用');
+        // 每 IP 每小时最多创建 20 个游客账号,防止被用来刷额度
+        if (!tc_rate_limit_check('guest:' . tc_client_ip(), 20, 3600000)) {
+            tc_fail(429, '游客账号创建过于频繁，请稍后再试');
+        }
+        $rounds = isset($db['settings']['guestRounds']) ? (int) $db['settings']['guestRounds'] : 3;
+        $name = '';
+        for ($try = 0; $try < 12; $try++) {
+            $cand = '游客' . strtoupper(substr(bin2hex(random_bytes(6)), 0, 5));
+            $taken = false;
+            foreach ($db['users'] as $u) {
+                if (isset($u['name']) && strtolower($u['name']) === strtolower($cand)) { $taken = true; break; }
+            }
+            if (!$taken) { $name = $cand; break; }
+        }
+        if ($name === '') tc_fail(500, '游客账号创建失败，请稍后重试');
+        $guestGroup = tc_find_builtin_group($db, 'guest');
+        $user = array(
+            'id' => tc_uid(), 'name' => $name, 'salt' => '', 'passwordHash' => '',
+            'quota' => 0, 'createdAt' => tc_now(), 'admin' => false, 'guest' => true,
+            'groupId' => $guestGroup ? $guestGroup['id'] : tc_default_register_group($db),
+            'tv' => 0, 'email' => '', 'emailVerifiedAt' => 1,
+            'lastIp' => tc_client_ip(),
+        );
+        // 游客账号不设密码:仅凭令牌使用,防止被当作可登录账号
+        tc_set_password($user, bin2hex(random_bytes(16)));
+        $db['users'][] = $user;
+        if ($rounds > 0) tc_add_quota($db, $user, $rounds);
+        $GLOBALS['_tc_guest_new'] = true;
+        return array('user' => $user, 'settings' => $db['settings']);
+    });
+    $user = $ctx['user'];
+    tc_json(200, array(
+        'token' => tc_issue_token($user, $ctx['settings']),
+        'user' => tc_sanitize_user($user),
+        'guest' => true,
+        'rounds' => isset($ctx['settings']['guestRounds']) ? (int) $ctx['settings']['guestRounds'] : 3,
+    ));
 }
 
 function tc_api_verify_email() {
@@ -793,7 +1070,7 @@ function tc_api_reset_password() {
 function tc_api_logout() {
     tc_with_db(false, function ($db) {
         $user = tc_auth_user($db);
-        if ($user) tc_push_log(array('kind' => 'auth', 'userName' => $user['name'], 'action' => '退出登录'));
+        if ($user) tc_log_auth_event('auth', $user['name'], '退出登录', $user['id']);
         tc_json(200, array('ok' => true));
     });
 }
@@ -840,6 +1117,7 @@ function tc_api_change_password() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
         $b = tc_read_json_body();
+        if (tc_is_demo_user($user)) tc_fail(403, '演示账号不允许修改密码');
         $oldPwd = (string) (isset($b['oldPassword']) ? $b['oldPassword'] : '');
         $newPwd = (string) (isset($b['newPassword']) ? $b['newPassword'] : '');
         if (!tc_verify_password($oldPwd, $user)) tc_fail(400, '原密码不正确');
@@ -889,7 +1167,7 @@ function tc_api_list_providers() {
             'chatLimits' => array(
                 'contextMessages' => isset($db['settings']['contextMessages']) ? (int) $db['settings']['contextMessages'] : 40,
                 'maxContextMessages' => isset($db['settings']['maxContextMessages']) ? (int) $db['settings']['maxContextMessages'] : 200,
-                'maxOutputTokens' => isset($db['settings']['maxOutputTokens']) ? (int) $db['settings']['maxOutputTokens'] : 12800,
+                'maxOutputTokens' => isset($db['settings']['maxOutputTokens']) ? (int) $db['settings']['maxOutputTokens'] : 8192,
             ),
         ));
     });
@@ -906,6 +1184,8 @@ function tc_api_create_provider() {
         $p = tc_normalize_provider_input($b, array('id' => tc_uid(), 'createdAt' => tc_now()));
         $err = tc_validate_provider($p);
         if ($err) tc_fail(400, $err);
+        // 新增供应商默认排到末尾,可在后台用上下移动调整顺序
+        if (!array_key_exists('order', $b) || !is_numeric($b['order'])) $p['order'] = tc_next_provider_order($db);
         $p['updatedAt'] = tc_now();
         if ($wantGlobal) {
             $p['ownerId'] = null;
@@ -921,7 +1201,7 @@ function tc_api_create_provider() {
             tc_fail(500, '密钥加密失败，请检查服务器 openssl 环境');
         }
         $db['providers'][] = $p;
-        if ($wantGlobal) tc_grant_default_group_provider($db, $p['id']);
+        if ($wantGlobal) tc_grant_all_groups_provider($db, $p['id']);
         tc_json(200, array('provider' => tc_client_provider($p, true, !empty($user['admin']))));
     });
 }
@@ -963,7 +1243,9 @@ function tc_api_reveal_provider_key($id) {
         $isAdminGlobal = !empty($user['admin']) && (isset($p['scope']) && $p['scope'] === 'global');
         if (!$isOwner && !$isAdminGlobal) tc_fail(403, '只能查看自己添加的供应商密钥');
         if (empty($p['keyRevealable'])) tc_fail(403, '保存时未勾选「保存后保持显示」，Key 不可查看');
-        $plain = tc_provider_key($p);
+        // 多密钥:可按 keyId 精确取回某一把;不传则取默认(第一把)
+        $keyId = isset($_GET['keyId']) ? trim((string) $_GET['keyId']) : '';
+        $plain = $keyId !== '' ? tc_provider_key_by_id($p, $keyId) : tc_provider_key($p);
         if ($plain === '') tc_fail(404, 'Key 缺失或解密失败');
         tc_json(200, array('key' => $plain));
     });
@@ -1259,6 +1541,8 @@ function tc_api_admin_save_package() {
 function tc_api_claim_package() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db); $b = tc_read_json_body();
+        // 游客仅享有体验轮数,不得领取套餐额度(否则可反复领免费套餐绕过体验限制)
+        if (!empty($user['guest'])) tc_fail(403, '游客不能领取套餐，请先注册账号');
         $pid = trim((string) (isset($b['packageId']) ? $b['packageId'] : ''));
         $pkg = null; foreach ($db['packages'] as $p) if ($p['id'] === $pid) $pkg = $p;
         if (!$pkg) tc_fail(404, '套餐不存在');
@@ -1364,7 +1648,10 @@ function tc_api_admin_create_fixed_code() {
 
 function tc_api_redeem_package() {
     tc_with_db(true, function (&$db) {
-        $user = tc_require_auth($db); $b = tc_read_json_body(); $code = preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($b['code'] ?? ''))); if ($code === '') tc_fail(400, '请输入兑换码');
+        $user = tc_require_auth($db); $b = tc_read_json_body();
+        // 游客不能兑换额度(与领取套餐同理,避免绕过体验轮数)
+        if (!empty($user['guest'])) tc_fail(403, '游客不能兑换额度，请先注册账号');
+        $code = preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($b['code'] ?? ''))); if ($code === '') tc_fail(400, '请输入兑换码');
         $hash = hash('sha256', $code); $idx = -1; foreach ($db['redemptionCodes'] as $i => $row) if ($row['codeHash'] === $hash) { $idx = $i; break; }
         if ($idx < 0) tc_fail(404, '兑换码无效'); $row = $db['redemptionCodes'][$idx];
         // 固定兑换码:不挂套餐,按码上设置的总次数/可用次数/有效期兑换
@@ -1406,7 +1693,8 @@ function tc_api_admin_get_settings() {
 // 强制全站下线:会话纪元 +1,所有已签发的令牌立即失效
 function tc_api_admin_invalidate_sessions() {
     tc_with_db(true, function (&$db) {
-        tc_require_admin($db);
+        $admin = tc_require_admin($db);
+        if (tc_is_demo_user($admin)) tc_fail(403, '演示账号不能强制全站下线');
         $db['settings']['authEpoch'] = (int) (isset($db['settings']['authEpoch']) ? $db['settings']['authEpoch'] : 1) + 1;
         tc_json(200, array('ok' => true, 'authEpoch' => (int) $db['settings']['authEpoch']));
     });
@@ -1430,7 +1718,16 @@ function tc_api_me_apikeys_list() {
         foreach ((isset($user['apiKeys']) && is_array($user['apiKeys']) ? $user['apiKeys'] : array()) as $k) {
             if (is_array($k)) $keys[] = tc_api_key_public($k);
         }
-        tc_json(200, array('keys' => $keys, 'enabled' => !empty($db['settings']['apiKeysEnabled'])));
+        // 站点当前的开放接口限制,供账户面板展示,避免用户误以为可无限调用
+        $s = $db['settings'];
+        tc_json(200, array(
+            'keys' => $keys,
+            'enabled' => !empty($s['apiKeysEnabled']),
+            'maxKeys' => 5,
+            'keyRateLimitPerMin' => isset($s['apiKeyRateLimitPerMin']) ? (int) $s['apiKeyRateLimitPerMin'] : 60,
+            'userRateLimitPerMin' => isset($s['rateLimitPerMin']) ? (int) $s['rateLimitPerMin'] : 30,
+            'exposeRestricted' => !empty($s['apiExposedModels']),
+        ));
     });
 }
 
@@ -1499,7 +1796,14 @@ function tc_api_admin_usage_export() {
 function tc_api_admin_invites_list() {
     tc_with_db(false, function ($db) {
         tc_require_admin($db);
-        $codes = array_values((isset($db['inviteCodes']) && is_array($db['inviteCodes']) ? $db['inviteCodes'] : array()));
+        $codes = array();
+        foreach ((isset($db['inviteCodes']) && is_array($db['inviteCodes']) ? $db['inviteCodes'] : array()) as $c) {
+            if (!is_array($c)) continue;
+            $c['maxUses'] = tc_invite_max_uses($c);
+            $c['usedCount'] = tc_invite_used_count($c);
+            $c['usable'] = tc_invite_is_usable($c);
+            $codes[] = $c;
+        }
         usort($codes, function ($a, $b) { return ((int) ($b['createdAt'] ?? 0)) - ((int) ($a['createdAt'] ?? 0)); });
         tc_json(200, array(
             'codes' => $codes,
@@ -1511,21 +1815,33 @@ function tc_api_admin_invites_list() {
 function tc_api_admin_invites_create() {
     tc_with_db(true, function (&$db) {
         tc_require_admin($db);
+        $demoAdmin = tc_require_admin($db);
+        tc_demo_guard($demoAdmin, '演示管理员不能管理邀请码');
         $b = tc_read_json_body();
         $count = min(50, max(1, (int) (isset($b['count']) ? $b['count'] : 5) ?: 5));
+        // maxUses:每个邀请码可用次数,<0 表示不限次数
+        $maxUsesRaw = isset($b['maxUses']) ? (int) $b['maxUses'] : 1;
+        $maxUses = $maxUsesRaw < 0 ? -1 : min(10000, max(1, $maxUsesRaw ?: 1));
+        $prefix = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string) (isset($b['prefix']) ? $b['prefix'] : '')));
+        $prefix = substr($prefix, 0, 8);
         $created = array();
         for ($i = 0; $i < $count; $i++) {
-            $code = strtoupper(tc_uid(4));
-            $db['inviteCodes'][] = array('code' => $code, 'createdAt' => tc_now(), 'usedBy' => null, 'usedAt' => 0);
+            $code = $prefix !== '' ? $prefix . '-' . strtoupper(tc_uid(4)) : strtoupper(tc_uid(4));
+            $db['inviteCodes'][] = array(
+                'code' => $code, 'createdAt' => tc_now(),
+                'usedBy' => null, 'usedAt' => 0, 'usedCount' => 0, 'maxUses' => $maxUses,
+            );
             $created[] = $code;
         }
-        tc_json(200, array('created' => $created));
+        tc_json(200, array('created' => $created, 'maxUses' => $maxUses));
     });
 }
 
 function tc_api_admin_invites_delete($code) {
     tc_with_db(true, function (&$db) use ($code) {
         tc_require_admin($db);
+        $demoAdmin = tc_require_admin($db);
+        tc_demo_guard($demoAdmin, '演示管理员不能管理邀请码');
         $code = strtoupper(trim((string) $code));
         $kept = array_values(array_filter((isset($db['inviteCodes']) && is_array($db['inviteCodes']) ? $db['inviteCodes'] : array()), function ($c) use ($code) {
             return !is_array($c) || !isset($c['code']) || strtoupper((string) $c['code']) !== $code;
@@ -1564,9 +1880,13 @@ function tc_api_agreement_page() {
 
 function tc_api_admin_save_settings() {
     tc_with_db(true, function (&$db) {
-        tc_require_admin($db);
+        $admin = tc_require_admin($db);
         $b = tc_read_json_body();
         $src = isset($b['settings']) && is_array($b['settings']) ? $b['settings'] : $b;
+        // 公告是面向全站的门面信息,演示管理员不可改动
+        if (tc_is_demo_user($admin) && array_key_exists('announcement', $src)) {
+            tc_fail(403, '演示管理员不能修改公告');
+        }
         if (array_key_exists('announcement', $src)) {
             if (!is_array($src['announcement'])) tc_fail(400, '公告设置格式不正确');
             $announcementText = trim((string) (isset($src['announcement']['text']) ? $src['announcement']['text'] : ''));
@@ -1591,6 +1911,11 @@ function tc_api_admin_save_settings() {
             $src['smtp']['password'] = $db['settings']['smtp']['password'] ?? '';
         }
         unset($src['defaultGroupId']);
+        // 演示开关由"创建演示管理员"驱动,不允许通过普通设置保存直接改写
+        unset($src['demoMode']);
+        if (array_key_exists('apiExposedModels', $src)) {
+            if (!is_array($src['apiExposedModels'])) tc_fail(400, '对外模型设置格式不正确');
+        }
         $db['settings'] = tc_normalize_settings(array_merge($db['settings'], $src));
         tc_json(200, array('settings' => tc_admin_settings_public($db['settings'])));
     });
@@ -1714,6 +2039,7 @@ function tc_api_admin_backup_restore() {
 function tc_api_admin_user_chats() {
     tc_with_db(false, function ($db) {
         tc_require_admin($db);
+        tc_demo_guard(tc_require_admin($db), '演示管理员不能查看用户对话');
         $q = tc_query();
         $userId = isset($q['userId']) ? $q['userId'] : '';
         $targets = array();
@@ -1725,27 +2051,19 @@ function tc_api_admin_user_chats() {
         }
         $out = array();
         foreach ($targets as $u) {
-            $chats = array();
-            foreach (tc_chats_of($db, $u['id']) as $c) {
-                $msgs = array();
-                if (isset($c['messages']) && is_array($c['messages'])) {
-                    foreach (array_slice($c['messages'], -50) as $m) {
-                        $msgs[] = array(
-                            'role' => isset($m['role']) ? $m['role'] : 'assistant',
-                            'content' => substr((string) (isset($m['content']) ? $m['content'] : ''), 0, 2000),
-                            'error' => !empty($m['error']),
-                            'createdAt' => isset($m['createdAt']) ? $m['createdAt'] : 0,
-                        );
-                    }
+            // 指定用户:完整下发(不截断条数/正文字符,带推理/引用/版本),
+            // 后台可像前台一样完整还原对话(复用与云同步相同的清洗规则)。
+            $chats = tc_sanitize_chats(tc_chats_of($db, $u['id']));
+            if (!$userId) {
+                // 「全部用户」模式:按最近更新时间取前 20 个对话、每个最多 200 条,避免整站数据过大
+                usort($chats, function ($a, $b) {
+                    return (isset($b['updatedAt']) ? $b['updatedAt'] : 0) <=> (isset($a['updatedAt']) ? $a['updatedAt'] : 0);
+                });
+                $chats = array_slice($chats, 0, 20);
+                foreach ($chats as &$c) {
+                    if (isset($c['messages']) && count($c['messages']) > 200) $c['messages'] = array_slice($c['messages'], -200);
                 }
-                $chats[] = array(
-                    'id' => $c['id'],
-                    'title' => isset($c['title']) ? $c['title'] : '新对话',
-                    'pinned' => !empty($c['pinned']),
-                    'createdAt' => isset($c['createdAt']) ? $c['createdAt'] : 0,
-                    'updatedAt' => isset($c['updatedAt']) ? $c['updatedAt'] : 0,
-                    'messages' => $msgs,
-                );
+                unset($c);
             }
             if ($chats || $userId) $out[] = array('user' => tc_sanitize_user($u), 'chats' => $chats);
         }
@@ -1776,23 +2094,41 @@ function tc_api_admin_users() {
 function tc_api_admin_create_user() {
     tc_with_db(true, function (&$db) {
         tc_require_admin($db);
+        tc_demo_guard(tc_require_admin($db), '演示管理员不能管理用户账号');
         $b = tc_read_json_body();
         $name = trim((string) (isset($b['name']) ? $b['name'] : ''));
         $password = (string) (isset($b['password']) ? $b['password'] : '');
         if (!tc_valid_name($name)) tc_fail(400, '用户名需 2-32 位（字母/数字/中文/._@-）');
         if (strlen($password) < 4) tc_fail(400, '密码至少 4 个字符');
         foreach ($db['users'] as $u) if (strtolower($u['name']) === strtolower($name)) tc_fail(409, '用户名已存在');
+        $isDemo = !empty($b['demo']);
+        $isAdmin = !empty($b['admin']) || $isDemo;
         $user = array(
             'id' => tc_uid(), 'name' => $name, 'salt' => '', 'passwordHash' => '',
-            'quota' => 0, 'createdAt' => tc_now(), 'admin' => !empty($b['admin']),
-            'groupId' => !empty($b['admin'])
+            'quota' => 0, 'createdAt' => tc_now(), 'admin' => $isAdmin,
+            'groupId' => $isAdmin
                 ? (($ag = tc_find_builtin_group($db, 'admin')) ? $ag['id'] : tc_default_register_group($db))
                 : tc_default_register_group($db),
             'tv' => 0,
         );
+        // 演示管理员默认额度:未显式填写时给一个很大的值,方便演示;填了就以填写值为准
+        $quota = array_key_exists('quota', $b)
+            ? max(0, (float) $b['quota'])
+            : ($isDemo ? 1e15 : $db['settings']['freeQuota']);
+        if ($isDemo) {
+            // 演示管理员:可改设置/授权,有效期后自动还原,且不可修改密码、管理其它账号或查看用户对话。
+            // 有效期以本次创建时指定(或默认)的值为准,再拍下改动前状态作为还原快照。
+            $minutes = isset($b['demoMinutes']) ? (int) $b['demoMinutes'] : (int) (isset($db['settings']['demoExpireMinutes']) ? $db['settings']['demoExpireMinutes'] : 10);
+            $minutes = min(1440, max(1, $minutes ?: 10));
+            $user['demo'] = true;
+            $db['settings']['demoExpireMinutes'] = $minutes;
+            // 拍下改动前状态作为还原快照;若已有生效中的快照则保留最早那份作为基准
+            tc_demo_arm($db, $user);
+            $user['demoExpireAt'] = (is_array($db['demoSnapshot']) && !empty($db['demoSnapshot']['expireAt']))
+                ? (int) $db['demoSnapshot']['expireAt'] : 0;
+        }
         tc_set_password($user, $password);
         $db['users'][] = $user;
-        $quota = array_key_exists('quota', $b) ? max(0, (float) $b['quota']) : $db['settings']['freeQuota'];
         if ($quota > 0) tc_add_quota($db, $user, $quota);
         tc_json(200, array('user' => tc_sanitize_user($user)));
     });
@@ -1801,10 +2137,14 @@ function tc_api_admin_create_user() {
 function tc_api_admin_update_user() {
     tc_with_db(true, function (&$db) {
         $admin = tc_require_admin($db);
+        tc_demo_guard($admin, '演示管理员不能管理用户账号');
         $b = tc_read_json_body();
         $user = null;
         foreach ($db['users'] as $u) if ($u['id'] === (string) (isset($b['userId']) ? $b['userId'] : '')) { $user = $u; break; }
         if (!$user) tc_fail(404, '用户不存在');
+        if (tc_is_demo_user($user) && array_key_exists('password', $b) && (string) $b['password'] !== '') {
+            tc_fail(403, '演示账号不允许修改密码');
+        }
         if (array_key_exists('password', $b) && (string) $b['password'] !== '') {
             $pwd = (string) $b['password'];
             if (strlen($pwd) < 4) tc_fail(400, '密码至少 4 个字符');
@@ -1835,6 +2175,45 @@ function tc_api_admin_update_user() {
             }
             $user['name'] = $name;
         }
+        // 演示管理员身份可随时设置/取消(不限于创建时)
+        if (array_key_exists('demo', $b)) {
+            $wantDemo = !empty($b['demo']);
+            $wasDemo = !empty($user['demo']);
+            if ($wantDemo) {
+                // 演示管理员必须是管理员,并归入管理员组
+                $user['admin'] = true;
+                $ag = tc_find_builtin_group($db, 'admin');
+                if ($ag && !empty($ag['id'])) $user['groupId'] = $ag['id'];
+                // 不允许把自己变成演示管理员而全站再无普通管理员(那样会失去账号管理能力)
+                if ($user['id'] === $admin['id']) {
+                    $others = 0;
+                    foreach ($db['users'] as $u) {
+                        if ($u['id'] !== $user['id'] && !empty($u['admin']) && empty($u['demo'])) $others++;
+                    }
+                    if ($others === 0) tc_fail(400, '至少要保留一个非演示的管理员，请先另设一位管理员');
+                }
+                if (isset($b['demoMinutes'])) {
+                    $db['settings']['demoExpireMinutes'] = min(1440, max(1, (int) $b['demoMinutes'] ?: 10));
+                }
+                $user['demo'] = true;
+                // 转为演示的那一刻即还原原点:强制重拍快照并重新计时
+                if (!$wasDemo) tc_demo_arm($db, $user, true);
+                $user['demoExpireAt'] = (is_array($db['demoSnapshot']) && !empty($db['demoSnapshot']['expireAt']))
+                    ? (int) $db['demoSnapshot']['expireAt'] : 0;
+            } elseif ($wasDemo) {
+                // 取消演示身份:若已无演示账号,快照与演示模式一并清除,避免日后误还原
+                unset($user['demo']);
+                unset($user['demoExpireAt']);
+                $stillDemo = false;
+                foreach ($db['users'] as $u) {
+                    if ($u['id'] !== $user['id'] && !empty($u['demo'])) { $stillDemo = true; break; }
+                }
+                if (!$stillDemo) {
+                    $db['demoSnapshot'] = null;
+                    $db['settings']['demoMode'] = false;
+                }
+            }
+        }
         tc_replace_user($db, $user);
         tc_json(200, array('user' => tc_sanitize_user($user)));
     });
@@ -1843,6 +2222,7 @@ function tc_api_admin_update_user() {
 function tc_api_admin_set_quota() {
     tc_with_db(true, function (&$db) {
         tc_require_admin($db);
+        tc_demo_guard(tc_require_admin($db), '演示管理员不能调整用户额度');
         $b = tc_read_json_body();
         $user = null;
         foreach ($db['users'] as $u) if ($u['id'] === (string) (isset($b['userId']) ? $b['userId'] : '')) { $user = $u; break; }
@@ -1877,6 +2257,7 @@ function tc_api_admin_set_quota() {
 function tc_api_admin_delete_user($id) {
     tc_with_db(true, function (&$db) use ($id) {
         $admin = tc_require_admin($db);
+        if (tc_is_demo_user($admin)) tc_fail(403, '演示账号不能删除用户');
         $idx = -1;
         foreach ($db['users'] as $i => $u) if ($u['id'] === $id) { $idx = $i; break; }
         if ($idx < 0) tc_fail(404, '用户不存在');
@@ -1889,6 +2270,69 @@ function tc_api_admin_delete_user($id) {
         foreach ($db['providers'] as $p) if (isset($p['ownerId']) && $p['ownerId'] === $id) $ownIds[] = $p['id'];
         foreach ($ownIds as $pid) tc_remove_provider($db, $pid);
         tc_json(200, array('ok' => true, 'removedProviders' => count($ownIds)));
+    });
+}
+
+// 一键清除全部游客账号:游客是按 IP 自动创建的一次性账号,提供了后台整体清理。
+// 会一并移除其对话与自建供应商;管理员与普通成员不受影响。
+function tc_api_admin_purge_guests() {
+    tc_with_db(true, function (&$db) {
+        $admin = tc_require_admin($db);
+        if (tc_is_demo_user($admin)) tc_fail(403, '演示账号不能清除游客');
+        $keep = array();
+        $removed = 0;
+        $removedIds = array();
+        foreach ($db['users'] as $u) {
+            if (!empty($u['guest'])) { $removed++; $removedIds[] = $u['id']; continue; }
+            $keep[] = $u;
+        }
+        $db['users'] = $keep;
+        // 清理游客的对话与自建供应商
+        $map = tc_assoc($db['userChats']);
+        foreach ($removedIds as $id) unset($map[$id]);
+        $db['userChats'] = tc_object_map($map);
+        $revs = tc_assoc(isset($db['userChatRevisions']) ? $db['userChatRevisions'] : array());
+        foreach ($removedIds as $id) unset($revs[$id]);
+        $db['userChatRevisions'] = tc_object_map($revs);
+        $ownIds = array();
+        foreach ($db['providers'] as $p) {
+            if (isset($p['ownerId']) && in_array($p['ownerId'], $removedIds, true)) $ownIds[] = $p['id'];
+        }
+        foreach ($ownIds as $pid) tc_remove_provider($db, $pid);
+        tc_json(200, array('ok' => true, 'removed' => $removed, 'removedProviders' => count($ownIds)));
+    });
+}
+
+// 用户批量删除:一次多个 id,逐个等价于单个删除(含对话与自建供应商清理)。
+// 跳过当前登录管理员与不存在的 id,并在结果里回报,便于前端提示。
+function tc_api_admin_bulk_delete_users() {
+    tc_with_db(true, function (&$db) {
+        $admin = tc_require_admin($db);
+        if (tc_is_demo_user($admin)) tc_fail(403, '演示账号不能删除用户');
+        $b = tc_read_json_body();
+        $ids = isset($b['ids']) && is_array($b['ids']) ? $b['ids'] : array();
+        $ids = array_values(array_unique(array_filter(array_map(function ($v) { return substr(trim((string) $v), 0, 80); }, $ids))));
+        if (!$ids) tc_fail(400, '请先选择要删除的用户');
+        if (count($ids) > 500) tc_fail(400, '一次最多删除 500 个用户');
+        $deleted = 0; $skipped = array();
+        foreach ($ids as $id) {
+            if ($id === $admin['id']) { $skipped[] = $id; continue; }
+            $idx = -1;
+            foreach ($db['users'] as $i => $u) if ($u['id'] === $id) { $idx = $i; break; }
+            if ($idx < 0) { $skipped[] = $id; continue; }
+            array_splice($db['users'], $idx, 1);
+            $map = tc_assoc($db['userChats']);
+            unset($map[$id]);
+            $db['userChats'] = tc_object_map($map);
+            $revs = tc_assoc(isset($db['userChatRevisions']) ? $db['userChatRevisions'] : array());
+            unset($revs[$id]);
+            $db['userChatRevisions'] = tc_object_map($revs);
+            $ownIds = array();
+            foreach ($db['providers'] as $p) if (isset($p['ownerId']) && $p['ownerId'] === $id) $ownIds[] = $p['id'];
+            foreach ($ownIds as $pid) tc_remove_provider($db, $pid);
+            $deleted++;
+        }
+        tc_json(200, array('ok' => true, 'deleted' => $deleted, 'skipped' => count($skipped)));
     });
 }
 
@@ -1964,26 +2408,7 @@ function tc_api_admin_delete_group($id) {
     });
 }
 
-function tc_grant_default_group_provider(&$db, $providerId) {
-    if (!$providerId) return;
-    $ids = array();
-    $user = tc_find_builtin_group($db, 'user');
-    $admin = tc_find_builtin_group($db, 'admin');
-    if ($user && !empty($user['id'])) $ids[] = $user['id'];
-    if ($admin && !empty($admin['id'])) $ids[] = $admin['id'];
-    if (!$ids) {
-        $fallback = tc_default_register_group($db);
-        if ($fallback) $ids[] = $fallback;
-    }
-    foreach ($ids as $gid) {
-        $exists = false;
-        foreach ($db['accessRules'] as $r) {
-            if ($r['groupId'] === $gid && $r['providerId'] === $providerId) { $exists = true; break; }
-        }
-        if ($exists) continue;
-        $db['accessRules'][] = array('id' => tc_uid(), 'groupId' => $gid, 'providerId' => $providerId, 'modelIds' => array('*'));
-    }
-}
+// (旧)仅授权给默认/管理员组;现统一由 tc_grant_all_groups_provider 覆盖所有用户组
 
 function tc_api_admin_set_default_group() {
     tc_with_db(true, function (&$db) {
@@ -2001,6 +2426,7 @@ function tc_api_admin_set_default_group() {
 function tc_api_admin_set_user_group() {
     tc_with_db(true, function (&$db) {
         tc_require_admin($db);
+        tc_demo_guard(tc_require_admin($db), '演示管理员不能修改用户组');
         $b = tc_read_json_body();
         $user = null;
         foreach ($db['users'] as $u) if ($u['id'] === (string) (isset($b['userId']) ? $b['userId'] : '')) { $user = $u; break; }
@@ -2400,6 +2826,16 @@ function tc_api_admin_update_provider($id) {
             $db['defaultProviderId'] = $id;
             tc_json(200, array('ok' => true, 'defaultProviderId' => $id));
         }
+        // 重新排序:body.order 为「供应商 id 顺序数组」,按数组下标写回 order
+        if (isset($b['action']) && $b['action'] === 'reorder' && isset($b['order']) && is_array($b['order'])) {
+            $pos = array();
+            foreach (array_values($b['order']) as $i => $pid) $pos[(string) $pid] = (int) $i;
+            foreach ($db['providers'] as &$pp) {
+                if (isset($pos[(string) $pp['id']])) $pp['order'] = $pos[(string) $pp['id']];
+            }
+            unset($pp);
+            tc_json(200, array('ok' => true));
+        }
         $next = tc_normalize_provider_input($b, $existing);
         $err = tc_validate_provider($next);
         if ($err) tc_fail(400, $err);
@@ -2417,6 +2853,19 @@ function tc_api_admin_update_provider($id) {
             if ($plain !== '' && !tc_provider_set_key($next, $plain)) tc_fail(500, '密钥加密失败，请检查服务器 openssl 环境');
         }
         tc_replace_by_id($db['providers'], $id, $next);
+        // 全局供应商新增模型时,仅把"新出现的模型"补进已有授权清单;
+        // 管理员此前刻意取消勾选的模型不会被重新授权,未授权该供应商的分组也不受影响
+        if ((isset($next['scope']) ? $next['scope'] : '') === 'global') {
+            $oldIds = array();
+            foreach ((isset($existing['models']) ? $existing['models'] : array()) as $m) {
+                if (isset($m['id']) && $m['id'] !== '') $oldIds[(string) $m['id']] = true;
+            }
+            $newIds = array();
+            foreach ((isset($next['models']) ? $next['models'] : array()) as $m) {
+                if (isset($m['id']) && $m['id'] !== '' && !isset($oldIds[(string) $m['id']])) $newIds[] = (string) $m['id'];
+            }
+            if ($newIds) tc_sync_new_models_access($db, $id, $newIds);
+        }
         tc_json(200, array('provider' => tc_client_provider($next, false, true)));
     });
 }
@@ -2445,14 +2894,26 @@ function tc_api_list_models() {
         if (!$target) tc_json(200, array('models' => array(), 'providerId' => null));
         $vis = tc_visible_provider($user, $target, $allowed);
         if (!$vis) tc_json(200, array('models' => array(), 'providerId' => null));
+        // 每模型单次扣费:模型级 cost 优先,未设置的回退供应商价格(前端提示里显示)
+        $costs = array();
+        foreach ((isset($target['models']) ? $target['models'] : array()) as $m) {
+            if (!is_array($m)) continue;
+            $mid = isset($m['id']) ? (string) $m['id'] : '';
+            if ($mid === '') continue;
+            $costs[$mid] = tc_model_cost($target, $mid);
+        }
         tc_json(200, array(
             'models' => $vis['models'],
             'providerId' => $target['id'],
             'providerName' => $target['name'],
             'apiFormat' => isset($target['apiFormat']) ? $target['apiFormat'] : 'chat',
             'costPerCall' => tc_provider_cost($target),
+            'costs' => $costs,
             'scope' => isset($target['scope']) ? $target['scope'] : 'user',
             'health' => tc_model_health_summary($db, $target['id']),
+            // 可用性分级阈值(百分比),供前台把状态图标翻译成人话
+            'healthOkMin' => isset($db['settings']['healthOkMin']) ? (int) $db['settings']['healthOkMin'] : 75,
+            'healthWarnMin' => isset($db['settings']['healthWarnMin']) ? (int) $db['settings']['healthWarnMin'] : 40,
         ));
     });
 }
@@ -2495,7 +2956,8 @@ function tc_api_parse_document() {
         tc_push_log(array(
             'kind' => 'parse', 'userName' => $user['name'], 'userId' => $user['id'],
             'provider' => 'MinerU', 'model' => $mode, 'status' => 200,
-            'ms' => $ms, 'cost' => 0, 'error' => $name . ' · ' . $chars . ' 字',
+            'ms' => $ms, 'cost' => 0, 'ip' => tc_client_ip(),
+            'note' => $name . ' · ' . $chars . ' 字',
         ));
         tc_json(200, array(
             'name' => $name,

@@ -14,6 +14,17 @@ function api(path, opts = {}) {
     return r;
   });
 }
+// 容错解析 JSON:响应不是 JSON(服务器返回 HTML 错误页)时给出可读提示,而不是抛 "Unexpected token '<'"
+async function readJsonSafe(res) {
+  let text = '';
+  try { text = await res.text(); } catch (e) { text = ''; }
+  const trimmed = text.trim();
+  if (!trimmed) return {};
+  if (trimmed.charAt(0) === '{' || trimmed.charAt(0) === '[') {
+    try { return JSON.parse(trimmed); } catch (e) { /* noop */ }
+  }
+  return { error: { message: '服务器返回了非预期内容（HTTP ' + res.status + '），请检查站点配置或稍后重试' } };
+}
 function toast(msg, isError = false) {
   if (window.OCUI && window.OCUI.toast) return window.OCUI.toast(msg, isError);
   const t = document.createElement('div');
@@ -112,6 +123,7 @@ async function loadStats() {
 
 let USER_FILTER = 'all';
 let USER_LIST = [];
+let USER_SELECTED = new Set();
 let USER_FORM_ID = null;
 let ME_ID = (JSON.parse(localStorage.getItem('oc_user') || '{}').id || '');
 
@@ -170,6 +182,11 @@ async function openUserForm(user) {
   $('uf-pass-label').textContent = user ? '新密码（留空不改）' : '密码';
   $('uf-quota').value = user ? user.quota : 100;
   $('uf-admin').checked = !!(user && user.admin);
+  if ($('uf-demo')) $('uf-demo').checked = !!(user && user.demo);
+  // 演示身份不限于创建时:编辑已有用户也能设置/取消
+  if ($('uf-demo-row')) $('uf-demo-row').style.display = '';
+  if ($('uf-demo-options')) $('uf-demo-options').hidden = !($('uf-demo') && $('uf-demo').checked);
+  if ($('uf-demo-minutes')) $('uf-demo-minutes').value = 10;
   const adminGroup = (GROUPS.find((g) => g.role === 'admin') || {}).id || '';
   const preferred = $('uf-admin').checked
     ? adminGroup
@@ -183,6 +200,18 @@ async function openUserForm(user) {
       const current = $('uf-group').getAttribute('data-value') || '';
       if ($('uf-admin').checked) setGroupSelect($('uf-group'), nextAdmin);
       else if (!current || current === nextAdmin) setGroupSelect($('uf-group'), DEFAULT_GROUP_ID || '');
+    });
+  }
+  if ($('uf-demo') && !$('uf-demo').dataset.boundDemo) {
+    $('uf-demo').dataset.boundDemo = '1';
+    $('uf-demo').addEventListener('change', () => {
+      // 演示管理员必须是管理员,勾选后自动带入管理员组
+      if ($('uf-demo').checked) {
+        $('uf-admin').checked = true;
+        const nextAdmin = (GROUPS.find((g) => g.role === 'admin') || {}).id || '';
+        setGroupSelect($('uf-group'), nextAdmin);
+      }
+      if ($('uf-demo-options')) $('uf-demo-options').hidden = !$('uf-demo').checked;
     });
   }
   modal.classList.remove('hidden');
@@ -199,7 +228,9 @@ async function saveUserForm() {
   const name = $('uf-name').value.trim();
   const password = $('uf-pass').value;
   const quota = Number($('uf-quota').value);
-  const admin = $('uf-admin').checked;
+  const demo = !!($('uf-demo') && $('uf-demo').checked);
+  const demoMinutes = Math.min(1440, Math.max(1, parseInt($('uf-demo-minutes') && $('uf-demo-minutes').value, 10) || 10));
+  const admin = $('uf-admin').checked || demo;
   const groupId = $('uf-group').getAttribute('data-value') || '';
   if (!name) return toast('请填写用户名', true);
   if (!USER_FORM_ID && !password) return toast('请填写密码', true);
@@ -213,7 +244,7 @@ async function saveUserForm() {
       const r = await api('/api/admin/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, password, quota, admin }),
+        body: JSON.stringify({ name, password, quota, admin, demo, demoMinutes }),
       });
       const data = await r.json();
       if (!r.ok) return toast((data.error && data.error.message) || '创建失败', true);
@@ -228,7 +259,7 @@ async function saveUserForm() {
       }
       toast('用户已创建');
     } else {
-      const body = { userId: USER_FORM_ID, name, admin };
+      const body = { userId: USER_FORM_ID, name, admin, demo, demoMinutes };
       if (password) body.password = password;
       const r = await api('/api/admin/users/update', {
         method: 'POST',
@@ -291,6 +322,28 @@ function bindDefaultGroupSelect() {
   });
 }
 
+async function openGroupRename(g) {
+  if (g.builtin) {
+    toast('系统用户组名称固定（按角色识别），可直接在「模型授权」中调整其可用模型', true);
+    return;
+  }
+  const next = window.prompt('修改用户组名称', g.name);
+  if (next == null) return;
+  const name = String(next).trim();
+  if (!name) return toast('组名不能为空', true);
+  if (name === g.name) return;
+  const r = await api('/api/admin/groups/' + encodeURIComponent(g.id), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return toast((d.error && d.error.message) || '修改失败', true);
+  toast('用户组已更新');
+  loadGroups();
+  loadUsers(currentUserKw());
+}
+
 async function loadGroups() {
   const r = await api('/api/admin/groups');
   const data = await r.json();
@@ -313,8 +366,11 @@ async function loadGroups() {
         <div class="pc-url">${g.memberCount} 名成员</div>
       </div>
       <div class="provider-card-actions" style="display:flex;gap:6px;flex-shrink:0">
-        ${g.builtin ? '' : '<button class="btn small danger" data-delgroup="' + escapeHtml(g.id) + '">删除</button>'}
+        ${g.builtin
+          ? '<button class="btn small" data-editgroup="' + escapeHtml(g.id) + '">重命名</button>'
+          : '<button class="btn small" data-editgroup="' + escapeHtml(g.id) + '">重命名</button><button class="btn small danger" data-delgroup="' + escapeHtml(g.id) + '">删除</button>'}
       </div>`;
+    card.querySelector('[data-editgroup]')?.addEventListener('click', () => openGroupRename(g));
     card.querySelector('[data-delgroup]')?.addEventListener('click', async () => {
       const extra = g.id === DEFAULT_GROUP_ID ? '该组当前是注册默认组，删除后会改回系统默认用户组。' : '';
       const ok = window.OCUI
@@ -369,7 +425,8 @@ $('g-add').addEventListener('click', async () => {
 
 function visibleUsers() {
   if (USER_FILTER === 'admin') return USER_LIST.filter((u) => u.admin);
-  if (USER_FILTER === 'member') return USER_LIST.filter((u) => !u.admin);
+  if (USER_FILTER === 'guest') return USER_LIST.filter((u) => u.guest);
+  if (USER_FILTER === 'member') return USER_LIST.filter((u) => !u.admin && !u.guest);
   return USER_LIST.slice();
 }
 
@@ -384,21 +441,28 @@ function renderUsers() {
       : '暂无用户';
   }
   tbody.innerHTML = '';
+  // 清理已不存在的选中项(切换筛选/删除后)
+  const aliveIds = new Set(USER_LIST.map((u) => u.id));
+  Array.from(USER_SELECTED).forEach((id) => { if (!aliveIds.has(id)) USER_SELECTED.delete(id); });
   if (!list.length) {
-    tbody.innerHTML = '<tr class="users-empty-row"><td colspan="7">' + (USER_LIST.length ? '没有匹配的用户' : '还没有用户，点右上角创建') + '</td></tr>';
+    tbody.innerHTML = '<tr class="users-empty-row"><td colspan="9">' + (USER_LIST.length ? '没有匹配的用户' : '还没有用户，点右上角创建') + '</td></tr>';
     return;
   }
   list.forEach((u) => {
     const tr = document.createElement('tr');
     const initial = String(u.name || '?').trim().charAt(0).toUpperCase();
     const gName = groupLabel(u.groupId);
+    const me = u.id === ME_ID;
     tr.innerHTML =
-      '<td class="col-user">'
+      '<td class="col-check">' + (me ? '' : '<input type="checkbox" class="user-pick" data-id="' + escapeHtml(u.id) + '"' + (USER_SELECTED.has(u.id) ? ' checked' : '') + ' aria-label="选择">') + '</td>'
+      + '<td class="col-user">'
       + '<div class="user-cell">'
       + '<span class="user-avatar' + (u.admin ? ' is-admin' : '') + '">' + escapeHtml(initial) + '</span>'
       + '<div class="user-meta">'
       + '<div class="user-name">' + escapeHtml(u.name)
       + (u.admin ? ' <span class="badge global">管理员</span>' : '')
+      + (u.demo ? ' <span class="badge">演示</span>' : '')
+      + (u.guest ? ' <span class="badge">游客</span>' : '')
       + (u.id === ME_ID ? ' <span class="badge default">我</span>' : '')
       + '</div></div></div></td>'
       + '<td class="col-quota">' + (u.quota ?? 0) + '</td>'
@@ -406,11 +470,17 @@ function renderUsers() {
       + '<td class="col-chats">' + (u.chatCount || 0) + '</td>'
       + '<td class="col-time muted">' + fmtTime(u.createdAt) + '</td>'
       + '<td class="col-seen muted">' + (u.lastSeen ? fmtTime(u.lastSeen) : '—') + '</td>'
+      + '<td class="col-ip muted">' + (u.lastIp ? escapeHtml(u.lastIp) : '—') + '</td>'
       + '<td class="col-actions"><div class="admin-row-actions">'
       + '<button class="btn small" type="button" data-edit="' + escapeHtml(u.id) + '">编辑</button>'
       + '<button class="btn small" type="button" data-chats="' + escapeHtml(u.id) + '">对话</button>'
       + (u.id === ME_ID ? '' : '<button class="btn small danger" type="button" data-deluser="' + escapeHtml(u.id) + '">删除</button>')
       + '</div></td>';
+    const pick = tr.querySelector('.user-pick');
+    if (pick) pick.addEventListener('change', () => {
+      if (pick.checked) USER_SELECTED.add(u.id); else USER_SELECTED.delete(u.id);
+      syncUserSelection();
+    });
     tr.querySelector('[data-edit]')?.addEventListener('click', () => openUserForm(u));
     tr.querySelector('[data-chats]')?.addEventListener('click', () => openUserChats(u));
     tr.querySelector('[data-deluser]')?.addEventListener('click', async () => {
@@ -424,7 +494,73 @@ function renderUsers() {
     });
     tbody.appendChild(tr);
   });
+  syncUserSelection();
 }
+// 同步「删除所选」按钮与全选框状态
+function syncUserSelection() {
+  const btn = $('users-bulk-delete');
+  if (btn) {
+    btn.hidden = USER_SELECTED.size === 0;
+    btn.textContent = USER_SELECTED.size ? ('删除所选 (' + USER_SELECTED.size + ')') : '删除所选';
+  }
+  const all = $('users-check-all');
+  if (all) {
+    const pickable = visibleUsers().filter((u) => u.id !== ME_ID);
+    const picked = pickable.filter((u) => USER_SELECTED.has(u.id)).length;
+    all.checked = pickable.length > 0 && picked === pickable.length;
+    all.indeterminate = picked > 0 && picked < pickable.length;
+  }
+}
+
+// 用户批量操作:全选、删除所选、一键清除游客
+(function initUserBulk() {
+  const all = $('users-check-all');
+  if (all) all.addEventListener('change', () => {
+    const pickable = visibleUsers().filter((u) => u.id !== ME_ID);
+    if (all.checked) pickable.forEach((u) => USER_SELECTED.add(u.id));
+    else pickable.forEach((u) => USER_SELECTED.delete(u.id));
+    renderUsers();
+  });
+  const bulk = $('users-bulk-delete');
+  if (bulk) bulk.addEventListener('click', async () => {
+    const ids = Array.from(USER_SELECTED);
+    if (!ids.length) return;
+    const ok = window.OCUI
+      ? await window.OCUI.confirm({ title: '批量删除用户', message: '确认删除选中的 ' + ids.length + ' 个用户？其对话与自建供应商会一并清除。', danger: true, confirmText: '删除' })
+      : confirm('确认删除选中的 ' + ids.length + ' 个用户?');
+    if (!ok) return;
+    bulk.disabled = true;
+    try {
+      const r = await api('/api/admin/users/bulk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+      const d = await r.json();
+      if (!r.ok) return toast((d.error && d.error.message) || '删除失败', true);
+      USER_SELECTED.clear();
+      toast('已删除 ' + d.deleted + ' 个用户' + (d.skipped ? '，跳过 ' + d.skipped + ' 个' : ''));
+      loadUsers(currentUserKw()); loadStats();
+    } catch (e) {
+      toast('删除失败: ' + e.message, true);
+    } finally { bulk.disabled = false; }
+  });
+  const purge = $('users-purge-guests');
+  if (purge) purge.addEventListener('click', async () => {
+    const guests = USER_LIST.filter((u) => u.guest);
+    const ok = window.OCUI
+      ? await window.OCUI.confirm({ title: '清除全部游客', message: '将删除全部 ' + guests.length + ' 个游客账号及其对话与自建供应商。管理员与普通成员不受影响。', danger: true, confirmText: '全部清除' })
+      : confirm('将删除全部 ' + guests.length + ' 个游客账号,确认?');
+    if (!ok) return;
+    purge.disabled = true;
+    try {
+      const r = await api('/api/admin/users/purge-guests', { method: 'POST' });
+      const d = await r.json();
+      if (!r.ok) return toast((d.error && d.error.message) || '清除失败', true);
+      USER_SELECTED.clear();
+      toast(d.removed ? ('已清除 ' + d.removed + ' 个游客账号') : '当前没有游客账号');
+      loadUsers(currentUserKw()); loadStats();
+    } catch (e) {
+      toast('清除失败: ' + e.message, true);
+    } finally { purge.disabled = false; }
+  });
+})();
 
 async function loadUsers(searchKw) {
   const r = await api('/api/admin/users' + (searchKw ? '?q=' + encodeURIComponent(searchKw) : ''));
@@ -462,33 +598,38 @@ async function loadAccess() {
     const locked = g.role === 'admin';
     section.innerHTML = `<div class="access-title">${escapeHtml(g.name)}${locked ? ' <span class="badge global">始终全部模型</span>' : ''}</div>`;
     PROVIDERS.forEach((p) => {
-      const rule = ACCESS.find((a) => a.groupId === g.id && a.providerId === p.id);
-      const checked = new Set(rule ? rule.modelIds : []);
-      const allOpen = locked || (rule ? rule.modelIds.includes('*') : false);
       const row = document.createElement('div');
       row.className = 'access-row';
+      row.dataset.group = g.id;
+      row.dataset.provider = p.id;
+      row.dataset.locked = locked ? '1' : '';
       row.innerHTML = `
         <div class="access-prov">${escapeHtml(p.name)}
           <label class="access-all" style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-weight:normal">
-            <input type="checkbox" data-prov="${p.id}" ${allOpen ? 'checked' : ''} ${locked ? 'disabled' : ''}> 全部
+            <input type="checkbox" data-prov="${p.id}" ${locked ? 'disabled' : ''}> 全部
           </label>
         </div>
         <div class="access-models">
           ${p.models.map((m) => `
-            <label class="access-model ${allOpen ? 'disabled' : ''}">
-              <input type="checkbox" data-model="${p.id}|${m.id}" ${checked.has(m.id) ? 'checked' : ''} ${allOpen ? 'disabled' : ''}>
+            <label class="access-model">
+              <input type="checkbox" data-model="${p.id}|${m.id}" ${locked ? 'disabled' : ''}>
               ${escapeHtml(m.id)}
             </label>`).join('')}
         </div>`;
+      syncAccessRow(row);
       const allChk = row.querySelector('[data-prov]');
       if (locked) { section.appendChild(row); return; }
+      // 「全部」= 全选/全不选快捷键:勾上写通配 ['*'],取消则清空(之后可逐个勾选)
       allChk.addEventListener('change', async () => {
-        await saveAccessRule(g.id, p.id, allChk.checked ? ['*'] : [], { row, allChk });
+        await saveAccessRule(g.id, p.id, allChk.checked ? ['*'] : [], row);
       });
+      // 单个模型:直接勾选即可只授权部分模型。全选时写回通配,便于新模型自动纳入。
       row.querySelectorAll('[data-model]').forEach((chk) => {
         chk.addEventListener('change', async () => {
-          const sel = Array.from(row.querySelectorAll('[data-model]')).filter((c) => c.checked).map((c) => c.dataset.model.split('|')[1]);
-          await saveAccessRule(g.id, p.id, sel, { row, allChk });
+          const boxes = Array.from(row.querySelectorAll('[data-model]'));
+          const sel = boxes.filter((c) => c.checked).map((c) => c.dataset.model.split('|')[1]);
+          const allSelected = boxes.length > 0 && sel.length === boxes.length;
+          await saveAccessRule(g.id, p.id, allSelected ? ['*'] : sel, row);
         });
       });
       section.appendChild(row);
@@ -497,35 +638,56 @@ async function loadAccess() {
   });
 }
 
-async function saveAccessRule(groupId, providerId, modelIds, { row, allChk } = {}) {
+// 依据当前 ACCESS 同步某一行复选框:通配时全部勾上并显示「全部」;
+// 部分授权时「全部」呈半选(不确定)态。
+function syncAccessRow(row) {
+  if (!row) return;
+  const gid = row.dataset.group;
+  const pid = row.dataset.provider;
+  const locked = row.dataset.locked === '1';
+  const rule = ACCESS.find((a) => a.groupId === gid && a.providerId === pid);
+  const ids = rule && Array.isArray(rule.modelIds) ? rule.modelIds : [];
+  const allOpen = locked || ids.indexOf('*') >= 0;
+  const boxFor = (mid) => allOpen || ids.indexOf(mid) >= 0;
+  row.querySelectorAll('[data-model]').forEach((chk) => {
+    const mid = chk.dataset.model.split('|')[1];
+    chk.checked = boxFor(mid);
+    chk.disabled = locked;
+    const label = chk.closest('.access-model');
+    if (label) label.classList.toggle('disabled', false);
+  });
+  const allChk = row.querySelector('[data-prov]');
+  if (allChk) {
+    const boxes = row.querySelectorAll('[data-model]');
+    const n = Array.from(boxes).filter((c) => c.checked).length;
+    allChk.checked = allOpen || (boxes.length > 0 && n === boxes.length);
+    allChk.indeterminate = !allOpen && n > 0 && n < boxes.length;
+  }
+}
+
+async function saveAccessRule(groupId, providerId, modelIds, row) {
   const r = await api('/api/admin/access', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ groupId, providerId, modelIds }),
   });
-  const data = await r.json();
-  if (!r.ok) return toast((data.error && data.error.message) || '保存授权失败', true);
-  ACCESS = data.rules || [];
-  toast('授权已更新');
-  // 局部同步复选框状态,避免整块重绘导致闪烁
-  if (row && allChk) {
-    const allOpen = modelIds.length === 1 && modelIds[0] === '*';
-    const modelChecks = row.querySelectorAll('[data-model]');
-    modelChecks.forEach((chk) => {
-      const m = chk.dataset.model.split('|')[1];
-      chk.checked = allOpen || modelIds.includes(m);
-      chk.disabled = allOpen;
-    });
-    allChk.checked = allOpen || modelChecks.length > 0 && modelIds.length === (modelChecks.length || -1);
-  } else {
-    loadAccess();
+  const data = await readJsonSafe(r);
+  if (!r.ok) {
+    toast((data.error && data.error.message) || '保存授权失败', true);
+    // 失败时回滚复选框到服务端真实状态
+    syncAccessRow(row);
+    return;
   }
+  ACCESS = data.rules || [];
+  const count = modelIds.length === 1 && modelIds[0] === '*' ? '全部模型' : (modelIds.length + ' 个模型');
+  toast('授权已更新：' + count);
+  // 局部同步复选框状态,避免整块重绘导致闪烁
+  if (row) syncAccessRow(row);
+  else loadAccess();
 }
 
 // ============ 供应商管理 ============
-// API Key 显示/隐藏切换
-const apKeyInput = $('ap-key');
-const toggleKeyBtn = $('ap-key-toggle');
+// ---- 多密钥编辑器:每行 = 名称 + Key(掩码/明文) + 显示/删除 ----
 function setKeyVisibility(input, button, visible) {
   if (!input || !button) return;
   input.type = visible ? 'text' : 'password';
@@ -533,33 +695,198 @@ function setKeyVisibility(input, button, visible) {
   button.title = visible ? '隐藏 Key' : '显示 Key';
   button.setAttribute('aria-label', button.title);
 }
-if (apKeyInput && toggleKeyBtn) {
-  toggleKeyBtn.addEventListener('click', async () => {
-    // 编辑模式且输入框为空:点小眼睛取回服务器上已保存的 Key(仅限勾选了「保存后保持显示」的供应商)
-    const editId = $('ap-save').dataset.editId;
-    if (editId && apKeyInput.value.trim() === '') {
-      if (!window.apEditingRevealable) {
-        toast('该 Key 保存时未勾选「保存后保持显示」，无法查看', true);
-        return;
-      }
-      try {
-        toggleKeyBtn.disabled = true;
-        const rr = await api('/api/providers/' + encodeURIComponent(editId) + '/key', { method: 'POST' });
-        const dd = await rr.json().catch(() => ({}));
-        if (!rr.ok) throw new Error((dd.error && dd.error.message) || '无法查看 Key');
-        apKeyInput.value = dd.key || '';
-        setKeyVisibility(apKeyInput, toggleKeyBtn, true);
-      } catch (err) {
-        toast(err.message || '无法查看 Key', true);
-      } finally {
-        toggleKeyBtn.disabled = false;
-      }
-      return;
-    }
-    setKeyVisibility(apKeyInput, toggleKeyBtn, apKeyInput.type !== 'text');
-    apKeyInput.focus();
+// 当前编辑中的密钥列表:[{id,name,apiKey,revealable}]
+let AP_KEYS = [];
+let AP_KEYS_EDIT_ID = null;    // 编辑模式下的供应商 id(用于小眼睛回显)
+let AP_KEYS_REVEALABLE = false;
+function apKeysBox() { return $('ap-keys'); }
+function renderApKeys() {
+  const box = apKeysBox();
+  if (!box) return;
+  // 每把 Key 需要有稳定 id 供模型绑定引用(新加的行为空 id)
+  AP_KEYS.forEach((k) => { if (!k.id) k.id = 'k' + Math.random().toString(36).slice(2, 9); });
+  box.innerHTML = AP_KEYS.map((k, i) => {
+    // 已保存的 Key 不回填掩码到输入框(留空 = 保持不变);掩码只放在 placeholder 里提示
+    const val = String(k.apiKey || '');
+    const ph = (val === '' && k.hasKey)
+      ? ('已保存 ' + String(k.masked || '••••••') + '，留空保持不变')
+      : 'sk-...';
+    return '<div class="ap-key-row" data-idx="' + i + '">'
+      + '<input class="ap-key-name" type="text" data-idx="' + i + '" value="' + escapeHtml(k.name || '') + '" placeholder="Key 名称（多个时必填）" maxlength="40" autocomplete="off">'
+      + '<div class="pw-wrap ap-key-pw">'
+      + '<input class="ap-key-val" type="password" data-idx="' + i + '" value="' + escapeHtml(val) + '" placeholder="' + escapeHtml(ph) + '" autocomplete="off">'
+      + '<button class="pw-toggle ap-key-eye" type="button" data-idx="' + i + '" title="显示 Key" aria-label="显示 Key">' + window.OC.icon('eye', 14) + '</button>'
+      + '</div>'
+      + '<button class="icon-btn ap-key-del" type="button" data-del="' + i + '" title="移除该 Key" aria-label="移除该 Key">' + window.OC.icon('close', 14) + '</button>'
+      + '</div>';
+  }).join('');
+  const addBtn = $('ap-key-add');
+  if (addBtn) addBtn.disabled = AP_KEYS.length >= 20;
+  // 密钥列表变化时同步给模型清单(用于密钥列下拉);未命名的暂用「未命名 N」
+  if (apModelList && apModelList.setKeys) {
+    apModelList.setKeys(AP_KEYS.map((k, i) => ({ id: k.id, name: (k.name || '').trim() || ('未命名 ' + (i + 1)) })));
+  }
+  syncFetchKeyBox();
+}
+// 「获取列表」用哪把 Key:多把密钥时显示选择器(默认第一把已填/已保存的)
+function syncFetchKeyBox() {
+  const box = $('ap-fetch-key');
+  if (!box) return;
+  const usable = AP_KEYS.filter((k) => k.hasKey || String(k.apiKey || '').trim() !== '');
+  if (usable.length < 2) { box.classList.add('hidden'); box.setAttribute('data-value', usable[0] ? usefulId(usable[0]) : ''); return; }
+  box.classList.remove('hidden');
+  let cur = box.getAttribute('data-value') || '';
+  const ids = usable.map((k) => usefulId(k));
+  if (ids.indexOf(cur) < 0) cur = ids[0];
+  box.setAttribute('data-value', cur);
+  const hit = usable.find((k) => usefulId(k) === cur);
+  const lab = box.querySelector('.sb-label');
+  if (lab) lab.textContent = (hit && (hit.name || '').trim()) || '获取用 Key';
+}
+function usefulId(k) { return String((k && k.id) || ''); }
+function bindFetchKeyBox() {
+  const box = $('ap-fetch-key');
+  if (!box || !window.OC || !OC.openSelect) return;
+  box.addEventListener('click', () => {
+    const usable = AP_KEYS.filter((k) => k.hasKey || String(k.apiKey || '').trim() !== '');
+    if (usable.length < 2) return;
+    OC.openSelect(box, usable.map((k) => ({ value: usefulId(k), label: (k.name || '').trim() || '未命名' })), {
+      selected: box.getAttribute('data-value') || '',
+      fitWidth: true,
+      onSelect: (val, item) => {
+        box.setAttribute('data-value', val);
+        const lab = box.querySelector('.sb-label');
+        if (lab) lab.textContent = (item && item.label) || val;
+      },
+    });
+  });
+  box.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); box.click(); } });
+}
+function apKeysFromProvider(p) {
+  AP_KEYS = [];
+  AP_KEYS_EDIT_ID = p && p.id ? p.id : null;
+  AP_KEYS_REVEALABLE = !!(p && p.keyRevealable);
+  const list = (p && Array.isArray(p.keys)) ? p.keys : [];
+  if (list.length) {
+    // 接口只回掩码:输入框留空表示「保持原 Key」,掩码存起来供 placeholder 展示
+    AP_KEYS = list.map((k) => ({ id: String(k.id || ''), name: String(k.name || ''), apiKey: '', masked: String(k.apiKey || ''), hasKey: !!k.hasKey }));
+  } else if (p && p.hasKey) {
+    // 旧数据:单 Key
+    AP_KEYS = [{ id: 'k0', name: '', apiKey: '', masked: String(p.apiKey || '••••••'), hasKey: true }];
+  }
+  if (!AP_KEYS.length) AP_KEYS = [{ id: '', name: '', apiKey: '' }];
+  renderApKeys();
+}
+function apKeysPayload() {
+  // 带回全部行(含未改动、apiKey 为空的):服务端按 id 复用原密文,
+  // 否则未改动的密钥会在保存时被丢弃。
+  return AP_KEYS.map((k) => ({ id: k.id || '', name: String(k.name || '').trim(), apiKey: String(k.apiKey || '') }));
+}
+// 有效行:已保存过的(hasKey) 或 刚填了明文
+function apKeysEffective() {
+  return AP_KEYS.filter((k) => k.hasKey || String(k.apiKey || '').trim() !== '');
+}
+// 只更新模型表密钥下拉的选项文字(不重渲染,避免输入时丢焦点)
+function syncKeySelectLabels() {
+  const opts = AP_KEYS.map((k, i) => ({ id: k.id, name: (k.name || '').trim() || ('未命名 ' + (i + 1)) }));
+  document.querySelectorAll('#ap-models-list select.mkey').forEach((sel) => {
+    Array.from(sel.options).forEach((o) => {
+      if (!o.value) return;
+      const hit = opts.find((x) => String(x.id) === o.value);
+      if (hit) o.textContent = hit.name || hit.id;
+    });
   });
 }
+// 校验:多 Key 时名称必填且不可重复;返回错误信息或 ''
+function apKeysValidate() {
+  const named = apKeysEffective();
+  if (named.length < 2) return '';
+  const seen = {};
+  for (const k of named) {
+    const nm = String(k.name || '').trim();
+    if (!nm) return '配置了多个 Key 时，每个 Key 都需要填写名称';
+    const low = nm.toLowerCase();
+    if (seen[low]) return 'Key 名称不能重复：' + nm;
+    seen[low] = true;
+  }
+  return '';
+}
+(function initApKeys() {
+  const box = apKeysBox();
+  if (!box) return;
+  const addBtn = $('ap-key-add');
+  if (addBtn) addBtn.addEventListener('click', () => {
+    if (AP_KEYS.length >= 20) return;
+    AP_KEYS.push({ id: '', name: '', apiKey: '' });
+    renderApKeys();
+  });
+  box.addEventListener('input', (e) => {
+    const nameInp = e.target.closest ? e.target.closest('input.ap-key-name') : null;
+    if (nameInp) {
+      const k = AP_KEYS[Number(nameInp.dataset.idx)];
+      if (k) k.name = nameInp.value;
+      // 同步模型表:密钥链芯片与下拉标签都按新名字显示
+      // (焦点在密钥名称输入框,不在模型表内,重渲染不会丢焦点)
+      syncKeySelectLabels();
+      if (apModelList && apModelList.setKeys) {
+        apModelList.setKeys(AP_KEYS.map((x, i) => ({ id: x.id, name: (x.name || '').trim() || ('未命名 ' + (i + 1)) })));
+      }
+      syncFetchKeyBox();
+      return;
+    }
+    const valInp = e.target.closest ? e.target.closest('input.ap-key-val') : null;
+    if (valInp) { const k = AP_KEYS[Number(valInp.dataset.idx)]; if (k) { k.apiKey = valInp.value; k.hasKey = true; } syncFetchKeyBox(); return; }
+  });
+  box.addEventListener('click', async (e) => {
+    const del = e.target.closest ? e.target.closest('[data-del]') : null;
+    if (del) {
+      const i = Number(del.dataset.del);
+      const victim = AP_KEYS[i];
+      // 该密钥正被模型绑定时先提示:移除后这些模型会回退到默认密钥
+      const bound = victim && victim.id && apModelList
+        ? (apModelList.getCatalog() || []).filter((m) => String(m.keyId || '') === String(victim.id))
+        : [];
+      if (bound.length) {
+        const names = bound.slice(0, 3).map((m) => m.name || m.id).join('、');
+        const more = bound.length > 3 ? ' 等 ' + bound.length + ' 个' : '';
+        const ok = window.OCUI
+          ? await window.OCUI.confirm({ title: '移除密钥', message: '「' + (victim.name || '未命名') + '」正被模型 ' + names + more + ' 使用，移除后这些模型会改用默认密钥。确认移除？', danger: true, confirmText: '移除' })
+          : confirm('密钥「' + (victim.name || '未命名') + '」正被 ' + bound.length + ' 个模型使用，移除后它们会改用默认密钥。确认?');
+        if (!ok) return;
+      }
+      AP_KEYS.splice(i, 1);
+      if (!AP_KEYS.length) AP_KEYS.push({ id: '', name: '', apiKey: '' });
+      renderApKeys();
+      return;
+    }
+    const eye = e.target.closest ? e.target.closest('.ap-key-eye') : null;
+    if (!eye) return;
+    const i = Number(eye.dataset.idx);
+    const k = AP_KEYS[i];
+    if (!k) return;
+    const input = box.querySelector('input.ap-key-val[data-idx="' + i + '"]');
+    if (!input) return;
+    // 编辑模式 + 输入为空 + 属主勾选过「保存后保持显示」:取回服务器上保存的明文
+    if (AP_KEYS_EDIT_ID && String(k.apiKey || '').trim() === '') {
+      if (!AP_KEYS_REVEALABLE) { toast('该 Key 保存时未勾选「保存后保持显示」，无法查看', true); return; }
+      try {
+        eye.disabled = true;
+        const rr = await api('/api/providers/' + encodeURIComponent(AP_KEYS_EDIT_ID) + '/key?keyId=' + encodeURIComponent(k.id || ''), { method: 'POST' });
+        const dd = await rr.json().catch(() => ({}));
+        if (!rr.ok) throw new Error((dd.error && dd.error.message) || '无法查看 Key');
+        k.apiKey = dd.key || '';
+        input.value = k.apiKey;
+        setKeyVisibility(input, eye, true);
+      } catch (err) {
+        toast(err.message || '无法查看 Key', true);
+      } finally { eye.disabled = false; }
+      return;
+    }
+    setKeyVisibility(input, eye, input.type !== 'text');
+  });
+})();
+
+bindFetchKeyBox();
 
 const apModelList = window.OC && window.OC.bindModelChecklist
   ? window.OC.bindModelChecklist({
@@ -578,7 +905,20 @@ async function loadProviders() {
   const box = $('admin-providers');
   box.innerHTML = '';
   const providers = (data.providers || []).filter((p) => p.scope === 'global');
-  providers.forEach((p) => {
+  // 上/下移:把当前顺序数组里相邻两项对调后整体提交,保证前台按此顺序展示
+  const providerIds = providers.map((p) => p.id);
+  const saveReorder = async (ids) => {
+    try {
+      const rr = await api('/api/admin/providers/' + ids[0], {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reorder', order: ids }),
+      });
+      if (!rr.ok) throw new Error('排序失败');
+      loadProviders();
+    } catch (e) { toast(e.message || '排序失败', true); }
+  };
+  providers.forEach((p, idx) => {
     const isDefault = p.id === data.defaultProviderId;
     const disabled = p.enabled === false;
     const card = document.createElement('div');
@@ -598,12 +938,26 @@ async function loadProviders() {
         ${keyHtml}
       </div>
       <div class="provider-card-actions" style="display:flex;gap:6px;flex-shrink:0">
+        <button class="btn small" data-up="' + p.id + '" type="button" title="上移（前台显示更靠前）">↑</button>
+        <button class="btn small" data-down="' + p.id + '" type="button" title="下移（前台显示更靠后）">↓</button>
         ${!disabled && !isDefault ? '<button class="btn small" data-default="' + p.id + '">设为默认</button>' : ''}
         <button class="btn small" data-toggle type="button">${disabled ? '启用' : '停用'}</button>
         <button class="btn small" data-test type="button">测试</button>
         <button class="btn small" data-edit type="button">编辑</button>
         <button class="btn small danger" data-del type="button">删除</button>
       </div>`;
+    card.querySelector('[data-up]')?.addEventListener('click', () => {
+      if (idx <= 0) return;
+      const ids = providerIds.slice();
+      [ids[idx - 1], ids[idx]] = [ids[idx], ids[idx - 1]];
+      saveReorder(ids);
+    });
+    card.querySelector('[data-down]')?.addEventListener('click', () => {
+      if (idx >= providerIds.length - 1) return;
+      const ids = providerIds.slice();
+      [ids[idx + 1], ids[idx]] = [ids[idx], ids[idx + 1]];
+      saveReorder(ids);
+    });
     card.querySelector('[data-toggle]')?.addEventListener('click', async () => {
       const enable = disabled;
       try {
@@ -667,18 +1021,16 @@ async function loadProviders() {
       showAdminTab('providers');
       $('ap-name').value = target.name;
       $('ap-baseurl').value = target.baseUrl;
-      // 接口只回掩码。留空表示不改密钥，填写新值才会覆盖；默认勾选「保存后保持显示」。
-      $('ap-key').value = '';
-      $('ap-key').type = 'password';
-      toggleKeyBtn.innerHTML = window.OC.icon('eye', 14);
-      $('ap-key').placeholder = target.hasKey
-        ? (target.keyRevealable ? ('已设置 ' + (target.apiKey || '') + '，留空则保持') : '已加密保存，不可查看；更换请输入新 Key')
-        : 'sk-...';
+      // 接口只回掩码:密钥编辑器里空值表示「沿用已保存的密钥」,输入新值才覆盖
+      apKeysFromProvider(target);
       $('ap-key-keep').checked = target.keyRevealable !== false;
       window.apEditingRevealable = target.keyRevealable !== false;
       delete $('ap-save').dataset.origKey;
       if (window.__setApFormat) window.__setApFormat(target.apiFormat);
-      if (apModelList) apModelList.setEnabled(target.models || []);
+      if (apModelList) {
+        apModelList.setKeys((target.keys || []).map((k) => ({ id: k.id, name: k.name || k.id })));
+        apModelList.setEnabled(target.models || []);
+      }
       $('ap-cost').value = target.costPerCall;
       if (window.__setApBilling) window.__setApBilling(target.billingMode || 'call');
       if ($('ap-price')) $('ap-price').value = target.pricePer1k != null ? target.pricePer1k : 0;
@@ -725,6 +1077,13 @@ function setWsProvider(val) {
   if ($('ws-tavily-row')) $('ws-tavily-row').classList.toggle('hidden', next !== 'tavily');
   if ($('ws-searx-row')) $('ws-searx-row').classList.toggle('hidden', next !== 'searxng');
 }
+// 「对话设置」面板专用加载:此前该页签没有 loader,直接打开会显示 HTML 默认值,
+// 若此时点保存会把默认值写回服务端、静默重置真实配置。
+async function loadChatSettings() {
+  const r = await api('/api/admin/settings');
+  const data = await r.json();
+  fillChatLimits((data && data.settings) || {});
+}
 async function loadSearchSettings() {
   const r = await api('/api/admin/settings');
   const data = await r.json();
@@ -753,8 +1112,12 @@ function fillChatLimits(s) {
     $('chat-temperature').value = Number.isFinite(t) ? t : '';
   }
   if ($('chat-ratelimit')) $('chat-ratelimit').value = Math.min(600, Math.max(0, parseInt(src.rateLimitPerMin, 10) || 0));
+  if ($('chat-timeout')) $('chat-timeout').value = Math.min(600, Math.max(5, Math.round((parseInt(src.proxyTimeoutMs, 10) || 120000) / 1000)));
   if ($('chat-context-learn')) $('chat-context-learn').checked = src.contextAutoLearn !== false;
   if ($('chat-persist-chats')) $('chat-persist-chats').checked = src.persistChats !== false;
+  if ($('chat-save-api')) $('chat-save-api').checked = src.apiSaveChats !== false;
+  if ($('chat-health-ok')) $('chat-health-ok').value = Math.min(100, Math.max(1, parseInt(src.healthOkMin, 10) || 75));
+  if ($('chat-health-warn')) $('chat-health-warn').value = Math.min(99, Math.max(0, parseInt(src.healthWarnMin, 10) || 40));
 }
 (function initChatLimits() {
   document.querySelectorAll('#panel-chat .stepper [data-step]').forEach((btn) => {
@@ -775,14 +1138,22 @@ function fillChatLimits(s) {
     const tempRaw = parseFloat(($('chat-temperature') && $('chat-temperature').value) || '');
     const temperature = Number.isFinite(tempRaw) ? Math.min(2, Math.max(0, tempRaw)) : null;
     const rateLimit = Math.min(600, Math.max(0, parseInt($('chat-ratelimit') && $('chat-ratelimit').value, 10) || 0));
+    const timeoutSec = Math.min(600, Math.max(5, parseInt($('chat-timeout') && $('chat-timeout').value, 10) || 120));
     const contextLearn = !!($('chat-context-learn') && $('chat-context-learn').checked);
     const persistChats = !!($('chat-persist-chats') && $('chat-persist-chats').checked);
+    const apiSaveChats = !!($('chat-save-api') && $('chat-save-api').checked);
+    // 可用性阈值:保证 okMin 严格大于 warnMin(输入颠倒时本地纠正并回写)
+    let healthOk = Math.min(100, Math.max(1, parseInt($('chat-health-ok') && $('chat-health-ok').value, 10) || 75));
+    let healthWarn = Math.min(99, Math.max(0, parseInt($('chat-health-warn') && $('chat-health-warn').value, 10)));
+    if (!(healthWarn < healthOk)) healthWarn = Math.max(0, healthOk - 1);
+    if ($('chat-health-ok')) $('chat-health-ok').value = healthOk;
+    if ($('chat-health-warn')) $('chat-health-warn').value = healthWarn;
     save.disabled = true;
     try {
       const r = await api('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature, rateLimitPerMin: rateLimit, contextAutoLearn: contextLearn, persistChats }),
+        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature, rateLimitPerMin: rateLimit, proxyTimeoutMs: timeoutSec * 1000, contextAutoLearn: contextLearn, persistChats, apiSaveChats, healthOkMin: healthOk, healthWarnMin: healthWarn }),
       });
       const data = await r.json();
       if (!r.ok) return toast((data.error && data.error.message) || '保存失败', true);
@@ -986,6 +1357,7 @@ function fillMineruSettings(s) {
     { value: 'responses', label: 'OpenAI responses', sub: '新版接口 /v1/responses' },
     { value: 'completions', label: 'OpenAI completions', sub: '旧版补全 /v1/completions' },
     { value: 'anthropic', label: 'Anthropic messages', sub: 'Claude 消息接口 /v1/messages' },
+    { value: 'video', label: 'Agnes videos', sub: '视频生成 /v1/videos（异步任务，前台可生视频）' },
   ];
   const setLabel = (v) => {
     const f = FORMATS.find((x) => x.value === (v || box.getAttribute('data-value') || 'chat'));
@@ -1029,13 +1401,29 @@ function fillMineruSettings(s) {
 })();
 $('ap-fetch-models').addEventListener('click', async () => {
   const baseUrl = $('ap-baseurl').value.trim();
-  const apiKey = $('ap-key').value.trim();
   const apiFormat = $('ap-format').getAttribute('data-value') || 'chat';
   if (!baseUrl) return toast('请先填写 Base URL', true);
-  // 编辑模式 key 未填时用原 key 尝试
   const editId = $('ap-save').dataset.editId;
-  const usedKey = apiKey.indexOf('••') < 0 ? apiKey : '';
-  if (!usedKey && !editId) { toast('请先填写 API Key', true); return; }
+  // 多密钥:用「获取用 Key」选择器指定的那把(默认第一把已填/已保存的)
+  const usable = AP_KEYS.filter((k) => k.hasKey || String(k.apiKey || '').trim() !== '');
+  const wantId = ($('ap-fetch-key') && $('ap-fetch-key').getAttribute('data-value')) || '';
+  const pickKey = usable.find((k) => String(k.id) === wantId) || usable[0];
+  const usedKey = pickKey && String(pickKey.apiKey || '').indexOf('••') < 0 ? String(pickKey.apiKey).trim() : '';
+  const usedKeyId = pickKey ? pickKey.id : '';
+  if (!usedKey && !usedKeyId && !editId) { toast('请先填写 API Key', true); return; }
+  // 按某个 Key 拉取模型列表:新供应商用明文字段,已保存的供应商可只传 keyId 由服务端解密
+  const fetchByKey = async (kid) => {
+    const k = AP_KEYS.find((x) => String(x.id) === String(kid));
+    const plain = k && String(k.apiKey || '').indexOf('••') < 0 ? String(k.apiKey).trim() : '';
+    const r = await api('/api/proxy/fetch-models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseUrl, apiKey: plain, apiFormat, keyId: (kid || undefined), providerId: editId || undefined }),
+    });
+    const data = await readJsonSafe(r);
+    if (!r.ok) throw new Error((data.error && data.error.message) || ('获取失败（HTTP ' + r.status + '）'));
+    return { models: data.models || [], keyId: String(kid || '') };
+  };
   const btn = $('ap-fetch-models');
   btn.disabled = true;
   btn.textContent = '获取中…';
@@ -1043,22 +1431,27 @@ $('ap-fetch-models').addEventListener('click', async () => {
     const r = await api('/api/proxy/fetch-models', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ baseUrl, apiKey: usedKey, apiFormat, providerId: editId || undefined }),
+      body: JSON.stringify({ baseUrl, apiKey: usedKey, apiFormat, keyId: usedKeyId || undefined, providerId: editId || undefined }),
     });
-    const data = await r.json();
-    if (!r.ok) return toast((data.error && data.error.message) || '获取失败', true);
+    const data = await readJsonSafe(r);
+    if (!r.ok) return toast((data.error && data.error.message) || ('获取失败（HTTP ' + r.status + '）'), true);
     const models = data.models || [];
     if (!models.length) return toast('上游未返回模型', true);
     if (window.OC && window.OC.openFetchedModelsModal) {
       window.OC.openFetchedModelsModal(models, {
         title: '获取到的模型',
         existing: apModelList ? apModelList.getCatalog() : [],
+        keys: AP_KEYS.map((k, i) => ({ id: k.id, name: (k.name || '').trim() || ('未命名 ' + (i + 1)) })),
+        fetchedKeyId: usedKeyId || '',
+        // 弹窗内切换 Key 继续获取:再次拉取并并入当前清单
+        onRefetch: (kid) => fetchByKey(kid),
         onApply: (picked, staleIds) => {
           resetModelTestResults();
           if (apModelList) apModelList.applyFetched(picked, staleIds);
           const n = picked.filter((m) => m.enabled).length;
           const cleared = (staleIds || []).length;
           toast('已应用 ' + n + ' 个启用模型' + (cleared ? '，清除 ' + cleared + ' 个失效模型' : '') + '，保存后生效');
+          return true;
         },
       });
     } else if (apModelList) {
@@ -1135,9 +1528,11 @@ function keepPassedModels() {
 }
 
 async function requestModelTest(model) {
+  const usable = AP_KEYS.filter((k) => String(k.apiKey || '').trim() !== '');
+  const pick = usable[0];
   const payload = {
     baseUrl: $('ap-baseurl').value.trim(),
-    apiKey: $('ap-key').value.trim(),
+    apiKey: pick && pick.apiKey.indexOf('••') < 0 ? pick.apiKey.trim() : '',
     apiFormat: ($('ap-format') && $('ap-format').getAttribute('data-value')) || 'chat',
     model: model,
     prompt: ($('ap-test-prompt') && $('ap-test-prompt').value.trim()) || '回复一个字：好',
@@ -1261,18 +1656,28 @@ function setModelTestBusy(on) {
 $('ap-save').addEventListener('click', async () => {
   const name = $('ap-name').value.trim();
   const baseUrl = $('ap-baseurl').value.trim();
-  const apiKey = $('ap-key').value.trim();
   const apiFormat = $('ap-format').getAttribute('data-value') || 'chat';
   const cost = Number($('ap-cost').value) || 1;
   if (!baseUrl) return toast('请填写 Base URL', true);
   const models = apModelList ? apModelList.getEnabled() : [];
   if (!models.length) return toast('请先获取模型并至少勾选一个', true);
-
+  const keyErr = apKeysValidate();
+  if (keyErr) return toast(keyErr, true);
+  // 全部行都提交(含未改动、apiKey 为空的):服务端按 id 复用原密文,
+  // 只把「既无新明文也非已保存」的空行丢掉。
+  const keys = apKeysPayload().filter((k, idx) => {
+    if (String(k.apiKey || '').trim() !== '') return true;
+    const src = AP_KEYS[idx];
+    return !!(src && src.hasKey);   // 已保存过的密钥:保留占位,服务端沿用原密文
+  });
   const editId = $('ap-save').dataset.editId;
+  if (!keys.length && !editId) return toast('请至少填写一个 API Key', true);
   const url = editId ? '/api/admin/providers/' + editId : '/api/providers';
-  const payload = { name, baseUrl, apiFormat, models, costPerCall: cost, billingMode: ($('ap-billing') && $('ap-billing').getAttribute('data-value')) || 'call', pricePer1k: Math.min(1000, Math.max(0, parseFloat($('ap-price') && $('ap-price').value) || 0)), scope: 'global', keyRevealable: !!($('ap-key-keep') && $('ap-key-keep').checked) };
-  // 编辑时留空或仍是掩码，表示不改密钥；服务端会保留原值。
-  if (!(editId && (!apiKey || apiKey.includes('••')))) payload.apiKey = apiKey;
+  const payload = { name, baseUrl, apiFormat, models, keys, costPerCall: cost, billingMode: ($('ap-billing') && $('ap-billing').getAttribute('data-value')) || 'call', pricePer1k: Math.min(1000, Math.max(0, parseFloat($('ap-price') && $('ap-price').value) || 0)), scope: 'global', keyRevealable: !!($('ap-key-keep') && $('ap-key-keep').checked) };
+  // 兼容旧字段:取第一把有明文的 Key 作为主 Key;编辑时若一把都没改,不带 apiKey(服务端保留)
+  const firstPlain = keys.find((k) => k.apiKey && k.apiKey.indexOf('••') < 0);
+  if (firstPlain) payload.apiKey = firstPlain.apiKey;
+  else if (!editId) payload.apiKey = (keys[0] && keys[0].apiKey) || '';
   const r = await api(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1285,14 +1690,13 @@ $('ap-save').addEventListener('click', async () => {
   window.apEditingRevealable = false;
   $('ap-save').textContent = '保存供应商';
   // 恢复表单到「新增」默认态；「保存后保持显示」默认勾选
-  $('ap-name').value = ''; $('ap-baseurl').value = ''; $('ap-key').value = '';
+  $('ap-name').value = ''; $('ap-baseurl').value = '';
+  apKeysFromProvider(null);
   resetModelTestResults();
-  if (apModelList) apModelList.reset();
+  if (apModelList) { apModelList.setKeys([]); apModelList.reset(); }
   // 计费模式一并回到默认「按次」，避免下次新增供应商继承上次编辑的 token 模式
   if (window.__setApBilling) window.__setApBilling('call');
   if ($('ap-price')) $('ap-price').value = 0;
-  setKeyVisibility(apKeyInput, toggleKeyBtn, false);
-  if (apKeyInput) apKeyInput.placeholder = 'sk-...';
   if ($('ap-key-keep')) $('ap-key-keep').checked = true;
   loadProviders(); loadStats();
 });
@@ -1319,26 +1723,72 @@ async function loadLogs() {
   logs.forEach((l) => {
     const tr = document.createElement('tr');
     const status = l.status || 0;
-    const ok = status === 0 ? l.error ? false : true : status < 400;
+    const hasStatus = typeof l.status === 'number' && l.status > 0;
+    const ok = l.error ? false : (hasStatus ? status < 400 : true);
+    // 无 HTTP 状态的条目(认证/邮件/管理等)不显示「连接失败」,统一按结果给「成功/失败」
+    const statusText = l.error ? '失败' : (hasStatus ? String(status) : (l.status === 0 ? '连接失败' : '成功'));
     const badge = l.kind === 'auth' ? '<span class="log-badge auth">认证</span>'
       : (l.kind === 'parse' ? '<span class="log-badge chat">解析</span>'
-      : (status >= 400 || l.error ? '<span class="log-badge err">错误</span>' : '<span class="log-badge chat">对话</span>'));
+      : (l.kind === 'mail' ? '<span class="log-badge auth">邮件</span>'
+      : (l.kind === 'admin' ? '<span class="log-badge auth">管理</span>'
+      : (status >= 400 || l.error ? '<span class="log-badge err">错误</span>' : '<span class="log-badge chat">对话</span>'))));
     const ms = l.ms !== undefined ? '<span title="' + l.ms + 'ms">' + (l.ms >= 1000 ? (l.ms / 1000).toFixed(1) + 's' : l.ms + 'ms') + '</span>' : '-';
+    // 信息列:失败原因 / 解析摘要(note) / 认证动作(action)
+    const infoMsg = l.error || l.note || l.action || '';
+    // 完整内容:提示词 / 模型回复 / 用量 / 来源 IP;点小眼睛展开查看
+    const hasDetail = !!(l.prompt || l.reply || l.usage || l.ip);
+    let contentCell = '-';
+    if (hasDetail) {
+      const usage = l.usage && (l.usage.prompt || l.usage.completion)
+        ? '用量：输入 ' + (l.usage.prompt || 0) + ' / 输出 ' + (l.usage.completion || 0) + ' tokens'
+        : '';
+      const detail = [
+        l.ip ? '来源 IP：' + l.ip : '',
+        l.action ? '动作：' + l.action : '',
+        usage,
+        l.prompt ? '【提示词】\n' + l.prompt : '',
+        l.reply ? '【模型回复】\n' + l.reply : '',
+        l.error ? '【错误】\n' + l.error : '',
+      ].filter(Boolean).join('\n\n');
+      contentCell = '<button class="log-eye" type="button" data-log-eye title="查看完整内容" aria-label="查看完整内容">' + window.OC.icon('eye', 13) + '</button>';
+      tr.dataset.detail = detail;
+    }
     tr.innerHTML = '<td>' + fmtTime(l.t) + '</td>'
       + '<td>' + escapeHtml(l.userName || '-') + '</td>'
       + '<td>' + badge + '</td>'
       + '<td>' + escapeHtml(l.provider || '-') + '</td>'
       + '<td>' + escapeHtml(l.model || '-') + '</td>'
-      + '<td class="log-status ' + (ok ? 'ok' : 'fail') + '">' + (l.error ? '失败' : status + (status === 0 ? '(连接失败)' : '')) + '</td>'
+      + '<td class="log-status ' + (ok ? 'ok' : 'fail') + '">' + statusText + '</td>'
       + '<td>' + ms + '</td>'
       + '<td>' + (l.cost || 0) + '</td>'
-      + '<td class="log-msg" title="' + escapeHtml(l.error || '') + '">' + escapeHtml(l.error || '') + '</td>';
+      + '<td class="log-msg" title="' + escapeHtml(infoMsg) + '">' + escapeHtml(infoMsg) + '</td>'
+      + '<td class="log-content">' + contentCell + '</td>';
     tbody.appendChild(tr);
   });
 }
 (function bindLogs() {
   const filters = $('log-filters');
   if (!filters) return;
+  const tbody = $('logs-tbody');
+  if (tbody) {
+    tbody.addEventListener('click', (e) => {
+      const eye = e.target.closest ? e.target.closest('[data-log-eye]') : null;
+      if (!eye) return;
+      const detail = eye.closest('tr') ? eye.closest('tr').dataset.detail : '';
+      if (!detail) return;
+      const mask = document.createElement('div');
+      mask.className = 'modal-mask';
+      mask.innerHTML = '<div class="modal modal-lg log-detail-modal" role="dialog" aria-modal="true">'
+        + '<div class="modal-header"><h3>日志完整内容</h3>'
+        + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + window.OC.icon('close', 16) + '</button></div>'
+        + '<div class="modal-body"><pre class="log-detail-pre">' + escapeHtml(detail) + '</pre></div>'
+        + '</div>';
+      document.body.appendChild(mask);
+      if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(mask); else mask.classList.add('show');
+      const close = () => { if (window.OCUI && window.OCUI.closeModal) window.OCUI.closeModal(mask); else mask.remove(); setTimeout(() => mask.parentNode && mask.remove(), 360); };
+      mask.addEventListener('click', (ev) => { if (ev.target === mask || ev.target.closest('[data-act="close"]')) close(); });
+    });
+  }
   filters.addEventListener('click', async (e) => {
     const btn = e.target.closest('.log-filter-btn');
     if (!btn) return;
@@ -1404,23 +1854,48 @@ async function loadUserChats(userId) {
       return;
     }
     let html = '';
+    const renderMarkdown = (el, text) => {
+      if (window.OCRenderer && OCRenderer.renderInto) {
+        try { OCRenderer.renderInto(el, String(text || '')); return; } catch (e) { /* 回退纯文本 */ }
+      }
+      el.textContent = String(text || '');
+    };
     list.forEach((uc) => {
       html += '<div class="section-title" style="margin-top:14px">' + escapeHtml(uc.user.name) + ' · ' + uc.chats.length + ' 个对话</div>';
       uc.chats.forEach((c) => {
         const msgs = (c.messages || []).map((m) => {
-          const who = m.role === 'user' ? '用户' : 'AI';
+          const who = m.role === 'user' ? '用户' : (m.role === 'system' ? '系统' : 'AI');
           const err = m.error ? ' <span class="log-badge err">失败</span>' : '';
-          const txt = escapeHtml((m.content || '').slice(0, 300)) + ((m.content || '').length > 300 ? '…' : '');
-          return '<div class="chat-msg ' + (m.role === 'user' ? 'u' : 'a') + '"><span class="chat-msg-who">' + who + err + '</span><div class="chat-msg-text">' + txt + '</div></div>';
+          const reasoning = m.reasoning
+            ? '<details class="chat-reasoning"><summary>思维链</summary><div class="chat-reasoning-body"></div></details>'
+            : '';
+          return '<div class="chat-msg ' + (m.role === 'user' ? 'u' : 'a') + '"><span class="chat-msg-who">' + who + err + '</span>'
+            + reasoning
+            + '<div class="chat-msg-text md-prose" data-md></div></div>';
         }).join('');
         const expanded = msgs ? '<div class="chat-detail"><div class="chat-detail-msgs">' + msgs + '</div></div>' : '';
-        html += '<details class="chat-history-item" ' + (c.id === (userId ? null : null) ? '' : '') + '>'
+        html += '<details class="chat-history-item">'
           + '<summary><span class="chat-h-title">' + escapeHtml(c.title) + '</span>'
           + '<span class="chat-h-meta">' + c.messages.length + ' 条 · ' + fmtTime(c.updatedAt) + '</span></summary>'
           + expanded + '</details>';
       });
     });
     content.innerHTML = html;
+    // 逐条渲染 Markdown / 代码 / 公式 / 图片(与前台一致),并在有思维链时填入推理内容
+    let mi = 0;
+    list.forEach((uc) => {
+      uc.chats.forEach((c) => {
+        (c.messages || []).forEach((m) => {
+          const root = content.querySelectorAll('[data-md]')[mi++];
+          if (!root) return;
+          renderMarkdown(root, m.content);
+          if (m.reasoning) {
+            const rb = root.closest('.chat-msg') ? root.closest('.chat-msg').querySelector('.chat-reasoning-body') : null;
+            if (rb) renderMarkdown(rb, m.reasoning);
+          }
+        });
+      });
+    });
   } catch (e) {
     content.innerHTML = '<p class="muted small">加载失败:' + escapeHtml(e.message) + '</p>';
   }
@@ -1816,6 +2291,14 @@ async function loadVerifySettings() {
   set('session-days', s.sessionDays || 7);
   if ($('apikeys-enabled')) $('apikeys-enabled').checked = s.apiKeysEnabled !== false;
   if ($('invite-required')) $('invite-required').checked = !!s.registerInviteRequired;
+  if ($('guest-enabled')) $('guest-enabled').checked = !!s.guestEnabled;
+  set('guest-rounds', s.guestRounds || 3);
+  // 注册与账号安全(allowRegister 后端强制:关掉后注册接口 403)
+  if ($('register-open')) $('register-open').checked = s.allowRegister !== false;
+  set('register-limit', s.registerLimitPerHour || 5);
+  if ($('user-providers-allowed')) $('user-providers-allowed').checked = s.allowUserProviders !== false;
+  set('login-max-fails', s.loginMaxFails != null ? s.loginMaxFails : 5);
+  set('login-lock-sec', s.loginLockMs != null ? Math.round(s.loginLockMs / 1000) : 60);
   const tpl = s.mailTemplates || {};
   MAIL_TPL.siteName = s.siteName || 'TinyChat';
   MAIL_TPL.tpl.verify = { subject: tpl.verifySubject || '', html: tpl.verifyHtml || '' };
@@ -1829,19 +2312,24 @@ async function loadInvites() {
   try {
     const r = await api('/api/admin/invites');
     const d = await r.json();
-    if (!r.ok) return;
+    if (!r.ok) return toast((d.error && d.error.message) || '邀请码加载失败', true);
     if ($('invite-required')) $('invite-required').checked = !!d.required;
     const codes = d.codes || [];
-    const unused = codes.filter((c) => !c.usedBy).length;
-    if ($('invite-count-info')) $('invite-count-info').textContent = '未使用 ' + unused + ' / 共 ' + codes.length;
+    const usable = codes.filter((c) => c.usable).length;
+    if ($('invite-count-info')) $('invite-count-info').textContent = '可用 ' + usable + ' / 共 ' + codes.length + ' 张';
     const tb = $('invite-tbody');
     if (!tb) return;
     tb.innerHTML = codes.map((c) => {
-      const status = c.usedBy
-        ? '<span class="muted">已使用 · ' + escapeHtml(c.usedByName || c.usedBy) + '</span>'
-        : '<b>未使用</b>';
-      return '<tr><td><code>' + escapeHtml(c.code) + '</code></td><td>' + status + '</td>'
-        + '<td style="text-align:right">' + (c.usedBy ? '' : '<button class="btn small danger" data-del-invite="' + escapeHtml(c.code) + '" type="button">删除</button>') + '</td></tr>';
+      const max = typeof c.maxUses === 'number' ? c.maxUses : 1;
+      const used = typeof c.usedCount === 'number' ? c.usedCount : (c.usedBy ? 1 : 0);
+      const limit = max < 0 ? '不限' : String(max);
+      const status = c.usable
+        ? '<b>可用</b>'
+        : '<span class="muted">已用完</span>';
+      const usage = used + ' / ' + limit
+        + (c.usedByName ? '<div class="muted small">最后：' + escapeHtml(c.usedByName) + '</div>' : '');
+      return '<tr><td><code>' + escapeHtml(c.code) + '</code></td><td>' + status + '</td><td class="muted small">' + usage + '</td>'
+        + '<td style="text-align:right"><button class="btn small danger" data-del-invite="' + escapeHtml(c.code) + '" type="button">删除</button></td></tr>';
     }).join('');
     if ($('invite-empty')) $('invite-empty').style.display = codes.length ? 'none' : 'block';
     tb.querySelectorAll('[data-del-invite]').forEach((btn) => {
@@ -1861,10 +2349,13 @@ async function loadInvites() {
     gen.disabled = true;
     try {
       const count = Math.min(50, Math.max(1, parseInt($('invite-count') && $('invite-count').value, 10) || 5));
+      const rawMax = parseInt($('invite-max-uses') && $('invite-max-uses').value, 10);
+      const maxUses = Number.isFinite(rawMax) && rawMax < 0 ? -1 : Math.min(10000, Math.max(1, rawMax || 1));
+      const prefix = (($('invite-prefix') && $('invite-prefix').value) || '').trim();
       const r = await api('/api/admin/invites', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ count }),
+        body: JSON.stringify({ count, maxUses, prefix }),
       });
       const d = await r.json();
       if (!r.ok) return toast((d.error && d.error.message) || '生成失败', true);
@@ -1873,6 +2364,115 @@ async function loadInvites() {
     } catch (e) {
       toast('生成失败: ' + e.message, true);
     } finally { gen.disabled = false; }
+  });
+  // 「注册需要邀请码」属于验证设置,改动后随验证设置一并保存
+  const req = $('invite-required');
+  if (req) req.addEventListener('change', () => { const sv = $('verify-save'); if (sv) sv.click(); });
+})();
+
+// ============ 开放 API(OpenAI 兼容出口)设置 ============
+let OPENAPI_MODELS = [];   // [{providerId, providerName, models:[{id,name}]}]
+async function loadOpenApi() {
+  const [rs, rp] = await Promise.all([api('/api/admin/settings'), api('/api/providers')]);
+  const ds = await rs.json();
+  const dp = await rp.json();
+  if (!rs.ok) return toast((ds.error && ds.error.message) || '加载失败', true);
+  const s = ds.settings || {};
+  if ($('apikeys-enabled')) $('apikeys-enabled').checked = s.apiKeysEnabled !== false;
+  if ($('openapi-key-limit')) $('openapi-key-limit').value = s.apiKeyRateLimitPerMin == null ? 60 : s.apiKeyRateLimitPerMin;
+  if ($('openapi-user-limit-hint')) $('openapi-user-limit-hint').textContent = (s.rateLimitPerMin == null ? 30 : s.rateLimitPerMin) + ' 次/分钟';
+  const exposed = new Set(Array.isArray(s.apiExposedModels) ? s.apiExposedModels : []);
+  if ($('openapi-restrict')) $('openapi-restrict').checked = exposed.size > 0;
+  OPENAPI_MODELS = (dp.providers || [])
+    .filter((p) => p.scope === 'global' && p.enabled !== false && Array.isArray(p.models) && p.models.length)
+    .map((p) => ({ providerId: p.id, providerName: p.name, models: p.models }));
+  renderOpenApiModels(exposed);
+}
+function renderOpenApiModels(exposed) {
+  const box = $('openapi-models');
+  if (!box) return;
+  const restrict = !!($('openapi-restrict') && $('openapi-restrict').checked);
+  if (!OPENAPI_MODELS.length) {
+    box.innerHTML = '<p class="muted small">暂无可用的全局供应商模型，请先在「供应商」中添加。</p>';
+  } else {
+    box.innerHTML = OPENAPI_MODELS.map((g) => {
+      const items = g.models.map((m) => {
+        const key = g.providerId + '|' + m.id;
+        const on = !restrict || exposed.has(key);
+        return '<label class="access-model' + (restrict ? '' : ' disabled') + '">'
+          + '<input type="checkbox" data-expose="' + escapeHtml(key) + '"' + (on ? ' checked' : '') + (restrict ? '' : ' disabled') + '>'
+          + escapeHtml(m.name || m.id) + '</label>';
+      }).join('');
+      return '<div class="access-row"><div class="access-prov">' + escapeHtml(g.providerName) + '</div>'
+        + '<div class="access-models">' + items + '</div></div>';
+    }).join('');
+  }
+  updateOpenApiCount();
+}
+function updateOpenApiCount() {
+  const el = $('openapi-model-count');
+  if (!el) return;
+  const restrict = !!($('openapi-restrict') && $('openapi-restrict').checked);
+  if (!restrict) { el.textContent = '当前：全部模型可用'; return; }
+  const total = OPENAPI_MODELS.reduce((n, g) => n + g.models.length, 0);
+  const picked = document.querySelectorAll('#openapi-models [data-expose]:checked').length;
+  el.textContent = '已选 ' + picked + ' / ' + total + ' 个模型';
+}
+(function initOpenApi() {
+  const box = $('openapi-models');
+  if (!box) return;
+  $('openapi-restrict')?.addEventListener('change', () => { renderOpenApiModels(new Set()); });
+  box.addEventListener('change', (e) => { if (e.target.closest('[data-expose]')) updateOpenApiCount(); });
+  $('openapi-select-all')?.addEventListener('click', () => {
+    box.querySelectorAll('[data-expose]').forEach((c) => { c.checked = true; });
+    updateOpenApiCount();
+  });
+  $('openapi-select-none')?.addEventListener('click', () => {
+    box.querySelectorAll('[data-expose]').forEach((c) => { c.checked = false; });
+    updateOpenApiCount();
+  });
+  $('openapi-fetch')?.addEventListener('click', async () => {
+    const btn = $('openapi-fetch');
+    const old = btn.textContent;
+    btn.disabled = true; btn.textContent = '获取中…';
+    try {
+      const r = await api('/api/providers?refresh=1');
+      const d = await r.json();
+      if (!r.ok) throw new Error((d.error && d.error.message) || '获取失败');
+      OPENAPI_MODELS = (d.providers || [])
+        .filter((p) => p.scope === 'global' && p.enabled !== false && Array.isArray(p.models) && p.models.length)
+        .map((p) => ({ providerId: p.id, providerName: p.name, models: p.models }));
+      renderOpenApiModels(new Set());
+      toast('已刷新模型列表');
+    } catch (e) {
+      toast('获取失败: ' + e.message, true);
+    } finally { btn.disabled = false; btn.textContent = old; }
+  });
+  $('openapi-save')?.addEventListener('click', async () => {
+    const btn = $('openapi-save');
+    btn.disabled = true;
+    try {
+      const restrict = !!($('openapi-restrict') && $('openapi-restrict').checked);
+      const list = restrict
+        ? Array.from(box.querySelectorAll('[data-expose]:checked')).map((c) => c.dataset.expose)
+        : [];
+      const payload = {
+        apiKeysEnabled: !!($('apikeys-enabled') && $('apikeys-enabled').checked),
+        apiKeyRateLimitPerMin: Math.min(600, Math.max(0, parseInt($('openapi-key-limit') && $('openapi-key-limit').value, 10) || 0)),
+        apiExposedModels: list,
+      };
+      const r = await api('/api/admin/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error((d.error && d.error.message) || '保存失败');
+      toast('开放 API 设置已保存');
+      loadOpenApi();
+    } catch (e) {
+      toast('保存失败: ' + e.message, true);
+    } finally { btn.disabled = false; }
   });
 })();
 let CODES_CACHE = [];
@@ -2090,7 +2690,7 @@ async function loadPackages() {
   });
 })();
 (function initVerifyAndPackages(){
-  const save=$('verify-save'); if(save) save.addEventListener('click',async()=>{ const tplPayload=MAIL_TPL.loaded?{mailTemplates:{tplVersion:2,verifySubject:MAIL_TPL.tpl.verify.subject,verifyHtml:MAIL_TPL.tpl.verify.html,resetSubject:MAIL_TPL.tpl.reset.subject,resetHtml:MAIL_TPL.tpl.reset.html}}:{}; const payload=Object.assign({emailVerificationEnabled:!!$('verify-email-enabled').checked,passwordResetEnabled:!!$('verify-reset-enabled').checked,freeQuotaUnlimited:!!$('verify-quota-unlimited').checked,freeQuota:parseInt($('verify-free-quota').value,10)||0,sessionDays:Math.min(30,Math.max(1,parseInt($('session-days')&&$('session-days').value,10)||7)),apiKeysEnabled:!!($('apikeys-enabled')&&$('apikeys-enabled').checked),registerInviteRequired:!!($('invite-required')&&$('invite-required').checked),smtp:{host:$('smtp-host').value.trim(),port:parseInt($('smtp-port').value,10)||587,username:$('smtp-user').value.trim(),password:$('smtp-pass').value,encryption:$('smtp-encryption').value,fromName:$('smtp-from-name').value.trim(),fromEmail:$('smtp-from-email').value.trim()}},tplPayload); const r=await api('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'保存失败',true); toast('验证设置已保存'); });
+  const save=$('verify-save'); if(save) save.addEventListener('click',async()=>{ const tplPayload=MAIL_TPL.loaded?{mailTemplates:{tplVersion:2,verifySubject:MAIL_TPL.tpl.verify.subject,verifyHtml:MAIL_TPL.tpl.verify.html,resetSubject:MAIL_TPL.tpl.reset.subject,resetHtml:MAIL_TPL.tpl.reset.html}}:{}; const payload=Object.assign({emailVerificationEnabled:!!$('verify-email-enabled').checked,passwordResetEnabled:!!$('verify-reset-enabled').checked,freeQuotaUnlimited:!!$('verify-quota-unlimited').checked,freeQuota:parseInt($('verify-free-quota').value,10)||0,sessionDays:Math.min(30,Math.max(1,parseInt($('session-days')&&$('session-days').value,10)||7)),apiKeysEnabled:!!($('apikeys-enabled')&&$('apikeys-enabled').checked),registerInviteRequired:!!($('invite-required')&&$('invite-required').checked),guestEnabled:!!($('guest-enabled')&&$('guest-enabled').checked),guestRounds:Math.min(1000,Math.max(1,parseInt($('guest-rounds')&&$('guest-rounds').value,10)||3)),allowRegister:!!($('register-open')&&$('register-open').checked),registerLimitPerHour:Math.min(1000,Math.max(1,parseInt($('register-limit')&&$('register-limit').value,10)||5)),allowUserProviders:!!($('user-providers-allowed')&&$('user-providers-allowed').checked),loginMaxFails:Math.min(50,Math.max(0,parseInt($('login-max-fails')&&$('login-max-fails').value,10)||0)),loginLockMs:Math.min(3600000,Math.max(0,parseInt($('login-lock-sec')&&$('login-lock-sec').value,10)||0))*1000,smtp:{host:$('smtp-host').value.trim(),port:parseInt($('smtp-port').value,10)||587,username:$('smtp-user').value.trim(),password:$('smtp-pass').value,encryption:$('smtp-encryption').value,fromName:$('smtp-from-name').value.trim(),fromEmail:$('smtp-from-email').value.trim()}},tplPayload); const r=await api('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'保存失败',true); toast('验证设置已保存'); });
   const invalidate=$('session-invalidate'); if(invalidate) invalidate.addEventListener('click',async()=>{
     const ok=window.OCUI&&OCUI.confirm?await OCUI.confirm({title:'强制全站下线',message:'所有人的现有登录态会立即失效（包括你自己），需要重新登录。确认执行？',danger:true,confirmText:'执行'}):confirm('所有人的现有登录态会立即失效（包括你自己），确认执行？');
     if(!ok) return;
@@ -2436,11 +3036,16 @@ const TAB_LOADERS = {
     await loadAccess();
   },
   providers: () => loadProviders(),
+  chat: () => loadChatSettings(),
   search: () => loadSearchSettings(),
   docs: () => loadSearchSettings(),
   verify: () => loadVerifySettings(),
+  invite: () => loadInvites(),
+  openapi: () => loadOpenApi(),
   packages: () => loadPackages(),
   codes: () => loadPackages(),
+  'codes-gen': () => loadPackages(),
+  'codes-fixed': () => loadPackages(),
   assistants: () => loadAssistants(),
   logs: () => loadLogs(),
   thinking: () => loadThinking(),
@@ -2569,9 +3174,14 @@ $('usage-export')?.addEventListener('click', async () => {
 
 const ADMIN_GROUPS = {
   overview: [{ id: 'overview', label: '概览' }, { id: 'usage', label: '用量分析' }, { id: 'logs', label: '运行日志' }],
-  users: [{ id: 'users', label: '用户' }, { id: 'groups', label: '用户组' }, { id: 'access', label: '模型授权' }, { id: 'verify', label: '用户验证' }],
-  billing: [{ id: 'packages', label: '额度套餐' }, { id: 'codes', label: '兑换码' }],
-  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'update', label: '版本更新' }],
+  users: [{ id: 'users', label: '用户' }, { id: 'groups', label: '用户组' }, { id: 'access', label: '模型授权' }, { id: 'verify', label: '用户验证' }, { id: 'invite', label: '邀请码' }],
+  billing: [
+    { id: 'packages', label: '额度套餐' },
+    { id: 'codes', label: '兑换码使用情况' },
+    { id: 'codes-gen', label: '生成兑换码' },
+    { id: 'codes-fixed', label: '添加固定兑换码' },
+  ],
+  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'update', label: '版本更新' }],
   thinking: [{ id: 'thinking', label: '思考策略' }],
   content: [{ id: 'assistants', label: '助手库' }],
 };
@@ -2617,6 +3227,21 @@ window.addEventListener('hashchange', () => {
     if (!me.ok || !data.user.admin) throw new Error('not admin');
     localStorage.setItem('oc_user', JSON.stringify(data.user));
     ME_ID = data.user && data.user.id ? data.user.id : ME_ID;
+    // 演示管理员:顶部常驻提示,提醒修改会失效;敏感入口直接隐藏,避免误操作撞到 403
+    if (data.user && data.user.demo) {
+      const banner = $('admin-demo-banner');
+      if (banner) banner.classList.remove('hidden');
+      document.body.classList.add('is-demo-admin');
+      // 隐藏不可用的敏感操作入口(公告保存、创建/编辑用户、邀请码、查看对话等)
+      ['announce-save'].forEach((id) => { const el = $(id); if (el) el.disabled = true; });
+      const announceBox = $('announce-enabled'); if (announceBox) announceBox.disabled = true;
+      const announceText = $('announce-text'); if (announceText) announceText.disabled = true;
+      try {
+        const cr = await api('/api/config');
+        const cfg = await cr.json();
+        if ($('admin-demo-minutes')) $('admin-demo-minutes').textContent = cfg.demoExpireMinutes == null ? 10 : cfg.demoExpireMinutes;
+      } catch (e) { /* 提示条不影响后台使用 */ }
+    }
     const rawStart = (location.hash || '').replace(/^#/, '');
     const startParts = rawStart.split('/');
     const start = startParts[0] && ADMIN_GROUPS[startParts[0]] ? (startParts[1] || ADMIN_GROUPS[startParts[0]][0].id) : (rawStart || 'overview');

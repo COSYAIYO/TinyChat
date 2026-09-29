@@ -19,7 +19,11 @@
   const PREF_DEFAULTS = {
     stream: true,          // 流式输出
     followups: false,      // AI 跟进建议(会额外扣费,默认关闭)
+    followupsModel: '',    // 跟进建议所用模型:'' = 跟随当前模型;否则 "providerId\nmodelId"
     autotitle: true,       // 自动生成会话标题
+    titleModel: '',        // 命名方式:'' = 本地截取;'current' = AI(当前模型);否则 "providerId\nmodelId"
+    imageModel: '',        // 默认生图模型:'' = 用第一个可用生图模型;否则 "providerId\nmodelId"
+    autoImage: true,       // 对话模型下说了「画一张…」等绘图/改图意图时,自动改走生图
     elapsed: true,         // 显示生成耗时
     reasoning: true,       // 请求并展示思维链
     reasoningEffort: 'medium', // off | low | medium | high
@@ -226,8 +230,27 @@
     requestAnimationFrame(() => el.classList.add('show'));
     if (modalStack.indexOf(el) === -1) modalStack.push(el);
     document.body.classList.add('modal-open');
-    const focusable = el.querySelector('input:not([type=hidden]):not([disabled]), textarea:not([disabled]), button:not([disabled])');
+    // 默认焦点优先落在输入框,其次是主操作按钮;绝不落在右上角关闭(X)等图标按钮上,
+    // 否则弹窗一打开关闭按钮就带着焦点高亮,视觉上像是被"选中"了。
+    const pick = [
+      '[data-autofocus]:not([disabled])',
+      'input:not([type=hidden]):not([disabled]):not([data-no-autofocus])',
+      'textarea:not([disabled]):not([data-no-autofocus])',
+      'button.btn.primary:not([disabled]):not([data-no-autofocus])',
+      '.modal-footer .btn:not(.icon-btn):not([disabled]):not([data-no-autofocus])',
+    ];
+    let focusable = null;
+    for (const sel of pick) {
+      const found = el.querySelector(sel);
+      if (found) { focusable = found; break; }
+    }
     if (focusable) setTimeout(() => focusable.focus(), 80);
+    else {
+      // 没有可聚焦元素时,把焦点交给弹窗容器本身(不可见焦点环),避免浏览器把焦点留给关闭按钮
+      el.setAttribute('tabindex', '-1');
+      el.style.outline = 'none';
+      setTimeout(() => el.focus({ preventScroll: true }), 80);
+    }
   };
   UI.closeModal = function (el) {
     if (!el) return;
