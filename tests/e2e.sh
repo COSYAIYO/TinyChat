@@ -345,6 +345,18 @@ assert_contains "演示管理员不可删用户" "$(curl -s -X DELETE "$BASE/api
 assert_contains "演示管理员不可改公告" "$(curl -s -X POST "$BASE/api/admin/settings" -H "$DAUTH" -H "Content-Type: application/json" -d '{"announcement":{"enabled":true,"text":"x"}}')" '演示管理员不能修改公告'
 assert_contains "演示管理员不可查看用户对话" "$(curl -s "$BASE/api/admin/users/chats" -H "$DAUTH")" '演示管理员不能查看用户对话'
 assert_contains "演示管理员不可创建用户" "$(curl -s -X POST "$BASE/api/admin/users" -H "$DAUTH" -H "Content-Type: application/json" -d '{"name":"zzz","password":"pass1234"}')" '演示管理员不能管理用户账号'
+# 真实管理员的改动成为演示的还原基准(不会被演示到期还原冲掉)
+snap_site() { # 读 demoSnapshot 里的基准 siteName
+  php -r '$pdo = new PDO("sqlite:" . $argv[1] . "/tinychat.sqlite");
+    $v = $pdo->query("SELECT v FROM store WHERE k = \"demoSnapshot\"")->fetchColumn();
+    $j = json_decode($v, true);
+    echo isset($j["settings"]["siteName"]) ? $j["settings"]["siteName"] : "";' "$1"
+}
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"siteName":"REALBASE"}' > /dev/null
+assert_eq "真实管理员改动写入演示基准" "$(snap_site "$TMP/data")" "REALBASE"
+# 演示管理员改动不写入基准
+curl -s -X POST "$BASE/api/admin/settings" -H "$DAUTH" -H "Content-Type: application/json" -d '{"siteName":"DEMOTMP"}' > /dev/null
+assert_eq "演示管理员改动不污染基准" "$(snap_site "$TMP/data")" "REALBASE"
 assert_contains "config 暴露 demoMode" "$(curl -s "$BASE/api/config")" '"demoMode":true'
 # 已有用户可随时转为/取消演示管理员(不限于创建时)
 plain=$(curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"plainadmin","password":"pass1234","admin":true}')

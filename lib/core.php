@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.37');
+define('TC_VERSION', '2.0.38');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -592,14 +592,22 @@ function tc_demo_arm(&$db, $user, $force = false) {
     if (!$force && is_array($snap) && !empty($snap['expireAt']) && tc_now() < (int) $snap['expireAt']) return false;
     $minutes = (int) (isset($db['settings']['demoExpireMinutes']) ? $db['settings']['demoExpireMinutes'] : 10);
     $minutes = min(1440, max(1, $minutes ?: 10));
+    $uid = isset($user['id']) ? (string) $user['id'] : '';
     $snapshot = array(
         'expireAt' => tc_now() + $minutes * 60000,
-        'userId' => isset($user['id']) ? (string) $user['id'] : '',
+        'userId' => $uid,
         'minutes' => $minutes,
     );
     foreach (tc_demo_snapshot_fields() as $k) {
         $snapshot[$k] = isset($db[$k]) ? $db[$k] : null;
     }
+    // 演示管理员的「个人数据」同样在转换那一刻定格:自己的对话与额度,到期后一并恢复。
+    $chatsMap = tc_assoc(isset($db['userChats']) ? $db['userChats'] : array());
+    $snapshot['demoChats'] = ($uid !== '' && isset($chatsMap[$uid]) && is_array($chatsMap[$uid])) ? $chatsMap[$uid] : array();
+    $revMap = tc_assoc(isset($db['userChatRevisions']) ? $db['userChatRevisions'] : array());
+    $snapshot['demoChatRevision'] = isset($revMap[$uid]) ? (int) $revMap[$uid] : 0;
+    $snapshot['demoQuota'] = isset($user['quota']) ? $user['quota'] : 0;
+    $snapshot['demoQuotaGrants'] = isset($user['quotaGrants']) && is_array($user['quotaGrants']) ? $user['quotaGrants'] : array();
     $db['demoSnapshot'] = $snapshot;
     $db['settings']['demoMode'] = true;
     return true;
@@ -619,8 +627,73 @@ function tc_demo_revert(&$db) {
     if (array_key_exists('defaultProviderId', $snap)) {
         $db['defaultProviderId'] = $snap['defaultProviderId'];
     }
+    // 恢复演示管理员的个人数据(对话 / 额度)到转换那一刻。
+    // 若该账号已被改回普通用户,则其数据保留、不还原(见需求:转普通用户后数据保留)。
+    $uid = isset($snap['userId']) ? (string) $snap['userId'] : '';
+    if ($uid !== '') {
+        $stillDemo = false;
+        foreach ($db['users'] as $u) {
+            if (isset($u['id']) && (string) $u['id'] === $uid) { $stillDemo = !empty($u['demo']); break; }
+        }
+        if ($stillDemo) {
+            if (array_key_exists('demoChats', $snap) && is_array($snap['demoChats'])) {
+                $chatsMap = tc_assoc(isset($db['userChats']) ? $db['userChats'] : array());
+                $chatsMap[$uid] = $snap['demoChats'];
+                $db['userChats'] = tc_object_map($chatsMap);
+                $revMap = tc_assoc(isset($db['userChatRevisions']) ? $db['userChatRevisions'] : array());
+                $revMap[$uid] = (isset($revMap[$uid]) ? (int) $revMap[$uid] : 0) + 1;
+                $db['userChatRevisions'] = tc_object_map($revMap);
+            }
+            foreach ($db['users'] as &$u) {
+                if (!isset($u['id']) || (string) $u['id'] !== $uid) continue;
+                if (array_key_exists('demoQuota', $snap)) $u['quota'] = $snap['demoQuota'];
+                if (array_key_exists('demoQuotaGrants', $snap)) $u['quotaGrants'] = $snap['demoQuotaGrants'];
+                break;
+            }
+            unset($u);
+        }
+    }
     $db['demoSnapshot'] = null;
     return true;
+}
+
+// 采集快照覆盖字段的当前值(供真实管理员改动前后比对)
+function tc_demo_capture($db) {
+    $out = array();
+    foreach (tc_demo_snapshot_fields() as $k) {
+        $out[$k] = isset($db[$k]) ? $db[$k] : null;
+    }
+    return $out;
+}
+
+// 真实管理员改动生效后,只把「确实被动过的字段」写回快照基线。
+// 这样真实管理员的修改成为新的还原基准(不会被演示到期还原冲掉),
+// 又不会把演示管理员在其它字段上的在途改动一并固化。
+function tc_demo_rebaseline(&$db, $before) {
+    $snap = isset($db['demoSnapshot']) ? $db['demoSnapshot'] : null;
+    if (!is_array($snap) || empty($snap['expireAt']) || !is_array($before)) return false;
+    $changed = false;
+    foreach (tc_demo_snapshot_fields() as $k) {
+        $cur = isset($db[$k]) ? $db[$k] : null;
+        $old = array_key_exists($k, $before) ? $before[$k] : null;
+        if ($k === 'settings' && is_array($cur) && is_array($old)) {
+            // settings 逐键比对:演示管理员在别的设置项上的改动不会被顺带固化
+            $merged = isset($snap[$k]) && is_array($snap[$k]) ? $snap[$k] : array();
+            foreach ($cur as $sk => $sv) {
+                $ov = array_key_exists($sk, $old) ? $old[$sk] : null;
+                if (tc_json_encode($ov) !== tc_json_encode($sv)) { $merged[$sk] = $sv; $changed = true; }
+            }
+            foreach ($old as $sk => $ov) {
+                if (!array_key_exists($sk, $cur) && array_key_exists($sk, $merged)) { unset($merged[$sk]); $changed = true; }
+            }
+            $snap[$k] = $merged;
+        } elseif (tc_json_encode($cur) !== tc_json_encode($old)) {
+            $snap[$k] = $cur;
+            $changed = true;
+        }
+    }
+    if ($changed) $db['demoSnapshot'] = $snap;
+    return $changed;
 }
 
 // 邀请码可用次数:未设置视为 1 次(老数据兼容),<0 表示不限次数
@@ -1115,6 +1188,7 @@ function tc_with_db($write, $fn) {
     list($orig, $origChats) = tc_db_raw_snapshot($pdo);
     $db = tc_db_load_all($pdo);
     $GLOBALS['_tc_db'] = &$db;
+    $GLOBALS['_tc_demo_before'] = null;
     $GLOBALS['_tc_db_ctx'] = array(
         'write' => $write, 'committed' => false, 'pdo' => $pdo,
         'orig' => $orig, 'origChats' => $origChats,
@@ -1152,6 +1226,11 @@ function tc_db_commit() {
     if (empty($ctx['write'])) return; // 读请求不落库
     try {
         $db = $GLOBALS['_tc_db'];
+        // 真实管理员改动生效后,把被改动的字段写回演示快照基线
+        if (!empty($GLOBALS['_tc_demo_before']) && isset($db['demoSnapshot'])) {
+            tc_demo_rebaseline($db, $GLOBALS['_tc_demo_before']);
+        }
+        $GLOBALS['_tc_demo_before'] = null;
         $ups = $pdo->prepare('INSERT INTO store (k, v) VALUES (:k, :v) ON CONFLICT(k) DO UPDATE SET v = :v2');
         $del = $pdo->prepare('DELETE FROM store WHERE k = :k');
         $newChats = tc_assoc(isset($db['userChats']) ? $db['userChats'] : null);
@@ -1459,8 +1538,13 @@ function tc_require_admin($db) {
     if (empty($user['admin'])) tc_fail(403, '需要管理员权限');
     // 演示管理员:每次写入前确保有一张生效中的还原快照。
     // 这样"改动 → 到期还原"可以反复进行,而不是只保护第一轮改动。
-    if (tc_is_demo_user($user) && !empty($GLOBALS['_tc_db_ctx']['write']) && isset($GLOBALS['_tc_db'])) {
-        tc_demo_arm($GLOBALS['_tc_db'], $user);
+    if (!empty($GLOBALS['_tc_db_ctx']['write']) && isset($GLOBALS['_tc_db'])) {
+        if (tc_is_demo_user($user)) {
+            tc_demo_arm($GLOBALS['_tc_db'], $user);
+        } elseif (is_array(isset($GLOBALS['_tc_db']['demoSnapshot']) ? $GLOBALS['_tc_db']['demoSnapshot'] : null)) {
+            // 真实管理员的改动要生效,并在提交时把被改动的字段写回快照(成为新的还原基准)
+            $GLOBALS['_tc_demo_before'] = tc_demo_capture($db);
+        }
     }
     return $user;
 }
