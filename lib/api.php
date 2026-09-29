@@ -168,6 +168,10 @@ function tc_normalize_models($models) {
         if (is_array($m) && array_key_exists('video', $m)) {
             $row['video'] = !empty($m['video']);
         }
+        // 单次调用扣减次数(可选):留空表示跟随供应商的「每次调用扣费次数」
+        if (is_array($m) && isset($m['cost']) && $m['cost'] !== '' && is_numeric($m['cost'])) {
+            $row['cost'] = max(0, min(1000, (float) $m['cost']));
+        }
         $out[] = $row;
         if (count($out) >= 500) break;
     }
@@ -2574,14 +2578,26 @@ function tc_api_list_models() {
         if (!$target) tc_json(200, array('models' => array(), 'providerId' => null));
         $vis = tc_visible_provider($user, $target, $allowed);
         if (!$vis) tc_json(200, array('models' => array(), 'providerId' => null));
+        // 每模型单次扣费:模型级 cost 优先,未设置的回退供应商价格(前端提示里显示)
+        $costs = array();
+        foreach ((isset($target['models']) ? $target['models'] : array()) as $m) {
+            if (!is_array($m)) continue;
+            $mid = isset($m['id']) ? (string) $m['id'] : '';
+            if ($mid === '') continue;
+            $costs[$mid] = tc_model_cost($target, $mid);
+        }
         tc_json(200, array(
             'models' => $vis['models'],
             'providerId' => $target['id'],
             'providerName' => $target['name'],
             'apiFormat' => isset($target['apiFormat']) ? $target['apiFormat'] : 'chat',
             'costPerCall' => tc_provider_cost($target),
+            'costs' => $costs,
             'scope' => isset($target['scope']) ? $target['scope'] : 'user',
             'health' => tc_model_health_summary($db, $target['id']),
+            // 可用性分级阈值(百分比),供前台把状态图标翻译成人话
+            'healthOkMin' => isset($db['settings']['healthOkMin']) ? (int) $db['settings']['healthOkMin'] : 75,
+            'healthWarnMin' => isset($db['settings']['healthWarnMin']) ? (int) $db['settings']['healthWarnMin'] : 40,
         ));
     });
 }

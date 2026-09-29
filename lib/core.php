@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.32');
+define('TC_VERSION', '2.0.34');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -102,6 +102,9 @@ $TC_SETTINGS_DEFAULTS = array(
     'authEpoch' => 1,
     // 从上游 context length 报错自动回填模型的 maxContext(不覆盖手动设置)
     'contextAutoLearn' => true,
+    // 模型可用性显示阈值(%):成功率 ≥ healthOkMin 显示「良好」,≥ healthWarnMin 显示「一般」,低于则「较差」
+    'healthOkMin' => 75,
+    'healthWarnMin' => 40,
     // 内容审核:发送前对用户消息做敏感词过滤
     'moderation' => array('enabled' => false, 'words' => ''),
     // 用户协议:启用后注册页需勾选同意,/agreement 展示协议正文
@@ -374,6 +377,12 @@ function tc_normalize_settings($raw) {
     $s['sessionDays'] = min(30, max(1, (int) (isset($s['sessionDays']) ? $s['sessionDays'] : 7) ?: 7));
     $s['authEpoch'] = max(1, (int) (isset($s['authEpoch']) ? $s['authEpoch'] : 1));
     $s['contextAutoLearn'] = !array_key_exists('contextAutoLearn', $s) || !empty($s['contextAutoLearn']);
+    // 可用性阈值:两个百分比,保证 okMin > warnMin(输入颠倒时自动纠正)
+    $okMin = min(100, max(1, (int) (isset($s['healthOkMin']) ? $s['healthOkMin'] : 75) ?: 75));
+    $warnMin = min(99, max(0, (int) (isset($s['healthWarnMin']) ? $s['healthWarnMin'] : 40)));
+    if ($warnMin >= $okMin) $warnMin = max(0, $okMin - 1);
+    $s['healthOkMin'] = $okMin;
+    $s['healthWarnMin'] = $warnMin;
     $mod = isset($s['moderation']) && is_array($s['moderation']) ? $s['moderation'] : array();
     $s['moderation'] = array(
         'enabled' => !empty($mod['enabled']),
@@ -1587,6 +1596,23 @@ function tc_provider_cost($provider) {
     return max(0, $c);
 }
 
+// 单次调用实际扣费:模型级 cost 优先(实现「同一供应商下各模型不同价格」),未设置时回退供应商的 costPerCall
+function tc_model_cost($provider, $modelId) {
+    $id = trim((string) $modelId);
+    if ($id !== '' && !empty($provider['models']) && is_array($provider['models'])) {
+        foreach ($provider['models'] as $m) {
+            if (!is_array($m)) continue;
+            if ((string) (isset($m['id']) ? $m['id'] : '') !== $id) continue;
+            if (array_key_exists('cost', $m)) {
+                $c = (float) $m['cost'];
+                if (is_numeric($c) && !is_nan($c) && $c != INF && $c != -INF) return max(0, $c);
+            }
+            break;
+        }
+    }
+    return tc_provider_cost($provider);
+}
+
 // 按模型 ID / 名称猜测是否为「生图模型」,用于后台默认勾选与请求自动路由的兜底判断。
 // 只做保守匹配:宁可漏判(交给管理员手动勾选),也不要把普通对话/视觉模型误判成生图。
 function tc_image_model_name_hint($id) {
@@ -1807,6 +1833,7 @@ function tc_record_model_health(&$db, $providerId, $model, $ok) {
 
 function tc_model_health_summary($db, $providerId) {
     $pid = substr(trim((string) $providerId), 0, 80);
+    $settings = isset($db['settings']) && is_array($db['settings']) ? $db['settings'] : array();
     $now = tc_now();
     $health = tc_assoc(isset($db['stats']['modelHealth']) ? $db['stats']['modelHealth'] : array());
     $prefix = $pid . "\n";
@@ -1820,8 +1847,15 @@ function tc_model_health_summary($db, $providerId) {
         $ok = 0;
         foreach ($events as $ev) if (!empty($ev['ok'])) $ok++;
         $rate = $ok / $calls;
+        // 分级阈值由后台「对话设置 → 模型可用性显示」配置(默认 ≥75% 良好,≥40% 一般,其余较差)
+        $okMin = min(100, max(1, (int) (isset($settings['healthOkMin']) ? $settings['healthOkMin'] : 75) ?: 75)) / 100;
+        $warnMin = min(99, max(0, (int) (isset($settings['healthWarnMin']) ? $settings['healthWarnMin'] : 40))) / 100;
+        if ($warnMin >= $okMin) $warnMin = max(0, $okMin - 0.01);
+        $state = 'bad';
+        if ($rate >= $okMin) $state = 'ok';
+        elseif ($rate >= $warnMin) $state = 'warn';
         $out[$model] = array(
-            'state' => $rate > 0.75 ? 'ok' : 'bad',
+            'state' => $state,
             'calls' => $calls,
             'ok' => $ok,
             'rate' => round($rate, 4),

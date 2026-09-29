@@ -1631,6 +1631,7 @@ async function loadModels(opts) {
   const prov = state.providers.find((p) => p.id === state.currentProviderId);
   state.models = data.models || [];
   state.modelHealth = data.health && typeof data.health === 'object' ? data.health : {};
+  state.modelCosts = data.costs && typeof data.costs === 'object' ? data.costs : {};
   const prefer = opts.prefer || pinnedModelId() || uiPref('lastModel', null);
   const found = prefer && state.models.find((x) => x.id === prefer);
   if (found) state.currentModel = found.id;
@@ -1641,23 +1642,55 @@ async function loadModels(opts) {
   // 切换后若当前模型是生图/生视频模型,自动取消 @助手
   if (modelIsVisual(state.currentModel)) enforceImageModelAssistant({ silent: true });
 }
-function modelHealthOf(id) {
+// 当前供应商下某模型的单次扣减次数:模型级 cost 优先(costs 映射),否则用供应商价
+function modelCostOf(id, providerId) {
+  const pid = providerId || state.currentProviderId;
+  const prov = (state.providers || []).find((p) => p.id === pid);
+  if (!prov) return null;
+  const m = (prov.models || []).find((x) => x && String(x.id) === String(id));
+  if (m && Object.prototype.hasOwnProperty.call(m, 'cost')) {
+    const c = Number(m.cost);
+    if (isFinite(c) && c >= 0) return c;
+  }
+  if (pid === state.currentProviderId && state.modelCosts && Object.prototype.hasOwnProperty.call(state.modelCosts, String(id))) {
+    const c = Number(state.modelCosts[String(id)]);
+    if (isFinite(c) && c >= 0) return c;
+  }
+  // 属主自己的供应商不计费
+  if (state.user && ((prov.ownerId && String(prov.ownerId) === String(state.user.id)) || prov.mine)) return 0;
+  const pc = Number(prov.costPerCall);
+  return isFinite(pc) && pc >= 0 ? pc : null;
+}
+function costTextOf(id, providerId) {
+  const c = modelCostOf(id, providerId);
+  if (c === null) return '';
+  return c === 0 ? '免费（不计站点次数）' : ('每次调用扣 ' + c + ' 次');
+}
+// 可用性分级:阈值由后台「对话设置 → 模型可用性显示」配置
+function healthLabelOf(stateName) {
+  if (stateName === 'ok') return '可用';
+  if (stateName === 'warn') return '不稳定';
+  if (stateName === 'bad') return '较差';
+  return '暂无数据';
+}
+function modelHealthOf(id, providerId) {
   const row = id && state.modelHealth ? state.modelHealth[id] : null;
-  const stateName = row && (row.state === 'ok' || row.state === 'bad') ? row.state : 'idle';
+  const allowed = ['ok', 'warn', 'bad'];
+  const stateName = row && allowed.indexOf(row.state) >= 0 ? row.state : 'idle';
   const calls = row && Number(row.calls) > 0 ? Number(row.calls) : 0;
   const rate = row && isFinite(Number(row.rate)) ? Math.round(Number(row.rate) * 100) : 0;
-  if (stateName === 'ok') {
-    return { state: 'ok', title: '最近 4 小时 ' + calls + ' 次调用，成功率 ' + rate + '%' };
-  }
-  if (stateName === 'bad') {
-    return { state: 'bad', title: '最近 4 小时 ' + calls + ' 次调用，成功率 ' + rate + '%' };
-  }
-  return { state: 'idle', title: '最近 4 小时无人调用' };
+  const cost = costTextOf(id, providerId);
+  const costLine = cost ? String.fromCharCode(10) + cost : '';
+  if (stateName === 'idle') return { state: 'idle', title: '最近 4 小时无人调用' + costLine };
+  return {
+    state: stateName,
+    title: healthLabelOf(stateName) + '：最近 4 小时 ' + calls + ' 次调用，成功率 ' + rate + '%' + costLine,
+  };
 }
 function healthIconName(stateName) {
   if (stateName === 'ok') return 'healthOk';
   if (stateName === 'bad') return 'healthBad';
-  return 'healthIdle';
+  return 'healthIdle';   // idle 与 warn 共用省略号图标(warn 由文字与颜色区分)
 }
 function modelDisplayName(model) {
   const provider = state.providers.find((x) => x.id === state.currentProviderId);
@@ -1734,7 +1767,14 @@ function availableModelItems() {
       const id = m && m.id ? String(m.id) : '';
       if (!id) return;
       const name = m.name || id;
-      const health = provider.id === state.currentProviderId ? modelHealthOf(id) : { state: 'idle', title: '最近 4 小时无人调用' };
+      const health = provider.id === state.currentProviderId
+        ? modelHealthOf(id, provider.id)
+        : (function () {
+            // 非当前供应商没有健康数据,但仍显示价格(提示里最有用的信息)
+            const c = modelCostOf(id, provider.id);
+            const costLine = (c === null) ? '' : (String.fromCharCode(10) + (c === 0 ? '免费（不计站点次数）' : ('每次调用扣 ' + c + ' 次')));
+            return { state: 'idle', title: '最近 4 小时无人调用' + costLine };
+          })();
       const isVideo = provider.apiFormat === 'video'
         || (Object.prototype.hasOwnProperty.call(m, 'video')
           ? !!m.video

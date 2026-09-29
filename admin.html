@@ -7,13 +7,14 @@
 <meta name="theme-color" content="#ffffff">
 <title>管理后台 · TinyChat</title>
 <meta name="robots" content="noindex,nofollow">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ctext x='12' y='17' text-anchor='middle' font-family='Inter,Segoe UI,Arial,sans-serif' font-size='15' font-weight='800' fill='%23232936'%3ET%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="./static/css/style.css?v=20261003.2">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261003.2">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261003.2">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261003.2">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261003.2">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261003.2">
+<link rel="icon" type="image/svg+xml" href="./static/logo/app-icon.svg">
+<link rel="apple-touch-icon" href="./static/logo/app-icon.svg">
+<link rel="stylesheet" href="./static/css/style.css?v=20261003.4">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261003.4">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261003.4">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261003.4">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261003.4">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261003.4">
 <script>
 (function () {
   try {
@@ -138,6 +139,12 @@
       <p class="muted small" style="margin:-6px 0 10px">调用上游 AI 接口的最长等待时间。生成长文或使用较慢的模型/平台时适当调大。<b>若上游根本连不上</b>（地址错误、网络不通），会更快返回明确提示，不受此值影响。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-context-learn" checked><span class="slider"></span></span><span>自动学习上下文窗口（从上游 context length 报错回填模型的最大上下文，不覆盖手动设置）</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-persist-chats" checked><span class="slider"></span></span><span>服务器保存对话记录（关闭后对话仅存用户浏览器本地，服务器不留存）</span></label>
+      <h3>模型可用性显示</h3>
+      <p class="muted small" style="margin:0 0 8px">按最近 4 小时的成功率给模型标注可用性，鼠标悬停（移动端点按）模型选择器里的状态图标即可看到，同时显示该模型单次扣减次数。默认：≥ 75% 显示「可用」、≥ 40% 显示「不稳定」、低于 40% 显示「较差」；无调用记录显示「暂无数据」。</p>
+      <div class="pkg-form-grid">
+        <label class="field"><span>「可用」阈值（成功率 ≥ %）</span><input id="chat-health-ok" type="number" min="1" max="100" step="1" value="75"></label>
+        <label class="field"><span>「不稳定」阈值（成功率 ≥ %）</span><input id="chat-health-warn" type="number" min="0" max="99" step="1" value="40"></label>
+      </div>
       <button class="btn primary" id="chat-limits-save" type="button">保存对话设置</button>
     </div>
   </div>
@@ -791,10 +798,10 @@
   </div>
 </div>
 </form>
-<script src="./static/js/config.js?v=20261003.2"></script>
-<script src="./static/js/icons.js?v=20261003.2"></script>
-<script src="./static/js/ui.js?v=20261003.2"></script>
-<script src="./static/js/components.js?v=20261003.2"></script>
-<script src="./static/js/admin.js?v=20261003.2"></script>
+<script src="./static/js/config.js?v=20261003.4"></script>
+<script src="./static/js/icons.js?v=20261003.4"></script>
+<script src="./static/js/ui.js?v=20261003.4"></script>
+<script src="./static/js/components.js?v=20261003.4"></script>
+<script src="./static/js/admin.js?v=20261003.4"></script>
 </body>
 </html>

@@ -121,7 +121,7 @@
           const row = document.createElement('div');
           row.className = 'oc-menu-item' + (it.value === opts.selected ? ' active' : '');
           row.dataset.value = String(it.value);
-          const healthName = it.health === 'ok' ? 'healthOk' : (it.health === 'bad' ? 'healthBad' : (it.health === 'idle' ? 'healthIdle' : ''));
+          const healthName = it.health === 'ok' ? 'healthOk' : (it.health === 'bad' ? 'healthBad' : ((it.health === 'idle' || it.health === 'warn') ? 'healthIdle' : ''));
           row.innerHTML = (it.icon && window.OC.logoImg ? OC.logoImg(it.icon, 'item-logo') : '')
             + '<span class="item-label">' + escapeHtml(it.label) + '</span>'
             + (it.sub ? '<span class="item-sub">' + escapeHtml(it.sub) + '</span>' : '')
@@ -240,6 +240,7 @@
       + '<th class="col-name">显示名称</th>'
       + '<th class="col-mtok" title="单次回答最多生成的 token，留空则跟随全局的单次输出上限">max_tokens</th>'
       + '<th class="col-ctx" title="该模型的上下文窗口（token），留空则不做限制">最大上下文</th>'
+      + '<th class="col-cost" title="该模型单次调用扣减的额度次数；留空则跟随供应商的「每次调用扣费次数」">单次扣减</th>'
       + '<th class="col-img" title="标记为生图模型：调用对话接口时会自动改用 images/generations（未标记时按模型名自动判断）">生图</th>'
       + '<th class="col-img" title="标记为视频生成模型：调用对话接口时会自动改用 videos（未标记时按模型名自动判断）">视频</th>'
       + '</tr></thead><tbody>'
@@ -271,6 +272,17 @@
     return '<span class="' + col.cls + '-static">' + (v === '' ? '<i class="muted">' + col.placeholder + '</i>' : v) + '</span>';
   }
 
+  // 单次调用扣减次数:留空 = 跟随供应商价格;填写后该模型单独计价
+  function modelCostCell(m, editable) {
+    const raw = (m && m.cost !== undefined && m.cost !== null && m.cost !== '') ? Number(m.cost) : '';
+    const v = (raw !== '' && isFinite(raw) && raw >= 0) ? raw : '';
+    if (editable) {
+      return '<input class="mcost" type="number" min="0" max="1000" step="0.1" data-mid="' + escapeHtml(m.id)
+        + '" value="' + v + '" placeholder="跟随" autocomplete="off">';
+    }
+    return '<span class="mcost-static">' + (v === '' ? '<i class="muted">跟随</i>' : v) + '</span>';
+  }
+
   function modelRowHtml(m, opts) {
     opts = opts || {};
     const checked = opts.checked ? ' checked' : '';
@@ -293,6 +305,7 @@
       + '<td class="col-id"><span class="mid">' + escapeHtml(m.id) + '</span></td>'
       + '<td class="col-name">' + modelNameCell(m, !opts.stale) + '</td>'
       + numCells
+      + '<td class="col-cost">' + modelCostCell(m, !opts.stale) + '</td>'
       + imageCell
       + videoCell
       + '</tr>';
@@ -338,6 +351,9 @@
         const incomingImage = hasImage ? !!m.image : undefined;
         const hasVideo = !!(m && Object.prototype.hasOwnProperty.call(m, 'video'));
         const incomingVideo = hasVideo ? !!m.video : undefined;
+        // 单次扣减:只有调用方显式携带且是数字时才更新(上游原始列表没有该字段)
+        const hasCost = !!(m && Object.prototype.hasOwnProperty.call(m, 'cost') && m.cost !== '' && m.cost !== null && isFinite(Number(m.cost)));
+        const incomingCost = hasCost ? Math.max(0, Math.min(1000, Number(m.cost))) : undefined;
         const found = catalog.find((x) => x.id === id);
         if (found) {
           if (updateName && incoming) found.name = incoming;
@@ -345,6 +361,7 @@
           Object.keys(incomingNums).forEach((f) => { found[f] = incomingNums[f]; });
           if (hasImage) found.image = incomingImage;
           if (hasVideo) found.video = incomingVideo;
+          if (hasCost) found.cost = incomingCost;
         } else {
           const item = { id, name: incoming || id };
           NUM_FIELDS.forEach((f) => { item[f] = incomingNums[f] !== undefined ? incomingNums[f] : 0; });
@@ -352,6 +369,7 @@
           else if (window.OC && OC.isImageModelName) item.image = OC.isImageModelName(id);
           if (hasVideo) item.video = incomingVideo;
           else if (window.OC && OC.isVideoModelName) item.video = OC.isVideoModelName(id);
+          if (hasCost) item.cost = incomingCost;
           catalog.push(item);
           if (selectNew) selected.add(id);
         }
@@ -438,6 +456,16 @@
         if (item) item.name = nameInp.value.trim() || item.id;
         return;
       }
+      const costInp = e.target && e.target.closest ? e.target.closest('input.mcost') : null;
+      if (costInp) {
+        const item = catalog.find((x) => x.id === costInp.dataset.mid);
+        if (item) {
+          const raw = String(costInp.value || '').trim();
+          if (raw === '' || !isFinite(Number(raw))) delete item.cost;
+          else item.cost = Math.max(0, Math.min(1000, Number(raw)));
+        }
+        return;
+      }
       const numInp = e.target && e.target.closest
         ? e.target.closest(MODEL_NUM_COLS.map((c) => 'input.' + c.cls).join(','))
         : null;
@@ -450,7 +478,7 @@
 
     listEl.addEventListener('keydown', (e) => {
       const cls = e.target && e.target.classList;
-      if (e.key === 'Enter' && cls && (cls.contains('mname') || cls.contains('mtokens') || cls.contains('mctx'))) {
+      if (e.key === 'Enter' && cls && (cls.contains('mname') || cls.contains('mtokens') || cls.contains('mctx') || cls.contains('mcost'))) {
         e.preventDefault();
         e.target.blur();
       }
@@ -516,6 +544,7 @@
           });
           if (Object.prototype.hasOwnProperty.call(m, 'image')) row.image = !!m.image;
           if (Object.prototype.hasOwnProperty.call(m, 'video')) row.video = !!m.video;
+          if (Object.prototype.hasOwnProperty.call(m, 'cost')) row.cost = m.cost;
           return row;
         });
       },
@@ -529,6 +558,7 @@
             });
             if (Object.prototype.hasOwnProperty.call(m, 'image')) row.image = !!m.image;
             if (Object.prototype.hasOwnProperty.call(m, 'video')) row.video = !!m.video;
+            if (Object.prototype.hasOwnProperty.call(m, 'cost')) row.cost = m.cost;
             return row;
           });
       },
@@ -725,7 +755,7 @@
     });
     listEl.addEventListener('keydown', (e) => {
       const cls = e.target && e.target.classList;
-      if (e.key === 'Enter' && cls && (cls.contains('mname') || cls.contains('mtokens') || cls.contains('mctx'))) {
+      if (e.key === 'Enter' && cls && (cls.contains('mname') || cls.contains('mtokens') || cls.contains('mctx') || cls.contains('mcost'))) {
         e.preventDefault();
         e.target.blur();
       }
