@@ -4,6 +4,13 @@
 
 开源地址：[github.com/HCARX/TinyChat](https://github.com/HCARX/TinyChat) · License: MIT
 
+## 目录
+
+- [Demo](#-demo) · [界面预览](#-界面预览) · [功能特性](#-功能特性) · [定位差异](#-与同类项目的定位差异)
+- **部署**：[环境要求](#环境要求) · [目录权限](#目录权限重要) · [虚拟主机](#虚拟主机部署) · [宝塔面板](#宝塔面板部署小白步骤) · [本机预览](#本机预览已装-php) · [首次运行](#首次运行)
+- **使用**：[OpenAI 兼容 API](#openai-兼容-api) · [AI 生视频](#ai-生视频) · [AI 生图](#ai-生图文生图--图生图)
+- **维护**：[配置](#配置configphp--环境变量) · [在线更新](#在线更新) · [数据与备份](#数据与备份) · [测试](#测试) · [服务器配置示例](#附录服务器配置示例)
+
 ## 🔗 Demo
 
 - 前台：<https://demo.tinychat.us.ci/>
@@ -30,24 +37,29 @@
 - 流式输出、Markdown、代码高亮、KaTeX 公式、Mermaid 图表 / 思维导图
 - 思维链展示与思考强度（关 / 低 / 中 / 高，含按模型规则自动修正）
 - 图片与文件附件、自动追问一键发送、双击 Backspace 取消生成
+- 附件解析：PDF / 图片 / Word / PPT / Excel（接 MinerU），链接读取自动抓取正文
 - 助手库：内置 + 管理员/用户自建，@ 选择助手、可拖拽整理分类
+- **AI 跟进建议**：回复后生成 3 条追问，可指定用哪个模型生成（默认跟随当前模型）
+- **AI 对话命名**：新会话可按首条消息本地截取标题（默认，不扣费），也可选「AI 生成」并指定模型
+- 会话管理：置顶 / 重命名 / 分支 / 分享链接 / 搜索，对话云同步（可选）
+- 全端适配：桌面端与移动端（抽屉侧栏、软键盘适配、安全区）均可正常使用
 
 **模型与供应商**
 
-- 多供应商多模型：OpenAI Chat / Responses / 旧 Completions、Anthropic Messages，以及各类 OpenAI 兼容接口
+- 多供应商多模型：OpenAI Chat / Responses / 旧 Completions、Anthropic Messages、视频生成接口，以及各类 OpenAI 兼容接口
 - 用户可自建「个人供应商」，不出现在管理后台；API Key 以 AES-256-GCM 加密落库并与属主绑定
 - 置顶模型（新建对话默认使用）、模型健康度展示
 - 联网搜索：Tavily 或自建 SearXNG，输入框旁一键开关，回复附来源链接
-- 文档解析：PDF / 图片 / Word / PPT / Excel（接 MinerU），链接读取自动抓取正文
 
 **用户与运营**
 
 - 用户注册登录、邮箱验证、找回密码（内置 SMTP 邮件与模板编辑器）
+- **注册与账号安全**（后台「用户验证」）：开放注册开关、注册限流（每 IP 每小时）、登录失败锁定（次数 + 时长）、是否允许用户自建供应商
 - 按次计费：额度套餐、兑换码（批量生成 / 导出 / 固定码 / 限领次数 / 有效期）
 - 按量计费可选：供应商可切换为「按 token」模式（每 1K token 价格，含输入+输出，用量缺失自动回退按次）
 - 用户组与模型授权：组 → 供应商 → 模型粒度控制，**可只授权某供应商下的部分模型**（逐个勾选即可）；勾「全部」＝开放该供应商所有模型（含新增），取消后可再逐个挑选
 - 管理后台：统计看板、14 天趋势、用量台账（一键导出 CSV）、运行日志、全局设置
-- 在线更新：后台一键检查并升级到 GitHub Releases 最新版
+- **用户 IP 记录**：后台用户列表展示最近登录 IP，便于治理
 - 全站公告：后台发布，支持 Markdown / HTML 富文本，前台居中弹窗展示，用户可随时从菜单再次查看
 - 注册邀请码：开启后注册必须提供有效邀请码，后台批量生成、支持一码多次有效
 - **游客免登录体验**：访客直接对话，每人自动生成独立游客账号（归入「游客」组，后台可见 IP 与对话数），轮数与可用模型可配
@@ -63,20 +75,28 @@
 - 429/5xx 自动重试一次（未向客户端发送字节前才重试，不重复计费）
 - 安全响应头：CSP、X-Frame-Options、Permissions-Policy；会话有效期可配 + 全站强制下线
 
-**AI 生图**
+**AI 生图（文生图 / 图生图）**
 
 - 文生图：调用供应商的 `images/generations` 接口（dall-e-3、gpt-image-1、flux、seedream、stable-diffusion、imagen、qwen-image 等），结果以 Markdown 图片插入对话
 - **图生图 / 改图**：上传 1–4 张参考图并填写修改要求即可改图；对话中给生图模型附图片也走改图流程
-- **生图模型自动识别**：后台模型清单可显式勾选「生图」；未勾选时按模型名自动识别。模型选择器会把生图模型自动归入末尾的「生图模型」分组，配合专属图标一眼可辨
-- **对话中无缝生图**：直接用生图模型发消息会自动改走上游生图接口，不再报 `is an image model` 错误；生图模型不使用 @助手，选中时会自动取消，`@` 也不再弹出助手候选
+- **生图模型自动识别**：后台模型清单可显式勾选「生图」；未勾选时按模型名自动识别。模型选择器会把生图模型自动归入末尾的「生图模型」分组
+- **对话中无缝生图**：直接用生图模型发消息会自动改走上游生图接口，不再报 `is an image model` 错误；生图模型不使用 @助手
+- **自定义图片规格**：像素尺寸（`1024x1024`）、档位（`2K` / `4K`）、宽高比（`16:9` / `9:16`）均可填
 - **两类接口都能对接**：独立生图端点型，以及图片放在对话回复里的对话式出图型，后者自动回退到对话接口并提取图片
 - **高兼容性对接**：兼容多种返回形态；对不接受部分参数的接口自动降级重试；放宽连接超时并在网络抖动时自动重试；结果图经同源代理展示，避免第三方存储域不可达导致「看不到图」
-- 生图弹窗：下拉选择生图模型、尺寸，支持手动输入自定义模型与 `b64_json` 返回
+
+**AI 生视频**
+
+- 后台「接口格式」新增**视频生成**（`/v1/videos` 异步任务），配好供应商即可在前台生成视频
+- 三种模式：**文字生成** / **首尾帧**（分别上传首帧、尾帧）/ **参考图**（最多 5 张）
+- 时长（4–12 秒）与画面比例（21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16）可选
+- 生成期间显示进度提示，完成后以内嵌播放器插入对话；对话中直接用视频模型发消息也可生成
+- 视频经同源签名代理播放（转发 Range，支持拖动进度）
 
 **开放能力**
 
-- OpenAI 兼容 API：`/v1/chat/completions`（含流式）、`/v1/models`、`/v1/images/generations`，用户在账户面板生成 `sk-tc-` 密钥（哈希落库、仅显示一次、每人最多 5 把），第三方客户端直接接入，计费与网页端一致
-- **开放 API 独立管控**：每把密钥单独限流、站点总限流、对外可用模型白名单（未开放的模型不出现在 `/v1/models` 且调用被拒，网页端不受影响）、一键获取模型
+- OpenAI 兼容 API：`/v1/chat/completions`（含流式）、`/v1/models`、`/v1/images/generations`、`/v1/videos`；用户在「设置 → API 密钥」生成 `sk-tc-` 密钥（哈希落库、仅显示一次、数量上限可配），第三方客户端直接接入，计费与网页端一致
+- **开放 API 独立管控**：单密钥限流、站点总限流、对外可用模型白名单（未开放的模型不出现在 `/v1/models` 且调用被拒，网页端不受影响）
 - 多模型对比：同一问题并行发给 2–3 个模型，并排查看、一键投票（计入模型评价）
 
 **部署与数据**
@@ -104,7 +124,9 @@ NextChat、LobeChat 等项目是「面向个人的聊天客户端」，TinyChat 
 适合：想给自己/团队/朋友搭一个有账号体系、能控制额度、能插自己供应商 Key 的独立 AI 站点。
 不适合：只需要一个本地单机客户端（这场景 NextChat 更轻）。
 
-## 环境要求
+## 部署
+
+### 环境要求
 
 - PHP 7.4+（推荐 8.x），扩展：`pdo_sqlite`（数据存储）、`curl`、`openssl`、`json`；在线更新需要 `zip` 或 `phar + zlib`
 - 首次访问登录页会自动运行环境自检表单，逐项核对扩展与 `data/` 目录权限
@@ -132,9 +154,7 @@ chmod -R 775 data
 - 权限不足时的典型现象是：能进环境自检页，但「`data/` 目录可写」一项标红，无法创建管理员。
 - 用宝塔面板部署的话，可直接照做下方「宝塔面板部署（小白步骤）」，权限设置在第 3 步。
 
-## 快速开始
-
-### 部署到虚拟主机
+### 虚拟主机部署
 
 1. 把本仓库整个上传到主机网站根目录（不要只传 `public`）。
 2. 确认根目录里有 `index.php`、`.htaccess`、`lib/`、`static/`、`vendor/`。
@@ -285,6 +305,81 @@ Nginx / IIS 的伪静态示例见文末「附录：服务器配置示例」。Ng
 
 子目录部署时，把 `.htaccess` 里的 `RewriteBase /` 改成实际路径，例如 `RewriteBase /chat/`。
 
+### 首次运行
+
+1. 浏览器打开站点：还没有管理员时，登录页会先展示**环境自检**（PHP 版本 / 扩展 / `data/` 可写逐项核对）。
+2. 全部通过后点「下一步：创建管理员」，设置管理员账号密码。
+3. 进入管理后台（`/admin`）→「平台配置 → 供应商」添加全局供应商（Base URL + API Key + 模型列表）。
+4. 「模型授权」中把模型开放给需要的用户组（默认组默认已授权全部模型）。
+
+> 也可以复制 `config.sample.php` 为 `config.php` 并写上 `admin_password`，首次访问会自动创建管理员（仅在库里还没有管理员时生效）。
+
+## OpenAI 兼容 API
+
+在「设置 → API 密钥」生成 `sk-tc-` 密钥后，把任意 OpenAI 兼容客户端的 Base URL 指向 `https://你的站点/v1` 即可。密钥支持流式、计费、限流与模型白名单，与网页端策略一致。可用端点：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/v1/chat/completions` | 对话（默认流式，支持 `stream: true`）；生图模型会自动改走生图接口 |
+| `GET` | `/v1/models` | 列出当前用户可用（且管理员开放）的模型 |
+| `POST` | `/v1/images/generations` | 文生图，返回 `{created, data:[{url\|b64_json}]}` |
+| `POST` | `/v1/videos` | 生视频（同步返回最终地址，服务端完成建任务与轮询） |
+
+请求示例：
+
+```bash
+curl https://your-site/v1/images/generations \
+  -H "Authorization: Bearer sk-tc-xxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-image-1","prompt":"一只戴墨镜的柯基在冲浪","size":"1024x1024","n":1}'
+```
+
+```bash
+curl https://your-site/v1/videos \
+  -H "Authorization: Bearer sk-tc-xxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"your-video-model","prompt":"雨后的未来城市街道","mode":"text","seconds":5,"aspect_ratio":"16:9"}'
+```
+
+```bash
+curl https://your-site/v1/chat/completions \
+  -H "Authorization: Bearer sk-tc-xxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"你好"}]}'
+```
+
+限流与开放范围在后台「平台配置 → 开放 API」中配置：单密钥限流、账号总限流、对外模型白名单。
+
+## AI 生视频
+
+对接提供 `/v1/videos` 异步任务的视频生成接口。
+
+### 配置步骤
+
+1. 后台「平台配置 → 供应商」新增供应商，填入 Base URL 与 API Key。
+2. 「接口格式」选择**视频生成**（列表中带「视频生成 /v1/videos」说明的那一项）；选中后该供应商下所有模型按视频模型处理。
+3. 模型列表填入视频模型 ID；也可在模型清单的「视频」列按模型单独勾选。
+4. 「模型授权」中把该供应商开放给需要的用户组。
+
+### 三种模式
+
+| 模式 | 说明 |
+|---|---|
+| 文字生成 | 只填提示词，直接生成视频 |
+| 首尾帧 | 分别上传首帧、尾帧，生成两帧之间的过渡视频（至少上传一张） |
+| 参考图 | 上传最多 5 张参考图，模型据此生成视频 |
+
+时长可选 4–12 秒，画面比例可选 21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16。
+
+### 用法
+
+- 输入区「≡ → 生视频」打开生成弹窗；
+- 或直接在模型选择器里选「生视频模型」分组中的模型，发消息即可生成（带图则以图为参考）；
+- 生成通常需要 1–5 分钟，期间弹窗与对话气泡都会显示进度提示，完成后以内嵌播放器插入对话；
+- 第三方客户端可用 `sk-tc-` 密钥调用 `POST /v1/videos`（同步返回最终地址，服务端完成轮询）。
+
+视频文件较大，结果经**同源签名代理**（`/api/proxy/video`）播放：转发浏览器的 Range 请求以支持拖动进度，按字节流式回传、不整段缓存。
+
 ## AI 生图（文生图 / 图生图）
 
 TinyChat 支持对接任意提供 OpenAI 兼容生图接口的供应商，并尽量抹平各平台差异，无需为不同平台改代码。
@@ -325,18 +420,7 @@ TinyChat 支持对接任意提供 OpenAI 兼容生图接口的供应商，并尽
 
 > 对接第三方平台的排查顺序：① 先用平台的 curl 示例确认 Key 与模型名可用；② Base URL 直接粘平台文档给的地址即可，不必自己拼路径；③ 若报 `Not Found`，多半是 Base URL 里多了或少了路径段；④ 若报参数错误，TinyChat 会自动降级重试，仍失败时弹窗会显示上游返回的具体原因。
 
-## 在线更新
-
-后台「平台配置 → 版本更新」可检查并在线安装新版本：程序对比 GitHub Releases 最新 tag 与 `lib/core.php` 里的 `TC_VERSION`，有新版时下载该 tag 的源码包，解压校验后覆盖站点文件。**`data/` 与 `config.php` 不会被改动**，升级前的程序自动备份到 `data/update/backup/`（仅保留最近一次）。
-
-自己发新版的流程：
-
-1. 改 `lib/core.php` 里的 `TC_VERSION`（如 `'1.0.1'`），提交并推送；
-2. 打同名 tag（`v1.0.1`），在 GitHub 上基于该 tag 创建 Release（Release 说明会显示在后台）。
-
-已部署的站点进后台点「检查更新 → 一键更新」即可。主机连不上 GitHub 时，`config.php` 里可把 `github_api_base` / `github_base` 配置成镜像或加速前缀。
-
-## 配置
+## 配置（config.php / 环境变量）
 
 复制 `config.sample.php` 为 `config.php` 按需修改，也可以用环境变量代替（环境变量优先）：
 
@@ -360,35 +444,18 @@ TinyChat 支持对接任意提供 OpenAI 兼容生图接口的供应商，并尽
 | `github_api_base` | API 根地址，默认 `https://api.github.com`，可换镜像 |
 | `github_base` | 发布包下载根地址，默认 `https://github.com`，可填自建反代等加速前缀 |
 
-## OpenAI 兼容 API
+## 在线更新
 
-在「设置 → 账户 → API 密钥」生成 `sk-tc-` 密钥后，把任意 OpenAI 兼容客户端的 Base URL 指向 `https://你的站点/v1` 即可。密钥支持流式、计费、限流与模型白名单，与网页端策略一致。可用端点：
+后台「平台配置 → 版本更新」可检查并在线安装新版本：程序对比 GitHub Releases 最新 tag 与 `lib/core.php` 里的 `TC_VERSION`，有新版时下载该 tag 的源码包，解压校验后覆盖站点文件。**`data/` 与 `config.php` 不会被改动**，升级前的程序自动备份到 `data/update/backup/`（仅保留最近一次）。
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `POST` | `/v1/chat/completions` | 对话（默认流式，支持 `stream: true`）；生图模型会自动改走生图接口 |
-| `GET` | `/v1/models` | 列出当前用户可用（且管理员开放）的模型 |
-| `POST` | `/v1/images/generations` | 文生图，返回 `{created, data:[{url\|b64_json}]}` |
+自己发新版的流程：
 
-请求示例：
+1. 改 `lib/core.php` 里的 `TC_VERSION`（如 `'1.0.1'`），提交并推送；
+2. 打同名 tag（`v1.0.1`），在 GitHub 上基于该 tag 创建 Release（Release 说明会显示在后台）。
 
-```bash
-curl https://your-site/v1/images/generations \
-  -H "Authorization: Bearer sk-tc-xxxxxxxx" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gpt-image-1","prompt":"一只戴墨镜的柯基在冲浪","size":"1024x1024","n":1}'
-```
+已部署的站点进后台点「检查更新 → 一键更新」即可。主机连不上 GitHub 时，`config.php` 里可把 `github_api_base` / `github_base` 配置成镜像或加速前缀。
 
-```bash
-curl https://your-site/v1/chat/completions \
-  -H "Authorization: Bearer sk-tc-xxxxxxxx" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"你好"}]}'
-```
-
-限流与开放范围在后台「平台配置 → 开放 API」中配置：每把密钥限流、站点总限流、对外模型白名单。
-
-## 目录
+## 代码结构
 
 ```
 TinyChat/
@@ -398,19 +465,16 @@ TinyChat/
 ├── .htaccess              # Apache 伪静态
 ├── config.sample.php      # 复制为 config.php
 ├── lib/                   # PHP 后端
-│   ├── core.php           # JSON 库、JWT、密码、锁、版本号
+│   ├── core.php           # 数据层（SQLite）、设置、JWT、密码、版本号
 │   ├── api.php            # 认证 / 供应商 / 助手 / 管理端
-│   ├── proxy.php          # 上游 curl 代理（含 SSE）
+│   ├── proxy.php          # 上游 curl 代理（含 SSE、生图、生视频、图片与视频代理）
+│   ├── tasks.php          # 后台任务（流式请求的断线续传）
 │   ├── updater.php        # 在线更新：检查 GitHub Releases、下载覆盖
+│   ├── integrity.php      # 完整性校验
 │   ├── catalog.json       # 内置助手库
 │   └── cacert.pem         # Mozilla CA，Windows / 部分虚拟主机缺证书时用
 ├── static/  vendor/       # 前端（含模型图标 static/logo/）
-├── tests/                 # E2E 与自检脚本
-│   ├── e2e.sh             # 端到端冒烟（需 php + curl）
-│   ├── mock-upstream.php  # E2E 用的 mock 上游
-│   ├── demo-revert.php    # 演示管理员还原逻辑自检
-│   ├── image-parse.php    # 生图返回形态解析自检
-│   └── logos-check.js     # 模型图标匹配自检
+├── tests/                 # E2E 与自检脚本（见下方「测试」）
 ├── .github/workflows/ci.yml  # CI：PHP lint + JS 语法 + 自检 + E2E
 ├── index.html login.html admin.html share.html
 └── data/                  # 运行数据（不要提交）
@@ -423,6 +487,8 @@ TinyChat/
 node tests/logos-check.js      # 模型图标匹配
 php tests/demo-revert.php      # 演示管理员还原
 php tests/image-parse.php      # 生图返回形态解析
+php tests/image-chat.php       # 对话式生图 / 改图
+php tests/image-proxy.php      # 生图图片代理（签名 / SSRF）
 php tests/upstream-url.php     # 上游接口地址拼接（补 /v1）
 php tests/attribution.php      # 完整性校验
 
@@ -430,9 +496,9 @@ php tests/attribution.php      # 完整性校验
 bash tests/e2e.sh
 ```
 
-E2E 覆盖登录与设置、备份与越权防护、邀请码注册、按次与按 token 计费、流式结算、敏感词审核、接口限流、API 密钥与 `/v1` 出口、生图（含自动路由与两种返回形态）、无限额度、游客模式、演示管理员等。CI 会在 PHP 7.4 / 8.1 / 8.3 上分别运行。
+E2E 覆盖登录与设置、备份与越权防护、邀请码注册、按次与按 token 计费、流式结算、敏感词审核、接口限流、API 密钥与 `/v1` 出口、获取模型列表、生图（含自动路由与两种返回形态）、生视频、无限额度、游客模式、演示管理员等。CI 会在 PHP 7.4 / 8.1 / 8.3 上分别运行。
 
-## 数据
+## 数据与备份
 
 数据存于 `data/tinychat.sqlite`（WAL 模式），`data/secret` 保存 JWT 与加密密钥。不要提交到 Git。
 
