@@ -183,7 +183,8 @@ async function openUserForm(user) {
   $('uf-quota').value = user ? user.quota : 100;
   $('uf-admin').checked = !!(user && user.admin);
   if ($('uf-demo')) $('uf-demo').checked = !!(user && user.demo);
-  if ($('uf-demo-row')) $('uf-demo-row').style.display = user ? 'none' : '';
+  // 演示身份不限于创建时:编辑已有用户也能设置/取消
+  if ($('uf-demo-row')) $('uf-demo-row').style.display = '';
   if ($('uf-demo-options')) $('uf-demo-options').hidden = !($('uf-demo') && $('uf-demo').checked);
   if ($('uf-demo-minutes')) $('uf-demo-minutes').value = 10;
   const adminGroup = (GROUPS.find((g) => g.role === 'admin') || {}).id || '';
@@ -227,7 +228,7 @@ async function saveUserForm() {
   const name = $('uf-name').value.trim();
   const password = $('uf-pass').value;
   const quota = Number($('uf-quota').value);
-  const demo = !!($('uf-demo') && $('uf-demo').checked && !USER_FORM_ID);
+  const demo = !!($('uf-demo') && $('uf-demo').checked);
   const demoMinutes = Math.min(1440, Math.max(1, parseInt($('uf-demo-minutes') && $('uf-demo-minutes').value, 10) || 10));
   const admin = $('uf-admin').checked || demo;
   const groupId = $('uf-group').getAttribute('data-value') || '';
@@ -258,7 +259,7 @@ async function saveUserForm() {
       }
       toast('用户已创建');
     } else {
-      const body = { userId: USER_FORM_ID, name, admin };
+      const body = { userId: USER_FORM_ID, name, admin, demo, demoMinutes };
       if (password) body.password = password;
       const r = await api('/api/admin/users/update', {
         method: 'POST',
