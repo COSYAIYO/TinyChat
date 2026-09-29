@@ -65,6 +65,19 @@ $db['demoSnapshot']['expireAt'] = 1;
 $eq('第二轮到期还原', tc_demo_revert($db), true);
 $eq('第二轮还原 siteName', $db['settings']['siteName'], 'ORIGINAL');
 
+// 5b) 「把已有用户转为演示管理员」:force 重拍,以转换那一刻为新原点
+$db3 = tc_empty_db();
+$db3['settings'] = tc_normalize_settings(array('siteName' => 'LIVE-A', 'demoExpireMinutes' => 1));
+tc_demo_arm($db3, array('id' => 'd0', 'admin' => true, 'demo' => true));   // 上一轮遗留快照
+$oldExpire = (int) $db3['demoSnapshot']['expireAt'];
+$db3['settings']['siteName'] = 'LIVE-B';                                   // 站点已被改成 LIVE-B
+// 现在把另一个用户转为演示管理员:应以 LIVE-B 为基准重拍,而不是沿用旧的 LIVE-A
+$forced = tc_demo_arm($db3, array('id' => 'd1', 'admin' => true, 'demo' => true), true);
+$eq('force 重拍快照', $forced, true);
+$eq('force 后基准为转换时的现值', $db3['demoSnapshot']['settings']['siteName'], 'LIVE-B');
+$eq('force 后归属新的演示账号', $db3['demoSnapshot']['userId'], 'd1');
+$eq('force 后重新计时', (int) $db3['demoSnapshot']['expireAt'] >= $oldExpire, true);
+
 // 6) 非演示管理员不参与
 $db2 = tc_empty_db();
 $db2['settings'] = tc_normalize_settings(array('siteName' => 'X'));

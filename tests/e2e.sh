@@ -346,6 +346,30 @@ assert_contains "演示管理员不可改公告" "$(curl -s -X POST "$BASE/api/a
 assert_contains "演示管理员不可查看用户对话" "$(curl -s "$BASE/api/admin/users/chats" -H "$DAUTH")" '演示管理员不能查看用户对话'
 assert_contains "演示管理员不可创建用户" "$(curl -s -X POST "$BASE/api/admin/users" -H "$DAUTH" -H "Content-Type: application/json" -d '{"name":"zzz","password":"pass1234"}')" '演示管理员不能管理用户账号'
 assert_contains "config 暴露 demoMode" "$(curl -s "$BASE/api/config")" '"demoMode":true'
+# 已有用户可随时转为/取消演示管理员(不限于创建时)
+plain=$(curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"plainadmin","password":"pass1234","admin":true}')
+PLAINID=$(printf '%s' "$plain" | jget id)
+assert_contains "普通管理员创建时非演示" "$plain" '"demo":false'
+upd=$(curl -s -X POST "$BASE/api/admin/users/update" -H "$AUTH" -H "Content-Type: application/json" -d '{"userId":"'"$PLAINID"'","demo":true,"demoMinutes":7}')
+assert_contains "可把已有用户转为演示管理员" "$upd" '"demo":true'
+assert_contains "转为演示后成为管理员" "$upd" '"admin":true'
+assert_contains "转演示可设复原时长" "$(curl -s "$BASE/api/config")" '"demoExpireMinutes":7'
+# 取消演示身份:快照与 demoMode 一并清零
+undemo=$(curl -s -X POST "$BASE/api/admin/users/update" -H "$AUTH" -H "Content-Type: application/json" -d '{"userId":"'"$PLAINID"'","demo":false}')
+assert_contains "可取消演示身份" "$undemo" '"demo":false'
+# 不允许把唯一的非演示管理员变为演示(会失去账号管理能力):
+# 先把 plainadmin 降为普通成员,使 admin 成为唯一非演示管理员,再尝试转换。
+curl -s -X POST "$BASE/api/admin/users/update" -H "$AUTH" -H "Content-Type: application/json" -d '{"userId":"'"$PLAINID"'","admin":false}' > /dev/null
+ADMINID=$(python -c "
+import json,urllib.request
+req=urllib.request.Request('$BASE/api/admin/users', headers={'Authorization':'Bearer $TOKEN'})
+d=json.load(urllib.request.urlopen(req))
+print([u['id'] for u in d['users'] if u['name']=='admin'][0])
+")
+selfdemo=$(curl -s -X POST "$BASE/api/admin/users/update" -H "$AUTH" -H "Content-Type: application/json" -d '{"userId":"'"$ADMINID"'","demo":true}')
+assert_contains "不能把唯一普通管理员变为演示" "$selfdemo" '至少要保留一个非演示的管理员'
+# 确认 admin 未被改动为演示
+assert_contains "唯一管理员未被改坏" "$(curl -s "$BASE/api/admin/users" -H "$AUTH" | grep -o '"name":"admin"[^}]*')" '"demo":false'
 # 演示管理员额度必须尊重填入值(此前会被强制写成 1e15)
 dq=$(curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"demoq","password":"demo1234","demo":true,"quota":9999,"demoMinutes":5}' | jget quota)
 assert_eq "演示管理员额度按填入值" "$dq" "9999"

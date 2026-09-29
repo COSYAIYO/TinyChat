@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.36');
+define('TC_VERSION', '2.0.37');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -584,10 +584,12 @@ function tc_demo_snapshot_fields() {
 
 // 拍一张演示快照(改动前的状态),并按设置的有效期计时。
 // 已有生效中的快照时不覆盖——必须保留最早那份作为还原基准。
-function tc_demo_arm(&$db, $user) {
+// $force=true 用于「把某个用户转为演示管理员」:以转为演示的那一刻作为还原原点,
+// 强制重拍快照并重新计时,而不是沿用上一轮还没到期的旧基准。
+function tc_demo_arm(&$db, $user, $force = false) {
     if (!tc_is_demo_user($user)) return false;
     $snap = isset($db['demoSnapshot']) ? $db['demoSnapshot'] : null;
-    if (is_array($snap) && !empty($snap['expireAt']) && tc_now() < (int) $snap['expireAt']) return false;
+    if (!$force && is_array($snap) && !empty($snap['expireAt']) && tc_now() < (int) $snap['expireAt']) return false;
     $minutes = (int) (isset($db['settings']['demoExpireMinutes']) ? $db['settings']['demoExpireMinutes'] : 10);
     $minutes = min(1440, max(1, $minutes ?: 10));
     $snapshot = array(

@@ -2060,6 +2060,45 @@ function tc_api_admin_update_user() {
             }
             $user['name'] = $name;
         }
+        // 演示管理员身份可随时设置/取消(不限于创建时)
+        if (array_key_exists('demo', $b)) {
+            $wantDemo = !empty($b['demo']);
+            $wasDemo = !empty($user['demo']);
+            if ($wantDemo) {
+                // 演示管理员必须是管理员,并归入管理员组
+                $user['admin'] = true;
+                $ag = tc_find_builtin_group($db, 'admin');
+                if ($ag && !empty($ag['id'])) $user['groupId'] = $ag['id'];
+                // 不允许把自己变成演示管理员而全站再无普通管理员(那样会失去账号管理能力)
+                if ($user['id'] === $admin['id']) {
+                    $others = 0;
+                    foreach ($db['users'] as $u) {
+                        if ($u['id'] !== $user['id'] && !empty($u['admin']) && empty($u['demo'])) $others++;
+                    }
+                    if ($others === 0) tc_fail(400, '至少要保留一个非演示的管理员，请先另设一位管理员');
+                }
+                if (isset($b['demoMinutes'])) {
+                    $db['settings']['demoExpireMinutes'] = min(1440, max(1, (int) $b['demoMinutes'] ?: 10));
+                }
+                $user['demo'] = true;
+                // 转为演示的那一刻即还原原点:强制重拍快照并重新计时
+                if (!$wasDemo) tc_demo_arm($db, $user, true);
+                $user['demoExpireAt'] = (is_array($db['demoSnapshot']) && !empty($db['demoSnapshot']['expireAt']))
+                    ? (int) $db['demoSnapshot']['expireAt'] : 0;
+            } elseif ($wasDemo) {
+                // 取消演示身份:若已无演示账号,快照与演示模式一并清除,避免日后误还原
+                unset($user['demo']);
+                unset($user['demoExpireAt']);
+                $stillDemo = false;
+                foreach ($db['users'] as $u) {
+                    if ($u['id'] !== $user['id'] && !empty($u['demo'])) { $stillDemo = true; break; }
+                }
+                if (!$stillDemo) {
+                    $db['demoSnapshot'] = null;
+                    $db['settings']['demoMode'] = false;
+                }
+            }
+        }
         tc_replace_user($db, $user);
         tc_json(200, array('user' => tc_sanitize_user($user)));
     });
