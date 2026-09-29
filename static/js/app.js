@@ -1800,10 +1800,8 @@ function availableModelItems() {
       (isVideo ? video : (isImage ? image : chat)).push(item);
     });
   });
-  const byLabel = (a, b) => a.label.localeCompare(b.label, 'zh');
-  chat.sort(byLabel);
-  image.sort(byLabel);
-  video.sort(byLabel);
+  // 后台可排序:供应商顺序(接口按 order 升序下发)与各供应商内的模型顺序(数组原序)原样保留。
+  // 不再按名称重排,否则后台调整的供应商顺序在前台会被打乱。
   const groups = [];
   const hasVisual = image.length || video.length;
   if (chat.length) groups.push({ label: hasVisual ? '对话模型' : '', items: chat });
@@ -2101,6 +2099,36 @@ function applyFollowUp(q) {
   updateSendBtn();
   sendMessage();
 }
+// 对话模型下识别「要画图」意图:出现明确的绘图口令即认为要出图。
+// 例:「画一张…」「帮我画个…」「生成一张图」「来张海报」「画个 logo」「draw …」
+function wantsDrawImage(text) {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  // 明显是在「问/讨论」而不是「下命令」时不触发:
+  // 以疑问收尾,或含「是什么/为什么/如何/怎么/能不能」等讨论性措辞,或过去式叙述(我画了…)
+  if (/[?？]$/.test(t) || /[吗呢]$/.test(t)) return false;
+  if (/(是什么|为什么|啥意思|什么意思|如何|怎么|怎样|能不能|可否|可不可以|是不是)/.test(t)) return false;
+  // 过去式叙述(我画了/他画了…),但「帮我画/给我画/替我画/为你画」属祈使,不算
+  if (/(^|[^帮给替为])(我|他|她|他们|她们)画了?/.test(t)) return false;
+  const drawRe = /(画一张|画一幅|画一个|画个|画张|画幅|帮我画|给我画|帮忙画|替我画|画一下|画出来|绘制|重新画|再画|重画|生成图片|生成图像|生成一张|生成一幅|生成个图|生成插画|生成海报|生成头像|生成logo|生成标志|出一张图|出个图|来一张图|来张图|做个图|做一张图|设计一张|设计个logo|设计一个logo)/i;
+  if (drawRe.test(t)) return true;
+  // 「画 + 数量词 + 对象」:如「画一只柯基」「画两张海报」(已排除疑问/叙述)
+  if (/画[一二三四五六七八九十两几]?[只个条张幅匹头朵棵盆群尾轮帧]/.test(t)) return true;
+  if (/\b(draw|paint|sketch|illustrate|generate an image|create an image|make an image|generate a picture|create a picture|render an image)\b/i.test(t)) return true;
+  return false;
+}
+// 「编辑已有图片」意图:必须有可用的参考图(本次附件或本会话上一张生成图),且有明确编辑动词。
+// 单独的「这张图是什么」这类看图问题不应命中。
+function wantsEditImage(text) {
+  const t = String(text || '');
+  if (!t) return false;
+  return /(改成|换成|修改|改一下|改变|调整成|调整一下|变成|变为|去掉|删除掉|删掉|加个|加上|添加|添个|换个|替换成|替换|重新画|再画|重画)/.test(t);
+}
+// 文本是否明确指代「上一张图」(决定追问是否把它作为参考图)
+function refersToPrevImage(text) {
+  return /(上面|刚才|上一张|上张|之前|这张图|这张|那张图|那张|这个图|那个图|此图|它)/.test(String(text || ''));
+}
+
 async function sendMessage() {
   if (state.streaming) return;
   const input = $('input');
@@ -2152,6 +2180,55 @@ async function sendMessage() {
     updateSendBtn();
     await sendVideoTurn(text, imageAtts);
     return;
+  }
+
+  // 对话模型下:识别到「画图 / 改图」意图时,自动改用「默认生图模型」出图,
+  // 并自动带上上一张生成图或本次附件作参考图(改图)。用户无需先手动切到生图模型。
+  if (uiPref('autoImage', true)) {
+    const imgAtts = attachments.filter((a) => a && a.type === 'image' && a.dataUrl).slice(0, 4);
+    let prevImg = '';
+    if (typeof lastImageSourceInChat === 'function') {
+      const c = currentChat();
+      if (c) prevImg = lastImageSourceInChat(c) || '';
+    }
+    const isDraw = wantsDrawImage(text);
+    // 改图意图:必须能定位到一张图。附图即视为要改这张图;否则需本会话有上一张生成图,
+    // 且文本明确指代它(上面/这张图/它…)。避免把「把这段话改成英文」这类文本编辑误判为改图。
+    const isEdit = wantsEditImage(text) && (imgAtts.length > 0 || (!!prevImg && refersToPrevImage(text)));
+    // 参考图策略:显式编辑或明确指代上一张图时带上;全新绘图默认不带
+    const usePrevRef = imgAtts.length === 0 && (isEdit || (isDraw && refersToPrevImage(text) && !!prevImg));
+    if (isDraw || isEdit) {
+      const target = defaultImageModel();
+      if (target) {
+        input.value = '';
+        autosizeInput();
+        state.pendingAttachments = [];
+        renderAttachments();
+        updateSendBtn();
+        // 记住用户原本的对话模型,出图后恢复,让用户继续留在对话模型里
+        const prevProviderId = state.currentProviderId;
+        const prevModel = state.currentModel;
+        // 临时切到默认生图模型(仅本次出图,不改变用户的置顶/上次使用偏好)
+        state.currentProviderId = target.providerId;
+        await loadModels({ prefer: target.modelId });
+        state.currentModel = target.modelId;
+        renderProviderLabel();
+        renderModelPicker();
+        const withRef = imgAtts.length > 0 || usePrevRef;
+        toast((isEdit ? '识别到改图意图，已用生图模型「' : '识别到绘图意图，已用生图模型「') + (target.label || target.modelId) + '」' + (withRef ? '并带上参考图' : ''));
+        try {
+          await sendImageTurn(text, imgAtts, { autoRef: usePrevRef });
+        } finally {
+          // 无论出图成功或失败,都恢复到用户原本的对话模型
+          state.currentProviderId = prevProviderId;
+          await loadModels({ prefer: prevModel });
+          state.currentModel = prevModel;
+          renderProviderLabel();
+          renderModelPicker();
+        }
+        return;
+      }
+    }
   }
 
   input.value = '';
@@ -3599,12 +3676,80 @@ function bindAuxModelSelect(id, prefKey, mode) {
   box.addEventListener('click', open);
   box.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
 }
+// 生图模型候选(跨供应商),供「默认生图模型」设置项使用
+// 生图模型候选(跨供应商,仅生图,不含生视频),供「默认生图模型」设置项使用
+function imageModelItems() {
+  const items = [];
+  availableModelItems().forEach((g) => {
+    if (g.label !== '生图模型') return;
+    (g.items || []).forEach((it) => items.push({ value: it.value, label: it.label, search: it.search }));
+  });
+  return items;
+}
+function imageModelLabel(val) {
+  const v = String(val || '');
+  if (!v) return '第一个生图模型';
+  const found = imageModelItems().find((it) => it.value === v);
+  return found ? found.label : '第一个生图模型';
+}
+function syncImageModelSelect(id, prefKey) {
+  const box = $(id);
+  if (!box) return;
+  const val = String(uiPref(prefKey, '') || '');
+  box.setAttribute('data-value', val);
+  const lab = box.querySelector('.sb-label');
+  if (lab) lab.textContent = imageModelLabel(val);
+}
+function bindImageModelSelect(id, prefKey) {
+  const box = $(id);
+  if (!box || !window.OC || !OC.openSelect) return;
+  const open = () => {
+    const items = imageModelItems().slice();
+    items.unshift({ value: '', label: '第一个生图模型' });
+    OC.openSelect(box, items, {
+      selected: String(uiPref(prefKey, '') || ''),
+      searchable: items.length > 8,
+      fitWidth: true,
+      onSelect: (val, item) => {
+        if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref(prefKey, val);
+        const lab = box.querySelector('.sb-label');
+        if (lab) lab.textContent = (item && item.label) || imageModelLabel(val);
+      },
+    });
+  };
+  box.addEventListener('click', open);
+  box.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+}
+// 全站可用的生图模型 [{providerId, modelId, value, label}]（后台「默认生图模型」与自动改走生图都用到）
+function allImageModels() {
+  const out = [];
+  (state.providers || []).forEach((p) => {
+    (p.models || []).forEach((m) => {
+      if (!m || !m.id) return;
+      if (!modelIsImage(m.id)) return;
+      out.push({ providerId: p.id, modelId: String(m.id), value: p.id + '\n' + m.id, label: (p.name || p.id) + '@' + (m.name || m.id) });
+    });
+  });
+  return out;
+}
+// 解析「默认生图模型」:优先用户设置,否则第一个可用生图模型
+function defaultImageModel() {
+  const list = allImageModels();
+  if (!list.length) return null;
+  const pref = String(uiPref('imageModel', '') || '');
+  if (pref) {
+    const hit = list.find((x) => x.value === pref);
+    if (hit) return hit;
+  }
+  return list[0];
+}
 function syncPrefsPanel() {
   const checks = [
     ['pref-stream', 'stream'],
     ['pref-show-api-chats', 'showApiChats'],
     ['pref-followups', 'followups'],
     ['pref-autotitle', 'autotitle'],
+    ['pref-auto-image', 'autoImage'],
     ['pref-elapsed', 'elapsed'],
     ['pref-reasoning', 'reasoning'],
   ];
@@ -3615,6 +3760,7 @@ function syncPrefsPanel() {
   });
   syncAuxModelSelect('pref-followups-model', 'followupsModel', '');
   syncAuxModelSelect('pref-title-model', 'titleModel', '');
+  syncImageModelSelect('pref-image-model', 'imageModel');
   const effortVal = reasoningEffort();
   document.querySelectorAll('#pref-reasoning-effort .seg-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.effort === effortVal);
@@ -3821,6 +3967,8 @@ async function saveToolSource(patch) {
   bindCheck('pref-autotitle', 'autotitle');
   bindAuxModelSelect('pref-followups-model', 'followupsModel', 'followups');
   bindAuxModelSelect('pref-title-model', 'titleModel', 'title');
+  bindImageModelSelect('pref-image-model', 'imageModel');
+  bindCheck('pref-auto-image', 'autoImage');
   bindCheck('pref-elapsed', 'elapsed');
   bindCheck('pref-reasoning', 'reasoning');
   const effortBox = $('pref-reasoning-effort');
@@ -5301,7 +5449,11 @@ function openImageDialog() {
   // 当前供应商里可用的生图模型(显式标记优先,其次按模型名判断)
   const imageModels = imageModelsOfCurrentProvider();
   const hasModelList = imageModels.length > 0;
-  const defaultModel = imageModels.some((m) => m.id === lastModel) ? lastModel : (imageModels[0] ? imageModels[0].id : '');
+  // 默认模型优先级:用户设置的「默认生图模型」(若在本供应商) > 上次使用 > 第一个
+  const prefImg = defaultImageModel();
+  const prefModelHere = (prefImg && prefImg.providerId === state.currentProviderId && imageModels.some((m) => m.id === prefImg.modelId)) ? prefImg.modelId : '';
+  const defaultModel = prefModelHere
+    || (imageModels.some((m) => m.id === lastModel) ? lastModel : (imageModels[0] ? imageModels[0].id : ''));
 
   const mask = document.createElement('div');
   mask.className = 'modal-mask';
@@ -5709,7 +5861,8 @@ function insertImageResult(model, prompt, images, kindLabel, refUrls) {
 // 对话内生图:生图模型下在输入框发指令(纯文本=文生图,带图=图生图)。
 // 与绘图弹窗共用同一接口与时序:先落一条用户消息(带附件则在气泡里显示参考图),
 // 再放一个占位的助手消息,拿到图片后替换为结果。
-async function sendImageTurn(prompt, imageAtts) {
+async function sendImageTurn(prompt, imageAtts, opts) {
+  opts = opts || {};
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
   const model = state.currentModel;
   const providerId = state.currentProviderId;
@@ -5723,9 +5876,10 @@ async function sendImageTurn(prompt, imageAtts) {
 
   // 参考图:优先用本次附的图;用户没附图时,追问自动把本会话上一张生成图作为参考图(改图)。
   // 取到后统一压缩(长边 1536 / JPEG),与绘图弹窗走同一逻辑,发给上游的图片一致。
+  // opts.autoRef === false 时不做「自动带上上一张图」(用于纯文生图的新画,避免误当作改图)。
   let refUrls = (await Promise.all(atts.map((a) => compressImageRef(a.dataUrl || a)))).filter(Boolean);
   let autoRef = false;
-  if (!refUrls.length && text) {
+  if (!refUrls.length && text && opts.autoRef !== false) {
     const prev = lastImageSourceInChat(chat);
     if (prev) {
       const dataUrl = await imageSourceToDataUrl(prev);

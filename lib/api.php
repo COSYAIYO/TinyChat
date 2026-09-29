@@ -5,6 +5,35 @@ function tc_provider_enabled($p) {
     return !isset($p['enabled']) || !empty($p['enabled']);
 }
 
+// 供应商排序:显式 order 优先,缺失/相同时按数组原始顺序稳定排列。
+// 前台模型选择器、供应商列表都按这个顺序展示。
+function tc_provider_order($p) {
+    return (isset($p['order']) && is_numeric($p['order'])) ? (int) $p['order'] : PHP_INT_MAX;
+}
+function tc_sort_providers($list) {
+    // 用带原始下标的稳定排序:order 相同时保持原顺序
+    $pairs = array();
+    foreach (array_values($list) as $i => $p) $pairs[] = array($i, $p);
+    usort($pairs, function ($a, $b) {
+        $oa = tc_provider_order($a[1]);
+        $ob = tc_provider_order($b[1]);
+        if ($oa === $ob) return $a[0] - $b[0];
+        return $oa < $ob ? -1 : 1;
+    });
+    $out = array();
+    foreach ($pairs as $pr) $out[] = $pr[1];
+    return $out;
+}
+// 下一个可用排序值(新增供应商时排到末尾)
+function tc_next_provider_order($db) {
+    $max = -1;
+    foreach ((isset($db['providers']) ? $db['providers'] : array()) as $p) {
+        $o = tc_provider_order($p);
+        if ($o !== PHP_INT_MAX && $o > $max) $max = $o;
+    }
+    return $max + 1;
+}
+
 function tc_visible_providers_of($db, $user) {
     $out = array();
     foreach ($db['providers'] as $p) {
@@ -14,7 +43,7 @@ function tc_visible_providers_of($db, $user) {
             $out[] = $p;
         }
     }
-    return $out;
+    return tc_sort_providers($out);
 }
 
 function tc_effective_group_id($db, $user) {
@@ -84,6 +113,7 @@ function tc_client_provider($p, $owner = false, $admin = false) {
         'enabled' => tc_provider_enabled($p),
         'ownerId' => isset($p['ownerId']) ? $p['ownerId'] : null,
         'mine' => $owner,
+        'order' => isset($p['order']) && is_numeric($p['order']) ? (int) $p['order'] : 0,
         // 密钥只以掩码形式下发给属主或管理员;其他用户不回传任何密钥信息
         'apiKey' => $showKey && $key ? tc_mask_key($key) : '',
         'hasKey' => !!$key,
@@ -260,6 +290,8 @@ function tc_normalize_provider_input($b, $base = array()) {
         $p['billingMode'] = $b['billingMode'];
     }
     if (array_key_exists('pricePer1k', $b)) $p['pricePer1k'] = max(0, min(1000, (float) $b['pricePer1k']));
+    // 排序值:前台供应商/模型列表按此升序展示;不传则保持原值(新增时由调用方补末尾值)
+    if (array_key_exists('order', $b) && is_numeric($b['order'])) $p['order'] = (int) $b['order'];
     if (array_key_exists('models', $b)) {
         $p['models'] = tc_normalize_models($b['models']);
         // 模型绑定的密钥必须在供应商的密钥列表里,否则清掉(回退默认密钥)
@@ -895,6 +927,7 @@ function tc_api_register() {
             $token = bin2hex(random_bytes(24)); $user['emailTokenHash'] = hash('sha256', $token); $user['emailTokenExpires'] = tc_now() + 86400000;
         }
         $db['users'][] = $user;
+        tc_log_auth_event('auth', $name, '注册账号', $user['id']);
         // 核销邀请码:累加使用次数,记录最后使用者;次数用尽后不再可用
         if ($inviteIndex >= 0) {
             $db['inviteCodes'][$inviteIndex]['usedCount'] = tc_invite_used_count($db['inviteCodes'][$inviteIndex]) + 1;
@@ -940,7 +973,15 @@ function tc_api_login() {
         }
         $settings = $db['settings'];
     });
+    tc_log_auth_event('auth', isset($user['name']) ? $user['name'] : '', '登录成功', $seenId);
     tc_json(200, array('token' => tc_issue_token($user, $settings), 'user' => tc_sanitize_user($user)));
+}
+
+// 登录/注册/游客等认证事件的日志(便于后台审计来源 IP)
+function tc_log_auth_event($kind, $userName, $action, $userId = '') {
+    $entry = array('kind' => $kind, 'userName' => (string) $userName, 'action' => (string) $action, 'ip' => tc_client_ip());
+    if ($userId !== '') $entry['userId'] = (string) $userId;
+    tc_push_log($entry);
 }
 
 // 游客登录:为每位访客自动创建一个独立账号(归入游客组、按 guestRounds 发放额度),
@@ -1029,7 +1070,7 @@ function tc_api_reset_password() {
 function tc_api_logout() {
     tc_with_db(false, function ($db) {
         $user = tc_auth_user($db);
-        if ($user) tc_push_log(array('kind' => 'auth', 'userName' => $user['name'], 'action' => '退出登录'));
+        if ($user) tc_log_auth_event('auth', $user['name'], '退出登录', $user['id']);
         tc_json(200, array('ok' => true));
     });
 }
@@ -1143,6 +1184,8 @@ function tc_api_create_provider() {
         $p = tc_normalize_provider_input($b, array('id' => tc_uid(), 'createdAt' => tc_now()));
         $err = tc_validate_provider($p);
         if ($err) tc_fail(400, $err);
+        // 新增供应商默认排到末尾,可在后台用上下移动调整顺序
+        if (!array_key_exists('order', $b) || !is_numeric($b['order'])) $p['order'] = tc_next_provider_order($db);
         $p['updatedAt'] = tc_now();
         if ($wantGlobal) {
             $p['ownerId'] = null;
@@ -2008,27 +2051,19 @@ function tc_api_admin_user_chats() {
         }
         $out = array();
         foreach ($targets as $u) {
-            $chats = array();
-            foreach (tc_chats_of($db, $u['id']) as $c) {
-                $msgs = array();
-                if (isset($c['messages']) && is_array($c['messages'])) {
-                    foreach (array_slice($c['messages'], -50) as $m) {
-                        $msgs[] = array(
-                            'role' => isset($m['role']) ? $m['role'] : 'assistant',
-                            'content' => substr((string) (isset($m['content']) ? $m['content'] : ''), 0, 2000),
-                            'error' => !empty($m['error']),
-                            'createdAt' => isset($m['createdAt']) ? $m['createdAt'] : 0,
-                        );
-                    }
+            // 指定用户:完整下发(不截断条数/正文字符,带推理/引用/版本),
+            // 后台可像前台一样完整还原对话(复用与云同步相同的清洗规则)。
+            $chats = tc_sanitize_chats(tc_chats_of($db, $u['id']));
+            if (!$userId) {
+                // 「全部用户」模式:按最近更新时间取前 20 个对话、每个最多 200 条,避免整站数据过大
+                usort($chats, function ($a, $b) {
+                    return (isset($b['updatedAt']) ? $b['updatedAt'] : 0) <=> (isset($a['updatedAt']) ? $a['updatedAt'] : 0);
+                });
+                $chats = array_slice($chats, 0, 20);
+                foreach ($chats as &$c) {
+                    if (isset($c['messages']) && count($c['messages']) > 200) $c['messages'] = array_slice($c['messages'], -200);
                 }
-                $chats[] = array(
-                    'id' => $c['id'],
-                    'title' => isset($c['title']) ? $c['title'] : '新对话',
-                    'pinned' => !empty($c['pinned']),
-                    'createdAt' => isset($c['createdAt']) ? $c['createdAt'] : 0,
-                    'updatedAt' => isset($c['updatedAt']) ? $c['updatedAt'] : 0,
-                    'messages' => $msgs,
-                );
+                unset($c);
             }
             if ($chats || $userId) $out[] = array('user' => tc_sanitize_user($u), 'chats' => $chats);
         }
@@ -2791,6 +2826,16 @@ function tc_api_admin_update_provider($id) {
             $db['defaultProviderId'] = $id;
             tc_json(200, array('ok' => true, 'defaultProviderId' => $id));
         }
+        // 重新排序:body.order 为「供应商 id 顺序数组」,按数组下标写回 order
+        if (isset($b['action']) && $b['action'] === 'reorder' && isset($b['order']) && is_array($b['order'])) {
+            $pos = array();
+            foreach (array_values($b['order']) as $i => $pid) $pos[(string) $pid] = (int) $i;
+            foreach ($db['providers'] as &$pp) {
+                if (isset($pos[(string) $pp['id']])) $pp['order'] = $pos[(string) $pp['id']];
+            }
+            unset($pp);
+            tc_json(200, array('ok' => true));
+        }
         $next = tc_normalize_provider_input($b, $existing);
         $err = tc_validate_provider($next);
         if ($err) tc_fail(400, $err);
@@ -2911,7 +2956,8 @@ function tc_api_parse_document() {
         tc_push_log(array(
             'kind' => 'parse', 'userName' => $user['name'], 'userId' => $user['id'],
             'provider' => 'MinerU', 'model' => $mode, 'status' => 200,
-            'ms' => $ms, 'cost' => 0, 'error' => $name . ' · ' . $chars . ' 字',
+            'ms' => $ms, 'cost' => 0, 'ip' => tc_client_ip(),
+            'note' => $name . ' · ' . $chars . ' 字',
         ));
         tc_json(200, array(
             'name' => $name,

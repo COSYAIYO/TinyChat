@@ -905,7 +905,20 @@ async function loadProviders() {
   const box = $('admin-providers');
   box.innerHTML = '';
   const providers = (data.providers || []).filter((p) => p.scope === 'global');
-  providers.forEach((p) => {
+  // 上/下移:把当前顺序数组里相邻两项对调后整体提交,保证前台按此顺序展示
+  const providerIds = providers.map((p) => p.id);
+  const saveReorder = async (ids) => {
+    try {
+      const rr = await api('/api/admin/providers/' + ids[0], {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reorder', order: ids }),
+      });
+      if (!rr.ok) throw new Error('排序失败');
+      loadProviders();
+    } catch (e) { toast(e.message || '排序失败', true); }
+  };
+  providers.forEach((p, idx) => {
     const isDefault = p.id === data.defaultProviderId;
     const disabled = p.enabled === false;
     const card = document.createElement('div');
@@ -925,12 +938,26 @@ async function loadProviders() {
         ${keyHtml}
       </div>
       <div class="provider-card-actions" style="display:flex;gap:6px;flex-shrink:0">
+        <button class="btn small" data-up="' + p.id + '" type="button" title="上移（前台显示更靠前）">↑</button>
+        <button class="btn small" data-down="' + p.id + '" type="button" title="下移（前台显示更靠后）">↓</button>
         ${!disabled && !isDefault ? '<button class="btn small" data-default="' + p.id + '">设为默认</button>' : ''}
         <button class="btn small" data-toggle type="button">${disabled ? '启用' : '停用'}</button>
         <button class="btn small" data-test type="button">测试</button>
         <button class="btn small" data-edit type="button">编辑</button>
         <button class="btn small danger" data-del type="button">删除</button>
       </div>`;
+    card.querySelector('[data-up]')?.addEventListener('click', () => {
+      if (idx <= 0) return;
+      const ids = providerIds.slice();
+      [ids[idx - 1], ids[idx]] = [ids[idx], ids[idx - 1]];
+      saveReorder(ids);
+    });
+    card.querySelector('[data-down]')?.addEventListener('click', () => {
+      if (idx >= providerIds.length - 1) return;
+      const ids = providerIds.slice();
+      [ids[idx + 1], ids[idx]] = [ids[idx], ids[idx + 1]];
+      saveReorder(ids);
+    });
     card.querySelector('[data-toggle]')?.addEventListener('click', async () => {
       const enable = disabled;
       try {
@@ -1696,26 +1723,72 @@ async function loadLogs() {
   logs.forEach((l) => {
     const tr = document.createElement('tr');
     const status = l.status || 0;
-    const ok = status === 0 ? l.error ? false : true : status < 400;
+    const hasStatus = typeof l.status === 'number' && l.status > 0;
+    const ok = l.error ? false : (hasStatus ? status < 400 : true);
+    // 无 HTTP 状态的条目(认证/邮件/管理等)不显示「连接失败」,统一按结果给「成功/失败」
+    const statusText = l.error ? '失败' : (hasStatus ? String(status) : (l.status === 0 ? '连接失败' : '成功'));
     const badge = l.kind === 'auth' ? '<span class="log-badge auth">认证</span>'
       : (l.kind === 'parse' ? '<span class="log-badge chat">解析</span>'
-      : (status >= 400 || l.error ? '<span class="log-badge err">错误</span>' : '<span class="log-badge chat">对话</span>'));
+      : (l.kind === 'mail' ? '<span class="log-badge auth">邮件</span>'
+      : (l.kind === 'admin' ? '<span class="log-badge auth">管理</span>'
+      : (status >= 400 || l.error ? '<span class="log-badge err">错误</span>' : '<span class="log-badge chat">对话</span>'))));
     const ms = l.ms !== undefined ? '<span title="' + l.ms + 'ms">' + (l.ms >= 1000 ? (l.ms / 1000).toFixed(1) + 's' : l.ms + 'ms') + '</span>' : '-';
+    // 信息列:失败原因 / 解析摘要(note) / 认证动作(action)
+    const infoMsg = l.error || l.note || l.action || '';
+    // 完整内容:提示词 / 模型回复 / 用量 / 来源 IP;点小眼睛展开查看
+    const hasDetail = !!(l.prompt || l.reply || l.usage || l.ip);
+    let contentCell = '-';
+    if (hasDetail) {
+      const usage = l.usage && (l.usage.prompt || l.usage.completion)
+        ? '用量：输入 ' + (l.usage.prompt || 0) + ' / 输出 ' + (l.usage.completion || 0) + ' tokens'
+        : '';
+      const detail = [
+        l.ip ? '来源 IP：' + l.ip : '',
+        l.action ? '动作：' + l.action : '',
+        usage,
+        l.prompt ? '【提示词】\n' + l.prompt : '',
+        l.reply ? '【模型回复】\n' + l.reply : '',
+        l.error ? '【错误】\n' + l.error : '',
+      ].filter(Boolean).join('\n\n');
+      contentCell = '<button class="log-eye" type="button" data-log-eye title="查看完整内容" aria-label="查看完整内容">' + window.OC.icon('eye', 13) + '</button>';
+      tr.dataset.detail = detail;
+    }
     tr.innerHTML = '<td>' + fmtTime(l.t) + '</td>'
       + '<td>' + escapeHtml(l.userName || '-') + '</td>'
       + '<td>' + badge + '</td>'
       + '<td>' + escapeHtml(l.provider || '-') + '</td>'
       + '<td>' + escapeHtml(l.model || '-') + '</td>'
-      + '<td class="log-status ' + (ok ? 'ok' : 'fail') + '">' + (l.error ? '失败' : status + (status === 0 ? '(连接失败)' : '')) + '</td>'
+      + '<td class="log-status ' + (ok ? 'ok' : 'fail') + '">' + statusText + '</td>'
       + '<td>' + ms + '</td>'
       + '<td>' + (l.cost || 0) + '</td>'
-      + '<td class="log-msg" title="' + escapeHtml(l.error || '') + '">' + escapeHtml(l.error || '') + '</td>';
+      + '<td class="log-msg" title="' + escapeHtml(infoMsg) + '">' + escapeHtml(infoMsg) + '</td>'
+      + '<td class="log-content">' + contentCell + '</td>';
     tbody.appendChild(tr);
   });
 }
 (function bindLogs() {
   const filters = $('log-filters');
   if (!filters) return;
+  const tbody = $('logs-tbody');
+  if (tbody) {
+    tbody.addEventListener('click', (e) => {
+      const eye = e.target.closest ? e.target.closest('[data-log-eye]') : null;
+      if (!eye) return;
+      const detail = eye.closest('tr') ? eye.closest('tr').dataset.detail : '';
+      if (!detail) return;
+      const mask = document.createElement('div');
+      mask.className = 'modal-mask';
+      mask.innerHTML = '<div class="modal modal-lg log-detail-modal" role="dialog" aria-modal="true">'
+        + '<div class="modal-header"><h3>日志完整内容</h3>'
+        + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + window.OC.icon('close', 16) + '</button></div>'
+        + '<div class="modal-body"><pre class="log-detail-pre">' + escapeHtml(detail) + '</pre></div>'
+        + '</div>';
+      document.body.appendChild(mask);
+      if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(mask); else mask.classList.add('show');
+      const close = () => { if (window.OCUI && window.OCUI.closeModal) window.OCUI.closeModal(mask); else mask.remove(); setTimeout(() => mask.parentNode && mask.remove(), 360); };
+      mask.addEventListener('click', (ev) => { if (ev.target === mask || ev.target.closest('[data-act="close"]')) close(); });
+    });
+  }
   filters.addEventListener('click', async (e) => {
     const btn = e.target.closest('.log-filter-btn');
     if (!btn) return;
@@ -1781,23 +1854,48 @@ async function loadUserChats(userId) {
       return;
     }
     let html = '';
+    const renderMarkdown = (el, text) => {
+      if (window.OCRenderer && OCRenderer.renderInto) {
+        try { OCRenderer.renderInto(el, String(text || '')); return; } catch (e) { /* 回退纯文本 */ }
+      }
+      el.textContent = String(text || '');
+    };
     list.forEach((uc) => {
       html += '<div class="section-title" style="margin-top:14px">' + escapeHtml(uc.user.name) + ' · ' + uc.chats.length + ' 个对话</div>';
       uc.chats.forEach((c) => {
         const msgs = (c.messages || []).map((m) => {
-          const who = m.role === 'user' ? '用户' : 'AI';
+          const who = m.role === 'user' ? '用户' : (m.role === 'system' ? '系统' : 'AI');
           const err = m.error ? ' <span class="log-badge err">失败</span>' : '';
-          const txt = escapeHtml((m.content || '').slice(0, 300)) + ((m.content || '').length > 300 ? '…' : '');
-          return '<div class="chat-msg ' + (m.role === 'user' ? 'u' : 'a') + '"><span class="chat-msg-who">' + who + err + '</span><div class="chat-msg-text">' + txt + '</div></div>';
+          const reasoning = m.reasoning
+            ? '<details class="chat-reasoning"><summary>思维链</summary><div class="chat-reasoning-body"></div></details>'
+            : '';
+          return '<div class="chat-msg ' + (m.role === 'user' ? 'u' : 'a') + '"><span class="chat-msg-who">' + who + err + '</span>'
+            + reasoning
+            + '<div class="chat-msg-text md-prose" data-md></div></div>';
         }).join('');
         const expanded = msgs ? '<div class="chat-detail"><div class="chat-detail-msgs">' + msgs + '</div></div>' : '';
-        html += '<details class="chat-history-item" ' + (c.id === (userId ? null : null) ? '' : '') + '>'
+        html += '<details class="chat-history-item">'
           + '<summary><span class="chat-h-title">' + escapeHtml(c.title) + '</span>'
           + '<span class="chat-h-meta">' + c.messages.length + ' 条 · ' + fmtTime(c.updatedAt) + '</span></summary>'
           + expanded + '</details>';
       });
     });
     content.innerHTML = html;
+    // 逐条渲染 Markdown / 代码 / 公式 / 图片(与前台一致),并在有思维链时填入推理内容
+    let mi = 0;
+    list.forEach((uc) => {
+      uc.chats.forEach((c) => {
+        (c.messages || []).forEach((m) => {
+          const root = content.querySelectorAll('[data-md]')[mi++];
+          if (!root) return;
+          renderMarkdown(root, m.content);
+          if (m.reasoning) {
+            const rb = root.closest('.chat-msg') ? root.closest('.chat-msg').querySelector('.chat-reasoning-body') : null;
+            if (rb) renderMarkdown(rb, m.reasoning);
+          }
+        });
+      });
+    });
   } catch (e) {
     content.innerHTML = '<p class="muted small">加载失败:' + escapeHtml(e.message) + '</p>';
   }

@@ -1489,6 +1489,48 @@ function tc_model_reply_text($data, $format) {
     return tc_plain_text($content, 240);
 }
 
+// 日志用:取模型回复的完整文本(不做摘要截断,由调用方按日志上限裁剪)
+function tc_model_reply_full($data, $format) {
+    if (!is_array($data)) return is_string($data) ? $data : '';
+    if ($format === 'anthropic') {
+        $parts = array();
+        if (isset($data['content']) && is_array($data['content'])) {
+            foreach ($data['content'] as $p) {
+                if (is_array($p) && isset($p['text'])) $parts[] = $p['text'];
+            }
+        }
+        return implode("\n", $parts);
+    }
+    if ($format === 'responses') {
+        if (isset($data['output_text']) && is_string($data['output_text'])) return $data['output_text'];
+        $parts = array();
+        if (isset($data['output']) && is_array($data['output'])) {
+            foreach ($data['output'] as $o) {
+                if (!is_array($o) || !isset($o['content']) || !is_array($o['content'])) continue;
+                foreach ($o['content'] as $c) {
+                    if (is_array($c) && isset($c['text'])) $parts[] = $c['text'];
+                }
+            }
+        }
+        return implode("\n", $parts);
+    }
+    if ($format === 'completions') {
+        return isset($data['choices'][0]['text']) ? (string) $data['choices'][0]['text'] : '';
+    }
+    $choice = isset($data['choices'][0]) ? $data['choices'][0] : array();
+    $msg = isset($choice['message']) ? $choice['message'] : array();
+    $content = isset($msg['content']) ? $msg['content'] : (isset($choice['text']) ? $choice['text'] : '');
+    if (is_array($content)) {
+        $parts = array();
+        foreach ($content as $p) {
+            if (is_string($p)) $parts[] = $p;
+            elseif (is_array($p) && isset($p['text'])) $parts[] = $p['text'];
+        }
+        $content = implode("\n", $parts);
+    }
+    return is_string($content) ? $content : '';
+}
+
 // 视频模型连通性测试(管理员/个人共用):只建任务判定连通,不等待出片。
 // 成功后直接输出响应并退出。
 function tc_video_test_and_reply($baseUrl, $model, $prompt, $apiKey, $providerName, $userName, $userId, $providerId) {
@@ -2027,11 +2069,12 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         $charged = 0;
         $streamUsage = array('prompt' => 0, 'completion' => 0);
         $streamText = '';
+        $streamLogId = 0;   // 首字节时先落一条日志,收尾再回填完整回复/用量
         // 429/5xx 一次自动重试:错误响应不会进入 onChunk(未计费未发送),重试安全
         $attempt = 0;
         do {
             $attempt++;
-            $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage, &$streamText) {
+            $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage, &$streamText, &$streamLogId) {
             tc_capture_stream_usage($streamUsage, $chunk, $format);
             tc_capture_stream_text($streamText, $chunk, $format);
             if (!$headersSent) {
@@ -2046,11 +2089,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                     tc_touch_user($db, $user['id']);
                     $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
                 });
-                tc_push_log(array(
+                $streamLogId = tc_push_log(array_merge(array(
                     'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
                     'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
                     'format' => $format, 'status' => 200, 'ms' => $ms, 'cost' => $charged, 'stream' => $isStream,
-                ));
+                ), tc_log_chat_meta($body, $format)));
                 tc_note_model_health($provider, $body, true);
                 tc_disable_buffers();
                 header('Content-Type: text/event-stream; charset=utf-8');
@@ -2094,6 +2137,12 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                     tc_api_append_chat($db, $user['id'], $msgs, array('model' => $modelStr, 'usage' => $streamUsage));
                 }
             });
+            // 回填日志:流式首字节时只落了元信息,收尾补上完整回复与用量
+            if ($streamLogId) tc_update_log($streamLogId, array(
+                'reply' => tc_log_clip($streamText, TC_LOG_TEXT_LIMIT),
+                'usage' => array('prompt' => (int) $streamUsage['prompt'], 'completion' => (int) $streamUsage['completion']),
+                'cost' => $charged,
+            ));
         }
 
         if (!$res['ok']) {
@@ -2101,11 +2150,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             $ms = tc_now() - $started;
             $code = $res['code'] ?: 502;
             $msg = tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : '');
-            tc_push_log(array(
+            tc_push_log(array_merge(array(
                 'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
                 'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
                 'format' => $format, 'status' => 0, 'ms' => $ms, 'cost' => 0, 'stream' => $isStream, 'error' => $msg,
-            ));
+            ), tc_log_chat_meta($body, $format)));
             tc_note_model_health($provider, $body, false);
             if (!$headersSent) tc_fail($code, $msg);
             exit;
@@ -2135,7 +2184,8 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                 $charged = 0;
                 $streamUsage = array('prompt' => 0, 'completion' => 0);
                 $streamText = '';
-                $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage, &$streamText) {
+                $streamLogId = 0;
+                $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage, &$streamText, &$streamLogId) {
                     tc_capture_stream_usage($streamUsage, $chunk, $format);
                     tc_capture_stream_text($streamText, $chunk, $format);
                     if (!$headersSent) {
@@ -2149,11 +2199,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                             tc_touch_user($db, $user['id']);
                             $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
                         });
-                        tc_push_log(array(
+                        $streamLogId = tc_push_log(array_merge(array(
                             'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
                             'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
                             'format' => $format, 'status' => 200, 'ms' => $ms, 'cost' => $charged, 'stream' => $isStream,
-                        ));
+                        ), tc_log_chat_meta($body, $format)));
                         tc_note_model_health($provider, $body, true);
                         tc_disable_buffers();
                         header('Content-Type: text/event-stream; charset=utf-8');
@@ -2206,6 +2256,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                                 tc_api_append_chat($db, $user['id'], $msgs, array('model' => $rModel, 'usage' => $streamUsage));
                             }
                         });
+                        if ($streamLogId) tc_update_log($streamLogId, array(
+                            'reply' => tc_log_clip($streamText, TC_LOG_TEXT_LIMIT),
+                            'usage' => array('prompt' => (int) $streamUsage['prompt'], 'completion' => (int) $streamUsage['completion']),
+                            'cost' => $charged,
+                        ));
                         tc_task_finish($taskId, 'completed');
                     }
                     exit;
@@ -2214,12 +2269,12 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             tc_task_finish($taskId, 'failed', 'upstream_http_' . $res['status']);
             $ms = tc_now() - $started;
             $msg = (isset($provider['name']) && $provider['name'] !== '' ? '「' . $provider['name'] . '」' : '') . tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', $res['status']);
-            tc_push_log(array(
+            tc_push_log(array_merge(array(
                 'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
                 'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
                 'format' => $format, 'status' => $res['status'], 'ms' => $ms, 'cost' => 0, 'stream' => $isStream,
                 'error' => substr($msg, 0, 200),
-            ));
+            ), tc_log_chat_meta($body, $format)));
             tc_note_model_health($provider, $body, false);
             if (!$headersSent) tc_fail($res['status'], $msg);
             exit;
@@ -2283,22 +2338,22 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
     if (!$res['ok']) {
         $code = $res['code'] ?: 502;
         $msg = tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : '');
-        tc_push_log(array(
+        tc_push_log(array_merge(array(
             'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
             'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
             'format' => $format, 'status' => 0, 'ms' => $ms, 'cost' => 0, 'stream' => false, 'error' => $msg,
-        ));
+        ), tc_log_chat_meta($body, $format)));
         tc_note_model_health($provider, $body, false);
         tc_fail($code, $msg);
     }
     if ($res['status'] >= 400) {
         $msg = (isset($provider['name']) && $provider['name'] !== '' ? '「' . $provider['name'] . '」' : '') . tc_upstream_error_message($res['body'], $res['status']);
-        tc_push_log(array(
+        tc_push_log(array_merge(array(
             'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
             'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
             'format' => $format, 'status' => $res['status'], 'ms' => $ms, 'cost' => 0, 'stream' => false,
             'error' => substr($msg, 0, 200),
-        ));
+        ), tc_log_chat_meta($body, $format)));
         tc_note_model_health($provider, $body, false);
         tc_fail($res['status'], $msg);
     }
@@ -2328,11 +2383,13 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             tc_api_append_chat($db, $user['id'], $msgs, array('model' => isset($body['model']) ? $body['model'] : '', 'usage' => $bodyUsage));
         }
     });
-    tc_push_log(array(
+    tc_push_log(array_merge(array(
         'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
         'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
         'format' => $format, 'status' => $res['status'], 'ms' => $ms, 'cost' => $charged, 'stream' => false,
-    ));
+        'reply' => tc_log_clip(is_array($jBody) ? tc_model_reply_full($jBody, $format) : (string) $res['body'], TC_LOG_TEXT_LIMIT),
+        'usage' => array('prompt' => (int) $bodyUsage['prompt'], 'completion' => (int) $bodyUsage['completion']),
+    ), tc_log_chat_meta($body, $format)));
     tc_note_model_health($provider, $body, true);
     $ctype = $res['ctype'];
     if (strpos($ctype, 'application/json') !== false) $ct = 'application/json; charset=utf-8';
@@ -2672,7 +2729,7 @@ function tc_generate_images($apiKeyOwner = null) {
         tc_fail(502, '该模型未返回图片。若这是对话式生图模型，请确认 Base URL 与模型名正确；也可尝试在「设置 → 供应商」中把该模型标记为生图。');
     }
     $usage = array('prompt' => 0, 'completion' => 0);
-    tc_with_db(true, function (&$db) use ($user, $provider, $ctx, $usage, $started) {
+    tc_with_db(true, function (&$db) use ($user, $provider, $ctx, $usage, $started, $items) {
         $fresh = null;
         foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
         if (!$fresh) return;
@@ -2680,7 +2737,10 @@ function tc_generate_images($apiKeyOwner = null) {
         tc_touch_user($db, $user['id']);
         $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
         tc_record_usage_entry($db, $user['id'], $ctx['model'] . ' (图像)', $charged, 0, 0);
-        tc_push_log(array('kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'], 'provider' => $provider['name'], 'model' => $ctx['model'] . ' (图像)', 'format' => 'images', 'status' => 200, 'ms' => tc_now() - $started, 'cost' => $charged, 'stream' => false));
+        tc_push_log(array('kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'], 'provider' => $provider['name'], 'model' => $ctx['model'] . ' (图像)', 'format' => 'images', 'status' => 200, 'ms' => tc_now() - $started, 'cost' => $charged, 'stream' => false,
+            'prompt' => tc_log_clip(isset($ctx['prompt']) ? $ctx['prompt'] : '', 4000),
+            'reply' => tc_log_clip(count($items) . ' 张图片：' . implode("\n", array_map(function ($im) { return isset($im['url']) ? $im['url'] : (isset($im['display']) ? $im['display'] : ($im['b64_json'] ?? '' ? '[b64 图片]' : '')); }, $items)), 4000),
+            'ip' => tc_client_ip()));
     });
     return array('ok' => true, 'model' => $ctx['model'], 'images' => $items);
 }
@@ -3250,7 +3310,7 @@ function tc_generate_video($apiKeyOwner = null) {
         'mode' => $ctx['mode'],
     );
     $usage = array('prompt' => 0, 'completion' => 0);
-    tc_with_db(true, function (&$db) use ($user, $provider, $ctx, $usage, $started) {
+    tc_with_db(true, function (&$db) use ($user, $provider, $ctx, $usage, $started, $video) {
         $fresh = null;
         foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
         if (!$fresh) return;
@@ -3258,7 +3318,10 @@ function tc_generate_video($apiKeyOwner = null) {
         tc_touch_user($db, $user['id']);
         $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
         tc_record_usage_entry($db, $user['id'], $ctx['model'] . ' (视频)', $charged, 0, 0);
-        tc_push_log(array('kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'], 'provider' => $provider['name'], 'model' => $ctx['model'] . ' (视频)', 'format' => 'videos', 'status' => 200, 'ms' => tc_now() - $started, 'cost' => $charged, 'stream' => false));
+        tc_push_log(array('kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'], 'provider' => $provider['name'], 'model' => $ctx['model'] . ' (视频)', 'format' => 'videos', 'status' => 200, 'ms' => tc_now() - $started, 'cost' => $charged, 'stream' => false,
+            'prompt' => tc_log_clip(isset($ctx['prompt']) ? $ctx['prompt'] : '', 4000),
+            'reply' => tc_log_clip('视频：' . (isset($video['url']) ? $video['url'] : (isset($video['display']) ? $video['display'] : '')), 4000),
+            'ip' => tc_client_ip()));
     });
     return array('ok' => true, 'model' => $ctx['model'], 'videos' => array($video));
 }

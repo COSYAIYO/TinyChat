@@ -22,6 +22,8 @@
     followupsModel: '',    // 跟进建议所用模型:'' = 跟随当前模型;否则 "providerId\nmodelId"
     autotitle: true,       // 自动生成会话标题
     titleModel: '',        // 命名方式:'' = 本地截取;'current' = AI(当前模型);否则 "providerId\nmodelId"
+    imageModel: '',        // 默认生图模型:'' = 用第一个可用生图模型;否则 "providerId\nmodelId"
+    autoImage: true,       // 对话模型下说了「画一张…」等绘图/改图意图时,自动改走生图
     elapsed: true,         // 显示生成耗时
     reasoning: true,       // 请求并展示思维链
     reasoningEffort: 'medium', // off | low | medium | high

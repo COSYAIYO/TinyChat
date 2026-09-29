@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.41');
+define('TC_VERSION', '2.0.42');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -905,14 +905,18 @@ function tc_migrate_db($raw) {
         $u['tools'] = tc_user_tools($u);
     }
     unset($u);
-    foreach ($db['providers'] as &$p) {
+    foreach ($db['providers'] as $pi => &$p) {
         if (!isset($p['models']) || !is_array($p['models'])) $p['models'] = array();
         if (!isset($p['costPerCall']) || !is_numeric($p['costPerCall'])) $p['costPerCall'] = 1;
         if (!isset($p['scope']) || $p['scope'] !== 'global') $p['scope'] = 'user';
         if (!array_key_exists('enabled', $p)) $p['enabled'] = true;
         if (empty($p['createdAt'])) $p['createdAt'] = tc_now();
+        // 供应商排序:旧数据按当前数组顺序补一个 order,之后可在后台调整
+        if (!isset($p['order']) || !is_numeric($p['order'])) $p['order'] = $pi;
     }
     unset($p);
+    // 旧数据补的 order 即原数组下标,顺序不变;已排过序的数据保持其顺序
+    if (function_exists('tc_sort_providers')) $db['providers'] = tc_sort_providers($db['providers']);
     if (!empty($db['defaultProviderId'])) {
         $found = false;
         foreach ($db['providers'] as $p) {
@@ -1749,10 +1753,22 @@ function tc_clear_login_fail($name) {
 
 function tc_logs_file() { return tc_data_dir() . '/logs.json'; }
 
+// 日志内容上限:提示词/回复按字符截断,避免 logs.json 过度膨胀
+// (日志文件每次写入都整体重写,内容上限直接决定单次 I/O 大小)
+if (!defined('TC_LOG_TEXT_LIMIT')) define('TC_LOG_TEXT_LIMIT', 10000);
+
+function tc_log_clip($s, $n) {
+    $s = (string) $s;
+    if ($n <= 0 || strlen($s) <= $n) return $s;
+    // 按字符边界截断,避免把多字节字符切坏
+    $cut = mb_substr($s, 0, $n, 'UTF-8');
+    return $cut . "\n…（已截断，共 " . mb_strlen($s, 'UTF-8') . ' 字）';
+}
+
 function tc_push_log($entry) {
     $file = tc_logs_file();
     $fp = fopen($file, 'c+');
-    if (!$fp) return;
+    if (!$fp) return 0;
     flock($fp, LOCK_EX);
     $raw = stream_get_contents($fp);
     $data = json_decode($raw, true);
@@ -1771,6 +1787,48 @@ function tc_push_log($entry) {
     fflush($fp);
     flock($fp, LOCK_UN);
     fclose($fp);
+    return $item['id'];
+}
+
+// 回填日志条目(流式对话在收尾时才有完整回复/用量,先记 id 再补内容)
+function tc_update_log($id, $patch) {
+    $id = (int) $id;
+    if ($id <= 0 || !is_array($patch) || !$patch) return false;
+    $file = tc_logs_file();
+    if (!is_file($file)) return false;
+    $fp = fopen($file, 'c+');
+    if (!$fp) return false;
+    flock($fp, LOCK_EX);
+    $data = json_decode((string) stream_get_contents($fp), true);
+    if (!is_array($data) || empty($data['items'])) { flock($fp, LOCK_UN); fclose($fp); return false; }
+    $hit = false;
+    foreach ($data['items'] as &$it) {
+        if (isset($it['id']) && (int) $it['id'] === $id) {
+            foreach ($patch as $k => $v) $it[$k] = $v;
+            $hit = true;
+            break;
+        }
+    }
+    unset($it);
+    if ($hit) {
+        ftruncate($fp, 0);
+        rewind($fp);
+        fwrite($fp, tc_json_encode($data));
+        fflush($fp);
+    }
+    flock($fp, LOCK_UN);
+    fclose($fp);
+    return $hit;
+}
+
+// 对话日志的通用元信息:提示词(最后一条用户消息)与来源 IP
+function tc_log_chat_meta($body, $format) {
+    $prompt = '';
+    if (function_exists('tc_last_user_text')) $prompt = tc_last_user_text($body, $format);
+    return array(
+        'prompt' => tc_log_clip($prompt, 8000),
+        'ip' => tc_client_ip(),
+    );
 }
 
 function tc_list_logs($limit) {

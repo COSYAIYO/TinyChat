@@ -25,15 +25,15 @@
 </script>
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./logo-icon.svg">
-<link rel="stylesheet" href="./static/css/style.css?v=20261005.2">
+<link rel="stylesheet" href="./static/css/style.css?v=20261005.8">
 <link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
 <link rel="stylesheet" href="./vendor/katex/katex.min.css">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261005.2">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261005.2">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261005.2">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261005.2">
-<link rel="stylesheet" href="./static/css/markdown.css?v=20261005.2">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261005.2">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261005.8">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261005.8">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261005.8">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261005.8">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20261005.8">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261005.8">
 <script>
 /* 在样式表之后立刻刷主题色,避免首屏主按钮仍是默认蓝 */
 (function () {
@@ -596,6 +596,23 @@
               <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
             </div>
           </div>
+          <div class="pref-row pref-sub-row" id="pref-image-model-row">
+            <div class="pref-info">
+              <div class="pref-name">默认生图模型</div>
+              <div class="pref-desc">对话中说「画一张…」或对上一张图说「改成…」时,自动调用此模型出图/改图；不选则用第一个可用生图模型</div>
+            </div>
+            <div class="select-box pref-model-select" id="pref-image-model" data-value="" role="button" tabindex="0" aria-haspopup="listbox">
+              <span class="sb-label">第一个生图模型</span>
+              <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
+            </div>
+          </div>
+          <label class="pref-row pref-sub-row" for="pref-auto-image">
+            <div class="pref-info">
+              <div class="pref-name">对话中自动改走生图</div>
+              <div class="pref-desc">在对话模型下识别到绘图/改图意图时，自动用默认生图模型出图并带上上一张图作参考</div>
+            </div>
+            <div class="switch"><input type="checkbox" id="pref-auto-image" checked><span class="slider"></span></div>
+          </label>
           <div class="pref-row" id="pref-context-row">
             <div class="pref-info">
               <div class="pref-name">AI 上下文条数</div>
@@ -857,19 +874,19 @@
     <button class="btn small primary" id="guest-bar-login" type="button">登录 / 注册</button>
   </div>
 
-  <script src="./static/js/config.js?v=20261005.2"></script>
-  <script src="./static/js/icons.js?v=20261005.2"></script>
-  <script src="./static/js/logos.js?v=20261005.2"></script>
-  <script src="./static/js/components.js?v=20261005.2"></script>
-  <script src="./static/js/ui.js?v=20261005.2"></script>
-  <script src="./static/js/assistants.js?v=20261005.2"></script>
-  <script src="./static/js/conversations.js?v=20261005.2"></script>
-  <script src="./static/js/renderer.js?v=20261005.2"></script>
-  <script src="./static/js/reasoning.js?v=20261005.2"></script>
-  <script src="./static/js/office-formula-copy.js?v=20261005.2"></script>
-  <script src="./static/js/citations.js?v=20261005.2"></script>
-  <script src="./static/js/messages.js?v=20261005.2"></script>
-  <script src="./static/js/multimodal.js?v=20261005.2"></script>
-  <script src="./static/js/app.js?v=20261005.2"></script>
+  <script src="./static/js/config.js?v=20261005.8"></script>
+  <script src="./static/js/icons.js?v=20261005.8"></script>
+  <script src="./static/js/logos.js?v=20261005.8"></script>
+  <script src="./static/js/components.js?v=20261005.8"></script>
+  <script src="./static/js/ui.js?v=20261005.8"></script>
+  <script src="./static/js/assistants.js?v=20261005.8"></script>
+  <script src="./static/js/conversations.js?v=20261005.8"></script>
+  <script src="./static/js/renderer.js?v=20261005.8"></script>
+  <script src="./static/js/reasoning.js?v=20261005.8"></script>
+  <script src="./static/js/office-formula-copy.js?v=20261005.8"></script>
+  <script src="./static/js/citations.js?v=20261005.8"></script>
+  <script src="./static/js/messages.js?v=20261005.8"></script>
+  <script src="./static/js/multimodal.js?v=20261005.8"></script>
+  <script src="./static/js/app.js?v=20261005.8"></script>
 </body>
 </html>
