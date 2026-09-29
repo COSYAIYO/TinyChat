@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.45');
+define('TC_VERSION', '2.0.46');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -1542,13 +1542,21 @@ function tc_model_key_ids($p, $modelId) {
 }
 
 // 按模型解析出「按优先级排列的明文密钥链」:依次尝试,前一把失败自动换下一把。
-// 未绑定任何密钥时返回供应商的默认(第一把)密钥,链长为 1。
+// 链的组成:模型显式绑定的密钥(按顺序)在前;其后把该供应商「其余尚未入选的密钥」按供应商
+// 顺序追加为备用。这样「配了多把 Key」就能天然获得多重保障——即使模型只绑了一把(或没绑),
+// 第一把认证失败/连不上时也会自动尝试供应商下的其它 Key,无需逐个模型手动配链。
 function tc_provider_key_chain($p, $modelId) {
-    $ids = tc_model_key_ids($p, $modelId);
     $out = array();
-    foreach ($ids as $kid) {
-        $plain = tc_provider_key_by_id($p, $kid);
+    $add = function ($plain) use (&$out) {
+        $plain = (string) $plain;
         if ($plain !== '' && !in_array($plain, $out, true)) $out[] = $plain;
+    };
+    foreach (tc_model_key_ids($p, $modelId) as $kid) {
+        $add(tc_provider_key_by_id($p, $kid));
+    }
+    // 追加供应商下其余密钥作备用(显式绑定的排在最前,保持用户设定的优先级)
+    foreach (tc_provider_keys($p) as $k) {
+        $add(tc_provider_key_by_id($p, (string) $k['id']));
     }
     if ($out) return $out;
     $def = tc_provider_key($p);

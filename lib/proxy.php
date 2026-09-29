@@ -626,6 +626,23 @@ function tc_upstream_error_message($raw, $status) {
     return $msg;
 }
 
+// 本次上游结果是否属于「该换下一把 Key 重试」的失败:
+// 连接失败、认证/权限类状态码(401/402/403),或响应体明确指向密钥/鉴权问题。
+// 非流式时 body 可用;流式时 >=400 的响应体也会被收集到 body。
+function tc_key_failure_retryable($res) {
+    if (empty($res['ok'])) return true;                 // 连接失败
+    $status = (int) (isset($res['status']) ? $res['status'] : 0);
+    // 认证/权限/配额类:401 未授权、402 余额、403 禁止、429 限流(多为按 Key 计,换一把可绕过)
+    if (in_array($status, array(401, 402, 403, 429), true)) return true;
+    $body = isset($res['body']) ? (string) $res['body'] : '';
+    if ($body === '') return false;
+    if ($status >= 400 && $status < 500) {
+        // 400/422 等:仅当错误信息指向密钥/鉴权/权限时才换 Key,避免把普通参数错误当成密钥问题
+        if (preg_match('/(api[\s_-]?key|apikey|invalid[\s_-]?key|unauthor|forbidden|authentication|鉴权|密钥|无权|未授权|权限)/iu', $body)) return true;
+    }
+    return false;
+}
+
 function tc_plain_text($s, $limit = 360) {
     $s = html_entity_decode(strip_tags((string) $s), ENT_QUOTES | ENT_HTML5, 'UTF-8');
     $s = preg_replace('/\s+/u', ' ', $s);
@@ -2128,8 +2145,7 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             flush();
         });
             // 密钥回退:认证失败 / 连接失败,且还未向客户端发出任何字节时,换下一把密钥重试
-            if ($keyIdx + 1 < count($keyChain) && !$headersSent
-                && (empty($res['ok']) || in_array((int) (isset($res['status']) ? $res['status'] : 0), array(401, 403), true))) {
+            if ($keyIdx + 1 < count($keyChain) && !$headersSent && tc_key_failure_retryable($res)) {
                 $keyIdx++;
                 $headers = tc_upstream_auth_headers($format, $keyChain[$keyIdx], true);
                 continue;
@@ -2325,8 +2341,7 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         $attempt++;
         $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], false);
         // 密钥回退:认证失败 / 连接失败时换下一把密钥重试(非流式未向客户端发送任何内容,安全)
-        if ($keyIdx + 1 < count($keyChain)
-            && (empty($res['ok']) || in_array((int) (isset($res['status']) ? $res['status'] : 0), array(401, 403), true))) {
+        if ($keyIdx + 1 < count($keyChain) && tc_key_failure_retryable($res)) {
             $keyIdx++;
             $headers = tc_upstream_auth_headers($format, $keyChain[$keyIdx], false);
             continue;
@@ -2618,7 +2633,11 @@ function tc_generate_images($apiKeyOwner = null) {
     if ($ctx['model'] === '' || $ctx['prompt'] === '') tc_fail(400, '请填写模型和提示词');
     // 关键:生图也必须补齐 /v1(用户常按平台文档只填 https://host,不写 /v1)
     $url = tc_api_url($provider['baseUrl'], '/images/generations');
-    $headers = array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . tc_provider_key_for_model($provider, $ctx['model']));
+    // 多密钥:按优先级链依次尝试,前一把认证/连接失败时自动换下一把
+    $imgKeyChain = tc_provider_key_chain($provider, $ctx['model']);
+    if (!$imgKeyChain) $imgKeyChain = array('');
+    $imgKeyIdx = 0;
+    $headers = array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . $imgKeyChain[0]);
     $body = array(
         'model' => $ctx['model'],
         'prompt' => $ctx['prompt'],
@@ -2665,27 +2684,46 @@ function tc_generate_images($apiKeyOwner = null) {
     $res = null;
     $status = 0;
     $lastMsg = '';
-    foreach ($attempts as $idx => $b) {
-        $sig = tc_json_encode($b);
-        if (isset($seen[$sig])) continue;
-        $seen[$sig] = true;
-        $res = tc_http_request($url, 'POST', $headers, $sig, $ctx['timeout'], false, null, true, 30000);
-        if (empty($res['ok'])) {
-            // 连接层失败:网络类(超时/连接)重试一次,其余直接报错
-            $retryable = in_array(isset($res['kind']) ? $res['kind'] : '', array('connect_timeout', 'read_timeout', 'connect'), true);
-            if ($retryable && $idx < 2) { sleep(1); continue; }
-            tc_fail(isset($res['code']) && $res['code'] ? $res['code'] : 502, tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : ''));
+    $imgKeyAttempt = 0;
+    while (true) {
+        $imgKeyAttempt++;
+        foreach ($attempts as $idx => $b) {
+            $sig = tc_json_encode($b);
+            if (isset($seen[$sig])) continue;
+            $seen[$sig] = true;
+            $res = tc_http_request($url, 'POST', $headers, $sig, $ctx['timeout'], false, null, true, 30000);
+            if (empty($res['ok'])) {
+                // 连接层失败:网络类(超时/连接)重试一次,其余交给下面的换 Key 逻辑判断
+                $retryable = in_array(isset($res['kind']) ? $res['kind'] : '', array('connect_timeout', 'read_timeout', 'connect'), true);
+                if ($retryable && $idx < 2) { sleep(1); continue; }
+                break;
+            }
+            $status = (int) (isset($res['status']) ? $res['status'] : 0);
+            if ($status < 400) break;
+            $lastMsg = tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', $status);
+            // 认证 / 限流 / 余额类错误:先尝试换下一把 Key;没有更多 Key 时才返回错误
+            if (in_array($status, array(401, 402, 403, 429), true)) break;
+            // 「该模型不支持此路径」的提示可能伴随各种状态码(实测 400 / 503 都出现过)。
+            // 命中这类语义时不必再降级参数(参数再少也不行),直接跳出走对话接口兜底。
+            if (tc_error_means_path_unsupported($lastMsg, $status)) break;
+            // 参数类错误(400/422):继续用下一组更精简的参数重试
+            if (!in_array($status, array(400, 422), true)) break; // 其它状态:路径/服务不可用,改走对话兜底
         }
-        $status = (int) (isset($res['status']) ? $res['status'] : 0);
-        if ($status < 400) break;
-        $lastMsg = tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', $status);
-        // 认证 / 限流 / 余额类错误:对话接口同样会失败,直接返回原样错误
-        if (in_array($status, array(401, 402, 403, 429), true)) tc_fail($status, $lastMsg);
-        // 「该模型不支持此路径」的提示可能伴随各种状态码(实测 400 / 503 都出现过)。
-        // 命中这类语义时不必再降级参数(参数再少也不行),直接跳出走对话接口兜底。
-        if (tc_error_means_path_unsupported($lastMsg, $status)) break;
-        // 参数类错误(400/422):继续用下一组更精简的参数重试
-        if (!in_array($status, array(400, 422), true)) break; // 其它状态:路径/服务不可用,改走对话兜底
+        // 换 Key:第一把认证/连接失败,而还有下一把时,用下一把重跑整条参数降级链
+        if ($imgKeyIdx + 1 < count($imgKeyChain) && tc_key_failure_retryable($res)) {
+            $imgKeyIdx++;
+            $headers['Authorization'] = 'Bearer ' . $imgKeyChain[$imgKeyIdx];
+            $seen = array(); $lastMsg = ''; $status = 0;
+            if ($imgKeyAttempt < 8) continue;
+        }
+        break;
+    }
+    if (empty($res['ok'])) {
+        tc_fail(isset($res['code']) && $res['code'] ? $res['code'] : 502, tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : ''));
+    }
+    if ((int) (isset($res['status']) ? $res['status'] : 0) >= 400 && in_array((int) $res['status'], array(401, 402, 403, 429), true)) {
+        // 所有 Key 都失败:返回最后一次的原样错误
+        tc_fail((int) $res['status'], $lastMsg !== '' ? $lastMsg : tc_upstream_error_message(isset($res['body']) ? $res['body'] : '', (int) $res['status']));
     }
     // ---- 兜底:改走 chat/completions ----
     // 不少平台(如 api.apilio.ai 的 gemini / gpt-4o-image / nano-banana 等)根本没有
@@ -3250,7 +3288,11 @@ function tc_generate_video($apiKeyOwner = null) {
     $user = $ctx['user'];
     if ($ctx['model'] === '' || $ctx['prompt'] === '') tc_fail(400, '请填写模型和提示词');
     $url = tc_api_url($provider['baseUrl'], '/videos');
-    $videoKey = tc_provider_key_for_model($provider, $ctx['model']);
+    // 多密钥:按优先级链依次尝试,前一把认证/连接失败时自动换下一把
+    $videoKeyChain = tc_provider_key_chain($provider, $ctx['model']);
+    if (!$videoKeyChain) $videoKeyChain = array('');
+    $videoKeyIdx = 0;
+    $videoKey = $videoKeyChain[0];
     $headers = array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . $videoKey);
     $body = array(
         'model' => $ctx['model'],
@@ -3266,7 +3308,17 @@ function tc_generate_video($apiKeyOwner = null) {
     if (!empty($ctx['audios'])) $body['audios'] = array_values($ctx['audios']);
     if ($ctx['first_frame'] !== '') $body['first_frame'] = $ctx['first_frame'];
     if ($ctx['last_frame'] !== '') $body['last_frame'] = $ctx['last_frame'];
-    $res = tc_http_request($url, 'POST', $headers, tc_json_encode($body), 60000, false, null, true, 30000);
+    $res = null;
+    for ($videoTry = 0; $videoTry < 8; $videoTry++) {
+        $res = tc_http_request($url, 'POST', $headers, tc_json_encode($body), 60000, false, null, true, 30000);
+        if ($videoKeyIdx + 1 < count($videoKeyChain) && tc_key_failure_retryable($res)) {
+            $videoKeyIdx++;
+            $videoKey = $videoKeyChain[$videoKeyIdx];
+            $headers['Authorization'] = 'Bearer ' . $videoKey;
+            continue;
+        }
+        break;
+    }
     if (empty($res['ok'])) {
         tc_fail(isset($res['code']) && $res['code'] ? $res['code'] : 502, tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : ''));
     }

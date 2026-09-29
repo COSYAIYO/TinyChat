@@ -226,6 +226,15 @@ assert_contains "图片规格:4K 档位可用" "$(curl -s -X POST "$BASE/api/pro
 assert_contains "图片规格:竖版精确像素可用" "$(curl -s -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$PROV"'","model":"mock-image","prompt":"x","size":"1024x1792"}')" 'example.com/mock.png'
 # 生图模型标记持久化(供应商保存 image:true 后能读回)
 assert_has "供应商模型生图标记可保存" "$(curl -s "$BASE/api/providers" -H "$AUTH")" '"id":"mock-image","name":"Mock Image","image":true'
+# 生图多密钥回退:第一把坏 Key(401)→ 应自动换第二把好 Key 出图成功
+cat > "$TMP/imgkey.json" <<EOF
+{"name":"ImgKeyProv","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiFormat":"chat","scope":"global","costPerCall":1,
+ "keys":[{"id":"k1","name":"坏","apiKey":"sk-fail"},{"id":"k2","name":"好","apiKey":"sk-good"}],
+ "models":[{"id":"mock-image","name":"Img","image":true,"keyIds":["k1"]}]}
+EOF
+imgkey=$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/imgkey.json")
+IMGKEYPROV=$(printf '%s' "$imgkey" | python -c "import sys,json;print(json.load(sys.stdin)['provider']['id'])")
+assert_contains "生图多密钥: 第一把失败自动回退第二把" "$(curl -s -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$IMGKEYPROV"'","model":"mock-image","prompt":"x"}')" 'example.com/mock.png'
 # 模型级单价:保存后能读回,并在 /api/proxy/models 的 costs 映射中体现
 cat > "$TMP/prov-cost.json" <<EOF
 {"name":"CostProv","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiKey":"sk-cost","apiFormat":"chat","models":[{"id":"mock-model","name":"Mock","cost":3},{"id":"mock-cheap","name":"Cheap"}],"costPerCall":1,"scope":"global"}
@@ -342,6 +351,31 @@ cat > "$TMP/chain-chat.json" <<EOF
 {"model":"mock-model","providerId":"$CHAINPROV","stream":false,"messages":[{"role":"user","content":"hi"}]}
 EOF
 assert_contains "密钥链认证失败自动回退下一把" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/chain-chat.json")" 'MOCK-REPLY'
+
+# 关键场景:供应商配了两把 Key,但模型只绑了第一把(坏号)→ 也应自动回退到供应商的另一把好号
+cat > "$TMP/mkone.json" <<EOF
+{"name":"OneBindProv","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiFormat":"chat","scope":"global","costPerCall":1,
+ "keys":[{"id":"k1","name":"坏号","apiKey":"sk-fail"},{"id":"k2","name":"好号","apiKey":"sk-good"}],
+ "models":[{"id":"mock-model","name":"OneBound","keyIds":["k1"]}]}
+EOF
+onebind=$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/mkone.json")
+ONEBINDPROV=$(printf '%s' "$onebind" | python -c "import sys,json;print(json.load(sys.stdin)['provider']['id'])")
+cat > "$TMP/onebind-chat.json" <<EOF
+{"model":"mock-model","providerId":"$ONEBINDPROV","stream":false,"messages":[{"role":"user","content":"hi"}]}
+EOF
+assert_contains "模型只绑一把时也回退到供应商其余 Key" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/onebind-chat.json")" 'MOCK-REPLY'
+# 模型完全未绑定 Key(仅有供应商多把)时,同样应有回退保障
+cat > "$TMP/mknone.json" <<EOF
+{"name":"NoBindProv","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiFormat":"chat","scope":"global","costPerCall":1,
+ "keys":[{"id":"k1","name":"坏号","apiKey":"sk-fail"},{"id":"k2","name":"好号","apiKey":"sk-good"}],
+ "models":[{"id":"mock-model","name":"NoBound"}]}
+EOF
+nobind=$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/mknone.json")
+NOBINDPROV=$(printf '%s' "$nobind" | python -c "import sys,json;print(json.load(sys.stdin)['provider']['id'])")
+cat > "$TMP/nobind-chat.json" <<EOF
+{"model":"mock-model","providerId":"$NOBINDPROV","stream":false,"messages":[{"role":"user","content":"hi"}]}
+EOF
+assert_contains "模型未绑定时也回退到供应商其余 Key" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/nobind-chat.json")" 'MOCK-REPLY'
 
 # ---------- 供应商排序 ----------
 say "== 供应商排序 =="
