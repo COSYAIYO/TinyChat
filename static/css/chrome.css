@@ -1,7 +1,12 @@
 .usage-ledger { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .usage-row { display: grid; grid-template-columns: minmax(72px, 120px) minmax(96px, 160px) 1fr; gap: 8px 12px; align-items: baseline; font-size: 13px; }
 .usage-name { font-weight: 600; }
-.usage-models { min-width: 0; }
+.usage-models { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  /* 窄屏三列挤成一窄条:改为「日期 + 汇总」一行,模型明细独占整行 */
+  .usage-row { grid-template-columns: auto 1fr; gap: 2px 10px; }
+  .usage-models { grid-column: 1 / -1; color: var(--text-tertiary); }
+}
 .usage-empty { margin: 0; color: var(--danger); font-size: 13px; }
 .reply-fail {
   color: var(--danger);
@@ -3772,6 +3777,15 @@ body.is-demo-admin [data-chats] { display: none !important; }
     gap: 10px;
   }
   .pref-row > .pref-info { flex: 1 1 100%; }
+  /* 说明 + 按钮行(数据/账户页签的「导出」「挑选」等):保持单行,
+     左侧文字可收缩换行,按钮不换行不变形 */
+  .modal .row-between { gap: 10px; }
+  .modal .row-between > div { flex: 1 1 auto; min-width: 0; }
+  .modal .row-between > .btn { flex: 0 0 auto; white-space: nowrap; }
+  /* 子行设置(跟进建议模型/命名方式):标题整行,选择器整行 */
+  .pref-sub-row { flex-wrap: wrap; gap: 8px; }
+  .pref-sub-row > .pref-info { flex: 1 1 100%; }
+  .pref-sub-row > .pref-model-select { flex: 1 1 100%; }
   .font-family-control {
     flex: 1 1 100%;
     flex-wrap: wrap;

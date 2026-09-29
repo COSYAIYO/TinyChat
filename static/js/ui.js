@@ -19,7 +19,9 @@
   const PREF_DEFAULTS = {
     stream: true,          // 流式输出
     followups: false,      // AI 跟进建议(会额外扣费,默认关闭)
+    followupsModel: '',    // 跟进建议所用模型:'' = 跟随当前模型;否则 "providerId\nmodelId"
     autotitle: true,       // 自动生成会话标题
+    titleModel: '',        // 命名方式:'' = 本地截取;'current' = AI(当前模型);否则 "providerId\nmodelId"
     elapsed: true,         // 显示生成耗时
     reasoning: true,       // 请求并展示思维链
     reasoningEffort: 'medium', // off | low | medium | high
