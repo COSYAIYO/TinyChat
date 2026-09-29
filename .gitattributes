@@ -1,0 +1,4 @@
+# 统一行尾:避免 Windows 下的工具把脚本写成 CRLF,导致 Linux/CI 上 bash 无法执行。
+# tests/e2e.sh 在 CI 中由 bash 直接运行,必须保持 LF,否则会报
+# `tests/e2e.sh: line N: $'\r': command not found`。
+*.sh text eol=lf
