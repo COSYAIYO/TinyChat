@@ -2153,6 +2153,9 @@ body.share-page {
 .users-table .col-chats { width: 72px; white-space: nowrap; }
 .users-table .col-time { white-space: nowrap; font-size: 12.5px; }
 .users-table .col-actions { width: 1%; white-space: nowrap; }
+/* 批量管理:首列勾选框(与类表头对齐,窄屏也不换行) */
+.users-table .col-check { width: 34px; text-align: center; }
+.users-table .col-check input { cursor: pointer; }
 .users-table .admin-row-actions { justify-content: flex-end; }
 .user-cell {
   display: flex;

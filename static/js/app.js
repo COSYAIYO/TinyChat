@@ -632,11 +632,18 @@ function mergeChatLists(cloudChats, localChats) {
 function currentChat() {
   return state.chats.find((c) => c.id === state.currentChatId) || null;
 }
+// API 对话是否显示在列表:用户偏好(默认开启),关闭后列表只显示网页端对话
+function showApiChats() { return !!uiPref('showApiChats', true); }
+function isApiChat(c) { return !!(c && c.apiKey); }
+function visibleChats() {
+  const all = state.chats || [];
+  return showApiChats() ? all : all.filter((c) => !isApiChat(c));
+}
 function renderChatList() {
   const list = $('chat-list');
   list.innerHTML = '';
   if (!window.OCConversations || !list) { renderChatListSimple(list); return; }
-  window.OCConversations.renderList(list, state.chats, {
+  window.OCConversations.renderList(list, visibleChats(), {
     currentId: state.currentChatId,
     onSelect: (c) => {
       if (state.streaming) { stopStreaming(); }
@@ -693,7 +700,7 @@ function renderChatList() {
 }
 function renderChatListSimple(list) {
   // 兜底：无 OCConversations 时的旧版渲染
-  state.chats.forEach((c) => {
+  visibleChats().forEach((c) => {
     const item = document.createElement('div');
     item.className = 'chat-item' + (c.id === state.currentChatId ? ' active' : '');
     item.textContent = c.title;
@@ -3595,6 +3602,7 @@ function bindAuxModelSelect(id, prefKey, mode) {
 function syncPrefsPanel() {
   const checks = [
     ['pref-stream', 'stream'],
+    ['pref-show-api-chats', 'showApiChats'],
     ['pref-followups', 'followups'],
     ['pref-autotitle', 'autotitle'],
     ['pref-elapsed', 'elapsed'],
@@ -3808,6 +3816,7 @@ async function saveToolSource(patch) {
     });
   };
   bindCheck('pref-stream', 'stream');
+  bindCheck('pref-show-api-chats', 'showApiChats');
   bindCheck('pref-followups', 'followups');
   bindCheck('pref-autotitle', 'autotitle');
   bindAuxModelSelect('pref-followups-model', 'followupsModel', 'followups');
