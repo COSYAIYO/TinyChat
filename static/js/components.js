@@ -185,9 +185,11 @@
 
     openMenu = menu;
 
-    // 搜索自动聚焦
+    // 搜索自动聚焦:桌面端方便直接输入;触摸端不聚焦——聚焦会弹出软键盘,
+    // 键盘又会改变视口尺寸并触发 resize/scroll,导致菜单「一闪而过」。
     const sq = menu.querySelector('.oc-menu-search');
-    if (sq) setTimeout(() => sq.focus(), 30);
+    const coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+    if (sq && !coarse) setTimeout(() => sq.focus(), 30);
 
     // 关闭处理
     const onDoc = (e) => {
@@ -197,9 +199,17 @@
     const onScroll = (e) => {
       const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
       if (menu.contains(e.target) || path.indexOf(menu) >= 0) return;
+      // 软键盘弹出时浏览器会把聚焦元素滚入视野,这不代表用户在滚动页面,不应关掉菜单
+      if (menu.contains(document.activeElement)) return;
       closeOpenMenu();
     };
-    const onResize = () => closeOpenMenu();
+    // 只在「宽度」变化时关闭(旋转屏幕/调整窗口);忽略软键盘导致的纯高度变化
+    let lastWidth = window.innerWidth;
+    const onResize = () => {
+      if (window.innerWidth === lastWidth) return;
+      lastWidth = window.innerWidth;
+      closeOpenMenu();
+    };
     const stopInside = (e) => e.stopPropagation();
     menu.addEventListener('wheel', stopInside, { passive: true, capture: true });
     menu.addEventListener('touchmove', stopInside, { passive: true, capture: true });
