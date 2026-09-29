@@ -51,15 +51,18 @@
         if (fenceLang === 'mindmap') {
           return '<pre class="mindmap-pre"><code class="language-mindmap">' + escapeHtml(code) + '</code></pre>';
         }
-        // 语法高亮
+        // 语法高亮(highlight.js 可能被后台关闭:此时降级为转义后的纯文本)
         let highlighted = '';
-        if (lang && hljs && hljs.getLanguage(lang)) {
+        const hasHljs = (typeof hljs !== 'undefined') && hljs;
+        if (hasHljs && lang && hljs.getLanguage(lang)) {
           try { highlighted = hljs.highlight(code, { language: lang, ignoreIllegals: true }).value; }
           catch (e) { highlighted = escapeHtml(code); }
-        } else {
+        } else if (hasHljs) {
           // 自动识别语言
           try { highlighted = hljs.highlightAuto(code).value; }
           catch (e) { highlighted = escapeHtml(code); }
+        } else {
+          highlighted = escapeHtml(code);
         }
         // 语言标签 + 复制按钮（由外部 CSS/JS 增强）
         const langLabel = lang || 'text';
@@ -403,6 +406,8 @@
     document.head.appendChild(s);
   }
   function whenMermaidReady(run) {
+    // 后台开启「不加载 Mermaid」:保持图表代码块为源码显示,不加载、不轮询
+    if (window.OC_PERF && window.OC_PERF.noMermaid) return;
     if (typeof mermaid !== 'undefined') {
       run();
       return;
@@ -434,6 +439,8 @@
   }
 
   function renderMermaidIn(root) {
+    // 后台关闭 Mermaid:保留代码块源码显示,不做占位替换(否则会永远停在「渲染图表…」)
+    if (window.OC_PERF && window.OC_PERF.noMermaid) return;
     const pending = [];
     root.querySelectorAll('code.language-mermaid').forEach((el) => {
       const code = normalizeMermaidCode(el.textContent.trim());
@@ -557,6 +564,8 @@
   }
 
   function renderMindmapIn(root) {
+    // 后台关闭 Mermaid 时一并关闭思维导图渲染(思维导图依赖 Mermaid 主题风格),保留源码
+    if (window.OC_PERF && window.OC_PERF.noMermaid) return;
     root.querySelectorAll('code.language-mindmap').forEach((el) => {
       const src = el.textContent;
       const parent = el.closest('pre');

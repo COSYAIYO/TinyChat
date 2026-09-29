@@ -1084,6 +1084,43 @@ async function loadChatSettings() {
   const data = await r.json();
   fillChatLimits((data && data.settings) || {});
 }
+// 性能优化面板:读取/保存
+function fillPerfSettings(s) {
+  const src = s || {};
+  if ($('perf-no-webfonts')) $('perf-no-webfonts').checked = !!src.perfNoWebfonts;
+  if ($('perf-no-katex')) $('perf-no-katex').checked = !!src.perfNoKatex;
+  if ($('perf-no-highlight')) $('perf-no-highlight').checked = !!src.perfNoHighlight;
+  if ($('perf-no-mermaid')) $('perf-no-mermaid').checked = !!src.perfNoMermaid;
+}
+async function loadPerfSettings() {
+  const r = await api('/api/admin/settings');
+  const data = await r.json();
+  fillPerfSettings((data && data.settings) || {});
+}
+(function initPerfSettings() {
+  const save = $('perf-save');
+  if (!save) return;
+  save.addEventListener('click', async () => {
+    const body = {
+      perfNoWebfonts: !!($('perf-no-webfonts') && $('perf-no-webfonts').checked),
+      perfNoKatex: !!($('perf-no-katex') && $('perf-no-katex').checked),
+      perfNoHighlight: !!($('perf-no-highlight') && $('perf-no-highlight').checked),
+      perfNoMermaid: !!($('perf-no-mermaid') && $('perf-no-mermaid').checked),
+    };
+    save.disabled = true;
+    try {
+      const r = await api('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const data = await r.json();
+      if (!r.ok) return toast((data.error && data.error.message) || '保存失败', true);
+      fillPerfSettings(data.settings || body);
+      toast('性能设置已保存，用户下次访问生效');
+    } catch (e) {
+      toast('保存失败: ' + e.message, true);
+    } finally {
+      save.disabled = false;
+    }
+  });
+})();
 async function loadSearchSettings() {
   const r = await api('/api/admin/settings');
   const data = await r.json();
@@ -3037,6 +3074,7 @@ const TAB_LOADERS = {
   },
   providers: () => loadProviders(),
   chat: () => loadChatSettings(),
+  perf: () => loadPerfSettings(),
   search: () => loadSearchSettings(),
   docs: () => loadSearchSettings(),
   verify: () => loadVerifySettings(),
@@ -3181,7 +3219,7 @@ const ADMIN_GROUPS = {
     { id: 'codes-gen', label: '生成兑换码' },
     { id: 'codes-fixed', label: '添加固定兑换码' },
   ],
-  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'update', label: '版本更新' }],
+  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'update', label: '版本更新' }],
   thinking: [{ id: 'thinking', label: '思考策略' }],
   content: [{ id: 'assistants', label: '助手库' }],
 };

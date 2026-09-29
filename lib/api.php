@@ -857,6 +857,13 @@ function tc_api_public_config($db) {
         // 游客模式:允许未登录访客直接体验对话
         'guestEnabled' => !empty($s['guestEnabled']),
         'guestRounds' => isset($s['guestRounds']) ? (int) $s['guestRounds'] : 3,
+        // 性能优化:前台据此决定是否加载内置字体 / KaTeX / 代码高亮 / Mermaid
+        'perf' => array(
+            'noWebfonts' => !empty($s['perfNoWebfonts']),
+            'noKatex' => !empty($s['perfNoKatex']),
+            'noHighlight' => !empty($s['perfNoHighlight']),
+            'noMermaid' => !empty($s['perfNoMermaid']),
+        ),
     ));
 }
 

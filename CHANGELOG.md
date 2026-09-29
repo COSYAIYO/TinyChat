@@ -2,6 +2,22 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.43] - 2026-09-30
+
+### 新增
+
+- **后台「平台配置 → 性能优化」快速访问设置**：用于降低前台首屏加载体积，适合带宽受限或主要用纯文本对话的场景。全部**默认关闭**，开启后前台不再加载对应资源，能力退化为纯文本显示：
+  - 不加载内置网页字体（思源宋体 / AlibabaPuHuiTi / Times New Roman / Helvetica / AlibabaSans，合计约 19MB）——改用系统字体；
+  - 不加载 KaTeX ——数学公式以源码显示；
+  - 不加载代码高亮 highlight.js ——代码块以纯文本显示（保留复制按钮）；
+  - 不加载 Mermaid 图表 ——流程图/时序图以源码显示（Mermaid 本就按需加载）。
+  - 改动在用户下次访问时生效：前台会缓存公开配置，若开关变化自动整页重载一次（带重入保护）。markdown-it 始终加载，Markdown 排版/表格/图片不受影响。
+
+### 实现说明
+
+- 新增 `static/js/perf.js`：在页面 `<head>` 同步按需注入渲染依赖（`document.write`，顺序敏感），并从 `localStorage['oc_cfg']` 读取上次缓存的公开配置；页面就绪后异步刷新配置，开关相对缓存有变化时整页重载一次。
+- 后端设置新增 `perfNoWebfonts` / `perfNoKatex` / `perfNoHighlight` / `perfNoMermaid`，经 `/api/config` 的 `perf` 字段下发。
+
 ## [2.0.42] - 2026-10-05
 
 ### 新增
