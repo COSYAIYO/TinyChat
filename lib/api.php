@@ -1180,7 +1180,9 @@ function tc_api_reveal_provider_key($id) {
         $isAdminGlobal = !empty($user['admin']) && (isset($p['scope']) && $p['scope'] === 'global');
         if (!$isOwner && !$isAdminGlobal) tc_fail(403, '只能查看自己添加的供应商密钥');
         if (empty($p['keyRevealable'])) tc_fail(403, '保存时未勾选「保存后保持显示」，Key 不可查看');
-        $plain = tc_provider_key($p);
+        // 多密钥:可按 keyId 精确取回某一把;不传则取默认(第一把)
+        $keyId = isset($_GET['keyId']) ? trim((string) $_GET['keyId']) : '';
+        $plain = $keyId !== '' ? tc_provider_key_by_id($p, $keyId) : tc_provider_key($p);
         if ($plain === '') tc_fail(404, 'Key 缺失或解密失败');
         tc_json(200, array('key' => $plain));
     });

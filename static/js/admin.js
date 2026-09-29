@@ -705,16 +705,21 @@ function renderApKeys() {
   if (!box) return;
   // 每把 Key 需要有稳定 id 供模型绑定引用(新加的行为空 id)
   AP_KEYS.forEach((k) => { if (!k.id) k.id = 'k' + Math.random().toString(36).slice(2, 9); });
-  box.innerHTML = AP_KEYS.map((k, i) =>
-    '<div class="ap-key-row" data-idx="' + i + '">'
-    + '<input class="ap-key-name" type="text" data-idx="' + i + '" value="' + escapeHtml(k.name || '') + '" placeholder="Key 名称（多个时必填）" maxlength="40" autocomplete="off">'
-    + '<div class="pw-wrap ap-key-pw">'
-    + '<input class="ap-key-val" type="password" data-idx="' + i + '" value="' + escapeHtml(k.apiKey || '') + '" placeholder="sk-..." autocomplete="off">'
-    + '<button class="pw-toggle ap-key-eye" type="button" data-idx="' + i + '" title="显示 Key" aria-label="显示 Key">' + window.OC.icon('eye', 14) + '</button>'
-    + '</div>'
-    + '<button class="icon-btn ap-key-del" type="button" data-del="' + i + '" title="移除该 Key" aria-label="移除该 Key">' + window.OC.icon('close', 14) + '</button>'
-    + '</div>'
-  ).join('');
+  box.innerHTML = AP_KEYS.map((k, i) => {
+    // 已保存的 Key 不回填掩码到输入框(留空 = 保持不变);掩码只放在 placeholder 里提示
+    const val = String(k.apiKey || '');
+    const ph = (val === '' && k.hasKey)
+      ? ('已保存 ' + String(k.masked || '••••••') + '，留空保持不变')
+      : 'sk-...';
+    return '<div class="ap-key-row" data-idx="' + i + '">'
+      + '<input class="ap-key-name" type="text" data-idx="' + i + '" value="' + escapeHtml(k.name || '') + '" placeholder="Key 名称（多个时必填）" maxlength="40" autocomplete="off">'
+      + '<div class="pw-wrap ap-key-pw">'
+      + '<input class="ap-key-val" type="password" data-idx="' + i + '" value="' + escapeHtml(val) + '" placeholder="' + escapeHtml(ph) + '" autocomplete="off">'
+      + '<button class="pw-toggle ap-key-eye" type="button" data-idx="' + i + '" title="显示 Key" aria-label="显示 Key">' + window.OC.icon('eye', 14) + '</button>'
+      + '</div>'
+      + '<button class="icon-btn ap-key-del" type="button" data-del="' + i + '" title="移除该 Key" aria-label="移除该 Key">' + window.OC.icon('close', 14) + '</button>'
+      + '</div>';
+  }).join('');
   const addBtn = $('ap-key-add');
   if (addBtn) addBtn.disabled = AP_KEYS.length >= 20;
   // 密钥列表变化时同步给模型清单(用于密钥列下拉);未命名的暂用「未命名 N」
@@ -728,16 +733,23 @@ function apKeysFromProvider(p) {
   AP_KEYS_REVEALABLE = !!(p && p.keyRevealable);
   const list = (p && Array.isArray(p.keys)) ? p.keys : [];
   if (list.length) {
-    AP_KEYS = list.map((k) => ({ id: String(k.id || ''), name: String(k.name || ''), apiKey: String(k.apiKey || ''), hasKey: !!k.hasKey }));
+    // 接口只回掩码:输入框留空表示「保持原 Key」,掩码存起来供 placeholder 展示
+    AP_KEYS = list.map((k) => ({ id: String(k.id || ''), name: String(k.name || ''), apiKey: '', masked: String(k.apiKey || ''), hasKey: !!k.hasKey }));
   } else if (p && p.hasKey) {
     // 旧数据:单 Key
-    AP_KEYS = [{ id: 'k0', name: '', apiKey: String(p.apiKey || '••••••'), hasKey: true }];
+    AP_KEYS = [{ id: 'k0', name: '', apiKey: '', masked: String(p.apiKey || '••••••'), hasKey: true }];
   }
   if (!AP_KEYS.length) AP_KEYS = [{ id: '', name: '', apiKey: '' }];
   renderApKeys();
 }
 function apKeysPayload() {
+  // 带回全部行(含未改动、apiKey 为空的):服务端按 id 复用原密文,
+  // 否则未改动的密钥会在保存时被丢弃。
   return AP_KEYS.map((k) => ({ id: k.id || '', name: String(k.name || '').trim(), apiKey: String(k.apiKey || '') }));
+}
+// 有效行:已保存过的(hasKey) 或 刚填了明文
+function apKeysEffective() {
+  return AP_KEYS.filter((k) => k.hasKey || String(k.apiKey || '').trim() !== '');
 }
 // 只更新模型表密钥下拉的选项文字(不重渲染,避免输入时丢焦点)
 function syncKeySelectLabels() {
@@ -752,7 +764,7 @@ function syncKeySelectLabels() {
 }
 // 校验:多 Key 时名称必填且不可重复;返回错误信息或 ''
 function apKeysValidate() {
-  const named = AP_KEYS.filter((k) => String(k.apiKey || '').trim() !== '');
+  const named = apKeysEffective();
   if (named.length < 2) return '';
   const seen = {};
   for (const k of named) {
@@ -1565,13 +1577,19 @@ $('ap-save').addEventListener('click', async () => {
   if (!models.length) return toast('请先获取模型并至少勾选一个', true);
   const keyErr = apKeysValidate();
   if (keyErr) return toast(keyErr, true);
-  const keys = apKeysPayload().filter((k) => String(k.apiKey || '').trim() !== '');
+  // 全部行都提交(含未改动、apiKey 为空的):服务端按 id 复用原密文,
+  // 只把「既无新明文也非已保存」的空行丢掉。
+  const keys = apKeysPayload().filter((k, idx) => {
+    if (String(k.apiKey || '').trim() !== '') return true;
+    const src = AP_KEYS[idx];
+    return !!(src && src.hasKey);   // 已保存过的密钥:保留占位,服务端沿用原密文
+  });
   const editId = $('ap-save').dataset.editId;
   if (!keys.length && !editId) return toast('请至少填写一个 API Key', true);
   const url = editId ? '/api/admin/providers/' + editId : '/api/providers';
   const payload = { name, baseUrl, apiFormat, models, keys, costPerCall: cost, billingMode: ($('ap-billing') && $('ap-billing').getAttribute('data-value')) || 'call', pricePer1k: Math.min(1000, Math.max(0, parseFloat($('ap-price') && $('ap-price').value) || 0)), scope: 'global', keyRevealable: !!($('ap-key-keep') && $('ap-key-keep').checked) };
-  // 兼容旧字段:取第一把 Key 作为主 Key(编辑时全部为掩码则不带,由服务端保留)
-  const firstPlain = keys.find((k) => k.apiKey.indexOf('••') < 0);
+  // 兼容旧字段:取第一把有明文的 Key 作为主 Key;编辑时若一把都没改,不带 apiKey(服务端保留)
+  const firstPlain = keys.find((k) => k.apiKey && k.apiKey.indexOf('••') < 0);
   if (firstPlain) payload.apiKey = firstPlain.apiKey;
   else if (!editId) payload.apiKey = (keys[0] && keys[0].apiKey) || '';
   const r = await api(url, {

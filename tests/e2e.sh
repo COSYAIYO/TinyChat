@@ -309,6 +309,15 @@ cat > "$TMP/mknn.json" <<EOF
  "models":[{"id":"mock-model","name":"M"}]}
 EOF
 assert_contains "多密钥未命名被拒" "$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/mknn.json")" '每个 Key 都需要填写名称'
+# 模拟「编辑时不动密钥、直接保存」:keys 里 apiKey 为空,应沿用原密文
+cat > "$TMP/mkupd.json" <<EOF
+{"name":"MultiKey","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiFormat":"chat","scope":"global","costPerCall":1,"keyRevealable":true,"keys":[{"id":"ka","name":"主号改名","apiKey":""},{"id":"kb","name":"副号","apiKey":""}],"models":[{"id":"mock-model","name":"Mock","keyId":"ka"}]}
+EOF
+curl -s -X POST "$BASE/api/admin/providers/$MKPROV" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/mkupd.json" > /dev/null
+assert_contains "未改动密钥保存后仍在" "$(curl -s "$BASE/api/providers" -H "$AUTH")" '"name":"主号改名"'
+# 按 keyId 取回明文(勾选了「保存后保持显示」)
+assert_contains "按 keyId 取回第一把" "$(curl -s -X POST "$BASE/api/providers/$MKPROV/key?keyId=ka" -H "$AUTH")" 'sk-key-a'
+assert_contains "按 keyId 取回第二把" "$(curl -s -X POST "$BASE/api/providers/$MKPROV/key?keyId=kb" -H "$AUTH")" 'sk-key-b'
 # 模型绑定的 keyId 必须存在:传一个不存在的 keyId 应被清掉(不报错)
 cat > "$TMP/mkbadkey.json" <<EOF
 {"name":"BadKeyRef","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiFormat":"chat","scope":"global",
