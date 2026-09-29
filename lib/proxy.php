@@ -1762,7 +1762,10 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             $circuitMsg = tc_model_circuit_message($db, isset($provider['id']) ? $provider['id'] : '', $circuitModel);
             if ($circuitMsg !== '') tc_fail(503, $circuitMsg);
         }
-        $cost = tc_provider_cost($provider);
+        // 单价:模型级 cost 优先,未设置时回退供应商的 costPerCall
+        $costModel = isset($b['model']) ? (string) $b['model'] : '';
+        if ($costModel === '' && !empty($provider['models'][0]['id'])) $costModel = (string) $provider['models'][0]['id'];
+        $cost = tc_model_cost($provider, $costModel);
         // 内容审核:开启敏感词过滤时,先检查最后一条用户消息
         $modHit = tc_moderation_hit(isset($db['settings']['moderation']) && is_array($db['settings']['moderation']) ? $db['settings']['moderation'] : array(), tc_last_user_text($b, $format));
         if ($modHit !== '') tc_fail(400, '消息包含被禁止的内容，请修改后重试');
@@ -2372,7 +2375,7 @@ function tc_generate_images($apiKeyOwner = null) {
         if ($apiKeyOwner !== null && !tc_api_model_exposed($db['settings'], isset($provider['id']) ? $provider['id'] : '', $model)) {
             tc_fail(403, '模型 ' . $model . ' 未对开放接口开放，请联系管理员');
         }
-        $cost = tc_provider_cost($provider);
+        $cost = tc_model_cost($provider, $model);
         if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
         if (!tc_is_unlimited_quota($user) && (isset($user['quota']) ? (float) $user['quota'] : 0) < $cost) {
             tc_fail(402, '剩余次数不足，请联系管理员充值');
@@ -2992,7 +2995,7 @@ function tc_generate_video($apiKeyOwner = null) {
         if ($apiKeyOwner !== null && !tc_api_model_exposed($db['settings'], isset($provider['id']) ? $provider['id'] : '', $model)) {
             tc_fail(403, '模型 ' . $model . ' 未对开放接口开放，请联系管理员');
         }
-        $cost = tc_provider_cost($provider);
+        $cost = tc_model_cost($provider, $model);
         if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
         if (!tc_is_unlimited_quota($user) && (isset($user['quota']) ? (float) $user['quota'] : 0) < $cost) {
             tc_fail(402, '剩余次数不足，请联系管理员充值');

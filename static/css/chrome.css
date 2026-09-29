@@ -224,6 +224,7 @@
   color: var(--text-tertiary);
 }
 .oc-menu-health.ok { color: #16a34a; }
+.oc-menu-health.warn { color: #d97706; }
 .oc-menu-health.bad { color: #f0a8a8; }
 .oc-menu-health.idle { color: #a3aab6; }
 .oc-menu-health .oc-icon {

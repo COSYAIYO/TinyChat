@@ -811,6 +811,13 @@ function setWsProvider(val) {
   if ($('ws-tavily-row')) $('ws-tavily-row').classList.toggle('hidden', next !== 'tavily');
   if ($('ws-searx-row')) $('ws-searx-row').classList.toggle('hidden', next !== 'searxng');
 }
+// 「对话设置」面板专用加载:此前该页签没有 loader,直接打开会显示 HTML 默认值,
+// 若此时点保存会把默认值写回服务端、静默重置真实配置。
+async function loadChatSettings() {
+  const r = await api('/api/admin/settings');
+  const data = await r.json();
+  fillChatLimits((data && data.settings) || {});
+}
 async function loadSearchSettings() {
   const r = await api('/api/admin/settings');
   const data = await r.json();
@@ -842,6 +849,8 @@ function fillChatLimits(s) {
   if ($('chat-timeout')) $('chat-timeout').value = Math.min(600, Math.max(5, Math.round((parseInt(src.proxyTimeoutMs, 10) || 120000) / 1000)));
   if ($('chat-context-learn')) $('chat-context-learn').checked = src.contextAutoLearn !== false;
   if ($('chat-persist-chats')) $('chat-persist-chats').checked = src.persistChats !== false;
+  if ($('chat-health-ok')) $('chat-health-ok').value = Math.min(100, Math.max(1, parseInt(src.healthOkMin, 10) || 75));
+  if ($('chat-health-warn')) $('chat-health-warn').value = Math.min(99, Math.max(0, parseInt(src.healthWarnMin, 10) || 40));
 }
 (function initChatLimits() {
   document.querySelectorAll('#panel-chat .stepper [data-step]').forEach((btn) => {
@@ -865,12 +874,18 @@ function fillChatLimits(s) {
     const timeoutSec = Math.min(600, Math.max(5, parseInt($('chat-timeout') && $('chat-timeout').value, 10) || 120));
     const contextLearn = !!($('chat-context-learn') && $('chat-context-learn').checked);
     const persistChats = !!($('chat-persist-chats') && $('chat-persist-chats').checked);
+    // 可用性阈值:保证 okMin 严格大于 warnMin(输入颠倒时本地纠正并回写)
+    let healthOk = Math.min(100, Math.max(1, parseInt($('chat-health-ok') && $('chat-health-ok').value, 10) || 75));
+    let healthWarn = Math.min(99, Math.max(0, parseInt($('chat-health-warn') && $('chat-health-warn').value, 10)));
+    if (!(healthWarn < healthOk)) healthWarn = Math.max(0, healthOk - 1);
+    if ($('chat-health-ok')) $('chat-health-ok').value = healthOk;
+    if ($('chat-health-warn')) $('chat-health-warn').value = healthWarn;
     save.disabled = true;
     try {
       const r = await api('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature, rateLimitPerMin: rateLimit, proxyTimeoutMs: timeoutSec * 1000, contextAutoLearn: contextLearn, persistChats }),
+        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature, rateLimitPerMin: rateLimit, proxyTimeoutMs: timeoutSec * 1000, contextAutoLearn: contextLearn, persistChats, healthOkMin: healthOk, healthWarnMin: healthWarn }),
       });
       const data = await r.json();
       if (!r.ok) return toast((data.error && data.error.message) || '保存失败', true);
@@ -2650,6 +2665,7 @@ const TAB_LOADERS = {
     await loadAccess();
   },
   providers: () => loadProviders(),
+  chat: () => loadChatSettings(),
   search: () => loadSearchSettings(),
   docs: () => loadSearchSettings(),
   verify: () => loadVerifySettings(),

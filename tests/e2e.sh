@@ -81,6 +81,12 @@ assert_contains "设置: 限流保存" "$res" '"rateLimitPerMin":50'
 assert_contains "设置: 协议启用" "$res" '"agreementEnabled":true'
 assert_contains "设置: 公告保存" "$res" '"text":"E2E announcement"'
 assert_contains "config 回读公告" "$(curl -s "$BASE/api/config")" '"text":"E2E announcement"'
+# 模型可用性阈值:可保存,颠倒输入自动纠正,并下发到前端
+assert_contains "可用性阈值可保存" "$(curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"healthOkMin":90,"healthWarnMin":60}')" '"healthOkMin":90'
+swapped=$(curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"healthOkMin":30,"healthWarnMin":80}')
+assert_contains "阈值颠倒自动纠正(ok)" "$swapped" '"healthOkMin":30'
+assert_contains "阈值颠倒自动纠正(warn)" "$swapped" '"healthWarnMin":29'
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"healthOkMin":75,"healthWarnMin":40}' > /dev/null
 empty_ann=$(curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"announcement":{"enabled":true,"text":""}}')
 assert_contains "空公告启用被拒" "$empty_ann" '启用公告时请填写公告内容'
 # 协议页(启用后)
@@ -220,6 +226,16 @@ assert_contains "图片规格:4K 档位可用" "$(curl -s -X POST "$BASE/api/pro
 assert_contains "图片规格:竖版精确像素可用" "$(curl -s -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$PROV"'","model":"mock-image","prompt":"x","size":"1024x1792"}')" 'example.com/mock.png'
 # 生图模型标记持久化(供应商保存 image:true 后能读回)
 assert_has "供应商模型生图标记可保存" "$(curl -s "$BASE/api/providers" -H "$AUTH")" '"id":"mock-image","name":"Mock Image","image":true'
+# 模型级单价:保存后能读回,并在 /api/proxy/models 的 costs 映射中体现
+cat > "$TMP/prov-cost.json" <<EOF
+{"name":"CostProv","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiKey":"sk-cost","apiFormat":"chat","models":[{"id":"mock-model","name":"Mock","cost":3},{"id":"mock-cheap","name":"Cheap"}],"costPerCall":1,"scope":"global"}
+EOF
+curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/prov-cost.json" > /dev/null
+COSTPROV=$(curl -s "$BASE/api/providers" -H "$AUTH" | grep -o '"id":"[a-f0-9]*","name":"CostProv"' | cut -d'"' -f4)
+assert_has "模型级单价可保存" "$(curl -s "$BASE/api/providers" -H "$AUTH")" '"id":"mock-model","name":"Mock","cost":3'
+assert_contains "模型单价下发到前端" "$(curl -s "$BASE/api/proxy/models?provider=$COSTPROV" -H "$UAUTH")" '"mock-model":3'
+assert_contains "未设单价的模型回退供应商价" "$(curl -s "$BASE/api/proxy/models?provider=$COSTPROV" -H "$UAUTH")" '"mock-cheap":1'
+assert_contains "可用性阈值下发前端" "$(curl -s "$BASE/api/proxy/models?provider=$COSTPROV" -H "$UAUTH")" '"healthOkMin"'
 # 开放接口 /v1/images/generations
 IMGKEY=$(curl -s -X POST "$BASE/api/me/apikeys" -H "$UAUTH" -H "Content-Type: application/json" -d '{"name":"img"}' | jget secret)
 assert_contains "/v1/images/generations 返回图片" "$(curl -s -X POST "$BASE/v1/images/generations" -H "Authorization: Bearer $IMGKEY" -H "Content-Type: application/json" -d '{"model":"mock-image","prompt":"a corgi","size":"1024x1024","n":1}')" 'example.com/mock.png'
