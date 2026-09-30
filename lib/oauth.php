@@ -390,9 +390,12 @@ function tc_oauth_user_bindings($user) {
 }
 
 // 跳转回前台并带上一次性票据(# 片段不发给服务器,读完即清)
-function tc_oauth_redirect_with_ticket($userId) {
+function tc_oauth_redirect_with_ticket($userId, $flags = array()) {
     $ticket = tc_oauth_make_ticket($userId);
-    header('Location: ' . tc_oauth_landing_url() . '#oauth_ticket=' . rawurlencode($ticket));
+    $hash = '#oauth_ticket=' . rawurlencode($ticket);
+    // 附加标记:created=本次新建了账号(前端据此明确提示,避免用户不知情)
+    if (!empty($flags['created'])) $hash .= '&oauth_created=1';
+    header('Location: ' . tc_oauth_landing_url() . $hash);
     exit;
 }
 
@@ -510,7 +513,7 @@ function tc_oauth_callback($id) {
     if (empty($result['created'])) {
         tc_log_auth_event('auth', isset($result['name']) ? $result['name'] : '', '第三方登录(' . $id . ')', $userId);
     }
-    tc_oauth_redirect_with_ticket($userId);
+    tc_oauth_redirect_with_ticket($userId, array('created' => !empty($result['created'])));
 }
 
 // —— API:用一次性票据换正式登录态 POST /api/auth/oauth/exchange ——
