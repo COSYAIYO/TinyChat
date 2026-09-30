@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.52');
+define('TC_VERSION', '2.0.53');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -76,6 +76,10 @@ $TC_SETTINGS_DEFAULTS = array(
     'proxyTimeoutMs' => 120000,
     'loginMaxFails' => 5,
     'loginLockMs' => 60000,
+    // 第三方一键登录:每个提供商的开关与凭据;开启且填全后前台登录页出现对应图标
+    'oauthProviders' => array(),
+    // 第三方登录时若未绑定过本站账号,是否自动建号(关闭则提示先注册并绑定)
+    'oauthAutoRegister' => true,
     'webSearchEnabled' => false,
     'webSearchProvider' => 'tavily',
     'webSearchTavilyKey' => '',
@@ -368,6 +372,19 @@ function tc_normalize_settings($raw) {
     $timeout = isset($s['proxyTimeoutMs']) ? (int) $s['proxyTimeoutMs'] : $TC_SETTINGS_DEFAULTS['proxyTimeoutMs'];
     $s['proxyTimeoutMs'] = min(600000, max(5000, $timeout ?: $TC_SETTINGS_DEFAULTS['proxyTimeoutMs']));
     $s['loginMaxFails'] = min(50, max(0, (int) $s['loginMaxFails']));
+    // 第三方登录配置归一化:只接受注册表里的提供商与字段,凭据截断长度
+    $oauthIn = isset($s['oauthProviders']) && is_array($s['oauthProviders']) ? $s['oauthProviders'] : array();
+    $oauth = array();
+    foreach (tc_oauth_providers() as $pid => $prov) {
+        $row = isset($oauthIn[$pid]) && is_array($oauthIn[$pid]) ? $oauthIn[$pid] : array();
+        $clean = array('enabled' => !empty($row['enabled']));
+        foreach (array_keys($prov['fields']) as $f) {
+            $clean[$f] = substr(trim((string) (isset($row[$f]) ? $row[$f] : '')), 0, 200);
+        }
+        $oauth[$pid] = $clean;
+    }
+    $s['oauthProviders'] = $oauth;
+    $s['oauthAutoRegister'] = !array_key_exists('oauthAutoRegister', $s) || !empty($s['oauthAutoRegister']);
     $s['loginLockMs'] = min(3600000, max(0, (int) $s['loginLockMs']));
     $s['webSearchEnabled'] = !empty($s['webSearchEnabled']);
     $prov = strtolower(trim((string) (isset($s['webSearchProvider']) ? $s['webSearchProvider'] : 'tavily')));
@@ -615,6 +632,15 @@ function tc_admin_settings_public($s) {
     if (!empty($out['webSearchBraveKey'])) $out['webSearchBraveKey'] = tc_mask_key($out['webSearchBraveKey']);
     if (!empty($out['webSearchJinaKey'])) $out['webSearchJinaKey'] = tc_mask_key($out['webSearchJinaKey']);
     if (!empty($out['mineruToken'])) $out['mineruToken'] = tc_mask_key($out['mineruToken']);
+    // 第三方登录密钥掩码(前端回显用;保存时按 •• 跳过,不回写)
+    if (!empty($out['oauthProviders']) && is_array($out['oauthProviders'])) {
+        foreach ($out['oauthProviders'] as $pid => $row) {
+            if (!is_array($row)) continue;
+            foreach (array('appSecret', 'appKey', 'clientSecret') as $sk) {
+                if (!empty($row[$sk])) $out['oauthProviders'][$pid][$sk] = tc_mask_key($row[$sk]);
+            }
+        }
+    }
     if (!empty($out['smtp']['password'])) $out['smtp']['password'] = tc_mask_key($out['smtp']['password']);
     $out['webSearchAllowUser'] = !empty($out['webSearchAllowUser']);
     $out['mineruAllowUser'] = !empty($out['mineruAllowUser']);

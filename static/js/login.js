@@ -136,6 +136,8 @@ fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
     const row = $('reg-invite-row');
     if (row) row.classList.remove('hidden');
   }
+  // 第三方一键登录:后台启用的提供商渲染为图标按钮
+  renderOauthIcons(cfg && cfg.oauth);
   // 配置就绪后再兜一次(此时注册表单的协议/邀请码等已按需显示)
   showRegisterForGuest();
   if (!cfg || !cfg.needsSetup) return;
@@ -244,3 +246,49 @@ $('show-login').addEventListener('click', (e) => {
   e.preventDefault();
   switchAuthForm('login-form', 'register-form', 'login-name');
 });
+
+
+// ============ 第三方一键登录 ============
+function renderOauthIcons(oauth) {
+  const wrap = $('oauth-login');
+  const box = $('oauth-icons');
+  if (!wrap || !box) return;
+  const providers = (oauth && Array.isArray(oauth.providers)) ? oauth.providers : [];
+  if (!providers.length) { wrap.classList.add('hidden'); return; }
+  box.innerHTML = providers.map((p) =>
+    '<button type="button" class="oauth-icon" data-oauth-go="' + escLogin(p.id) + '" title="使用 ' + escLogin(p.name) + ' 登录">'
+    + '<img src="' + escLogin(p.logo) + '" alt="' + escLogin(p.name) + '" loading="lazy"></button>'
+  ).join('');
+  wrap.classList.remove('hidden');
+  box.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-oauth-go]');
+    if (!btn) return;
+    btn.disabled = true;
+    // 整页跳转到授权端点(第三方登录必须离开当前页面)
+    location.href = '/auth/' + encodeURIComponent(btn.getAttribute('data-oauth-go'));
+  });
+}
+// 回调回来时前端消费一次性票据/错误(# 片段不发给服务器,读完立刻清掉)
+(function consumeOauthFragment() {
+  const hash = String(location.hash || '');
+  if (!hash || hash.indexOf('oauth_') < 0) return;
+  const params = new URLSearchParams(hash.replace(/^#/, ''));
+  const err = params.get('oauth_error');
+  const ticket = params.get('oauth_ticket');
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* 忽略 */ }
+  if (err) { showError(err); return; }
+  if (!ticket) return;
+  setBusy($('login-btn'), true, '登录');
+  fetch(apiUrl('/api/auth/oauth/exchange'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ticket: ticket }),
+  }).then((r) => r.json().then((d) => ({ ok: r.ok, d: d }))).then((res) => {
+    if (!res.ok) throw new Error((res.d.error && res.d.error.message) || '登录失败');
+    try { localStorage.setItem(cacheKey, res.d.token); } catch (e) { /* 忽略 */ }
+    location.replace('/');
+  }).catch((e) => {
+    setBusy($('login-btn'), false, '登录');
+    showError(e.message || '登录失败');
+  });
+})();

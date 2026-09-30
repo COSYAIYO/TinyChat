@@ -32,20 +32,29 @@ jget() { # 从 stdin JSON 提取 "key":"value" 或 "key":value 的值
 cleanup() {
   [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null
   [ -n "${MOCK_PID:-}" ] && kill "$MOCK_PID" 2>/dev/null
+  [ -n "${OAUTH_PID:-}" ] && kill "$OAUTH_PID" 2>/dev/null
   rm -rf "$TMP"
 }
 trap cleanup EXIT
 
 say "== 启动服务 (app :$PORT / mock :$MOCK_PORT) =="
+OAUTH_PORT="${E2E_OAUTH_PORT:-8104}"
 DATA_DIR="$TMP/data" ADMIN_NAME=admin ADMIN_PASSWORD=e2e-pass \
   TC_BRAVE_SEARCH_BASE="http://127.0.0.1:$MOCK_PORT" \
   TC_DDG_HTML_BASE="http://127.0.0.1:$MOCK_PORT" \
   TC_JINA_SEARCH_BASE="http://127.0.0.1:$MOCK_PORT" \
   TC_MISTRAL_OCR_BASE="http://127.0.0.1:$MOCK_PORT" \
+  TC_WECHAT_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" TC_WECHAT_API_BASE="http://127.0.0.1:$OAUTH_PORT" \
+  TC_QQ_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
+  TC_LINUXDO_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
+  TC_NODELOC_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
   php -S "127.0.0.1:$PORT" router.php >"$TMP/app.log" 2>&1 &
 APP_PID=$!
 php -S "127.0.0.1:$MOCK_PORT" tests/mock-upstream.php >"$TMP/mock.log" 2>&1 &
 MOCK_PID=$!
+OAUTH_PORT="${E2E_OAUTH_PORT:-8104}"
+php -S "127.0.0.1:$OAUTH_PORT" tests/mock-oauth.php >"$TMP/mock-oauth.log" 2>&1 &
+OAUTH_PID=$!
 
 wait_for() {
   local i code
@@ -781,6 +790,130 @@ BADK=$(parse_upload doc.pdf "$TOKEN")
 assert_contains "mistral 坏 key 错误透传" "$BADK" 'invalid mistral key'
 # 恢复默认路由
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"parseChannels":{"pdf":"mineru","image":"mineru","office":"mineru"},"mistralOcrKey":"","paddleOcrUrl":"http://127.0.0.1:'"$MOCK_PORT"'/ocr"}' > /dev/null
+
+# ---------- 第三方一键登录(微信 / QQ / LinuxDO / NodeLoc,走 mock 提供商) ----------
+say "== 第三方一键登录 =="
+OAUTHBASE="http://127.0.0.1:$OAUTH_PORT"
+# 保存四家配置(含掩码回显与未配置时的行为)
+cat > "$TMP/oauth_cfg.json" <<'EOF'
+{"oauthProviders":{"wechat":{"enabled":true,"appId":"wx-e2e-app","appSecret":"wx-e2e-secret"},"qq":{"enabled":true,"appId":"123456","appKey":"qq-e2e-key"},"linuxdo":{"enabled":true,"clientId":"ldo-e2e-id","clientSecret":"ldo-e2e-secret"},"nodeloc":{"enabled":true,"clientId":"ndl-e2e-id","clientSecret":"ndl-e2e-secret"}},"oauthAutoRegister":true}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/oauth_cfg.json" > /dev/null
+OS=$(curl -s "$BASE/api/admin/settings" -H "$AUTH")
+assert_contains "第三方登录:微信可保存" "$OS" '"appId":"wx-e2e-app"'
+assert_has "第三方登录:密钥掩码回显" "$OS" '"appSecret":"wx-e'
+assert_contains "第三方登录:自动注册开关可保存" "$OS" '"oauthAutoRegister":true'
+# config 下发已启用的提供商(登录页据此渲染图标)
+OCFG=$(curl -s "$BASE/api/config")
+for pid in wechat qq linuxdo nodeloc; do
+  assert_contains "config 下发 $pid 图标" "$OCFG" "\"id\":\"$pid\""
+done
+assert_contains "config 带图标路径" "$OCFG" 'static/logo/weixin.svg'
+# 掩码保存不覆盖真实密钥(只传掩码)
+cat > "$TMP/oauth_mask.json" <<'EOF'
+{"oauthProviders":{"wechat":{"enabled":true,"appSecret":"wx-••••cret"}}}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/oauth_mask.json" > /dev/null
+cat > "$TMP/getsecret.php" <<'PHPEOF'
+<?php
+$pdo = new PDO("sqlite:" . $argv[1] . "/tinychat.sqlite");
+$s = json_decode($pdo->query('SELECT v FROM store WHERE k = "settings"')->fetchColumn(), true);
+echo isset($s["oauthProviders"]["wechat"]["appSecret"]) ? $s["oauthProviders"]["wechat"]["appSecret"] : "";
+PHPEOF
+php_out=$(php "$TMP/getsecret.php" "$TMP/data")
+assert_eq "掩码保存保留原密钥" "$php_out" "wx-e2e-secret"
+
+# 未配置的提供商:发起授权应提示未启用
+curl -s -o /dev/null -D "$TMP/h.disabled" "$BASE/auth/wechat?x=1" 2>/dev/null
+# (先记下启用状态,再临时关掉微信验证提示)
+cat > "$TMP/off.json" <<'EOF'
+{"oauthProviders":{"wechat":{"enabled":false}}}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/off.json" > /dev/null
+DIS=$(curl -s -D - -o /dev/null "$BASE/auth/wechat" | grep -i '^location:' | head -1)
+assert_has "未启用时提示未配置" "$DIS" 'oauth_error='
+cat > "$TMP/on.json" <<'EOF'
+{"oauthProviders":{"wechat":{"enabled":true}}}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/on.json" > /dev/null
+
+# 全链路(Nodeloc):发起 -> 授权 -> 回调 -> 票据 -> 换登录态
+oauth_flow() { # $1=provider, 输出最终 location
+  local pid="$1"
+  local auth=$(curl -s -D - -o /dev/null "$BASE/auth/$pid" | grep -i '^location:' | sed 's/^[Ll]ocation: //' | tr -d '')
+  local cb=$(curl -s -D - -o /dev/null "$auth" | grep -i '^location:' | sed 's/^[Ll]ocation: //' | tr -d '')
+  curl -s -D - -o /dev/null "$cb" | grep -i '^location:' | sed 's/^[Ll]ocation: //' | tr -d ''
+}
+NODEID=""
+for pid in nodeloc linuxdo; do
+  LAND=$(oauth_flow "$pid")
+  assert_contains "$pid 登录链路到达前台票据" "$LAND" 'oauth_ticket='
+  TK=$(printf '%s' "$LAND" | sed 's/.*oauth_ticket=//')
+  cat > "$TMP/tk.json" <<EOF2
+{"ticket":"$TK"}
+EOF2
+  EX=$(curl -s -X POST "$BASE/api/auth/oauth/exchange" -H "Content-Type: application/json" --data-binary @"$TMP/tk.json")
+  assert_contains "$pid 票据可换登录态" "$EX" '"token":"'
+  UNAME=$(printf '%s' "$EX" | python -c "import sys,json;print(json.load(sys.stdin)['user']['name'])" 2>/dev/null)
+  # 昵称重名时自动加数字后缀去重,因此只断言前缀
+  case "$UNAME" in
+    E2E测试用户*) ok "$pid 自动建号用户名($UNAME)" ;;
+    *) bad "$pid 自动建号用户名(得到 $UNAME)" ;;
+  esac
+  if [ "$pid" = "nodeloc" ]; then
+    NODEID=$(printf '%s' "$EX" | python -c "import sys,json;print(json.load(sys.stdin)['user']['id'])" 2>/dev/null)
+  fi
+  # 同一票据只能换一次
+  EX2=$(curl -s -X POST "$BASE/api/auth/oauth/exchange" -H "Content-Type: application/json" --data-binary @"$TMP/tk.json")
+  assert_contains "$pid 票据不可重放" "$EX2" '已使用'
+done
+# 同一第三方账号二次登录(仍是 nodeloc):不再建号,直接复用原账号
+LAND2=$(oauth_flow nodeloc)
+TK2=$(printf '%s' "$LAND2" | sed 's/.*oauth_ticket=//')
+cat > "$TMP/tk2.json" <<EOF3
+{"ticket":"$TK2"}
+EOF3
+EX3=$(curl -s -X POST "$BASE/api/auth/oauth/exchange" -H "Content-Type: application/json" --data-binary @"$TMP/tk2.json")
+ID3=$(printf '%s' "$EX3" | python -c "import sys,json;print(json.load(sys.stdin)['user']['id'])" 2>/dev/null)
+assert_eq "同一第三方账号再次登录复用原账号" "$ID3" "$NODEID"
+
+# 关闭自动注册:未绑定的第三方账号应被拒(先解绑 wechat,再关闭自动注册)
+BTOKEN_TMP=$(printf '%s' "$EX3" | python -c "import sys,json;print(json.load(sys.stdin)['token'])" 2>/dev/null)
+curl -s -X DELETE "$BASE/api/me/oauth/wechat" -H "Authorization: Bearer $BTOKEN_TMP" > /dev/null
+cat > "$TMP/off2.json" <<'EOF'
+{"oauthAutoRegister":false}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/off2.json" > /dev/null
+LANDNR=$(oauth_flow wechat)
+assert_has "关闭自动注册后未绑定账号被拒" "$LANDNR" 'oauth_error='
+cat > "$TMP/on2.json" <<'EOF'
+{"oauthAutoRegister":true}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/on2.json" > /dev/null
+
+# 微信链路(独立端点形状:GET 换 token + openid 随 token 返回)
+LANDW=$(oauth_flow wechat)
+assert_contains "微信登录链路到达前台票据" "$LANDW" 'oauth_ticket='
+# QQ 链路(需二次请求取 OpenID)
+LANDQ=$(oauth_flow qq)
+assert_contains "QQ 登录链路到达前台票据" "$LANDQ" 'oauth_ticket='
+
+# 已登录用户:绑定 / 解绑 / 已绑定列表
+BINDUSER=$(printf '%s' "$EX" | python -c "import sys,json;print(json.load(sys.stdin)['user']['id'])" 2>/dev/null)
+BTOKEN=$(printf '%s' "$EX" | python -c "import sys,json;print(json.load(sys.stdin)['token'])" 2>/dev/null)
+BIND=$(curl -s "$BASE/api/me/oauth" -H "Authorization: Bearer $BTOKEN")
+assert_contains "绑定列表含 wechat" "$BIND" '"id":"wechat"'
+assert_contains "绑定列表标记已绑定" "$BIND" '"bound":true'
+UNB=$(curl -s -X DELETE "$BASE/api/me/oauth/linuxdo" -H "Authorization: Bearer $BTOKEN")
+assert_contains "解绑成功" "$UNB" '"ok":true'
+BIND2=$(curl -s "$BASE/api/me/oauth" -H "Authorization: Bearer $BTOKEN")
+if printf '%s' "$BIND2" | grep -q '"id":"linuxdo","name":"LINUX DO","logo":"[^"]*","enabled":true,"bound":true'; then
+  bad "解绑后 linuxdo 仍显示已绑定"
+else
+  ok "解绑后状态刷新"
+fi
+UNB2=$(curl -s -X DELETE "$BASE/api/me/oauth/linuxdo" -H "Authorization: Bearer $BTOKEN")
+assert_contains "重复解绑被拒" "$UNB2" '未绑定'
 
 say ""
 say "结果: $PASS 通过, $FAIL 失败"

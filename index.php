@@ -9,6 +9,7 @@ require_once __DIR__ . '/lib/integrity.php';
 require_once __DIR__ . '/lib/api.php';
 require_once __DIR__ . '/lib/proxy.php';
 require_once __DIR__ . '/lib/tasks.php';
+require_once __DIR__ . '/lib/oauth.php';
 require_once __DIR__ . '/lib/updater.php';
 
 tc_send_cors();
@@ -83,6 +84,15 @@ if ($method === 'GET' || $method === 'HEAD') {
         tc_api_agreement_page();
         exit;
     }
+    // 第三方一键登录:/auth/<provider> 发起授权,/auth/<provider>/callback 处理回调
+    if (preg_match('#^/auth/([a-z0-9]+)$#', $path, $m)) {
+        tc_oauth_start($m[1]);
+        exit;
+    }
+    if (preg_match('#^/auth/([a-z0-9]+)/callback$#', $path, $m)) {
+        tc_oauth_callback($m[1]);
+        exit;
+    }
 }
 
 http_response_code(404);
@@ -116,6 +126,9 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/auth/register$#', 'tc_api_register'),
         array('POST', '#^/api/auth/login$#', 'tc_api_login'),
         array('POST', '#^/api/auth/guest$#', 'tc_api_guest_login'),
+        array('POST', '#^/api/auth/oauth/exchange$#', 'tc_api_oauth_exchange'),
+        array('GET', '#^/api/me/oauth$#', 'tc_api_me_oauth'),
+        array('DELETE', '#^/api/me/oauth/([^/]+)$#', 'tc_api_me_oauth_unbind'),
         array('POST', '#^/api/auth/verify-email$#', 'tc_api_verify_email'),
         array('POST', '#^/api/auth/resend-verification$#', 'tc_api_resend_verification'),
         array('POST', '#^/api/auth/forgot-password$#', 'tc_api_forgot_password'),

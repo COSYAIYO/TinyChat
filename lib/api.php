@@ -844,6 +844,11 @@ function tc_api_public_config($db) {
         'mailReady' => !empty($s['smtp']['host']),
         'webSearch' => tc_web_search_public($s),
         'mineru' => tc_mineru_public($s),
+        // 第三方一键登录:登录页据此渲染对应小图标(仅已启用且配置完整的)
+        'oauth' => array(
+            'providers' => tc_oauth_enabled_providers($s),
+            'autoRegister' => !empty($s['oauthAutoRegister']),
+        ),
         // 全站公告:enabled 且 text 非空时前台展示;updatedAt 变化视为新公告(重新弹出)
         'announcement' => array(
             'enabled' => !empty($s['announcement']['enabled']),
@@ -1986,6 +1991,27 @@ function tc_api_admin_save_settings() {
         if (array_key_exists('apiExposedModels', $src)) {
             if (!is_array($src['apiExposedModels'])) tc_fail(400, '对外模型设置格式不正确');
             $src['apiExposedModels'] = tc_normalize_exposed_models($src['apiExposedModels'], $db['providers']);
+        }
+        // 第三方登录:按提供商逐字段深合并。整键覆盖会丢掉本次未提交的字段
+        // (前端对留空/掩码的密钥不提交,期望"保持原值"),因此这里显式保留旧值。
+        if (array_key_exists('oauthProviders', $src)) {
+            if (!is_array($src['oauthProviders'])) tc_fail(400, '第三方登录设置格式不正确');
+            $prevOauth = isset($db['settings']['oauthProviders']) && is_array($db['settings']['oauthProviders']) ? $db['settings']['oauthProviders'] : array();
+            $merged = $prevOauth;
+            foreach ($src['oauthProviders'] as $pid => $row) {
+                if (!is_array($row)) continue;
+                $base = isset($prevOauth[$pid]) && is_array($prevOauth[$pid]) ? $prevOauth[$pid] : array();
+                if (array_key_exists('enabled', $row)) $base['enabled'] = !empty($row['enabled']);
+                foreach ($row as $k => $v) {
+                    if ($k === 'enabled') continue;
+                    $v = trim((string) $v);
+                    // 空串或掩码(••)= 不修改,保留已存值
+                    if ($v === '' || strpos($v, '••') !== false) continue;
+                    $base[$k] = $v;
+                }
+                $merged[$pid] = $base;
+            }
+            $src['oauthProviders'] = $merged;
         }
         $db['settings'] = tc_normalize_settings(array_merge($db['settings'], $src));
         tc_json(200, array('settings' => tc_admin_settings_public($db['settings'])));

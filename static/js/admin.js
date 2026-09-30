@@ -1410,6 +1410,134 @@ function fillChatLimits(s) {
 function shownHasMask(token) {
   return String(token || '').indexOf('••') >= 0;
 }
+
+// ============ 第三方一键登录 ============
+// 提供商元数据(字段名/显示名/图标/申请入口)与后端 tc_oauth_providers() 对应
+const OAUTH_PROVIDERS = [
+  {
+    id: 'wechat', name: '微信', logo: 'static/logo/weixin.svg',
+    hint: '需在微信开放平台创建「网站应用」并通过审核，回调域需与备案域名一致',
+    docs: 'https://open.weixin.qq.com',
+    fields: [
+      { key: 'appId', label: 'AppID', placeholder: 'wx开头的应用 ID' },
+      { key: 'appSecret', label: 'AppSecret', placeholder: '应用密钥', secret: true },
+    ],
+  },
+  {
+    id: 'qq', name: 'QQ', logo: 'static/logo/qq.svg',
+    hint: '需在 QQ 互联（connect.qq.com）创建网站应用，审核通过后获得 AppID 与 AppKey',
+    docs: 'https://connect.qq.com',
+    fields: [
+      { key: 'appId', label: 'AppID', placeholder: '数字 AppID' },
+      { key: 'appKey', label: 'AppKey', placeholder: '应用密钥', secret: true },
+    ],
+  },
+  {
+    id: 'linuxdo', name: 'LINUX DO', logo: 'static/logo/linuxdo.png',
+    hint: '在 connect.linux.do 创建应用；scope 使用 openid profile email',
+    docs: 'https://connect.linux.do',
+    fields: [
+      { key: 'clientId', label: 'Client ID', placeholder: '应用 Client ID' },
+      { key: 'clientSecret', label: 'Client Secret', placeholder: '应用密钥', secret: true },
+    ],
+  },
+  {
+    id: 'nodeloc', name: 'NodeLoc', logo: 'static/logo/nodeloc.png',
+    hint: '在 nodeloc.com/oauth-provider/applications 创建应用（需 TL2 及以上）',
+    docs: 'https://www.nodeloc.com/oauth-provider/applications',
+    fields: [
+      { key: 'clientId', label: 'Client ID', placeholder: '应用 Client ID' },
+      { key: 'clientSecret', label: 'Client Secret', placeholder: '应用密钥', secret: true },
+    ],
+  },
+];
+
+function renderOauthProviders(s) {
+  const box = $('oauth-providers');
+  if (!box) return;
+  const cfg = (s && s.oauthProviders) || {};
+  box.innerHTML = OAUTH_PROVIDERS.map((p) => {
+    const row = (cfg[p.id] && typeof cfg[p.id] === 'object') ? cfg[p.id] : {};
+    const on = !!row.enabled;
+    const fields = p.fields.map((f) => {
+      const val = row[f.key] || '';
+      return '<label class="field" style="margin:8px 0 0"><span>' + escapeHtml(f.label) + '</span>'
+        + '<input type="' + (f.secret ? 'password' : 'text') + '" data-oauth="' + p.id + '" data-key="' + f.key + '"'
+        + ' value="' + escapeHtml(f.secret ? val : (val.indexOf('••') >= 0 ? '' : val)) + '"'
+        + ' placeholder="' + escapeHtml(f.placeholder || '') + '" autocomplete="off"' + (on ? '' : ' disabled') + '>'
+        + '</label>';
+    }).join('');
+    return '<div class="oauth-row" data-oauth-row="' + p.id + '" style="border:1px solid var(--line,#e5e7eb);border-radius:10px;padding:12px 14px;margin-bottom:10px">'
+      + '<label class="user-form-admin" style="margin:0">'
+      + '<span class="switch"><input type="checkbox" data-oauth-enable="' + p.id + '"' + (on ? ' checked' : '') + '><span class="slider"></span></span>'
+      + '<img src="' + p.logo + '" alt="" style="width:20px;height:20px;border-radius:5px;object-fit:contain;vertical-align:-4px;margin-right:6px">'
+      + '<b>' + escapeHtml(p.name) + '</b>'
+      + '</label>'
+      + '<p class="muted small" style="margin:6px 0 0">' + escapeHtml(p.hint)
+      + ' · <a href="' + escapeHtml(p.docs) + '" target="_blank" rel="noopener">申请入口</a></p>'
+      + '<div class="oauth-fields" style="' + (on ? '' : 'display:none') + '">' + fields + '</div>'
+      + '</div>';
+  }).join('');
+  const hint = $('oauth-callback-hint');
+  if (hint) hint.textContent = location.origin + '/auth/';
+}
+function fillOauthSettings(s) {
+  if ($('oauth-auto-register')) $('oauth-auto-register').checked = (s && s.oauthAutoRegister) !== false;
+  renderOauthProviders(s || {});
+}
+async function loadOauthSettings() {
+  const r = await api('/api/admin/settings');
+  const data = await r.json();
+  if (!r.ok) return toast((data.error && data.error.message) || '加载失败', true);
+  fillOauthSettings((data && data.settings) || {});
+}
+(function initOauthSettings() {
+  const box = $('oauth-providers');
+  if (box) {
+    box.addEventListener('change', (e) => {
+      const en = e.target.closest('[data-oauth-enable]');
+      if (!en) return;
+      const pid = en.getAttribute('data-oauth-enable');
+      const row = box.querySelector('[data-oauth-row="' + pid + '"]');
+      if (!row) return;
+      const fields = row.querySelector('.oauth-fields');
+      if (fields) fields.style.display = en.checked ? '' : 'none';
+      row.querySelectorAll('[data-oauth]').forEach((inp) => { inp.disabled = !en.checked; });
+    });
+  }
+  const save = $('oauth-save');
+  if (save) save.addEventListener('click', async () => {
+    const payload = { oauthProviders: {}, oauthAutoRegister: !!($('oauth-auto-register') && $('oauth-auto-register').checked) };
+    OAUTH_PROVIDERS.forEach((p) => {
+      const enableBox = box && box.querySelector('[data-oauth-enable="' + p.id + '"]');
+      const row = { enabled: !!(enableBox && enableBox.checked) };
+      p.fields.forEach((f) => {
+        const inp = box && box.querySelector('[data-oauth="' + p.id + '"][data-key="' + f.key + '"]');
+        const v = (inp && inp.value || '').trim();
+        // 敏感字段:掩码或留空都不提交,由后端保留原值(避免误清空已保存的密钥)
+        if (f.secret && (v === '' || v.indexOf('••') >= 0)) return;
+        row[f.key] = v;
+      });
+      payload.oauthProviders[p.id] = row;
+    });
+    save.disabled = true;
+    try {
+      const r = await api('/api/admin/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await r.json();
+      if (!r.ok) return toast((data.error && data.error.message) || '保存失败', true);
+      toast('第三方登录设置已保存');
+      if (data.settings) fillOauthSettings(data.settings);
+    } catch (e) {
+      toast('保存失败: ' + e.message, true);
+    } finally {
+      save.disabled = false;
+    }
+  });
+})();
 function fillMineruSettings(s) {
   const token = (s && s.mineruToken) || '';
   if ($('mineru-token') && token) $('mineru-token').value = token;
@@ -3187,6 +3315,7 @@ const TAB_LOADERS = {
   perf: () => loadPerfSettings(),
   search: () => loadSearchSettings(),
   docs: () => loadSearchSettings(),
+  oauth: () => loadOauthSettings(),
   verify: () => loadVerifySettings(),
   invite: () => loadInvites(),
   openapi: () => loadOpenApi(),
@@ -3329,7 +3458,7 @@ const ADMIN_GROUPS = {
     { id: 'codes-gen', label: '生成兑换码' },
     { id: 'codes-fixed', label: '添加固定兑换码' },
   ],
-  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'update', label: '版本更新' }],
+  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'oauth', label: '第三方登录' }, { id: 'update', label: '版本更新' }],
   thinking: [{ id: 'thinking', label: '思考策略' }],
   content: [{ id: 'assistants', label: '助手库' }],
 };
