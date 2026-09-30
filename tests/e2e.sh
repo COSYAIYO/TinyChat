@@ -476,6 +476,16 @@ assert_contains "白名单内模型可见" "$(curl -s "$BASE/v1/models" -H "Auth
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d "{\"apiExposedModels\":[\"$PROV|not-exist\"]}" > /dev/null
 assert_has "白名单外模型不可见" "$(curl -s "$BASE/v1/models" -H "Authorization: Bearer $KEY2")" '"data":[]'
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"apiExposedModels":[]}' > /dev/null
+# 白名单归一化:裸模型 id 唯一命中时自动转成「供应商ID|模型ID」;
+# 同名歧义或不存在的模型必须明确报 400,不能静默丢弃(否则白名单悄悄失效)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"apiExposedModels":["mock-cheap"]}' > /dev/null
+assert_has "裸模型 id 自动解析为供应商规则" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" "\"$COSTPROV|mock-cheap\""
+assert_contains "解析后的白名单对 /v1 生效" "$(curl -s "$BASE/v1/models" -H "Authorization: Bearer $KEY2")" 'mock-cheap'
+assert_contains "同名模型裸 id 明确报错" "$(curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"apiExposedModels":["mock-model"]}')" '无法唯一匹配'
+assert_contains "不存在的模型也明确报错" "$(curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"apiExposedModels":["no-such-model"]}')" '无法唯一匹配'
+# 报错时原白名单不被破坏
+assert_has "报错后白名单保持原值" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" "\"$COSTPROV|mock-cheap\""
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"apiExposedModels":[]}' > /dev/null
 
 # ---------- 演示管理员 ----------
 say "== 演示管理员 =="
@@ -654,6 +664,27 @@ BADPROV=$(curl -s "$BASE/api/providers" -H "$AUTH" | grep -o '"id":"[a-f0-9]*","
 [ -n "$BADPROV" ] && ok "创建不可达供应商" || bad "创建不可达供应商"
 badmsg=$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d "{\"providerId\":\"$BADPROV\",\"model\":\"bad-model\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
 assert_contains "连接失败给出可定位提示" "$badmsg" '无法解析上游域名'
+
+# ---------- 授权规则 API 语义:单组更新 vs 全量替换 ----------
+say "== 授权规则语义 =="
+# 基准快照。注意:内置管理员组会在每次写库时自动补齐全部供应商授权(管理员永远全量可用),
+# 因此断言只针对「非管理员组」的规则增删,不能假设全量替换后总条数为 1。
+baseline=$(curl -s "$BASE/api/admin/access" -H "$AUTH")
+basecount=$(printf '%s' "$baseline" | grep -o '"groupId"' | wc -l | tr -d ' ')
+NG=$(curl -s -X POST "$BASE/api/admin/groups" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"access-sem-group"}' | jget id)
+[ -n "$NG" ] && ok "创建语义测试组" || bad "创建语义测试组"
+curl -s -X POST "$BASE/api/admin/access" -H "$AUTH" -H "Content-Type: application/json" -d "{\"groupId\":\"$NG\",\"providerId\":\"$PROV\",\"modelIds\":[\"mock-model\"]}" > /dev/null
+assert_has "单组更新写入新规则" "$(curl -s "$BASE/api/admin/access" -H "$AUTH")" "\"groupId\":\"$NG\",\"providerId\":\"$PROV\",\"modelIds\":[\"mock-model\"]"
+newcount=$(curl -s "$BASE/api/admin/access" -H "$AUTH" | grep -o '"groupId"' | wc -l | tr -d ' ')
+assert_eq "单组更新不影响其他组(规则数+1)" "$newcount" "$((basecount + 1))"
+# rules 数组 = 全量替换:替换后只剩 NG 一条 + 管理员组自愈规则;其他组(如默认组)的规则必须消失
+curl -s -X POST "$BASE/api/admin/access" -H "$AUTH" -H "Content-Type: application/json" -d "{\"rules\":[{\"groupId\":\"$NG\",\"providerId\":\"$PROV\",\"modelIds\":[\"*\"]}]}" > /dev/null
+acc_after=$(curl -s "$BASE/api/admin/access" -H "$AUTH")
+assert_has "替换后 NG 规则可回读" "$acc_after" "\"groupId\":\"$NG\""
+if printf '%s' "$acc_after" | grep -q "\"groupId\":\"$GID1\""; then bad "全量替换应移除未包含组(默认组)的规则"; else ok "全量替换移除了未包含组的规则"; fi
+# 用基准快照整体回滚,验证全量替换可用于安全的批量导入
+curl -s -X POST "$BASE/api/admin/access" -H "$AUTH" -H "Content-Type: application/json" -d "{\"rules\":$(printf '%s' "$baseline" | sed 's/^{"rules"://; s/}$//')}" > /dev/null
+assert_eq "基准快照可整体回滚" "$(curl -s "$BASE/api/admin/access" -H "$AUTH" | grep -o '"groupId"' | wc -l | tr -d ' ')" "$basecount"
 
 say ""
 say "结果: $PASS 通过, $FAIL 失败"

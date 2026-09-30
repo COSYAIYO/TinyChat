@@ -1885,6 +1885,39 @@ function tc_api_agreement_page() {
     exit;
 }
 
+// 开放 API 对外模型白名单归一化。条目两种写法:
+//   「providerId|modelId」——管理后台的标准格式,原样保留;
+//   裸「modelId」——按当前供应商清单解析,唯一命中才转成标准格式。
+// 解析不了(不存在,或多个供应商有同名模型)时整体报 400,
+// 绝不静默丢弃——否则白名单悄悄失效,管理员还以为已经放开/收紧了模型。
+function tc_normalize_exposed_models($list, $providers) {
+    $out = array();
+    $bad = array();
+    foreach ((array) $list as $item) {
+        $item = trim((string) $item);
+        if ($item === '') continue;
+        if (strpos($item, '|') !== false) { $out[$item] = true; continue; }
+        $hits = array();
+        foreach ((array) $providers as $p) {
+            $models = isset($p['models']) && is_array($p['models']) ? $p['models'] : array();
+            foreach ($models as $m) {
+                $mid = is_array($m)
+                    ? (string) (isset($m['id']) && $m['id'] !== '' ? $m['id'] : (isset($m['name']) ? $m['name'] : ''))
+                    : (string) $m;
+                if ($mid === $item) { $hits[] = (string) $p['id'] . '|' . $item; break; }
+            }
+        }
+        if (count($hits) === 1) { $out[$hits[0]] = true; continue; }
+        $bad[] = $item;
+    }
+    if ($bad) {
+        tc_fail(400, '以下模型无法唯一匹配到供应商（同名模型请用「供应商ID|模型ID」格式）: '
+            . implode('、', array_slice($bad, 0, 10))
+            . (count($bad) > 10 ? ' 等 ' . count($bad) . ' 项' : ''));
+    }
+    return array_keys($out);
+}
+
 function tc_api_admin_save_settings() {
     tc_with_db(true, function (&$db) {
         $admin = tc_require_admin($db);
@@ -1922,6 +1955,7 @@ function tc_api_admin_save_settings() {
         unset($src['demoMode']);
         if (array_key_exists('apiExposedModels', $src)) {
             if (!is_array($src['apiExposedModels'])) tc_fail(400, '对外模型设置格式不正确');
+            $src['apiExposedModels'] = tc_normalize_exposed_models($src['apiExposedModels'], $db['providers']);
         }
         $db['settings'] = tc_normalize_settings(array_merge($db['settings'], $src));
         tc_json(200, array('settings' => tc_admin_settings_public($db['settings'])));
@@ -2465,6 +2499,11 @@ function tc_api_admin_get_access() {
     });
 }
 
+// 保存用户组模型授权,两种互斥写法:
+//   ① 带 rules 数组 —— 全量替换整个 accessRules 表(批量导入用);
+//      未出现在数组里的组/供应商规则会被删除,不要用它做单条修改。
+//   ② 带 groupId+providerId(+modelIds) —— 只更新这一组这一供应商的规则,
+//      其他规则原样保留;管理后台的授权勾选走的就是这个分支。
 function tc_api_admin_set_access() {
     tc_with_db(true, function (&$db) {
         tc_require_admin($db);
