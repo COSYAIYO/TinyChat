@@ -41,6 +41,187 @@ function fmtTime(ts) {
 }
 
 // ============ 统计 ============
+// ============ 服务器状态看板（概览顶部） ============
+// 取不到的指标（如 Windows 下的 CPU/整机内存）直接隐藏，不显示会误导人的 0
+function fmtBytesBig(n) {
+  n = Number(n);
+  if (!isFinite(n) || n <= 0) return '0 B';
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+  return (n / 1073741824).toFixed(2) + ' GB';
+}
+function fmtUptime(sec) {
+  sec = Math.max(0, Number(sec) || 0);
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  if (d > 0) return d + ' 天 ' + h + ' 小时';
+  if (h > 0) return h + ' 小时 ' + m + ' 分';
+  return m + ' 分';
+}
+function sysRing(label, sub, pct, color) {
+  const has = (pct !== null && pct !== undefined);
+  const p = has ? Math.max(0, Math.min(100, Math.round(pct))) : 0;
+  return '<div class="sys-meter">'
+    + '<div class="sys-ring"' + (has ? ' style="--ring-color:' + color + ';--pct:' + p + '"' : ' style="--ring-color:#cbd5e1"') + '>'
+    + '<span>' + (has ? p + '%' : '—') + '</span></div>'
+    + '<div class="sys-meter-meta"><div class="k">' + escapeHtml(label) + '</div><div class="v">' + escapeHtml(sub) + '</div></div>'
+    + '</div>';
+}
+function sysFact(k, v, sub) {
+  return '<div class="sys-fact"><div class="k">' + escapeHtml(k) + '</div><div class="v">' + escapeHtml(String(v)) + '</div>'
+    + (sub ? '<div class="sub">' + escapeHtml(sub) + '</div>' : '') + '</div>';
+}
+function sysRingColor(pct) { return pct >= 85 ? '#dc2626' : (pct >= 60 ? '#f59e0b' : '#16a34a'); }
+async function loadSystemBoard() {
+  const metersEl = $('sys-meters'); const factsEl = $('sys-facts');
+  if (!metersEl || !factsEl) return;
+  let d = null;
+  try {
+    const r = await api('/api/admin/system');
+    d = await readJsonSafe(r);
+    if (!r.ok) throw new Error((d.error && d.error.message) || '加载失败');
+  } catch (e) {
+    metersEl.innerHTML = '<p class="muted small" style="margin:0">服务器指标加载失败：' + escapeHtml(e.message || '') + '</p>';
+    return;
+  }
+  const cpu = d.cpu || {}, mem = d.memory || {}, disk = d.disk || {}, users = d.users || {};
+  const calls = d.calls || {}, content = d.content || {}, srv = d.server || {};
+  const meters = [];
+  if (cpu.percent !== null && cpu.percent !== undefined) {
+    const la = (cpu.loadavg && cpu.loadavg.length) ? '负载 ' + cpu.loadavg.join(' / ') : (cpu.cores ? cpu.cores + ' 核' : '—');
+    meters.push(sysRing('CPU 使用率', la, cpu.percent, sysRingColor(cpu.percent)));
+  } else if (cpu.cores) {
+    meters.push(sysRing('CPU', cpu.cores + ' 核', null, '#cbd5e1'));
+  }
+  if (mem.totalBytes) {
+    const pct = mem.usedBytes * 100 / mem.totalBytes;
+    meters.push(sysRing('内存', fmtBytesBig(mem.usedBytes) + ' / ' + fmtBytesBig(mem.totalBytes), pct, sysRingColor(pct)));
+  } else if (mem.phpBytes) {
+    const lim = mem.phpLimitBytes;
+    meters.push(sysRing('PHP 进程内存', fmtBytesBig(mem.phpBytes) + (lim ? ' / ' + fmtBytesBig(lim) : ''),
+      lim ? mem.phpBytes * 100 / lim : null, sysRingColor(lim ? mem.phpBytes * 100 / lim : 0)));
+  }
+  if (disk.totalBytes && disk.freeBytes !== null && disk.freeBytes !== undefined) {
+    const used = disk.totalBytes - disk.freeBytes;
+    const pct = used * 100 / disk.totalBytes;
+    meters.push(sysRing('磁盘', fmtBytesBig(used) + ' / ' + fmtBytesBig(disk.totalBytes), pct, sysRingColor(pct)));
+  }
+  metersEl.innerHTML = meters.join('') || '<p class="muted small" style="margin:0">当前环境未提供 CPU / 内存指标。</p>';
+  factsEl.innerHTML = [
+    sysFact('在线用户', users.online, '最近 ' + (users.onlineWindowMin || 5) + ' 分钟活跃'),
+    sysFact('总用户', users.total, '24 小时活跃 ' + (users.active24h || 0)),
+    sysFact('今日调用', calls.today, '近 7 天 ' + (calls.last7d || 0)),
+    sysFact('累计调用', calls.total),
+    sysFact('对话总数', content.chats),
+    sysFact('模型供应商', content.providers),
+    sysFact('助手数', content.assistants),
+    sysFact('运行时长', fmtUptime(d.uptimeSec)),
+  ].join('');
+  const hostEl = $('sys-host');
+  if (hostEl) hostEl.textContent = ['v' + (d.version || '?'), srv.phpVersion ? 'PHP ' + srv.phpVersion : '', srv.os, srv.sqliteVersion ? 'SQLite ' + srv.sqliteVersion : '', srv.arch].filter(Boolean).join(' · ');
+  const upEl = $('sys-updated');
+  if (upEl) upEl.textContent = '更新于 ' + fmtTime(Date.now()).replace(/^.*\s/, '').replace(/:\d\d$/, '');
+}
+(function initSystemBoard() {
+  const btn = $('sys-refresh');
+  if (btn) btn.addEventListener('click', () => { btn.disabled = true; Promise.resolve(loadSystemBoard()).then(() => { btn.disabled = false; }); });
+})();
+
+// ============ 存储管理 ============
+function stRow(name, desc, bytes, maxBytes, action) {
+  const pct = maxBytes > 0 ? Math.min(100, bytes * 100 / maxBytes) : 0;
+  return '<div class="st-row">'
+    + '<div class="st-row-main"><div class="st-row-name">' + escapeHtml(name) + '</div>'
+    + '<div class="st-row-desc">' + escapeHtml(desc) + '</div>'
+    + '<div class="st-bar"><i style="width:' + pct.toFixed(1) + '%"></i></div></div>'
+    + '<div class="st-row-val">' + fmtBytesBig(bytes) + (action || '') + '</div></div>';
+}
+async function loadStorage() {
+  const catEl = $('st-categories');
+  if (!catEl) return;
+  catEl.innerHTML = '<p class="muted small">加载中…</p>';
+  let d = null;
+  try {
+    const r = await api('/api/admin/storage');
+    d = await readJsonSafe(r);
+    if (!r.ok) throw new Error((d.error && d.error.message) || '加载失败');
+  } catch (e) {
+    catEl.innerHTML = '<p class="muted small">加载失败：' + escapeHtml(e.message || '') + '</p>';
+    return;
+  }
+  const total = d.totalBytes || 1;
+  const byKey = {};
+  (d.categories || []).forEach((c) => { byKey[c.key] = c; });
+  const meters = [sysRing('数据目录占用', fmtBytesBig(d.totalBytes), null, '#cbd5e1')];
+  if (d.disk && d.disk.totalBytes) {
+    const used = d.disk.totalBytes - d.disk.freeBytes;
+    const pct = used * 100 / d.disk.totalBytes;
+    meters.push(sysRing('磁盘已用', fmtBytesBig(used) + ' / ' + fmtBytesBig(d.disk.totalBytes), pct, sysRingColor(pct)));
+  }
+  const quotaBytes = (d.quotaMb > 0 ? d.quotaMb : 0) * 1048576;
+  meters.push(sysRing('生图留存', fmtBytesBig(d.images.bytes) + (d.archiveEnabled ? '' : '（留存已关闭）'),
+    quotaBytes > 0 ? d.images.bytes * 100 / quotaBytes : null, d.images.bytes * 100 > quotaBytes * 85 ? '#f59e0b' : '#16a34a'));
+  meters.push(sysRing('数据备份', d.backups.count + ' 个文件', null, '#cbd5e1'));
+  if ($('st-meters')) $('st-meters').innerHTML = meters.join('');
+  catEl.innerHTML = (d.categories || []).map((c) => stRow(c.name,
+    c.desc + (c.exists ? '' : '（当前不存在）') + (c.files ? ' · ' + c.files + ' 个文件' : ''), c.bytes, total)).join('');
+  const cl = [];
+  if (byKey.imgcache && byKey.imgcache.bytes > 0) cl.push(['imagecache', '图片代理缓存', byKey.imgcache.bytes + ' 可释放']);
+  if (d.images.count > 0) cl.push(['images', '生图留存（' + d.images.count + ' 个文件）', fmtBytesBig(d.images.bytes) + ' 可释放']);
+  if (d.backups.count > 0) cl.push(['backups', '数据备份（' + d.backups.count + ' 个文件）', fmtBytesBig(d.backups.bytes) + ' 可释放']);
+  if (byKey.logs && byKey.logs.bytes > 0) cl.push(['logs', '运行日志（' + d.logs.count + ' 条）', fmtBytesBig(byKey.logs.bytes) + ' 可释放']);
+  if (byKey.update && byKey.update.bytes > 0) cl.push(['updates', '更新残留', fmtBytesBig(byKey.update.bytes) + ' 可释放']);
+  if ($('st-clean')) $('st-clean').innerHTML = cl.length ? cl.map((x) =>
+    '<div class="st-row"><div class="st-row-main"><div class="st-row-name">' + escapeHtml(x[1]) + '</div>'
+    + '<div class="st-row-desc">' + escapeHtml(x[2]) + '</div></div>'
+    + '<div class="st-row-val"><button class="btn small st-danger" type="button" data-st-clean="' + x[0] + '">清理</button></div></div>').join('')
+    : '<p class="muted small">暂无可清理项。</p>';
+  const fileRow = (f) => '<div class="st-row"><div class="st-row-main"><div class="st-row-name">' + escapeHtml(f.name) + '</div>'
+    + '<div class="st-row-desc">' + fmtTime(f.mtime) + '</div></div>'
+    + '<div class="st-row-val">' + fmtBytesBig(f.bytes) + '</div></div>';
+  if ($('st-images')) $('st-images').innerHTML = d.images.count
+    ? d.images.items.map(fileRow).join('') + (d.images.count > d.images.items.length ? '<p class="muted small">仅显示最近 ' + d.images.items.length + ' 个，共 ' + d.images.count + ' 个。</p>' : '')
+    : '<p class="muted small">暂无生图留存文件。</p>';
+  if ($('st-backups')) $('st-backups').innerHTML = d.backups.count
+    ? d.backups.items.map(fileRow).join('') + (d.backups.count > d.backups.items.length ? '<p class="muted small">仅显示最近 ' + d.backups.items.length + ' 个，共 ' + d.backups.count + ' 个。</p>' : '')
+    : '<p class="muted small">暂无备份文件（可在「版本更新」页开启自动备份）。</p>';
+}
+(function initStoragePanel() {
+  const b = $('st-refresh');
+  if (b) b.addEventListener('click', () => { b.disabled = true; Promise.resolve(loadStorage()).then(() => { b.disabled = false; }); });
+  const box = $('st-clean');
+  if (!box) return;
+  box.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-st-clean]');
+    if (!btn) return;
+    const target = btn.getAttribute('data-st-clean');
+    const label = btn.closest('.st-row').querySelector('.st-row-name').textContent;
+    const hint = {
+      imagecache: '仅清空代理图片缓存，用户下次访问会重新抓取，不影响历史内容。',
+      images: '已生成图片的本地留存会被删除，历史对话中这些图片将无法再显示。',
+      backups: '历史数据快照会被删除，删除后无法回滚到这些时间点。',
+      logs: '运行日志会被清空，仅影响排查记录。',
+      updates: '更新下载的包与旧版本备份会被删除，不影响当前运行。',
+    }[target] || '';
+    const msg = hint + '清理后不可恢复，确定继续？';
+    const ok = window.OCUI && window.OCUI.confirm
+      ? await window.OCUI.confirm({ title: '清理' + label, message: msg, danger: true, confirmText: '清理' })
+      : window.confirm('清理' + label + '？' + msg);
+    if (!ok) return;
+    btn.disabled = true;
+    try {
+      const r = await api('/api/admin/storage/clean', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target: target }) });
+      const res = await readJsonSafe(r);
+      if (!r.ok) throw new Error((res.error && res.error.message) || '清理失败');
+      toast('已清理' + res.label + '：' + res.removed + ' 个文件，释放 ' + fmtBytesBig(res.freedBytes));
+      await loadStorage();
+    } catch (err) {
+      btn.disabled = false;
+      toast(err.message || '清理失败', true);
+    }
+  });
+})();
+
 async function loadStats() {
   const r = await api('/api/admin/stats');
   const data = await r.json();
@@ -3436,7 +3617,7 @@ async function restoreBackup(name) {
 })();
 
 const TAB_LOADERS = {
-  overview: () => { loadStats(); loadAnnouncement(); },
+  overview: () => { loadStats(); loadSystemBoard(); },
   usage: () => loadStats(),
   users: () => loadUsers(),
   groups: () => loadGroups(),
@@ -3465,6 +3646,8 @@ const TAB_LOADERS = {
     await loadBackups();
   },
   moderation: () => loadModeration(),
+  announce: () => loadAnnouncement(),
+  storage: () => loadStorage(),
 };
 
 // ============ 内容安全 ============
@@ -3584,7 +3767,7 @@ $('usage-export')?.addEventListener('click', async () => {
 });
 
 const ADMIN_GROUPS = {
-  overview: [{ id: 'overview', label: '概览' }, { id: 'usage', label: '用量分析' }, { id: 'logs', label: '运行日志' }],
+  overview: [{ id: 'overview', label: '概览' }, { id: 'usage', label: '用量分析' }, { id: 'announce', label: '全站公告' }, { id: 'logs', label: '运行日志' }],
   users: [{ id: 'users', label: '用户' }, { id: 'groups', label: '用户组' }, { id: 'access', label: '模型授权' }, { id: 'verify', label: '用户验证' }, { id: 'invite', label: '邀请码' }],
   billing: [
     { id: 'packages', label: '额度套餐' },
@@ -3592,7 +3775,7 @@ const ADMIN_GROUPS = {
     { id: 'codes-gen', label: '生成兑换码' },
     { id: 'codes-fixed', label: '添加固定兑换码' },
   ],
-  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'oauth', label: '第三方登录' }, { id: 'update', label: '版本更新' }],
+  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'oauth', label: '第三方登录' }, { id: 'storage', label: '存储管理' }, { id: 'update', label: '版本更新' }],
   thinking: [{ id: 'thinking', label: '思考策略' }],
   content: [{ id: 'assistants', label: '助手库' }],
 };

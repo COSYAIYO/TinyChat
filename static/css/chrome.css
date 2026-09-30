@@ -3881,3 +3881,48 @@ body.is-demo-admin [data-chats] { display: none !important; }
 .acc-name-edit { flex: 0 0 auto; opacity: .55; }
 .acc-name-edit:hover { opacity: 1; }
 .acc-secure-row { display: flex; gap: 8px; margin: 10px 0 4px; }
+
+
+/* ============ 后台:服务器状态看板 ============ */
+.sys-board {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--brand) 10%, var(--surface,#fff)), var(--surface,#fff) 55%);
+  border: 1px solid var(--hairline, #e5e7eb); border-radius: 16px; padding: 16px 18px; margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(15,23,42,.05);
+}
+.sys-board-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.sys-board-title { display: flex; align-items: center; gap: 8px; font-size: 15px; }
+.sys-board-actions { display: flex; align-items: center; gap: 10px; }
+/* 呼吸点:暗示这是一块实时状态区 */
+.sys-pulse { width: 9px; height: 9px; border-radius: 50%; background: #16a34a; box-shadow: 0 0 0 0 rgba(22,163,74,.6); animation: sysPulse 2.2s infinite; flex: 0 0 auto; }
+@keyframes sysPulse {
+  0% { box-shadow: 0 0 0 0 rgba(22,163,74,.55); }
+  70% { box-shadow: 0 0 0 7px rgba(22,163,74,0); }
+  100% { box-shadow: 0 0 0 0 rgba(22,163,74,0); }
+}
+/* 环形指标:用 conic-gradient 画进度环 */
+.sys-meters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.sys-meter { display: flex; align-items: center; gap: 12px; background: var(--surface,#fff); border: 1px solid var(--hairline,#eef2f7);
+  border-radius: 12px; padding: 12px 14px; min-width: 0; }
+.sys-ring { position: relative; width: 54px; height: 54px; border-radius: 50%; flex: 0 0 auto;
+  background: conic-gradient(var(--ring-color, var(--brand,#3b82f6)) calc(var(--pct,0) * 1%), var(--ring-track, #eef2f7) 0);
+  display: grid; place-items: center; }
+.sys-ring::after { content: ''; position: absolute; inset: 6px; border-radius: 50%; background: var(--surface,#fff); }
+.sys-ring span { position: relative; z-index: 1; font-size: 13px; font-weight: 650; letter-spacing: -0.02em; }
+.sys-meter-meta { min-width: 0; }
+.sys-meter-meta .k { font-size: 12.5px; color: var(--muted,#6b7280); }
+.sys-meter-meta .v { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+.sys-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 12px; }
+.sys-fact { background: var(--surface,#fff); border: 1px solid var(--hairline,#eef2f7); border-radius: 10px; padding: 9px 12px; }
+.sys-fact .k { font-size: 12px; color: var(--muted,#6b7280); display: flex; align-items: center; gap: 4px; }
+.sys-fact .v { font-size: 16px; font-weight: 650; letter-spacing: -0.01em; margin-top: 2px; }
+.sys-fact .sub { font-size: 11.5px; color: var(--muted,#9ca3af); }
+/* 存储管理:条形占用 */
+.st-row { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--hairline,#eef2f7); }
+.st-row:last-child { border-bottom: 0; }
+.st-row-main { flex: 1 1 auto; min-width: 0; }
+.st-row-name { display: flex; align-items: center; gap: 6px; font-size: 13.5px; }
+.st-row-desc { font-size: 11.5px; color: var(--muted,#9ca3af); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-bar { height: 5px; border-radius: 3px; background: var(--hairline,#eef2f7); margin-top: 5px; overflow: hidden; }
+.st-bar i { display: block; height: 100%; border-radius: 3px; background: var(--brand,#3b82f6); }
+.st-row-val { flex: 0 0 auto; text-align: right; font-size: 13px; font-weight: 600; white-space: nowrap; }
+.st-danger { color: #dc2626; }

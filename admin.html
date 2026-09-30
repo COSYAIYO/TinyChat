@@ -9,15 +9,15 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./logo-icon.svg">
-<link rel="stylesheet" href="./static/css/style.css?v=20261007.18">
+<link rel="stylesheet" href="./static/css/style.css?v=20261007.19">
 <link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
 <link rel="stylesheet" href="./vendor/katex/katex.min.css">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.18">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261007.18">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.18">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261007.18">
-<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.18">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.18">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.19">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261007.19">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.19">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261007.19">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.19">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.19">
 <script>
 (function () {
   try {
@@ -81,17 +81,38 @@
 
   <!-- 概览 -->
   <div class="admin-panel active" id="panel-overview">
+    <!-- 服务器状态看板:数据来自 /api/admin/system;取不到的指标自动隐藏(不显示误导性的 0) -->
+    <div class="sys-board" id="sys-board">
+      <div class="sys-board-head">
+        <div class="sys-board-title">
+          <span class="sys-pulse" aria-hidden="true"></span>
+          <b>服务器状态</b>
+          <span class="muted small" id="sys-updated"></span>
+        </div>
+        <div class="sys-board-actions">
+          <span class="muted small" id="sys-host"></span>
+          <button class="btn small" id="sys-refresh" type="button">刷新</button>
+        </div>
+      </div>
+      <div class="sys-meters" id="sys-meters"></div>
+      <div class="sys-facts" id="sys-facts"></div>
+    </div>
+
     <div class="admin-card">
       <h2>概览</h2>
       <div class="admin-grid" id="stats-grid"></div>
 
       <div class="overview-note muted small">核心状态概览。详细趋势、用量和排行请进入“用量分析”。</div>
     </div>
-    <div class="admin-card" style="margin-top:16px">
+  </div>
+
+  <!-- 全站公告(独立页签:原先挤在概览里) -->
+  <div class="admin-panel" id="panel-announce">
+    <div class="admin-card">
       <h2>全站公告</h2>
       <p class="muted small">启用后登录用户会看到<b>居中弹窗</b>；关闭后内容更新（重新保存）才会再次自动弹出。用户可随时从右上角用户菜单的「公告」再次查看。纯文本，最多 2000 字。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="announce-enabled"><span class="slider"></span></span><span>启用公告</span></label>
-      <label class="field"><span>公告内容</span><textarea id="announce-text" rows="3" maxlength="2000" placeholder="例如：系统将于周日晚 22:00–24:00 升级维护" style="resize:vertical"></textarea></label>
+      <label class="field"><span>公告内容</span><textarea id="announce-text" rows="6" maxlength="2000" placeholder="例如：系统将于周日晚 22:00–24:00 升级维护" style="resize:vertical"></textarea></label>
       <button class="btn primary" id="announce-save" type="button">保存公告</button>
       <span class="muted small" id="announce-status" role="status" aria-live="polite" style="margin-left:8px"></span>
     </div>
@@ -672,6 +693,26 @@
     </div>
   </div>
 
+  <!-- 存储管理 -->
+  <div class="admin-panel" id="panel-storage">
+    <div class="admin-card">
+      <h2>存储管理</h2>
+      <p class="muted small">数据目录与磁盘占用一览。清理操作不可撤销，请确认后再执行；数据库与站点配置不会被清理。</p>
+      <div class="sys-meters" id="st-meters"></div>
+      <div class="section-title">分类占用</div>
+      <div id="st-categories" class="admin-long-list"></div>
+      <div class="section-title">可清理项</div>
+      <div id="st-clean" class="admin-long-list"></div>
+      <div class="section-title">生图留存文件</div>
+      <div id="st-images" class="admin-long-list"></div>
+      <div class="section-title">数据备份</div>
+      <div id="st-backups" class="admin-long-list"></div>
+      <div class="form-actions" style="margin-top:12px">
+        <button class="btn" id="st-refresh" type="button">刷新</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 版本更新 -->
   <div class="admin-panel" id="panel-update">
     <div class="admin-card">
@@ -887,16 +928,16 @@
   </div>
 </div>
 </form>
-<script src="./static/js/config.js?v=20261007.18"></script>
-<script src="./static/js/icons.js?v=20261007.18"></script>
+<script src="./static/js/config.js?v=20261007.19"></script>
+<script src="./static/js/icons.js?v=20261007.19"></script>
 <script defer src="./vendor/markdown-it/markdown-it.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-footnote.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-emoji.min.js"></script>
 <script defer src="./vendor/katex/katex.min.js"></script>
 <script defer src="./vendor/highlight/highlight.min.js"></script>
-<script src="./static/js/ui.js?v=20261007.18"></script>
-<script src="./static/js/components.js?v=20261007.18"></script>
-<script src="./static/js/renderer.js?v=20261007.18"></script>
-<script src="./static/js/admin.js?v=20261007.18"></script>
+<script src="./static/js/ui.js?v=20261007.19"></script>
+<script src="./static/js/components.js?v=20261007.19"></script>
+<script src="./static/js/renderer.js?v=20261007.19"></script>
+<script src="./static/js/admin.js?v=20261007.19"></script>
 </body>
 </html>
