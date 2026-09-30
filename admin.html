@@ -9,15 +9,15 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./logo-icon.svg">
-<link rel="stylesheet" href="./static/css/style.css?v=20261007.6">
+<link rel="stylesheet" href="./static/css/style.css?v=20261007.7">
 <link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
 <link rel="stylesheet" href="./vendor/katex/katex.min.css">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.6">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261007.6">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.6">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261007.6">
-<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.6">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.6">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.7">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261007.7">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.7">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261007.7">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.7">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.7">
 <script>
 (function () {
   try {
@@ -656,9 +656,13 @@
     <div class="admin-card">
       <h2>第三方一键登录</h2>
       <p class="muted small">开启并填全凭据后，对应小图标会出现在登录页底部，用户可直接用第三方账号登录。首次登录若未绑定过本站账号，按下方开关自动建号。</p>
-      <label class="user-form-admin" style="margin:14px 0 18px">
+      <label class="user-form-admin" style="margin:14px 0 10px">
         <span class="switch"><input type="checkbox" id="oauth-auto-register"><span class="slider"></span></span>
         <span>未绑定过本站账号时自动注册（关闭后需先登录本站账号并绑定）</span>
+      </label>
+      <label class="user-form-admin" style="margin:0 0 18px">
+        <span class="switch"><input type="checkbox" id="oauth-require-profile"><span class="slider"></span></span>
+        <span>要求补全用户名与密码（第三方登录后强制填写，之后可脱离第三方用密码登录）</span>
       </label>
       <div id="oauth-providers"></div>
       <p class="muted small" style="margin:14px 0 0">回调地址需在第三方平台登记为本站：<code id="oauth-callback-hint">—</code>（每个平台分别是该地址 + 平台标识，例如 <code>/auth/wechat/callback</code>）。</p>
@@ -875,16 +879,16 @@
   </div>
 </div>
 </form>
-<script src="./static/js/config.js?v=20261007.6"></script>
-<script src="./static/js/icons.js?v=20261007.6"></script>
+<script src="./static/js/config.js?v=20261007.7"></script>
+<script src="./static/js/icons.js?v=20261007.7"></script>
 <script defer src="./vendor/markdown-it/markdown-it.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-footnote.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-emoji.min.js"></script>
 <script defer src="./vendor/katex/katex.min.js"></script>
 <script defer src="./vendor/highlight/highlight.min.js"></script>
-<script src="./static/js/ui.js?v=20261007.6"></script>
-<script src="./static/js/components.js?v=20261007.6"></script>
-<script src="./static/js/renderer.js?v=20261007.6"></script>
-<script src="./static/js/admin.js?v=20261007.6"></script>
+<script src="./static/js/ui.js?v=20261007.7"></script>
+<script src="./static/js/components.js?v=20261007.7"></script>
+<script src="./static/js/renderer.js?v=20261007.7"></script>
+<script src="./static/js/admin.js?v=20261007.7"></script>
 </body>
 </html>

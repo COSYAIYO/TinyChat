@@ -915,6 +915,121 @@ fi
 UNB2=$(curl -s -X DELETE "$BASE/api/me/oauth/linuxdo" -H "Authorization: Bearer $BTOKEN")
 assert_contains "重复解绑被拒" "$UNB2" '未绑定'
 
+# ---------- 余量明细与第三方账号资料补全 ----------
+say "== 余量明细 / 资料补全 =="
+# 造一个有明确额度的用户,验证每笔扣减都带用途与前后余额
+cat > "$TMP/qu.json" <<'EOF'
+{"name":"ledgeruser","password":"test1234","quota":20}
+EOF
+curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/qu.json" > /dev/null
+LT=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"ledgeruser","password":"test1234"}' | jget token)
+[ -n "$LT" ] && ok "余量明细测试用户登录" || bad "余量明细测试用户登录"
+LAUTH="Authorization: Bearer $LT"
+# 普通对话
+cat > "$TMP/lc1.json" <<'EOF'
+{"providerId":"x","model":"mock-model","stream":false,"messages":[{"role":"user","content":"hi"}]}
+EOF
+cat > "$TMP/lc1.json" <<EOF2
+{"providerId":"$PROV","model":"mock-model","stream":false,"messages":[{"role":"user","content":"hi"}]}
+EOF2
+curl -s -X POST "$BASE/api/proxy/chat" -H "$LAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/lc1.json" > /dev/null
+# 带用途:生成标题 / 生成跟进建议
+cat > "$TMP/lc2.json" <<EOF3
+{"providerId":"$PROV","model":"mock-model","stream":false,"_purpose":"title","messages":[{"role":"user","content":"t"}]}
+EOF3
+curl -s -X POST "$BASE/api/proxy/chat" -H "$LAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/lc2.json" > /dev/null
+cat > "$TMP/lc3.json" <<EOF4
+{"providerId":"$PROV","model":"mock-model","stream":false,"_purpose":"followup","messages":[{"role":"user","content":"f"}]}
+EOF4
+curl -s -X POST "$BASE/api/proxy/chat" -H "$LAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/lc3.json" > /dev/null
+LEDGER=$(curl -s "$BASE/api/me/quota/ledger" -H "$LAUTH")
+assert_contains "明细记录普通对话" "$LEDGER" '对话'
+assert_contains "明细记录生成标题" "$LEDGER" '生成标题'
+assert_contains "明细记录生成跟进建议" "$LEDGER" '生成跟进建议'
+assert_contains "明细带余额变化" "$LEDGER" '"before":'
+LED_SPENT=$(printf '%s' "$LEDGER" | python -c "import sys,json;print(json.load(sys.stdin)['spent'])" 2>/dev/null)
+if [ -n "$LED_SPENT" ] && [ "$LED_SPENT" != "0" ] && [ "$LED_SPENT" != "0.0" ]; then ok "明细汇总消耗为 $LED_SPENT"; else bad "明细汇总消耗为空($LED_SPENT)"; fi
+# 分页参数
+assert_contains "明细支持 limit" "$(curl -s "$BASE/api/me/quota/ledger?limit=1" -H "$LAUTH")" '"total":3'
+# 充值/兑换码也进同一明细
+cat > "$TMP/lpkg.json" <<'EOF'
+{"name":"明细测试套餐","quota":10,"enabled":true}
+EOF
+LPKG=$(curl -s -X POST "$BASE/api/admin/packages" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/lpkg.json" | jget id)
+LCODE=$(curl -s -X POST "$BASE/api/admin/packages/$LPKG/codes" -H "$AUTH" -H "Content-Type: application/json" -d '{"count":1}' | python -c "import sys,json;print(json.load(sys.stdin)['codes'][0])" 2>/dev/null)
+cat > "$TMP/lrd.json" <<EOF5
+{"code":"$LCODE"}
+EOF5
+curl -s -X POST "$BASE/api/packages/redeem" -H "$LAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/lrd.json" > /dev/null
+assert_contains "明细记录兑换码获得" "$(curl -s "$BASE/api/me/quota/ledger" -H "$LAUTH")" '兑换码'
+
+# 第三方账号:改用户名 / 设密码(无密码用户不要求旧密码)
+cat > "$TMP/ou_cfg.json" <<'EOF'
+{"oauthProviders":{"nodeloc":{"enabled":true}},"oauthAutoRegister":true,"oauthRequireProfile":false}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ou_cfg.json" > /dev/null
+OLAND=$(oauth_flow nodeloc)
+OTK=$(printf '%s' "$OLAND" | sed 's/.*oauth_ticket=//')
+cat > "$TMP/otk.json" <<EOF6
+{"ticket":"$OTK"}
+EOF6
+OEX=$(curl -s -X POST "$BASE/api/auth/oauth/exchange" -H "Content-Type: application/json" --data-binary @"$TMP/otk.json")
+OT=$(printf '%s' "$OEX" | jget token)
+OAUTH="Authorization: Bearer $OT"
+assert_contains "第三方用户登录后无密码标记" "$(curl -s "$BASE/api/auth/me" -H "$OAUTH")" '"hasPassword":false'
+# 无密码用户:直接设密码(不带 oldPassword)
+cat > "$TMP/opw.json" <<'EOF'
+{"oldPassword":"","newPassword":"oauthpass1"}
+EOF
+assert_contains "无密码用户可直接设密码" "$(curl -s -X POST "$BASE/api/auth/password" -H "$OAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/opw.json")" '"ok":true'
+# 设密码后 tv 递增,用「自动建号时的实际用户名 + 刚设的密码」重新登录
+OUNAME=$(printf '%s' "$OEX" | python -c "import sys,json;print(json.load(sys.stdin)['user']['name'])" 2>/dev/null)
+cat > "$TMP/ologin.json" <<EOF9
+{"name":"$OUNAME","password":"oauthpass1"}
+EOF9
+OT2=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" --data-binary @"$TMP/ologin.json" | jget token)
+if [ -n "$OT2" ]; then ok "设密码后可用密码登录($OUNAME)"; else bad "设密码后无法用密码登录($OUNAME)"; fi
+OAUTH2="Authorization: Bearer $OT2"
+cat > "$TMP/oname.json" <<'EOF'
+{"name":"oauthrenamed","password":"oauthpass1"}
+EOF
+RNAME=$(curl -s -X POST "$BASE/api/auth/name" -H "$OAUTH2" -H "Content-Type: application/json" --data-binary @"$TMP/oname.json")
+assert_contains "第三方用户可改用户名" "$RNAME" '"name":"oauthrenamed"'
+# 改名会让旧会话失效(tv 递增),用返回的新 token 继续做校验用例
+AT3=$(printf '%s' "$RNAME" | jget token)
+OAUTH2="Authorization: Bearer $AT3"
+# 校验:密码错误 / 重名 / 非法名
+cat > "$TMP/oname_bad.json" <<'EOF'
+{"name":"anothername","password":"wrong"}
+EOF
+assert_contains "改名校验:密码错误被拒" "$(curl -s -X POST "$BASE/api/auth/name" -H "$OAUTH2" -H "Content-Type: application/json" --data-binary @"$TMP/oname_bad.json")" '请输入当前密码'
+cat > "$TMP/oname_dup.json" <<'EOF'
+{"name":"admin","password":"oauthpass1"}
+EOF
+assert_contains "改名校验:重名被拒" "$(curl -s -X POST "$BASE/api/auth/name" -H "$OAUTH2" -H "Content-Type: application/json" --data-binary @"$TMP/oname_dup.json")" '用户名已存在'
+# 开启「强制补全」:exchange 返回 needsProfile,且已有密码的用户不再要求
+cat > "$TMP/reqp.json" <<'EOF'
+{"oauthRequireProfile":true}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/reqp.json" > /dev/null
+assert_contains "config 下发补全开关" "$(curl -s "$BASE/api/config")" '"requireProfile":true'
+OLAND2=$(oauth_flow wechat)
+OTK2=$(printf '%s' "$OLAND2" | sed 's/.*oauth_ticket=//')
+cat > "$TMP/otk2.json" <<EOF7
+{"ticket":"$OTK2"}
+EOF7
+assert_contains "无密码新用户 exchange 要求补全" "$(curl -s -X POST "$BASE/api/auth/oauth/exchange" -H "Content-Type: application/json" --data-binary @"$TMP/otk2.json")" '"needsProfile":true'
+OLAND3=$(oauth_flow nodeloc)
+OTK3=$(printf '%s' "$OLAND3" | sed 's/.*oauth_ticket=//')
+cat > "$TMP/otk3.json" <<EOF8
+{"ticket":"$OTK3"}
+EOF8
+assert_contains "已设密码用户不再要求补全" "$(curl -s -X POST "$BASE/api/auth/oauth/exchange" -H "Content-Type: application/json" --data-binary @"$TMP/otk3.json")" '"needsProfile":false'
+cat > "$TMP/reqp2.json" <<'EOF'
+{"oauthRequireProfile":false}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/reqp2.json" > /dev/null
+
 say ""
 say "结果: $PASS 通过, $FAIL 失败"
 [ "$FAIL" -eq 0 ]

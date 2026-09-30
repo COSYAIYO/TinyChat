@@ -848,6 +848,7 @@ function tc_api_public_config($db) {
         'oauth' => array(
             'providers' => tc_oauth_enabled_providers($s),
             'autoRegister' => !empty($s['oauthAutoRegister']),
+            'requireProfile' => !empty($s['oauthRequireProfile']),
         ),
         // 全站公告:enabled 且 text 非空时前台展示;updatedAt 变化视为新公告(重新弹出)
         'announcement' => array(
@@ -1143,13 +1144,47 @@ function tc_api_change_password() {
         if (tc_is_demo_user($user)) tc_fail(403, '演示账号不允许修改密码');
         $oldPwd = (string) (isset($b['oldPassword']) ? $b['oldPassword'] : '');
         $newPwd = (string) (isset($b['newPassword']) ? $b['newPassword'] : '');
-        if (!tc_verify_password($oldPwd, $user)) tc_fail(400, '原密码不正确');
+        // 第三方登录自动建号的用户从未设置过密码:允许直接设置,不要求「原密码」
+        $hasPassword = isset($user['passwordHash']) && (string) $user['passwordHash'] !== '';
+        if ($hasPassword && !tc_verify_password($oldPwd, $user)) tc_fail(400, '原密码不正确');
         if (strlen($newPwd) < 4) tc_fail(400, '新密码至少 4 个字符');
         if (strlen($newPwd) > 128) tc_fail(400, '新密码过长');
-        if ($newPwd === $oldPwd) tc_fail(400, '新密码不能与原密码相同');
+        if ($hasPassword && $newPwd === $oldPwd) tc_fail(400, '新密码不能与原密码相同');
         tc_set_password($user, $newPwd);
         tc_replace_user($db, $user);
         tc_json(200, array('ok' => true, 'token' => tc_issue_token($user, $db['settings'])));
+    });
+}
+
+// 修改用户名(第三方登录建号后常需改成自己习惯的名字)
+function tc_api_change_name() {
+    tc_with_db(true, function (&$db) {
+        $user = tc_require_auth($db);
+        $b = tc_read_json_body();
+        if (tc_is_demo_user($user)) tc_fail(403, '演示账号不允许修改用户名');
+        $name = trim((string) (isset($b['name']) ? $b['name'] : ''));
+        if ($name === (string) $user['name']) tc_fail(400, '新用户名与当前相同');
+        if (!tc_valid_name($name)) tc_fail(400, '用户名需 2-32 位（字母/数字/中文/._@-）');
+        // 重名检查需要密码校验:避免被用于探测已有用户名
+        $hasPassword = isset($user['passwordHash']) && (string) $user['passwordHash'] !== '';
+        if ($hasPassword) {
+            $pwd = (string) (isset($b['password']) ? $b['password'] : '');
+            if (!tc_verify_password($pwd, $user)) tc_fail(400, '请输入当前密码以确认修改');
+        }
+        foreach ($db['users'] as $u) {
+            if ((string) $u['id'] === (string) $user['id']) continue;
+            if (strtolower((string) $u['name']) === strtolower($name)) tc_fail(409, '用户名已存在');
+        }
+        foreach ($db['users'] as $i => $u) {
+            if ((string) $u['id'] !== (string) $user['id']) continue;
+            $db['users'][$i]['name'] = $name;
+            // 改名后让旧会话失效,重新签发
+            $db['users'][$i]['tv'] = (isset($u['tv']) ? (int) $u['tv'] : 0) + 1;
+            $user = $db['users'][$i];
+            break;
+        }
+        tc_log_auth_event('auth', $name, '修改用户名', $user['id']);
+        tc_json(200, array('ok' => true, 'user' => tc_sanitize_user($user), 'token' => tc_issue_token($user, $db['settings'])));
     });
 }
 
@@ -1732,6 +1767,78 @@ function tc_api_key_public($k) {
         'createdAt' => isset($k['createdAt']) ? (int) $k['createdAt'] : 0,
         'lastUsed' => isset($k['lastUsed']) ? (int) $k['lastUsed'] : 0,
     );
+}
+
+// 当前用户的余量明细(额度增减流水),供「设置 → 账户」追溯每一笔变化
+function tc_api_me_quota_ledger() {
+    tc_with_db(false, function ($db) {
+        $user = tc_require_auth($db);
+        $q = tc_query();
+        $limit = isset($q['limit']) ? (int) $q['limit'] : 50;
+        $limit = min(200, max(1, $limit ?: 50));
+        $offset = isset($q['offset']) ? max(0, (int) $q['offset']) : 0;
+        $rows = array();
+        foreach ($db['quotaLedger'] as $e) {
+            if (!is_array($e)) continue;
+            if (!isset($e['userId']) || (string) $e['userId'] !== (string) $user['id']) continue;
+            $rows[] = $e;
+        }
+        usort($rows, function ($a, $b) {
+            $ta = isset($a['createdAt']) ? (int) $a['createdAt'] : 0;
+            $tb = isset($b['createdAt']) ? (int) $b['createdAt'] : 0;
+            if ($ta === $tb) return 0;
+            return $ta > $tb ? -1 : 1;
+        });
+        $total = count($rows);
+        $out = array();
+        foreach (array_slice($rows, $offset, $limit) as $e) {
+            $amount = isset($e['amount']) ? (float) $e['amount'] : 0;
+            $src = isset($e['source']) ? (string) $e['source'] : '';
+            if ($src === 'usage') {
+                $title = (string) (isset($e['purpose']) ? $e['purpose'] : '对话');
+                $extra = trim((string) (isset($e['model']) ? $e['model'] : ''));
+                if ($extra !== '' && strpos($title, $extra) === false) $title .= ' · ' . $extra;
+            } elseif ($src === 'fixed_code') {
+                $title = '固定兑换码' . (isset($e['code']) && $e['code'] !== '' ? ' ' . $e['code'] : '');
+            } elseif ($src === 'package_redeem' || $src === 'package') {
+                // 'package' 是兑换码核销落库时使用的历史值
+                $title = '兑换码 · ' . (string) (isset($e['packageName']) ? $e['packageName'] : '套餐');
+            } elseif ($src === 'package_claim') {
+                $title = '领取套餐 · ' . (string) (isset($e['packageName']) ? $e['packageName'] : '');
+            } elseif ($src === 'admin') {
+                $title = '管理员调整' . (isset($e['note']) && $e['note'] !== '' ? ' · ' . $e['note'] : '');
+            } elseif ($src === 'register') {
+                $title = '注册赠送';
+            } else {
+                $title = $src !== '' ? $src : '额度变化';
+            }
+            $row = array(
+                'id' => isset($e['id']) ? (string) $e['id'] : '',
+                'amount' => $amount,
+                'title' => $title,
+                'source' => $src,
+                'createdAt' => isset($e['createdAt']) ? (int) $e['createdAt'] : 0,
+            );
+            if (isset($e['before'])) $row['before'] = (float) $e['before'];
+            if (isset($e['after'])) $row['after'] = (float) $e['after'];
+            if (!empty($e['expiresAt'])) $row['expiresAt'] = (int) $e['expiresAt'];
+            $out[] = $row;
+        }
+        $gained = 0.0;
+        $spent = 0.0;
+        foreach ($rows as $e) {
+            $a = isset($e['amount']) ? (float) $e['amount'] : 0;
+            if ($a >= 0) $gained += $a; else $spent += -$a;
+        }
+        $pub = tc_sanitize_user($user);
+        tc_json(200, array(
+            'entries' => $out,
+            'total' => $total,
+            'gained' => round($gained, 4),
+            'spent' => round($spent, 4),
+            'quota' => $pub['quota'],
+        ));
+    });
 }
 
 function tc_api_me_apikeys_list() {
