@@ -305,21 +305,34 @@ function renderOauthIcons(oauth) {
 function showProfileGate(token, user) {
   const mask = document.createElement('div');
   mask.className = 'modal-mask';
-  mask.innerHTML = '<div class="modal" role="dialog" aria-modal="true" style="max-width:400px">'
-    + '<h3 style="margin:0 0 6px">完善账号信息</h3>'
-    + '<p class="muted small" style="margin:0 0 14px">本站要求补全用户名与密码，之后你也可以直接用用户名密码登录。</p>'
+  mask.innerHTML = '<div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="pg-title">'
+    + '<div class="modal-header">'
+    + '<h3 id="pg-title">完善账号信息</h3>'
+    + '<button class="icon-btn" type="button" id="pg-x" aria-label="关闭">'
+    + '<svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke-linecap="round"/></svg>'
+    + '</button>'
+    + '</div>'
+    + '<div class="modal-body">'
+    + '<p class="muted small pg-tip">本站要求补全用户名与密码，之后你也可以直接用用户名密码登录。</p>'
     + '<label class="field"><span>用户名</span><input type="text" id="pg-name" maxlength="32" value="" placeholder="2-32 位（字母/数字/中文/._@-）" autocomplete="off"></label>'
     + '<label class="field"><span>密码（至少 4 位）</span><input type="password" id="pg-pwd" autocomplete="new-password"></label>'
     + '<label class="field"><span>确认密码</span><input type="password" id="pg-pwd2" autocomplete="new-password"></label>'
-    + '<div class="hidden" id="pg-err" style="color:#dc2626;font-size:13px;margin:6px 0"></div>'
-    + '<button type="button" class="btn primary w-full" id="pg-save" style="margin-top:10px">保存并进入</button>'
+    + '<div class="hidden pg-err" id="pg-err" role="alert" aria-live="polite"></div>'
+    + '</div>'
+    + '<div class="modal-footer">'
+    + '<button type="button" class="btn primary" id="pg-save">保存并进入</button>'
+    + '</div>'
     + '</div>';
   document.body.appendChild(mask);
   const nameInput = mask.querySelector('#pg-name');
   if (nameInput && user && user.name) nameInput.value = user.name;
   const errBox = mask.querySelector('#pg-err');
   const showErr = (m) => { errBox.textContent = m; errBox.classList.remove('hidden'); };
+  // 已拿到登录态:选择暂不完善时直接进站,不要把人留在登录页
+  const xBtn = mask.querySelector('#pg-x');
+  if (xBtn) xBtn.addEventListener('click', () => location.replace('/'));
   const btn = mask.querySelector('#pg-save');
+  if (nameInput) nameInput.focus();
   btn.addEventListener('click', async () => {
     const name = (nameInput.value || '').trim();
     const pwd = (mask.querySelector('#pg-pwd').value || '');

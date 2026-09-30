@@ -44,13 +44,14 @@ DATA_DIR="$TMP/data" ADMIN_NAME=admin ADMIN_PASSWORD=e2e-pass \
   TC_DDG_HTML_BASE="http://127.0.0.1:$MOCK_PORT" \
   TC_JINA_SEARCH_BASE="http://127.0.0.1:$MOCK_PORT" \
   TC_MISTRAL_OCR_BASE="http://127.0.0.1:$MOCK_PORT" \
+  TC_PAGE_FETCH_BASE="http://127.0.0.1:$MOCK_PORT" \
   TC_WECHAT_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" TC_WECHAT_API_BASE="http://127.0.0.1:$OAUTH_PORT" \
   TC_QQ_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
   TC_LINUXDO_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
   TC_NODELOC_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
   php -S "127.0.0.1:$PORT" router.php >"$TMP/app.log" 2>&1 &
 APP_PID=$!
-php -S "127.0.0.1:$MOCK_PORT" tests/mock-upstream.php >"$TMP/mock.log" 2>&1 &
+TC_MOCK_ECHO_FILE="$TMP/pf_echo_out.txt" php -S "127.0.0.1:$MOCK_PORT" tests/mock-upstream.php >"$TMP/mock.log" 2>&1 &
 MOCK_PID=$!
 OAUTH_PORT="${E2E_OAUTH_PORT:-8104}"
 php -S "127.0.0.1:$OAUTH_PORT" tests/mock-oauth.php >"$TMP/mock-oauth.log" 2>&1 &
@@ -751,6 +752,25 @@ assert_contains "用户自备 ddg 即 ready" "$TOOLS" '"ownReady":true'
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchAllowUser":false}' > /dev/null
 
 # ---------- 文档解析通道(PaddleOCR / Mistral OCR,按类别路由,走 mock) ----------
+say "== 搜索结果正文抓取 =="
+# 用 mock 页面验证整条链路:搜索结果 -> 抓正文 -> 注入模型上下文。
+# mock 页面刻意把导航放前面、正文里带裸 "<"(曾让 strip_tags 吞掉整段正文)。
+cat > "$TMP/pf_echo.json" <<EOF
+{"providerId":"$PROV","model":"mock-echo-system","webSearch":"1","messages":[{"role":"user","content":"上海天气"}]}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchEnabled":true,"webSearchProvider":"ddg","webSearchMaxResults":3}' > /dev/null
+PFRES=$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/pf_echo.json")
+assert_contains "联网搜索开启后请求走通" "$PFRES" 'MOCK-ECHO-OK'
+assert_contains "搜索结果正文已注入上下文" "$(cat "$TMP/pf_echo_out.txt" 2>/dev/null)" 'MOCK-PAGE-BODY-OK'
+assert_contains "正文里的温度数据被保留" "$(cat "$TMP/pf_echo_out.txt" 2>/dev/null)" '21℃'
+# 裸 <(风力「<3级」)之后的正文不能被 strip_tags 吞掉 —— 本次修复的核心回归
+assert_contains "正文裸 < 不再吞掉后续内容" "$(cat "$TMP/pf_echo_out.txt" 2>/dev/null)" '明天阴'
+assert_contains "风力数据随裸 < 一起保留" "$(cat "$TMP/pf_echo_out.txt" 2>/dev/null)" '3级'
+if grep -qF 'MOCK-SCRIPT-SHOULD-NOT-APPEAR' "$TMP/pf_echo_out.txt" 2>/dev/null; then bad "脚本内容进了上下文"; else ok "脚本内容不进上下文"; fi
+if grep -qF 'MOCK-COMMENT-SHOULD-NOT-APPEAR' "$TMP/pf_echo_out.txt" 2>/dev/null; then bad "注释内容进了上下文"; else ok "注释内容不进上下文"; fi
+if grep -qF '天气地图' "$TMP/pf_echo_out.txt" 2>/dev/null; then bad "导航菜单未被瘦身"; else ok "导航菜单被瘦身"; fi
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchEnabled":false}' > /dev/null
+
 say "== 文档解析通道路由 =="
 # 路由与凭据保存:pdf->mistral, image->paddle, office->mineru;key 掩码回显
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"parseChannels":{"pdf":"mistral","image":"paddle","office":"mineru"},"mistralOcrKey":"sk-mistral-e2e","paddleOcrUrl":"http://127.0.0.1:'"$MOCK_PORT"'/ocr","paddleOcrKey":""}' > /dev/null

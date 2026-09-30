@@ -1176,8 +1176,28 @@ function tc_search_today() {
 function tc_html_to_text($html) {
     $html = (string) $html;
     $html = preg_replace('#<(script|style|noscript|svg|iframe|template)\b[^>]*>.*?</\1>#is', ' ', $html);
-    if (preg_match('#<article\b[^>]*>(.*?)</article>#is', $html, $m)) $html = $m[1];
-    elseif (preg_match('#<main\b[^>]*>(.*?)</main>#is', $html, $m)) $html = $m[1];
+    // 注释不是正文:strip_tags 会把 <!-- ... --> 原样当文本留下来,既占额度又干扰模型
+    $html = preg_replace('#<!--.*?-->#s', ' ', $html);
+    $scoped = false;
+    if (preg_match('#<article\b[^>]*>(.*?)</article>#is', $html, $m)) { $html = $m[1]; $scoped = true; }
+    elseif (preg_match('#<main\b[^>]*>(.*?)</main>#is', $html, $m)) { $html = $m[1]; $scoped = true; }
+    // 页头/页脚/侧栏/导航里几乎不会是答案,去掉后正文能更靠前,
+    // 不至于被导航链接占满截断额度(很多站点正文在 1000 字之后)
+    $html = preg_replace('#<(nav|header|footer|aside)\b[^>]*>.*?</\1>#is', ' ', $html);
+    // 整页抓取时另删「锚文本极短」的链接:这类几乎都是菜单/面包屑,却常占掉上千字额度。
+    // 已被 article/main 圈定的正文不做这一步,避免误删正文里的短链接文本。
+    if (!$scoped) {
+        $html = preg_replace_callback('#<a\b[^>]*>(.*?)</a>#is', function ($mm) {
+            $txt = trim(html_entity_decode(strip_tags($mm[1]), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+            $len = function_exists('mb_strlen') ? mb_strlen($txt, 'UTF-8') : strlen($txt);
+            return $len <= 12 ? ' ' : $mm[0];
+        }, $html);
+    }
+    // 先转义「不构成合法标签」的 <(如正文里的「<3级」「2<3」)。
+    // strip_tags 遇到裸 < 会当作标签起点一直吞到下一个 >,把正文整段吃掉
+    // (实测天气页因「<3级」丢失全部预报数据),所以必须先转义再剥标签。
+    // 判据:只有「<」后面能在不含 <> 的范围内闭合出「>」才算真标签,否则是正文里的比较符。
+    $html = preg_replace('/<(?![a-zA-Z\/!?][^<>]*>)/', '&lt;', $html);
     $html = preg_replace('#</?(br|p|div|li|h[1-6]|tr|section|article|header|footer)\b[^>]*>#i', "\n", $html);
     $text = html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
     $text = preg_replace("/[ \t\x{00A0}]+/u", ' ', (string) $text);
@@ -1330,11 +1350,29 @@ function tc_url_public_host($url) {
 function tc_fetch_pages_parallel($urls, $timeoutMs = 8000, $maxChars = 1800) {
     $out = array();
     $entries = array();
+    // 测试钩子:把已通过 SSRF 校验的公网地址重定向到本地 mock(与 TC_BRAVE_SEARCH_BASE 等一致的约定)。
+    // 只在设置环境变量时生效,且校验发生在改写之前 —— 被拦截的地址照样进不来。
+    $testBase = rtrim((string) (getenv('TC_PAGE_FETCH_BASE') ?: ''), '/');
     foreach ((array) $urls as $u) {
         $out[$u] = '';
         $guard = tc_url_public_host($u);
         if (!$guard) continue; // 内网/保留地址/非法端口:静默跳过
-        $entries[] = array('url' => $u, 'resolve' => $guard['host'] . ':' . $guard['port'] . ':' . $guard['ip']);
+        if ($testBase !== '') {
+            // 原始地址仍要先过 SSRF 校验(恶意搜索结果照样进不来),通过后才改写到
+            // 运营方/CI 显式配置的测试基址 —— 该基址由环境变量给定,不来自页面内容。
+            $p = @parse_url($u);
+            $target = $testBase . '/page' . (isset($p['path']) ? $p['path'] : '/')
+                . (isset($p['query']) ? '?' . $p['query'] : '');
+            $tGuard = tc_url_public_host($target);
+            $entries[] = array(
+                'url' => $target,
+                'resolve' => $tGuard ? ($tGuard['host'] . ':' . $tGuard['port'] . ':' . $tGuard['ip']) : null,
+                'orig' => $u,
+                'test' => true,
+            );
+            continue;
+        }
+        $entries[] = array('url' => $u, 'resolve' => $guard['host'] . ':' . $guard['port'] . ':' . $guard['ip'], 'orig' => $u);
     }
     if (!$entries) return $out;
     if (!function_exists('curl_multi_init')) {
@@ -1344,7 +1382,7 @@ function tc_fetch_pages_parallel($urls, $timeoutMs = 8000, $maxChars = 1800) {
                 'User-Agent' => 'Mozilla/5.0 (compatible; TinyChat/1.0)',
             ), null, $timeoutMs, false);
             if (empty($res['ok']) || $res['status'] >= 400) continue;
-            $out[$e['url']] = tc_html_to_text(isset($res['body']) ? $res['body'] : '');
+            $out[$e['orig']] = tc_html_to_text(isset($res['body']) ? $res['body'] : '');
         }
         return $out;
     }
@@ -1367,11 +1405,12 @@ function tc_fetch_pages_parallel($urls, $timeoutMs = 8000, $maxChars = 1800) {
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
             // 固定已校验的解析结果,防 DNS 重绑定;限制协议;限制下载体积
-            CURLOPT_RESOLVE => array($e['resolve']),
             CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
             CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
             CURLOPT_MAXFILESIZE => 4194304,
         );
+        // 测试基址可能是本机地址(拿不到「公网解析」结果),此时不加 RESOLVE,交给系统解析
+        if (!empty($e['resolve'])) $opts[CURLOPT_RESOLVE] = array($e['resolve']);
         if ($ca) $opts[CURLOPT_CAINFO] = $ca;
         curl_setopt_array($ch, $opts);
         curl_multi_add_handle($mh, $ch);
@@ -1386,9 +1425,10 @@ function tc_fetch_pages_parallel($urls, $timeoutMs = 8000, $maxChars = 1800) {
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $ctype = strtolower((string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE));
         $raw = curl_multi_getcontent($ch);
-        // 重定向后可能落到内网:对最终生效地址再做一次校验,不通过则丢弃内容
+        // 重定向后可能落到内网:对最终生效地址再做一次校验,不通过则丢弃内容。
+        // 测试基址是本机 mock,本身就不是公网地址,这一步对它跳过(该基址由环境变量显式指定)。
         $eff = (string) curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
-        if ($eff !== '' && !tc_url_public_host($eff)) { curl_multi_remove_handle($mh, $ch); curl_close($ch); continue; }
+        if (empty($entries[$i]['test']) && $eff !== '' && !tc_url_public_host($eff)) { curl_multi_remove_handle($mh, $ch); curl_close($ch); continue; }
         curl_multi_remove_handle($mh, $ch);
         curl_close($ch);
         if ($code < 200 || $code >= 400 || !is_string($raw) || $raw === '') continue;
@@ -1398,24 +1438,31 @@ function tc_fetch_pages_parallel($urls, $timeoutMs = 8000, $maxChars = 1800) {
         $text = trim((string) preg_replace('/[ \t]+/u', ' ', $text));
         $len = function_exists('mb_strlen') ? mb_strlen($text, 'UTF-8') : strlen($text);
         if ($len < 80) continue;
-        $out[$entries[$i]['url']] = function_exists('mb_substr') ? mb_substr($text, 0, $maxChars, 'UTF-8') : substr($text, 0, $maxChars);
+        $out[$entries[$i]['orig']] = function_exists('mb_substr') ? mb_substr($text, 0, $maxChars, 'UTF-8') : substr($text, 0, $maxChars);
     }
     curl_multi_close($mh);
     return $out;
 }
 
 function tc_enrich_search_pages(&$hits) {
+    // 候选最多看 5 条(与搜索结果条数上限一致),但只有「确实抓到正文」的才占名额:
+    // 纯前端渲染页/抓取失败很常见,若按前 3 条硬取,一条空白就会让后面对的内容轮不到。
     $want = array();
     foreach ($hits as $i => $h) {
-        if (count($want) >= 3) break;
+        if (count($want) >= 5) break;
         $url = isset($h['url']) ? (string) $h['url'] : '';
         if ($url === '' || preg_match('/\.(pdf|zip|png|jpe?g|gif|webp|mp4|mp3)(\?|$)/i', $url)) continue;
         $want[$i] = $url;
     }
     if (!$want) return;
     $pages = tc_fetch_pages_parallel(array_values($want), 8000);
+    $kept = 0;
     foreach ($want as $i => $url) {
-        if (!empty($pages[$url])) $hits[$i]['page'] = $pages[$url];
+        if ($kept >= 3) break;
+        $text = isset($pages[$url]) ? trim((string) $pages[$url]) : '';
+        if ($text === '') continue;
+        $hits[$i]['page'] = $text;
+        $kept++;
     }
 }
 

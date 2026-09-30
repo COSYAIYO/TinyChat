@@ -3926,3 +3926,11 @@ body.is-demo-admin [data-chats] { display: none !important; }
 .st-bar i { display: block; height: 100%; border-radius: 3px; background: var(--brand,#3b82f6); }
 .st-row-val { flex: 0 0 auto; text-align: right; font-size: 13px; font-weight: 600; white-space: nowrap; }
 .st-danger { color: #dc2626; }
+
+/* ============ 完善账号信息弹窗(第三方登录后的资料补全) ============ */
+/* 弹窗内容一律通过 modal-header/body/footer 承载,.modal 自身没有内边距;
+   之前这里把内容直接塞进 .modal,才会出现文字贴边、按钮顶到圆角的情况。 */
+.pg-tip { margin: 0 0 14px; line-height: 1.6; }
+.pg-err { color: #dc2626; font-size: 13px; margin: 10px 0 0; }
+.pg-err:not(.hidden) { animation: pgErrIn 200ms ease-out; }
+@keyframes pgErrIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
