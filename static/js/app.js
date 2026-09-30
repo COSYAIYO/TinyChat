@@ -250,9 +250,16 @@ const ENDPOINT_BY_FORMAT = {
 
 // ============ 基础工具 ============
 function api(path, opts = {}) {
-  opts.headers = Object.assign({ Authorization: 'Bearer ' + state.token }, opts.headers || {});
+  const sentToken = state.token;
+  opts.headers = Object.assign({ Authorization: 'Bearer ' + (sentToken || '') }, opts.headers || {});
   return fetch(apiUrl(path), opts).then(async (r) => {
-    if (r.status === 401) { logout(); throw new Error('登录已过期'); }
+    // 仅在「本次确实带了 token 且该 token 仍是当前 token」时才登出:
+    // 启动阶段第三方登录正在换票据时 state.token 可能还是空/旧值,此时 401 不该清登录态、
+    // 更不能把用户踢到登录页(会丢掉正在处理的 oauth_ticket 片段)。
+    if (r.status === 401 && sentToken && sentToken === state.token) {
+      logout();
+      throw new Error('登录已过期');
+    }
     return r;
   });
 }
@@ -7012,6 +7019,100 @@ function showGuestBar() {
     btn.addEventListener('click', () => openAuthModal());
   }
 }
+// 第三方一键登录回跳到主站时的票据消费:
+// 落地页是 /(主站),票据在 URL 片段里;用一次性票据换正式登录态。
+// 需要补全资料时(后台开启 oauthRequireProfile 且该账号还没设密码)弹补全表单。
+async function consumeOauthTicketOnBoot() {
+  const hash = String(location.hash || '');
+  if (hash.indexOf('oauth_') < 0) return;
+  const params = new URLSearchParams(hash.replace(/^#/, ''));
+  const err = params.get('oauth_error');
+  const ticket = params.get('oauth_ticket');
+  const bound = params.get('oauth_bound');
+  const created = params.get('oauth_created') === '1';
+  // 片段不发给服务器,读完立刻从地址栏清掉(避免刷新重复消费/泄露)
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* 忽略 */ }
+  if (err) { setTimeout(() => toast(err, true), 400); return; }
+  if (bound) { setTimeout(() => toast('已绑定第三方账号'), 400); return; }
+  if (!ticket) return;
+  try {
+    const r = await fetch(apiUrl('/api/auth/oauth/exchange'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticket: ticket }),
+    });
+    const d = await readJsonSafe(r);
+    if (!r.ok) throw new Error((d && d.error && d.error.message) || '登录失败');
+    state.token = d.token;
+    try { localStorage.setItem('oc_token', d.token); } catch (e) { /* 忽略 */ }
+    if (d.needsProfile) {
+          // 要求补全:先说明「已创建账号,请完善信息」,再弹表单
+          setTimeout(() => toast(created
+            ? '已用第三方账号创建新账号，请继续完善用户名与密码'
+            : '请继续完善用户名与密码'), 400);
+          openOauthProfileGate(d.token, d.user);
+        } else if (created) {
+          const uname = (d.user && d.user.name) ? d.user.name : '';
+          setTimeout(() => toast('已用第三方账号创建新账号' + (uname ? '：' + uname : '') + '（可在「设置 → 账户」修改用户名与密码）'), 600);
+        }
+  } catch (e) {
+    setTimeout(() => toast('第三方登录失败：' + ((e && e.message) || '未知错误'), true), 400);
+  }
+}
+// 资料补全弹窗:后台要求补全时,强制填写用户名与密码(之后可脱离第三方登录)
+function openOauthProfileGate(token, user) {
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask';
+  mask.innerHTML = '<div class="modal" role="dialog" aria-modal="true" style="max-width:420px">'
+    + '<h3 style="margin:0 0 6px">完善账号信息</h3>'
+    + '<p class="muted small" style="margin:0 0 14px">本站要求补全用户名与密码；完成后你也可以直接用用户名密码登录。</p>'
+    + '<label class="field"><span>用户名</span><input type="text" id="og-name" maxlength="32" placeholder="2-32 位（字母/数字/中文/._@-）" autocomplete="off"></label>'
+    + '<label class="field"><span>密码（至少 4 位）</span><input type="password" id="og-pwd" autocomplete="new-password"></label>'
+    + '<label class="field"><span>确认密码</span><input type="password" id="og-pwd2" autocomplete="new-password"></label>'
+    + '<div class="hidden" id="og-err" style="color:#dc2626;font-size:13px;margin:6px 0"></div>'
+    + '<button type="button" class="btn primary w-full" id="og-save" style="margin-top:10px">保存并进入</button>'
+    + '</div>';
+  document.body.appendChild(mask);
+  const nameInput = mask.querySelector('#og-name');
+  if (nameInput && user && user.name) nameInput.value = user.name;
+  const errBox = mask.querySelector('#og-err');
+  const showErr = (m) => { errBox.textContent = m; errBox.classList.remove('hidden'); };
+  const btn = mask.querySelector('#og-save');
+  // 用可变变量保存当前 token:设置密码会递增 tv 使旧 token 立即失效(服务端安全设计),
+  // 后续请求必须用上一步返回的新 token,否则会「未登录或登录已过期」。
+  let activeToken = token;
+  const call = (url, body) => fetch(apiUrl(url), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + activeToken },
+    body: JSON.stringify(body),
+  }).then((r) => readJsonSafe(r).then((d) => ({ ok: r.ok, d: d })));
+  btn.addEventListener('click', async () => {
+    const name = (nameInput.value || '').trim();
+    const pwd = (mask.querySelector('#og-pwd').value || '');
+    const pwd2 = (mask.querySelector('#og-pwd2').value || '');
+    if (!name) return showErr('请输入用户名');
+    if (pwd.length < 4) return showErr('密码至少 4 位');
+    if (pwd !== pwd2) return showErr('两次输入的密码不一致');
+    btn.disabled = true; btn.textContent = '保存中…';
+    try {
+      const r1 = await call('/api/auth/password', { oldPassword: '', newPassword: pwd });
+      if (!r1.ok) throw new Error((r1.d && r1.d.error && r1.d.error.message) || '设置密码失败');
+      let finalToken = r1.d.token || token;
+      if (r1.d.token) activeToken = r1.d.token;
+      if (user && name && name !== user.name) {
+        const r2 = await call('/api/auth/name', { name: name, password: pwd });
+        if (!r2.ok) throw new Error((r2.d && r2.d.error && r2.d.error.message) || '设置用户名失败');
+        if (r2.d.token) finalToken = r2.d.token;
+      }
+      state.token = finalToken;
+      try { localStorage.setItem('oc_token', finalToken); } catch (e) { /* 忽略 */ }
+      location.reload();
+    } catch (e) {
+      btn.disabled = false; btn.textContent = '保存并进入';
+      showErr((e && e.message) || '保存失败');
+    }
+  });
+}
 // 未登录且未开启游客模式:正常显示对话主页(只读),点击输入框/发送弹出登录弹窗
 function enterReadonlyHome() {
   state.readonlyGuest = true;
@@ -7039,6 +7140,9 @@ function enterReadonlyHome() {
 // ============ 启动 ============
 (async function init() {
   initTheme();
+  // 第三方一键登录回跳到主站(/):落地页是主站而不是登录页,必须在这里消费票据,
+  // 否则票据被丢弃、用户会停在未登录态(此前只有 login.js 处理,导致第三方登录后进不去)。
+  await consumeOauthTicketOnBoot();
   if (!state.token) {
     let cfg = null;
     try {
@@ -7067,7 +7171,12 @@ function enterReadonlyHome() {
   try {
     const r = await api('/api/auth/me');
     const data = await r.json();
-    if (!r.ok) throw new Error('invalid');
+    // 认证失败时不要跳登录页:第三方登录刚落地时票据可能还在兑换中,这里会短暂失败。
+    // 保留 token 并退回只读首页,后续请求会自然恢复(或用户手动登录)。
+    if (!r.ok) {
+      enterReadonlyHome();
+      return;
+    }
     state.user = data.user;
     if (state.user && state.user.guest) { state.isGuest = true; state.guestRounds = state.guestRounds || 0; }
     if (data.tools) state.tools = data.tools;

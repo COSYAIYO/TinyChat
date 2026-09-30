@@ -848,7 +848,7 @@ NODEID=""
 for pid in nodeloc linuxdo; do
   LAND=$(oauth_flow "$pid")
   assert_contains "$pid 登录链路到达前台票据" "$LAND" 'oauth_ticket='
-  TK=$(printf '%s' "$LAND" | sed 's/.*oauth_ticket=//')
+  TK=$(printf '%s' "$LAND" | sed 's/.*oauth_ticket=//' | sed 's/&.*//')
   cat > "$TMP/tk.json" <<EOF2
 {"ticket":"$TK"}
 EOF2
@@ -869,7 +869,7 @@ EOF2
 done
 # 同一第三方账号二次登录(仍是 nodeloc):不再建号,直接复用原账号
 LAND2=$(oauth_flow nodeloc)
-TK2=$(printf '%s' "$LAND2" | sed 's/.*oauth_ticket=//')
+TK2=$(printf '%s' "$LAND2" | sed 's/.*oauth_ticket=//' | sed 's/&.*//')
 cat > "$TMP/tk2.json" <<EOF3
 {"ticket":"$TK2"}
 EOF3
@@ -969,7 +969,7 @@ cat > "$TMP/ou_cfg.json" <<'EOF'
 EOF
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ou_cfg.json" > /dev/null
 OLAND=$(oauth_flow nodeloc)
-OTK=$(printf '%s' "$OLAND" | sed 's/.*oauth_ticket=//')
+OTK=$(printf '%s' "$OLAND" | sed 's/.*oauth_ticket=//' | sed 's/&.*//')
 cat > "$TMP/otk.json" <<EOF6
 {"ticket":"$OTK"}
 EOF6
@@ -1014,13 +1014,13 @@ EOF
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/reqp.json" > /dev/null
 assert_contains "config 下发补全开关" "$(curl -s "$BASE/api/config")" '"requireProfile":true'
 OLAND2=$(oauth_flow wechat)
-OTK2=$(printf '%s' "$OLAND2" | sed 's/.*oauth_ticket=//')
+OTK2=$(printf '%s' "$OLAND2" | sed 's/.*oauth_ticket=//' | sed 's/&.*//')
 cat > "$TMP/otk2.json" <<EOF7
 {"ticket":"$OTK2"}
 EOF7
 assert_contains "无密码新用户 exchange 要求补全" "$(curl -s -X POST "$BASE/api/auth/oauth/exchange" -H "Content-Type: application/json" --data-binary @"$TMP/otk2.json")" '"needsProfile":true'
 OLAND3=$(oauth_flow nodeloc)
-OTK3=$(printf '%s' "$OLAND3" | sed 's/.*oauth_ticket=//')
+OTK3=$(printf '%s' "$OLAND3" | sed 's/.*oauth_ticket=//' | sed 's/&.*//')
 cat > "$TMP/otk3.json" <<EOF8
 {"ticket":"$OTK3"}
 EOF8
@@ -1029,6 +1029,41 @@ cat > "$TMP/reqp2.json" <<'EOF'
 {"oauthRequireProfile":false}
 EOF
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/reqp2.json" > /dev/null
+
+# ---------- 第三方登录回跳与提示标记 ----------
+say "== 第三方登录回跳标记 =="
+cat > "$TMP/rc.json" <<'EOF'
+{"oauthProviders":{"nodeloc":{"enabled":true}},"oauthAutoRegister":true,"oauthRequireProfile":true}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/rc.json" > /dev/null
+# 未绑定新账号:落地地址应带 oauth_created=1(前端据此提示"已创建新账号")。
+# 先清空该第三方 uid 的既有绑定,确保本次是"首次建号"。
+cat > "$TMP/rcqq.json" <<'EOF'
+{"oauthProviders":{"qq":{"enabled":true}}}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/rcqq.json" > /dev/null
+cat > "$TMP/unbind_all.php" <<'PHPEOF'
+<?php
+// 清掉所有用户的 oauth 绑定,让后续第三方登录都走"首次建号"分支
+$pdo = new PDO("sqlite:" . $argv[1] . "/tinychat.sqlite");
+$u = json_decode($pdo->query('SELECT v FROM store WHERE k = "users"')->fetchColumn(), true);
+foreach ($u as $i => $x) { $u[$i]["oauth"] = array(); }
+$pdo->prepare('UPDATE store SET v = ? WHERE k = "users"')->execute(array(json_encode($u, JSON_UNESCAPED_UNICODE)));
+PHPEOF
+php "$TMP/unbind_all.php" "$TMP/data"
+NEWLAND=$(oauth_flow qq)
+assert_contains "新账号落地带 created 标记" "$NEWLAND" 'oauth_created=1'
+assert_contains "新账号落地带票据" "$NEWLAND" 'oauth_ticket='
+# 已绑定账号:落地不带 created 标记
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"oauthRequireProfile":false}' > /dev/null
+# 同一第三方账号第二次登录:已绑定,落地不应再带 created 标记
+BOUNDLAND=$(oauth_flow qq)
+assert_contains "已绑定账号落地带票据" "$BOUNDLAND" 'oauth_ticket='
+if printf '%s' "$BOUNDLAND" | grep -q 'oauth_created=1'; then bad "已绑定账号不应带 created 标记"; else ok "已绑定账号不带 created 标记"; fi
+cat > "$TMP/oc_off.json" <<'EOF'
+{"oauthProviders":{"wechat":{"enabled":false},"linuxdo":{"enabled":false},"qq":{"enabled":false},"nodeloc":{"enabled":false}}}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/oc_off.json" > /dev/null
 
 say ""
 say "结果: $PASS 通过, $FAIL 失败"

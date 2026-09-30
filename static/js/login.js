@@ -275,6 +275,7 @@ function renderOauthIcons(oauth) {
   const params = new URLSearchParams(hash.replace(/^#/, ''));
   const err = params.get('oauth_error');
   const ticket = params.get('oauth_ticket');
+  const created = params.get('oauth_created') === '1';
   try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* 忽略 */ }
   if (err) { showError(err); return; }
   if (!ticket) return;
@@ -287,7 +288,12 @@ function renderOauthIcons(oauth) {
     if (!res.ok) throw new Error((res.d.error && res.d.error.message) || '登录失败');
     try { localStorage.setItem(cacheKey, res.d.token); } catch (e) { /* 忽略 */ }
     // 后台要求补全资料、且该账号还没有密码时,进入补全流程(补全后可脱离第三方登录)
-    if (res.d.needsProfile) { showProfileGate(res.d.token, res.d.user); return; }
+    if (res.d.needsProfile) {
+      // 新建账号时先明确告知,避免用户不知道自己已被创建
+      showError(created ? '已用第三方账号创建新账号，请继续完善用户名与密码' : '请继续完善用户名与密码');
+      showProfileGate(res.d.token, res.d.user);
+      return;
+    }
     location.replace('/');
   }).catch((e) => {
     setBusy($('login-btn'), false, '登录');
@@ -323,15 +329,18 @@ function showProfileGate(token, user) {
     if (pwd !== pwd2) return showErr('两次输入的密码不一致');
     btn.disabled = true; btn.textContent = '保存中…';
     try {
+      // 设密码会使旧 token 立即失效(tv 递增),后续请求必须用返回的新 token
+      let activeToken = token;
       const call = (url, body) => fetch(apiUrl(url), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + activeToken },
         body: JSON.stringify(body),
       }).then((r) => r.json().then((d) => ({ ok: r.ok, d: d })));
       // 先设密码,再改用户名(两者都返回新 token,保留最后一次)
       const r1 = await call('/api/auth/password', { oldPassword: '', newPassword: pwd });
       if (!r1.ok) throw new Error((r1.d.error && r1.d.error.message) || '设置密码失败');
       let finalToken = r1.d.token || token;
+      if (r1.d.token) activeToken = r1.d.token;
       if (user && name && name !== user.name) {
         const r2 = await call('/api/auth/name', { name: name, password: pwd });
         if (!r2.ok) throw new Error((r2.d.error && r2.d.error.message) || '设置用户名失败');
