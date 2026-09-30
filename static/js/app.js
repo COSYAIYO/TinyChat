@@ -2218,7 +2218,7 @@ async function aiJudgeTools(text, ctx) {
   }
   if (wantTitle) sys += 'title=根据这句话为本次对话起一个简短中文标题（不超过 14 字、不加引号、不用「对话/标题」等字眼）。';
   const user = '用户发言：' + text;
-  const body = { model, providerId, stream: false, messages: [{ role: 'system', content: sys }, { role: 'user', content: user }] };
+  const body = { model, providerId, stream: false, _purpose: 'judge', messages: [{ role: 'system', content: sys }, { role: 'user', content: user }] };
   try {
     const r = await api(ENDPOINT_BY_FORMAT[format] || ENDPOINT_BY_FORMAT.chat, {
       method: 'POST',
@@ -3268,6 +3268,7 @@ async function aiFollowUps(content) {
       model,
       stream: false,
       providerId,
+      _purpose: 'followup',
       messages: [
         { role: 'system', content: '你是对话助手。根据用户与 AI 的最后一条回复，生成 3 个简短、自然的追问建议。只输出 3 个短句，每行一个，不要编号，不要引号。' },
         { role: 'user', content: '最后回复内容：\n' + content.slice(0, 3000) },
@@ -4472,6 +4473,96 @@ async function saveToolSource(patch) {
       }
     });
     loadAccountOauth();
+  }
+
+  // 第三方登录建号的用户还没有密码:此时隐藏「当前密码」输入并提示直接设置
+  function syncPasswordFormForOauth() {
+    const u = state.user || {};
+    const hasPwd = !!u.hasPassword;
+    const oldRow = $('acc-old-pwd-row');
+    if (oldRow) oldRow.style.display = hasPwd ? '' : 'none';
+    const namePwdRow = $('acc-name-pwd-row');
+    if (namePwdRow) namePwdRow.style.display = hasPwd ? '' : 'none';
+    const hint = $('acc-pwd-hint');
+    if (hint) hint.textContent = hasPwd ? '修改后其它设备上的登录会失效' : '你还没有设置密码，设置后即可用用户名密码登录';
+  }
+
+  // 修改用户名
+  const saveName = $('acc-save-name');
+  if (saveName) saveName.addEventListener('click', async () => {
+    const name = (($('acc-new-name') && $('acc-new-name').value) || '').trim();
+    if (!name) return toast('请输入新用户名', true);
+    const pwd = (($('acc-name-pwd') && $('acc-name-pwd').value) || '');
+    const btn = saveName;
+    btn.disabled = true; const label = btn.textContent; btn.textContent = '提交中…';
+    try {
+      const r = await api('/api/auth/name', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name, password: pwd }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((d.error && d.error.message) || '修改失败');
+      if (d.token) { state.token = d.token; try { localStorage.setItem('oc_token', d.token); } catch (e) { /* 忽略 */ } }
+      if (d.user) state.user = d.user;
+      if ($('acc-new-name')) $('acc-new-name').value = '';
+      if ($('acc-name-pwd')) $('acc-name-pwd').value = '';
+      if (typeof renderAccountHead === 'function') renderAccountHead();
+      toast('用户名已更新');
+    } catch (e) {
+      toast(e.message || '修改失败', true);
+    } finally {
+      btn.disabled = false; btn.textContent = label;
+    }
+  });
+
+  // 余量明细:逐笔展示额度增减,支持分页
+  let quotaLedgerOffset = 0;
+  const QUOTA_PAGE = 50;
+  function quotaEntryHtml(e) {
+    const amt = Number(e.amount) || 0;
+    const sign = amt > 0 ? '+' : '';
+    const cls = amt > 0 ? 'color:#16a34a' : (amt < 0 ? 'color:#dc2626' : '');
+    const when = e.createdAt ? new Date(e.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+    const flow = (typeof e.before === 'number' && typeof e.after === 'number')
+      ? '<span class="muted small">' + e.before + ' → ' + e.after + '</span>' : '';
+    return '<div class="row-between" style="padding:8px 0;border-bottom:1px solid var(--hairline,#eee);gap:10px">'
+      + '<div style="min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(e.title || '额度变化') + '</div>'
+      + '<div class="muted small">' + when + '</div></div>'
+      + '<div style="text-align:right;white-space:nowrap"><b style="' + cls + '">' + sign + amt + '</b><br>' + flow + '</div></div>';
+  }
+  async function loadQuotaLedger(reset) {
+    const box = $('acc-quota-list');
+    if (!box) return;
+    if (reset) { quotaLedgerOffset = 0; box.innerHTML = '<p class="muted small">加载中…</p>'; }
+    try {
+      const r = await api('/api/me/quota/ledger?limit=' + QUOTA_PAGE + '&offset=' + quotaLedgerOffset);
+      const d = await r.json();
+      if (!r.ok) throw new Error((d.error && d.error.message) || '加载失败');
+      const rows = Array.isArray(d.entries) ? d.entries : [];
+      if (reset) box.innerHTML = '';
+      if (!rows.length && quotaLedgerOffset === 0) {
+        box.innerHTML = '<p class="muted small">暂无记录。</p>';
+      } else {
+        box.insertAdjacentHTML('beforeend', rows.map(quotaEntryHtml).join(''));
+      }
+      quotaLedgerOffset += rows.length;
+      const sum = $('acc-quota-summary');
+      if (sum && typeof d.gained === 'number') {
+        sum.textContent = '当前余额 ' + d.quota + ' · 累计获得 ' + d.gained + ' · 累计消耗 ' + d.spent
+          + '（逐笔记录含生成标题、跟进建议等辅助调用）';
+      }
+      const moreWrap = $('acc-quota-more-wrap');
+      if (moreWrap) moreWrap.style.display = (quotaLedgerOffset < (d.total || 0)) ? '' : 'none';
+    } catch (e) {
+      if (reset) box.innerHTML = '<p class="muted small">加载失败：' + escapeHtml(e.message || '') + '</p>';
+    }
+  }
+  const moreBtn = $('acc-quota-more');
+  if (moreBtn) moreBtn.addEventListener('click', () => loadQuotaLedger(false));
+  if ($('sp-account')) {
+    loadQuotaLedger(true);
+    syncPasswordFormForOauth();
   }
 
   function chatToMarkdown(c) {
@@ -6333,7 +6424,7 @@ function openCompareDialog() {
     const answers = picks.map((p) => {
       const prov = (state.providers || []).find((x) => x.id === p.providerId);
       const format = (prov && prov.apiFormat) || 'chat';
-      const body = { model: p.model, providerId: p.providerId, stream: false, max_tokens: cap, messages: [{ role: 'user', content: question }] };
+      const body = { model: p.model, providerId: p.providerId, stream: false, max_tokens: cap, _purpose: 'compare', messages: [{ role: 'user', content: question }] };
       return api(ENDPOINT_BY_FORMAT[format] || '/api/proxy/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

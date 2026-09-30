@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.53');
+define('TC_VERSION', '2.0.54');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -80,6 +80,8 @@ $TC_SETTINGS_DEFAULTS = array(
     'oauthProviders' => array(),
     // 第三方登录时若未绑定过本站账号,是否自动建号(关闭则提示先注册并绑定)
     'oauthAutoRegister' => true,
+    // 自动建号/首次绑定后是否强制补全用户名与密码(补全后即可脱离第三方用密码登录)
+    'oauthRequireProfile' => false,
     'webSearchEnabled' => false,
     'webSearchProvider' => 'tavily',
     'webSearchTavilyKey' => '',
@@ -372,10 +374,18 @@ function tc_normalize_settings($raw) {
     $timeout = isset($s['proxyTimeoutMs']) ? (int) $s['proxyTimeoutMs'] : $TC_SETTINGS_DEFAULTS['proxyTimeoutMs'];
     $s['proxyTimeoutMs'] = min(600000, max(5000, $timeout ?: $TC_SETTINGS_DEFAULTS['proxyTimeoutMs']));
     $s['loginMaxFails'] = min(50, max(0, (int) $s['loginMaxFails']));
-    // 第三方登录配置归一化:只接受注册表里的提供商与字段,凭据截断长度
+    // 第三方登录配置归一化:只接受注册表里的提供商与字段,凭据截断长度。
+    // 注册表在 lib/oauth.php;单独加载 core 的场景(如 CI 自检)没有它,
+    // 此时按已知字段名兜底,避免让整个数据层硬依赖可选模块。
     $oauthIn = isset($s['oauthProviders']) && is_array($s['oauthProviders']) ? $s['oauthProviders'] : array();
     $oauth = array();
-    foreach (tc_oauth_providers() as $pid => $prov) {
+    $oauthRegistry = function_exists('tc_oauth_providers') ? tc_oauth_providers() : array();
+    if (!$oauthRegistry) {
+        foreach (array('wechat', 'qq', 'linuxdo', 'nodeloc') as $pid) {
+            $oauthRegistry[$pid] = array('fields' => array('appId' => 1, 'appSecret' => 1, 'appKey' => 1, 'clientId' => 1, 'clientSecret' => 1));
+        }
+    }
+    foreach ($oauthRegistry as $pid => $prov) {
         $row = isset($oauthIn[$pid]) && is_array($oauthIn[$pid]) ? $oauthIn[$pid] : array();
         $clean = array('enabled' => !empty($row['enabled']));
         foreach (array_keys($prov['fields']) as $f) {
@@ -385,6 +395,7 @@ function tc_normalize_settings($raw) {
     }
     $s['oauthProviders'] = $oauth;
     $s['oauthAutoRegister'] = !array_key_exists('oauthAutoRegister', $s) || !empty($s['oauthAutoRegister']);
+    $s['oauthRequireProfile'] = !empty($s['oauthRequireProfile']);
     $s['loginLockMs'] = min(3600000, max(0, (int) $s['loginLockMs']));
     $s['webSearchEnabled'] = !empty($s['webSearchEnabled']);
     $prov = strtolower(trim((string) (isset($s['webSearchProvider']) ? $s['webSearchProvider'] : 'tavily')));
@@ -1491,6 +1502,8 @@ function tc_sanitize_user($u) {
         'guest' => !empty($u['guest']),
         'lastIp' => isset($u['lastIp']) ? (string) $u['lastIp'] : '',
         'groupId' => isset($u['groupId']) ? $u['groupId'] : null,
+        // 是否已设密码:第三方登录建号的用户为 false,前端据此隐藏「当前密码」并允许直接设置
+        'hasPassword' => isset($u['passwordHash']) && (string) $u['passwordHash'] !== '',
     );
 }
 
@@ -2037,6 +2050,58 @@ function tc_is_unlimited_quota($user) {
     return isset($user['quota']) && (string) $user['quota'] === '-1';
 }
 
+// —— 余量明细(用户可追溯每次增减) ——
+// 写入 quotaLedger:与充值/兑换码共用一张表,用 source 区分:
+//   usage=消耗 | package_redeem/package_claim/fixed_code=获得 | admin=管理员调整
+// 明细只保留最近 N 条(按用户分片),避免库无限增长。
+define('TC_QUOTA_LEDGER_PER_USER', 200);
+
+function tc_quota_note(&$db, $userId, $entry) {
+    $userId = (string) $userId;
+    if ($userId === '') return;
+    if (!isset($db['quotaLedger']) || !is_array($db['quotaLedger'])) $db['quotaLedger'] = array();
+    $row = array_merge(array('id' => tc_uid(8), 'userId' => $userId, 'createdAt' => tc_now()), $entry);
+    $db['quotaLedger'][] = $row;
+    // 超过上限时,只裁该用户最旧的记录(其他人的不动)
+    $mine = 0;
+    foreach ($db['quotaLedger'] as $e) {
+        if (isset($e['userId']) && (string) $e['userId'] === $userId) $mine++;
+    }
+    if ($mine > TC_QUOTA_LEDGER_PER_USER) {
+        $drop = $mine - TC_QUOTA_LEDGER_PER_USER;
+        $kept = array();
+        foreach ($db['quotaLedger'] as $e) {
+            if ($drop > 0 && isset($e['userId']) && (string) $e['userId'] === $userId) { $drop--; continue; }
+            $kept[] = $e;
+        }
+        $db['quotaLedger'] = $kept;
+    }
+}
+
+// 用途标签:让用户看懂「这笔扣费是因为什么」
+function tc_quota_purpose_label($purpose, $model = '') {
+    $p = strtolower(trim((string) $purpose));
+    $map = array(
+        'chat' => '对话',
+        'image' => '生图',
+        'video' => '生视频',
+        'title' => '生成标题',
+        'followup' => '生成跟进建议',
+        'judge' => 'AI 工具判定',
+        'search' => '联网检索',
+        'parse' => '文档解析',
+        'compare' => '多模型对比',
+        'assistant' => '助手对话',
+        'api' => 'API 调用',
+    );
+    if (isset($map[$p])) return $map[$p];
+    // 未标注用途时按模型名兜底推断
+    $m = strtolower((string) $model);
+    if (strpos($m, '(图像)') !== false) return '生图';
+    if (strpos($m, '(视频)') !== false) return '生视频';
+    return $p !== '' ? $p : '对话';
+}
+
 function tc_add_quota(&$db, &$user, $amount, $expiresAt = 0) {
     if ((string) $amount === '-1' || tc_is_unlimited_quota($user)) {
         $user['quota'] = -1;
@@ -2125,15 +2190,25 @@ function tc_replace_user(&$db, $user) {
     }
 }
 
-function tc_charge_user(&$db, &$user, $cost, $model = '') {
+function tc_charge_user(&$db, &$user, $cost, $model = '', $purpose = '') {
     $n = max(0, (float) $cost);
     $unlimited = tc_is_unlimited_quota($user);
     if (!$unlimited) tc_enforce_quota_expiry($db, $user);
+    $before = isset($user['quota']) ? (float) $user['quota'] : 0;
     // 0 成本(自有 Key)与无限额度的调用不扣额度,但同样计入调用次数
     if ($n > 0 && !$unlimited) {
         // 按 token 计费会出现小数额度,4 位舍入避免浮点尘埃累积
-        $user['quota'] = max(0, round((isset($user['quota']) ? (float) $user['quota'] : 0) - $n, 4));
+        $user['quota'] = max(0, round($before - $n, 4));
         tc_consume_quota_grants($user, $n);
+        // 余量明细:记录每次实际扣减(含用途与前后余量),供用户追溯
+        tc_quota_note($db, (string) $user['id'], array(
+            'amount' => -$n,
+            'source' => 'usage',
+            'purpose' => tc_quota_purpose_label($purpose, $model),
+            'model' => (string) $model,
+            'before' => round($before, 4),
+            'after' => round((float) $user['quota'], 4),
+        ));
     }
     // 生命周期调用计数:存用户记录上,清空对话也不丢失
     if (!isset($user['totalCalls'])) {

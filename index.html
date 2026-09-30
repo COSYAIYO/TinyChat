@@ -25,15 +25,15 @@
 </script>
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./logo-icon.svg">
-<link rel="stylesheet" href="./static/css/style.css?v=20261007.6">
+<link rel="stylesheet" href="./static/css/style.css?v=20261007.7">
 <link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
 <link rel="stylesheet" href="./vendor/katex/katex.min.css">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.6">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261007.6">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.6">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261007.6">
-<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.6">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.6">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.7">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261007.7">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.7">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261007.7">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.7">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.7">
 <script>
 /* 在样式表之后立刻刷主题色,避免首屏主按钮仍是默认蓝 */
 (function () {
@@ -72,7 +72,7 @@
 </script>
 <!-- 性能门控:按后台设置决定是否加载渲染依赖(markdown-it 始终加载;KaTeX/highlight 可关)。
      必须在渲染依赖之前同步执行;具体的 <script> 标签由 perf.js 用 document.write 注入。 -->
-<script src="./static/js/perf.js?v=20261007.6"></script>
+<script src="./static/js/perf.js?v=20261007.7"></script>
 </head>
 <body>
   <!-- 移动端侧边栏遮罩 -->
@@ -426,20 +426,37 @@
             <button class="btn small" id="acc-go-plan" type="button">去购买</button>
           </div>
 
+          <div class="section-title">修改用户名</div>
+          <div class="add-provider-form">
+            <label class="field"><span>新用户名</span><input id="acc-new-name" type="text" maxlength="32" placeholder="2-32 位（字母/数字/中文/._@-）" autocomplete="off"></label>
+            <label class="field" id="acc-name-pwd-row"><span>当前密码（确认身份）</span><input id="acc-name-pwd" type="password" autocomplete="current-password"></label>
+            <div class="form-actions">
+              <button class="btn primary" id="acc-save-name">更新用户名</button>
+              <span class="muted small">修改后需使用新用户名登录</span>
+            </div>
+          </div>
+
           <div class="section-title">修改密码</div>
           <div class="add-provider-form">
-            <label class="field"><span>当前密码</span><input id="acc-old-pwd" type="password" autocomplete="current-password"></label>
+            <label class="field" id="acc-old-pwd-row"><span>当前密码</span><input id="acc-old-pwd" type="password" autocomplete="current-password"></label>
             <label class="field"><span>新密码(至少 4 位)</span><input id="acc-new-pwd" type="password" autocomplete="new-password"></label>
             <label class="field"><span>确认新密码</span><input id="acc-new-pwd2" type="password" autocomplete="new-password"></label>
             <div class="form-actions">
               <button class="btn primary" id="acc-save-pwd">更新密码</button>
-              <span class="muted small">修改后其它设备上的登录会失效</span>
+              <span class="muted small" id="acc-pwd-hint">修改后其它设备上的登录会失效</span>
             </div>
           </div>
 
           <div class="section-title">第三方账号绑定</div>
           <p class="muted small" style="margin:0 0 8px">绑定的第三方账号可直接用于一键登录；解绑后需用用户名密码登录。</p>
           <div id="acc-oauth-list" class="apikey-list"></div>
+
+          <div class="section-title">余量明细</div>
+          <p class="muted small" style="margin:0 0 8px" id="acc-quota-summary">逐笔记录额度的来源与消耗（含生成标题、跟进建议等辅助调用），便于核对。</p>
+          <div id="acc-quota-list" class="apikey-list"></div>
+          <div class="form-actions" id="acc-quota-more-wrap" style="display:none">
+            <button class="btn small" id="acc-quota-more" type="button">加载更多</button>
+          </div>
 
         </section>
 
@@ -889,19 +906,19 @@
     <button class="btn small primary" id="guest-bar-login" type="button">登录 / 注册</button>
   </div>
 
-  <script src="./static/js/config.js?v=20261007.6"></script>
-  <script src="./static/js/icons.js?v=20261007.6"></script>
-  <script src="./static/js/logos.js?v=20261007.6"></script>
-  <script src="./static/js/components.js?v=20261007.6"></script>
-  <script src="./static/js/ui.js?v=20261007.6"></script>
-  <script src="./static/js/assistants.js?v=20261007.6"></script>
-  <script src="./static/js/conversations.js?v=20261007.6"></script>
-  <script src="./static/js/renderer.js?v=20261007.6"></script>
-  <script src="./static/js/reasoning.js?v=20261007.6"></script>
-  <script src="./static/js/office-formula-copy.js?v=20261007.6"></script>
-  <script src="./static/js/citations.js?v=20261007.6"></script>
-  <script src="./static/js/messages.js?v=20261007.6"></script>
-  <script src="./static/js/multimodal.js?v=20261007.6"></script>
-  <script src="./static/js/app.js?v=20261007.6"></script>
+  <script src="./static/js/config.js?v=20261007.7"></script>
+  <script src="./static/js/icons.js?v=20261007.7"></script>
+  <script src="./static/js/logos.js?v=20261007.7"></script>
+  <script src="./static/js/components.js?v=20261007.7"></script>
+  <script src="./static/js/ui.js?v=20261007.7"></script>
+  <script src="./static/js/assistants.js?v=20261007.7"></script>
+  <script src="./static/js/conversations.js?v=20261007.7"></script>
+  <script src="./static/js/renderer.js?v=20261007.7"></script>
+  <script src="./static/js/reasoning.js?v=20261007.7"></script>
+  <script src="./static/js/office-formula-copy.js?v=20261007.7"></script>
+  <script src="./static/js/citations.js?v=20261007.7"></script>
+  <script src="./static/js/messages.js?v=20261007.7"></script>
+  <script src="./static/js/multimodal.js?v=20261007.7"></script>
+  <script src="./static/js/app.js?v=20261007.7"></script>
 </body>
 </html>

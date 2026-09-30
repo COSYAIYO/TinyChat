@@ -537,7 +537,15 @@ function tc_api_oauth_exchange() {
     });
     if (!$ticketOk) tc_fail(401, '登录票据无效、已使用或已过期，请重新登录');
     if (!$user) tc_fail(401, '账号不存在');
-    tc_json(200, array('token' => tc_issue_token($user, $settings), 'user' => tc_sanitize_user($user)));
+    // 后台要求补全资料、且该账号还没设过密码时,前端进入补全流程
+    $needsProfile = !empty($settings['oauthRequireProfile'])
+        && (!isset($user['passwordHash']) || (string) $user['passwordHash'] === '');
+    $pub = tc_sanitize_user($user);
+    tc_json(200, array(
+        'token' => tc_issue_token($user, $settings),
+        'user' => $pub,
+        'needsProfile' => $needsProfile,
+    ));
 }
 
 // —— API:当前用户已绑定的第三方账号 GET /api/me/oauth ——

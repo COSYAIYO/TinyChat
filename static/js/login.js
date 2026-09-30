@@ -286,9 +286,62 @@ function renderOauthIcons(oauth) {
   }).then((r) => r.json().then((d) => ({ ok: r.ok, d: d }))).then((res) => {
     if (!res.ok) throw new Error((res.d.error && res.d.error.message) || '登录失败');
     try { localStorage.setItem(cacheKey, res.d.token); } catch (e) { /* 忽略 */ }
+    // 后台要求补全资料、且该账号还没有密码时,进入补全流程(补全后可脱离第三方登录)
+    if (res.d.needsProfile) { showProfileGate(res.d.token, res.d.user); return; }
     location.replace('/');
   }).catch((e) => {
     setBusy($('login-btn'), false, '登录');
     showError(e.message || '登录失败');
   });
 })();
+
+// —— 第三方登录后的资料补全(用户名 + 密码) ——
+function showProfileGate(token, user) {
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask';
+  mask.innerHTML = '<div class="modal" role="dialog" aria-modal="true" style="max-width:400px">'
+    + '<h3 style="margin:0 0 6px">完善账号信息</h3>'
+    + '<p class="muted small" style="margin:0 0 14px">本站要求补全用户名与密码，之后你也可以直接用用户名密码登录。</p>'
+    + '<label class="field"><span>用户名</span><input type="text" id="pg-name" maxlength="32" value="" placeholder="2-32 位（字母/数字/中文/._@-）" autocomplete="off"></label>'
+    + '<label class="field"><span>密码（至少 4 位）</span><input type="password" id="pg-pwd" autocomplete="new-password"></label>'
+    + '<label class="field"><span>确认密码</span><input type="password" id="pg-pwd2" autocomplete="new-password"></label>'
+    + '<div class="hidden" id="pg-err" style="color:#dc2626;font-size:13px;margin:6px 0"></div>'
+    + '<button type="button" class="btn primary w-full" id="pg-save" style="margin-top:10px">保存并进入</button>'
+    + '</div>';
+  document.body.appendChild(mask);
+  const nameInput = mask.querySelector('#pg-name');
+  if (nameInput && user && user.name) nameInput.value = user.name;
+  const errBox = mask.querySelector('#pg-err');
+  const showErr = (m) => { errBox.textContent = m; errBox.classList.remove('hidden'); };
+  const btn = mask.querySelector('#pg-save');
+  btn.addEventListener('click', async () => {
+    const name = (nameInput.value || '').trim();
+    const pwd = (mask.querySelector('#pg-pwd').value || '');
+    const pwd2 = (mask.querySelector('#pg-pwd2').value || '');
+    if (!name) return showErr('请输入用户名');
+    if (pwd.length < 4) return showErr('密码至少 4 位');
+    if (pwd !== pwd2) return showErr('两次输入的密码不一致');
+    btn.disabled = true; btn.textContent = '保存中…';
+    try {
+      const call = (url, body) => fetch(apiUrl(url), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        body: JSON.stringify(body),
+      }).then((r) => r.json().then((d) => ({ ok: r.ok, d: d })));
+      // 先设密码,再改用户名(两者都返回新 token,保留最后一次)
+      const r1 = await call('/api/auth/password', { oldPassword: '', newPassword: pwd });
+      if (!r1.ok) throw new Error((r1.d.error && r1.d.error.message) || '设置密码失败');
+      let finalToken = r1.d.token || token;
+      if (user && name && name !== user.name) {
+        const r2 = await call('/api/auth/name', { name: name, password: pwd });
+        if (!r2.ok) throw new Error((r2.d.error && r2.d.error.message) || '设置用户名失败');
+        if (r2.d.token) finalToken = r2.d.token;
+      }
+      try { localStorage.setItem(cacheKey, finalToken); } catch (e) { /* 忽略 */ }
+      location.replace('/');
+    } catch (e) {
+      btn.disabled = false; btn.textContent = '保存并进入';
+      showErr(e.message || '保存失败');
+    }
+  });
+}

@@ -39,6 +39,8 @@
     'stability-color.svg': 1, 'suno.svg': 1, 'tavily-color.svg': 1, 'tiangong-color.svg': 1,
     'together-color.svg': 1, 'vertexai-color.svg': 1, 'wenxin-color.svg': 1, 'xiaomimimo.svg': 1,
     'yi-color.svg': 1, 'yuanbao-color.svg': 1, 'zai.svg': 1, 'zhipu-color.svg': 1,
+    // 功能图标与登录方式图标:虽不参与关键词匹配,但需登记,否则会被当成缺失文件
+    'video-camera.svg': 1, 'qq.svg': 1, 'weixin.svg': 1,
   };
 
   // [关键词, 图标文件, 优先级?];优先级默认 0,数值大者优先。

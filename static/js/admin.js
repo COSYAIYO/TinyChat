@@ -1483,6 +1483,7 @@ function renderOauthProviders(s) {
 }
 function fillOauthSettings(s) {
   if ($('oauth-auto-register')) $('oauth-auto-register').checked = (s && s.oauthAutoRegister) !== false;
+  if ($('oauth-require-profile')) $('oauth-require-profile').checked = !!(s && s.oauthRequireProfile);
   renderOauthProviders(s || {});
 }
 async function loadOauthSettings() {
@@ -1507,7 +1508,7 @@ async function loadOauthSettings() {
   }
   const save = $('oauth-save');
   if (save) save.addEventListener('click', async () => {
-    const payload = { oauthProviders: {}, oauthAutoRegister: !!($('oauth-auto-register') && $('oauth-auto-register').checked) };
+    const payload = { oauthProviders: {}, oauthAutoRegister: !!($('oauth-auto-register') && $('oauth-auto-register').checked), oauthRequireProfile: !!($('oauth-require-profile') && $('oauth-require-profile').checked) };
     OAUTH_PROVIDERS.forEach((p) => {
       const enableBox = box && box.querySelector('[data-oauth-enable="' + p.id + '"]');
       const row = { enabled: !!(enableBox && enableBox.checked) };

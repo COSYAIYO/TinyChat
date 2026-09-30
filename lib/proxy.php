@@ -2248,6 +2248,8 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             'user' => $user,
             'provider' => $provider,
             'body' => tc_prepare_upstream_body($b, $provider, $format),
+            // 用途标记(标题/跟进建议/判定等):仅存在于原始请求体,用于余量明细
+            'purpose' => isset($b['_purpose']) ? (string) $b['_purpose'] : '',
             'cost' => $cost,
             'timeout' => $db['settings']['proxyTimeoutMs'],
             'wantSearch' => (!empty($b['webSearch']) && $b['webSearch'] !== 'off' && $b['webSearch'] !== false) ? (string) $b['webSearch'] : '',
@@ -2400,11 +2402,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                 // First successful bytes: charge then start SSE.
                 $ms = tc_now() - $started;
                 $charged = 0;
-                tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage) {
+                tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage, $ctx) {
                     $fresh = null;
                     foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
                     if (!$fresh) return;
-                    $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '');
+                    $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '', isset($ctx['purpose']) ? (string) $ctx['purpose'] : '');
                     tc_touch_user($db, $user['id']);
                     $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
                 });
@@ -2509,11 +2511,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                     if (!$headersSent) {
                         $ms = tc_now() - $started;
                         $charged = 0;
-                        tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage) {
+                        tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage, $ctx) {
                             $fresh = null;
                             foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
                             if (!$fresh) return;
-                            $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '');
+                            $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '', isset($ctx['purpose']) ? (string) $ctx['purpose'] : '');
                             tc_touch_user($db, $user['id']);
                             $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
                         });
@@ -2545,11 +2547,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                         tc_task_finish($taskId, 'completed');
                         $ms = tc_now() - $started;
                         $charged = 0;
-                        tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage) {
+                        tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage, $ctx) {
                             $fresh = null;
                             foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
                             if (!$fresh) return;
-                            $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '');
+                            $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '', isset($ctx['purpose']) ? (string) $ctx['purpose'] : '');
                             tc_touch_user($db, $user['id']);
                             $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
                             tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $charged, $streamUsage['prompt'], $streamUsage['completion']);
@@ -2601,11 +2603,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             tc_task_finish($taskId, 'completed');
             $ms = tc_now() - $started;
             $charged = 0;
-            tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage) {
+            tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage, $ctx) {
                 $fresh = null;
                 foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
                 if (!$fresh) return;
-                $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '');
+                $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '', isset($ctx['purpose']) ? (string) $ctx['purpose'] : '');
                 tc_touch_user($db, $user['id']);
                 $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
                 tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $cost, $streamUsage['prompt'], $streamUsage['completion']);
@@ -2688,7 +2690,7 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         $fresh = null;
         foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
         if (!$fresh) return;
-        $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $bodyUsage), isset($body['model']) ? $body['model'] : '');
+        $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $bodyUsage), isset($body['model']) ? $body['model'] : '', isset($ctx['purpose']) ? (string) $ctx['purpose'] : '');
         tc_touch_user($db, $user['id']);
         $quota = isset($fresh['quota']) ? $fresh['quota'] : 0;
         tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $charged, $bodyUsage['prompt'], $bodyUsage['completion']);
@@ -3093,7 +3095,7 @@ function tc_generate_images($apiKeyOwner = null) {
         $fresh = null;
         foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
         if (!$fresh) return;
-        $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $ctx['cost'], $usage), $ctx['model'] . ' (图像)');
+        $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $ctx['cost'], $usage), $ctx['model'] . ' (图像)', 'image');
         tc_touch_user($db, $user['id']);
         $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
         tc_record_usage_entry($db, $user['id'], $ctx['model'] . ' (图像)', $charged, 0, 0);
@@ -3804,7 +3806,7 @@ function tc_generate_video($apiKeyOwner = null) {
         $fresh = null;
         foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
         if (!$fresh) return;
-        $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $ctx['cost'], $usage), $ctx['model'] . ' (视频)');
+        $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $ctx['cost'], $usage), $ctx['model'] . ' (视频)', 'video');
         tc_touch_user($db, $user['id']);
         $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
         tc_record_usage_entry($db, $user['id'], $ctx['model'] . ' (视频)', $charged, 0, 0);
