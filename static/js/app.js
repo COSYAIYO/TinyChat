@@ -2152,6 +2152,32 @@ function wantsEditImage(text) {
   if (!t) return false;
   return /(改成|换成|修改|改一下|改变|调整成|调整一下|变成|变为|去掉|删除掉|删掉|加个|加上|添加|添个|换个|替换成|替换|重新画|再画|重画)/.test(t);
 }
+// 对上一张生成图的「评价式反馈」(无编辑动词,如「不够优雅」「太暗了」「背景太乱」)。
+// 这类短句在会话里有生成图时,几乎都是在要求重画/改图;此前只认编辑动词,
+// 导致「不够优雅」被当普通对话发给对话模型,表现为「追问第二轮不出图」。
+function wantsImageFeedback(text) {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  // 纯致谢/确认不算
+  if (/^(谢谢|好的|好|嗯|行|收到|辛苦了|ok|OK|thanks?)[！!。.~～]?$/.test(t)) return false;
+  // 过长通常是新指令或新问题,不算轻量反馈
+  if (t.length > 40) return false;
+  // 提问不算(用户在问,不是要改)
+  if (/[?？]$/.test(t) || /(是什么|为什么|啥意思|什么意思|如何|怎么|怎样|能不能|可否|是不是)/.test(t) || /[吗呢]$/.test(t)) return false;
+  // 欠缺/程度类:「不够优雅」「不太行」「再亮一点」「更柔和一些」
+  if (/(不够|不太|不怎么|缺少|少了|缺了)/.test(t)) return true;
+  // 负面评价类:「不好看」「太乱」「不自然」(注意先于夸赞词判断:「不好看」含「好看」)
+  if (/(不好看|难看|好丑|太丑|奇怪|违和|诡异|不协调|不和谐|太乱|太杂|太脏|太糊|模糊|不清楚|不清晰|太暗|太亮|太假|不自然|生硬|呆板|死板|单调|空洞|敷衍)/.test(t)) return true;
+  if (/(更|再)[^，。！？!?]{0,8}(一点|一些|点)/.test(t)) return true;
+  if (/[^，。！？!?]{1,8}(一点|一些)($|[，。！？!?])/.test(t)) return true;
+  // 「有点糊」「有些怪」这类轻量负面
+  if (/(有点|有些|略微|稍微|稍微有点)[^，。！？!?]{0,6}(糊|脏|乱|暗|亮|假|怪|丑|土|僵|虚|油|崩|歪|斜|廉价|塑料|违和|奇怪|生硬|死板)/.test(t)) return true;
+  // 画面要素 + 负向词:「背景太乱」「颜色不对」「光线不好」
+  if (/(背景|颜色|色调|配色|构图|光线|光影|氛围|细节|姿势|表情|服装|衣服|脸|手|眼睛)[^，。！？!?]{0,6}(不对|不好|太|怪|乱|假|糊|脏|暗|亮)/.test(t)) return true;
+  // 正面夸赞不算(用户满意,不需要重画)
+  if (/(太棒|太好|太美|太漂亮|太帅|太可爱|太惊艳|太赞|很喜欢|太满意|完美|好看)/.test(t)) return false;
+  return false;
+}
 // 文本是否明确指代「上一张图」(决定追问是否把它作为参考图)
 function refersToPrevImage(text) {
   return /(上面|刚才|上一张|上张|之前|这张图|这张|那张图|那张|这个图|那个图|此图|它)/.test(String(text || ''));
@@ -2180,7 +2206,7 @@ async function aiJudgeTools(text, ctx) {
     + (wantTitle ? ',"title":"简短标题"' : '') + '}。'
     + 'search=需要联网检索最新/实时信息（如新闻、天气、股价、当前时间、近期事件、需查证的事实）；闲聊、写作、代码、翻译、数学等不联网。';
   if (wantImage) {
-    sys += 'draw=用户在要求生成一张新图片（如「画一只猫」「生成海报」）；edit=用户在要求修改已有的图片（上下文提供了一张可修改的图片，且用户在要求改它，如「把上面的图换成蓝色」）。'
+    sys += 'draw=用户在要求生成一张新图片（如「画一只猫」「生成海报」）；edit=用户在要求修改已有的图片，也包括对上一张图表达不满或要求改进（如「把上面的图换成蓝色」「不够优雅」「颜色太暗，再亮一点」）。'
       + '注意：讨论、提问或解释（如「画一个圆是什么原理」）不算。';
     if (ctx.prevImage) sys += '当前上下文里有一张可供修改的图片。';
     else sys += '当前上下文里没有可修改的图片，edit 一律为 false。';
@@ -2302,15 +2328,18 @@ async function sendMessage() {
     state._judgeTitle = (verdict && verdict.title) ? verdict.title : '';
     let isDraw = false, isEdit = false;
     if (aim !== 'off') {
+      const feedback = wantsImageFeedback(text);
       if (aim === 'auto' && verdict) {
         isDraw = !!verdict.draw;
-        isEdit = !!verdict.edit && hasRef;
+        // 判定模型漏看评价式反馈时兜底:有参考图且命中反馈模式,仍按改图处理
+        isEdit = (!!verdict.edit || feedback) && hasRef;
       } else {
         // 粗略识别,或「智能判定」失败时回退
         isDraw = wantsDrawImage(text);
         // 改图意图:必须能定位到一张图。附图即视为要改这张图;否则需本会话有上一张生成图,
-        // 且文本明确指代它(上面/这张图/它…)。避免把「把这段话改成英文」这类文本编辑误判为改图。
-        isEdit = wantsEditImage(text) && (imgAtts.length > 0 || (!!prevImg && refersToPrevImage(text)));
+        // 且文本明确指代它(上面/这张图/它…)或是针对上一张图的评价式反馈(不够优雅/太暗了)。
+        // 避免把「把这段话改成英文」这类文本编辑误判为改图。
+        isEdit = (wantsEditImage(text) || feedback) && (imgAtts.length > 0 || (!!prevImg && (refersToPrevImage(text) || feedback)));
       }
     }
     // 参考图策略:显式编辑或明确指代上一张图时带上;全新绘图默认不带
