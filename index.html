@@ -504,7 +504,7 @@
           <div class="pref-row" id="pref-search-source-row">
             <div class="pref-info">
               <div class="pref-name">联网搜索</div>
-              <div class="pref-desc" id="pref-search-source-desc">使用平台配置，或改用自己的 Tavily / SearXNG</div>
+              <div class="pref-desc" id="pref-search-source-desc">使用平台配置，或改用自己的检索配置</div>
             </div>
             <div class="theme-seg" id="pref-search-source" role="radiogroup" aria-label="联网搜索来源">
               <button type="button" class="seg-btn active" data-source="platform">平台</button>
@@ -520,6 +520,12 @@
             </label>
             <label class="field" id="pref-search-key-row"><span>Tavily API Key</span>
               <input id="pref-search-key" type="password" placeholder="留空保持已保存的密钥" autocomplete="off">
+            </label>
+            <label class="field hidden" id="pref-search-brave-row"><span>Brave Search API Key</span>
+              <input id="pref-search-brave-key" type="password" placeholder="留空保持已保存的密钥" autocomplete="off">
+            </label>
+            <label class="field hidden" id="pref-search-jina-row"><span>Jina API Key（可选）</span>
+              <input id="pref-search-jina-key" type="password" placeholder="留空可用免登录额度" autocomplete="off">
             </label>
             <label class="field hidden" id="pref-search-url-row"><span>SearXNG 地址</span>
               <textarea id="pref-search-url" rows="3" placeholder="每行一个实例地址" spellcheck="false"></textarea>

@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.49');
+define('TC_VERSION', '2.0.50');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -79,6 +79,8 @@ $TC_SETTINGS_DEFAULTS = array(
     'webSearchEnabled' => false,
     'webSearchProvider' => 'tavily',
     'webSearchTavilyKey' => '',
+    'webSearchBraveKey' => '',
+    'webSearchJinaKey' => '',
     'webSearchSearxUrl' => '',
     'webSearchMaxResults' => 5,
     'webSearchAllowUser' => false,
@@ -86,6 +88,10 @@ $TC_SETTINGS_DEFAULTS = array(
     'urlReadMax' => 3,
     'mineruToken' => '',
     'mineruAllowUser' => false,
+    'paddleOcrUrl' => '',
+    'paddleOcrKey' => '',
+    'mistralOcrKey' => '',
+    'parseChannels' => array('pdf' => 'mineru', 'image' => 'mineru', 'office' => 'mineru'),
     'defaultGroupId' => '',
     'contextMessages' => 40,
     'maxContextMessages' => 200,
@@ -365,8 +371,10 @@ function tc_normalize_settings($raw) {
     $s['loginLockMs'] = min(3600000, max(0, (int) $s['loginLockMs']));
     $s['webSearchEnabled'] = !empty($s['webSearchEnabled']);
     $prov = strtolower(trim((string) (isset($s['webSearchProvider']) ? $s['webSearchProvider'] : 'tavily')));
-    $s['webSearchProvider'] = ($prov === 'searxng') ? 'searxng' : 'tavily';
+    $s['webSearchProvider'] = in_array($prov, array('tavily', 'searxng', 'brave', 'ddg', 'jina'), true) ? $prov : 'tavily';
     $s['webSearchTavilyKey'] = substr(trim((string) (isset($s['webSearchTavilyKey']) ? $s['webSearchTavilyKey'] : '')), 0, 200);
+    $s['webSearchBraveKey'] = substr(trim((string) (isset($s['webSearchBraveKey']) ? $s['webSearchBraveKey'] : '')), 0, 200);
+    $s['webSearchJinaKey'] = substr(trim((string) (isset($s['webSearchJinaKey']) ? $s['webSearchJinaKey'] : '')), 0, 200);
     $s['webSearchSearxUrl'] = tc_searx_urls_text(isset($s['webSearchSearxUrl']) ? $s['webSearchSearxUrl'] : '');
     $max = isset($s['webSearchMaxResults']) ? (int) $s['webSearchMaxResults'] : 5;
     $s['webSearchMaxResults'] = min(8, max(1, $max ?: 5));
@@ -376,6 +384,17 @@ function tc_normalize_settings($raw) {
     $s['urlReadMax'] = min(5, max(1, (int) (isset($s['urlReadMax']) ? $s['urlReadMax'] : 3) ?: 3));
     $s['mineruToken'] = substr(trim((string) (isset($s['mineruToken']) ? $s['mineruToken'] : '')), 0, 300);
     $s['mineruAllowUser'] = !empty($s['mineruAllowUser']);
+    // 文档解析通道:PaddleOCR 服务地址/Key、Mistral OCR Key,以及按类别的路由表
+    $s['paddleOcrUrl'] = rtrim(trim((string) (isset($s['paddleOcrUrl']) ? $s['paddleOcrUrl'] : '')), '/');
+    $s['paddleOcrKey'] = substr(trim((string) (isset($s['paddleOcrKey']) ? $s['paddleOcrKey'] : '')), 0, 300);
+    $s['mistralOcrKey'] = substr(trim((string) (isset($s['mistralOcrKey']) ? $s['mistralOcrKey'] : '')), 0, 300);
+    $channelsIn = isset($s['parseChannels']) && is_array($s['parseChannels']) ? $s['parseChannels'] : array();
+    $channels = array();
+    foreach (array('pdf', 'image', 'office') as $pcat) {
+        $pval = strtolower(trim((string) (isset($channelsIn[$pcat]) ? $channelsIn[$pcat] : 'mineru')));
+        $channels[$pcat] = in_array($pval, array('mineru', 'paddle', 'mistral'), true) ? $pval : 'mineru';
+    }
+    $s['parseChannels'] = $channels;
     $s['defaultGroupId'] = substr(trim((string) (isset($s['defaultGroupId']) ? $s['defaultGroupId'] : '')), 0, 64);
     $maxCtx = isset($s['maxContextMessages']) ? (int) $s['maxContextMessages'] : $TC_SETTINGS_DEFAULTS['maxContextMessages'];
     $s['maxContextMessages'] = min(500, max(2, $maxCtx ?: $TC_SETTINGS_DEFAULTS['maxContextMessages']));
@@ -470,8 +489,15 @@ function tc_searx_url_list($raw) {
 
 function tc_web_search_ready($s) {
     if (empty($s['webSearchEnabled'])) return false;
-    if (isset($s['webSearchProvider']) && $s['webSearchProvider'] === 'searxng') {
+    $prov = isset($s['webSearchProvider']) ? (string) $s['webSearchProvider'] : 'tavily';
+    if ($prov === 'searxng') {
         return tc_searx_url_list(isset($s['webSearchSearxUrl']) ? $s['webSearchSearxUrl'] : '') !== array();
+    }
+    if ($prov === 'brave') {
+        return trim((string) (isset($s['webSearchBraveKey']) ? $s['webSearchBraveKey'] : '')) !== '';
+    }
+    if ($prov === 'ddg' || $prov === 'jina') {
+        return true; // 免 Key;Jina 填 Key 仅为提升配额
     }
     return trim((string) (isset($s['webSearchTavilyKey']) ? $s['webSearchTavilyKey'] : '')) !== '';
 }
@@ -484,17 +510,29 @@ function tc_user_tools($u) {
     $raw = (isset($u['tools']) && is_array($u['tools'])) ? $u['tools'] : array();
     $src = isset($raw['webSearchSource']) ? (string) $raw['webSearchSource'] : 'platform';
     $parse = isset($raw['parseSource']) ? (string) $raw['parseSource'] : 'platform';
-    $provider = isset($raw['webSearchProvider']) && $raw['webSearchProvider'] === 'searxng' ? 'searxng' : 'tavily';
+    $provider = strtolower(trim((string) (isset($raw['webSearchProvider']) ? $raw['webSearchProvider'] : 'tavily')));
+    $provider = in_array($provider, array('tavily', 'searxng', 'brave', 'ddg', 'jina'), true) ? $provider : 'tavily';
     $max = isset($raw['webSearchMaxResults']) ? (int) $raw['webSearchMaxResults'] : 5;
     return array(
         'webSearchSource' => $src === 'own' ? 'own' : 'platform',
         'webSearchProvider' => $provider,
         'webSearchTavilyKey' => substr(trim((string) (isset($raw['webSearchTavilyKey']) ? $raw['webSearchTavilyKey'] : '')), 0, 200),
+        'webSearchBraveKey' => substr(trim((string) (isset($raw['webSearchBraveKey']) ? $raw['webSearchBraveKey'] : '')), 0, 200),
+        'webSearchJinaKey' => substr(trim((string) (isset($raw['webSearchJinaKey']) ? $raw['webSearchJinaKey'] : '')), 0, 200),
         'webSearchSearxUrl' => tc_searx_urls_text(isset($raw['webSearchSearxUrl']) ? $raw['webSearchSearxUrl'] : ''),
         'webSearchMaxResults' => min(8, max(1, $max ?: 5)),
         'parseSource' => $parse === 'own' ? 'own' : 'platform',
         'mineruToken' => substr(trim((string) (isset($raw['mineruToken']) ? $raw['mineruToken'] : '')), 0, 300),
     );
+}
+
+// 各检索源「用户自备配置是否已填完整」:ddg/jina 免 Key,恒可用
+function tc_user_search_own_ready($tools) {
+    $prov = isset($tools['webSearchProvider']) ? (string) $tools['webSearchProvider'] : 'tavily';
+    if ($prov === 'searxng') return $tools['webSearchSearxUrl'] !== '';
+    if ($prov === 'brave') return $tools['webSearchBraveKey'] !== '';
+    if ($prov === 'ddg' || $prov === 'jina') return true;
+    return $tools['webSearchTavilyKey'] !== '';
 }
 
 function tc_user_search_settings($user, $site) {
@@ -504,6 +542,8 @@ function tc_user_search_settings($user, $site) {
             'webSearchEnabled' => true,
             'webSearchProvider' => $tools['webSearchProvider'],
             'webSearchTavilyKey' => $tools['webSearchTavilyKey'],
+            'webSearchBraveKey' => $tools['webSearchBraveKey'],
+            'webSearchJinaKey' => $tools['webSearchJinaKey'],
             'webSearchSearxUrl' => $tools['webSearchSearxUrl'],
             'webSearchMaxResults' => $tools['webSearchMaxResults'],
         );
@@ -519,9 +559,7 @@ function tc_user_mineru_token($user, $site) {
 
 function tc_user_tools_public($user, $site) {
     $tools = tc_user_tools($user);
-    $ownSearch = $tools['webSearchProvider'] === 'searxng'
-        ? ($tools['webSearchSearxUrl'] !== '')
-        : ($tools['webSearchTavilyKey'] !== '');
+    $ownReady = tc_user_search_own_ready($tools);
     return array(
         'webSearch' => array(
             'allowOwn' => !empty($site['webSearchAllowUser']),
@@ -530,9 +568,11 @@ function tc_user_tools_public($user, $site) {
             'provider' => $tools['webSearchProvider'],
             'hasKey' => $tools['webSearchTavilyKey'] !== '',
             'keyMask' => $tools['webSearchTavilyKey'] !== '' ? tc_mask_key($tools['webSearchTavilyKey']) : '',
+            'braveKeyMask' => $tools['webSearchBraveKey'] !== '' ? tc_mask_key($tools['webSearchBraveKey']) : '',
+            'jinaKeyMask' => $tools['webSearchJinaKey'] !== '' ? tc_mask_key($tools['webSearchJinaKey']) : '',
             'searxUrl' => $tools['webSearchSearxUrl'],
             'maxResults' => $tools['webSearchMaxResults'],
-            'ownReady' => $ownSearch,
+            'ownReady' => $ownReady,
         ),
         'parse' => array(
             'allowOwn' => !empty($site['mineruAllowUser']),
@@ -545,17 +585,24 @@ function tc_user_tools_public($user, $site) {
 }
 
 function tc_mineru_public($s) {
+    $channels = isset($s['parseChannels']) && is_array($s['parseChannels']) ? $s['parseChannels'] : array();
     return array(
         'enabled' => true,
         'mode' => tc_mineru_token($s) !== '' ? 'precise' : 'lite',
         'allowOwn' => !empty($s['mineruAllowUser']),
+        'routes' => array(
+            'pdf' => isset($channels['pdf']) ? $channels['pdf'] : 'mineru',
+            'image' => isset($channels['image']) ? $channels['image'] : 'mineru',
+            'office' => isset($channels['office']) ? $channels['office'] : 'mineru',
+        ),
     );
 }
 
 function tc_web_search_public($s) {
+    $prov = isset($s['webSearchProvider']) ? (string) $s['webSearchProvider'] : 'tavily';
     return array(
         'enabled' => tc_web_search_ready($s),
-        'provider' => (isset($s['webSearchProvider']) && $s['webSearchProvider'] === 'searxng') ? 'searxng' : 'tavily',
+        'provider' => in_array($prov, array('tavily', 'searxng', 'brave', 'ddg', 'jina'), true) ? $prov : 'tavily',
         'allowOwn' => !empty($s['webSearchAllowUser']),
     );
 }
@@ -563,6 +610,10 @@ function tc_web_search_public($s) {
 function tc_admin_settings_public($s) {
     $out = is_array($s) ? $s : array();
     if (!empty($out['webSearchTavilyKey'])) $out['webSearchTavilyKey'] = tc_mask_key($out['webSearchTavilyKey']);
+    if (!empty($out['paddleOcrKey'])) $out['paddleOcrKey'] = tc_mask_key($out['paddleOcrKey']);
+    if (!empty($out['mistralOcrKey'])) $out['mistralOcrKey'] = tc_mask_key($out['mistralOcrKey']);
+    if (!empty($out['webSearchBraveKey'])) $out['webSearchBraveKey'] = tc_mask_key($out['webSearchBraveKey']);
+    if (!empty($out['webSearchJinaKey'])) $out['webSearchJinaKey'] = tc_mask_key($out['webSearchJinaKey']);
     if (!empty($out['mineruToken'])) $out['mineruToken'] = tc_mask_key($out['mineruToken']);
     if (!empty($out['smtp']['password'])) $out['smtp']['password'] = tc_mask_key($out['smtp']['password']);
     $out['webSearchAllowUser'] = !empty($out['webSearchAllowUser']);

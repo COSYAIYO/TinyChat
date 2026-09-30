@@ -1,11 +1,106 @@
 <?php
 /**
- * E2E 测试用 mock 上游:模拟 OpenAI 兼容 chat/completions(含 SSE 流式)与 images/generations。
+ * E2E 测试用 mock 上游:模拟 OpenAI 兼容 chat/completions(含 SSE 流式)与 images/generations,
+ * 以及搜索源 Brave / DuckDuckGo HTML / Jina(配合 TC_BRAVE_SEARCH_BASE 等 base 覆盖)。
  * 用法:php -S 127.0.0.1:8100 tests/mock-upstream.php
  */
 $uri = isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '';
 $body = json_decode((string) file_get_contents('php://input'), true);
 header('Content-Type: application/json');
+// ---- 搜索源 mock(brave / ddg / jina):返回带 query 关键词的固定结果 ----
+$q = isset($_GET['q']) ? (string) $_GET['q'] : '';
+if (strpos($uri, '/res/v1/web/search') !== false) {
+    // Brave:必须带 X-Subscription-Token;结果标题带上查询词便于断言
+    if (empty($_SERVER['HTTP_X_SUBSCRIPTION_TOKEN'])) {
+        http_response_code(401);
+        echo json_encode(array('error' => array('message' => 'missing token')));
+        return;
+    }
+    echo json_encode(array('type' => 'search', 'web' => array('results' => array(
+        array('title' => 'Brave:' . $q, 'url' => 'https://example.com/brave1', 'description' => 'brave 第一条 ' . $q),
+        array('title' => 'Brave2:' . $q, 'url' => 'https://example.com/brave2', 'description' => 'brave 第二条'),
+    ))));
+    return;
+}
+if (strpos($uri, '/html/') !== false && $q !== '') {
+    // DuckDuckGo HTML:一条 uddg 包装的正常结果 + 一条应被过滤的广告 + 一条直链结果
+    header('Content-Type: text/html; charset=UTF-8');
+    $ad = '<div class="result"><h2><a class="result__a" href="https://duckduckgo.com/y.js?ad_provider=mock">广告位</a></h2>'
+        . '<a class="result__snippet">广告描述</a></div>';
+    $r1 = '<div class="result"><h2><a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg='
+        . rawurlencode('https://example.com/ddg1?q=' . $q) . '&amp;rut=abc">' . htmlspecialchars('DDG:' . $q)
+        . '</a></h2><a class="result__snippet">ddg 第一条 ' . htmlspecialchars($q) . '</a></div>';
+    $r2 = '<div class="result"><h2><a class="result__a" href="https://example.com/ddg2">直接链接结果</a></h2>'
+        . '<a class="result__snippet">ddg 第二条</a></div>';
+    echo '<html><body>' . $ad . $r1 . $r2 . '</body></html>';
+    return;
+}
+if (strpos($uri, '/jina-markdown') !== false) {
+    // Jina markdown 兜底格式([标题](链接) 列表)
+    header('Content-Type: text/markdown');
+    echo "Search results:\n\nTitle From Markdown\n\n[MD:" . $q . "](https://example.com/jina-md)\n\nMD 摘要内容 " . $q . "\n";
+    return;
+}
+// ---- 文档解析 mock(PaddleOCR serving /ocr 与 Mistral /v1/ocr) ----
+$rPath = (string) parse_url($uri, PHP_URL_PATH);
+if ($rPath === '/ocr') {
+    // PaddleX serving 形状:POST {file: base64, fileType} -> result.ocrResults[].prunedResult.rec_texts
+    if (!is_array($body) || empty($body['file'])) {
+        http_response_code(400);
+        echo json_encode(array('errorMsg' => 'file required'));
+        return;
+    }
+    echo json_encode(array('logId' => 'mock', 'errorMsg' => '', 'result' => array('ocrResults' => array(
+        array('prunedResult' => array('rec_texts' => array('PaddleOCR 识别 第一行 ' . (isset($body['fileType']) ? ('ft=' . $body['fileType']) : ''), '第二行内容'), 'rec_scores' => array(0.98, 0.97))),
+        array('prunedResult' => array('rec_texts' => array('第二页识别'))),
+    ))));
+    return;
+}
+if ($rPath === '/v1/ocr') {
+    // Mistral OCR 形状:POST {model, document:{type:'document_url'|'image_url', <type>: data-URI}} -> pages[].markdown
+    // 严格校验判别字段:漏了 type 就按官方契约报错,让 e2e 能锁住请求形状
+    if (!isset($_SERVER['HTTP_AUTHORIZATION']) || strpos((string) $_SERVER['HTTP_AUTHORIZATION'], 'Bearer ') === false) {
+        http_response_code(401);
+        echo json_encode(array('message' => 'missing api key'));
+        return;
+    }
+    if (strpos((string) $_SERVER['HTTP_AUTHORIZATION'], 'sk-bad-mistral') !== false) {
+        http_response_code(401);
+        echo json_encode(array('message' => 'invalid mistral key'));
+        return;
+    }
+    $doc = (is_array($body) && isset($body['document']) && is_array($body['document'])) ? $body['document'] : array();
+    $dtype = isset($doc['type']) ? (string) $doc['type'] : '';
+    if ($dtype !== 'document_url' && $dtype !== 'image_url') {
+        http_response_code(422);
+        echo json_encode(array('message' => 'invalid document schema: missing type discriminant'));
+        return;
+    }
+    if (!isset($doc[$dtype]) || strpos((string) $doc[$dtype], 'data:') !== 0) {
+        http_response_code(422);
+        echo json_encode(array('message' => 'invalid document schema: missing data URI for ' . $dtype));
+        return;
+    }
+    echo json_encode(array('model' => 'mistral-ocr-latest', 'pages' => array(
+        array('index' => 0, 'markdown' => '# Mistral 第一页'),
+        array('index' => 1, 'markdown' => '第二页内容'),
+    )));
+    return;
+}
+$pathQ = rawurldecode((string) parse_url($uri, PHP_URL_PATH));
+// Jina JSON:GET /<urlencoded 查询> -> {data:[...]}。注意放行 /v1/* 与 agnesapi 等其它 mock 路由
+if ($pathQ !== '/' && $pathQ !== '' && strpos($pathQ, '/v1') !== 0 && strpos($pathQ, '/agnesapi') === false) {
+    if (isset($_SERVER['HTTP_AUTHORIZATION']) && strpos((string) $_SERVER['HTTP_AUTHORIZATION'], 'Bearer sk-bad-jina') !== false) {
+        http_response_code(401);
+        echo json_encode(array('error' => array('message' => 'invalid jina key')));
+        return;
+    }
+    $qTitle = ltrim($pathQ, '/');
+    echo json_encode(array('code' => 200, 'data' => array(
+        array('title' => 'Jina:' . $qTitle, 'url' => 'https://example.com/jina1', 'description' => 'jina 第一条 ' . $qTitle),
+    )));
+    return;
+}
 // 多密钥回退:携带 sk-fail 的请求一律 401,用于验证「第一把失败自动回退下一把」
 $authHdr = isset($_SERVER['HTTP_AUTHORIZATION']) ? (string) $_SERVER['HTTP_AUTHORIZATION'] : '';
 foreach (array('HTTP_X_API_KEY') as $hk) { if ($authHdr === '' && !empty($_SERVER[$hk])) $authHdr = (string) $_SERVER[$hk]; }

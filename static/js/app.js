@@ -3907,19 +3907,27 @@ function syncToolSourcePanel() {
   if (searchOwn) searchOwn.classList.toggle('hidden', !search.allowOwn || search.source !== 'own');
   if (parseOwn) parseOwn.classList.toggle('hidden', !parse.allowOwn || parse.source !== 'own');
   const provider = $('pref-search-provider');
-  const providerVal = search.provider === 'searxng' ? 'searxng' : 'tavily';
+  const SEARCH_NAMES = { tavily: 'Tavily', searxng: 'SearXNG', brave: 'Brave Search', ddg: 'DuckDuckGo', jina: 'Jina AI' };
+  const providerVal = SEARCH_NAMES[search.provider] ? search.provider : 'tavily';
   if (provider) {
     provider.setAttribute('data-value', providerVal);
     const lab = provider.querySelector('.sb-label');
-    if (lab) lab.textContent = providerVal === 'searxng' ? 'SearXNG' : 'Tavily';
+    if (lab) lab.textContent = SEARCH_NAMES[providerVal];
   }
   const keyRow = $('pref-search-key-row');
+  const braveRow = $('pref-search-brave-row');
+  const jinaRow = $('pref-search-jina-row');
   const urlRow = $('pref-search-url-row');
-  const searx = providerVal === 'searxng';
-  if (keyRow) keyRow.classList.toggle('hidden', !!searx);
-  if (urlRow) urlRow.classList.toggle('hidden', !searx);
+  if (keyRow) keyRow.classList.toggle('hidden', providerVal !== 'tavily');
+  if (braveRow) braveRow.classList.toggle('hidden', providerVal !== 'brave');
+  if (jinaRow) jinaRow.classList.toggle('hidden', providerVal !== 'jina');
+  if (urlRow) urlRow.classList.toggle('hidden', providerVal !== 'searxng');
   const key = $('pref-search-key');
   if (key && document.activeElement !== key) key.value = search.keyMask || '';
+  const braveKey = $('pref-search-brave-key');
+  if (braveKey && document.activeElement !== braveKey) braveKey.value = search.braveKeyMask || '';
+  const jinaKey = $('pref-search-jina-key');
+  if (jinaKey && document.activeElement !== jinaKey) jinaKey.value = search.jinaKeyMask || '';
   const url = $('pref-search-url');
   if (url && document.activeElement !== url) url.value = search.searxUrl || '';
   const token = $('pref-parse-token');
@@ -3982,18 +3990,21 @@ async function saveToolSource(patch) {
     const SEARCH_PROVIDERS = [
       { value: 'tavily', label: 'Tavily', sub: '官方搜索 API，填自己的 Key' },
       { value: 'searxng', label: 'SearXNG', sub: '自建元搜索，填实例地址' },
+      { value: 'brave', label: 'Brave Search', sub: '独立索引，填自己的 Key' },
+      { value: 'ddg', label: 'DuckDuckGo', sub: '免 Key，有速率限制' },
+      { value: 'jina', label: 'Jina AI', sub: '免 Key 可用，填 Key 提升配额' },
     ];
     const open = () => {
       window.OC.openSelect(provider, SEARCH_PROVIDERS, {
         selected: provider.getAttribute('data-value') || 'tavily',
         onSelect: (val) => {
-          const next = val === 'searxng' ? 'searxng' : 'tavily';
+          const next = SEARCH_NAMES[val] ? val : 'tavily';
           provider.setAttribute('data-value', next);
           const lab = provider.querySelector('.sb-label');
-          if (lab) lab.textContent = next === 'searxng' ? 'SearXNG' : 'Tavily';
-          const keyRow = $('pref-search-key-row');
-          const urlRow = $('pref-search-url-row');
+          if (lab) lab.textContent = SEARCH_NAMES[next];
           if (keyRow) keyRow.classList.toggle('hidden', next !== 'tavily');
+          if (braveRow) braveRow.classList.toggle('hidden', next !== 'brave');
+          if (jinaRow) jinaRow.classList.toggle('hidden', next !== 'jina');
           if (urlRow) urlRow.classList.toggle('hidden', next !== 'searxng');
         },
       });
@@ -4011,8 +4022,12 @@ async function saveToolSource(patch) {
       webSearchSearxUrl: ($('pref-search-url') && $('pref-search-url').value) || '',
     };
     const key = ($('pref-search-key') && $('pref-search-key').value || '').trim();
+    const braveKey = ($('pref-search-brave-key') && $('pref-search-brave-key').value || '').trim();
+    const jinaKey = ($('pref-search-jina-key') && $('pref-search-jina-key').value || '').trim();
     const token = ($('pref-parse-token') && $('pref-parse-token').value || '').trim();
     if (key !== (search.keyMask || '')) body.webSearchTavilyKey = key;
+    if (braveKey !== (search.braveKeyMask || '')) body.webSearchBraveKey = braveKey;
+    if (jinaKey !== (search.jinaKeyMask || '')) body.webSearchJinaKey = jinaKey;
     if (token !== (((state.tools && state.tools.parse) || {}).tokenMask || '')) body.mineruToken = token;
     save.disabled = true;
     try {

@@ -255,6 +255,122 @@ function tc_mineru_parse($name, $bytes, $token, $budgetSec) {
     return tc_mineru_parse_lite($name, $bytes, $deadline);
 }
 
+// ---- 文档解析通道:按文件类别(PDF/图片/Office)路由到 MinerU / PaddleOCR / Mistral OCR ----
+// 类别归属:pdf=pdf;image=png/jpg/jpeg/jp2/webp/gif/bmp;office=doc/docx/ppt/pptx/xls/xlsx;html 归 mineru。
+function tc_parse_category($name) {
+    $ext = tc_mineru_ext($name);
+    if ($ext === 'pdf') return 'pdf';
+    if (in_array($ext, array('png', 'jpg', 'jpeg', 'jp2', 'webp', 'gif', 'bmp'), true)) return 'image';
+    if (in_array($ext, array('doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx'), true)) return 'office';
+    return 'html';
+}
+
+// PaddleOCR 是纯 OCR 引擎:只吃 PDF 与图片,Office 文档不支持
+function tc_paddle_parseable($name) {
+    $cat = tc_parse_category($name);
+    return $cat === 'pdf' || $cat === 'image';
+}
+
+// Mistral OCR:PDF/图片/DOCX/PPTX;不支持旧版 .doc/.ppt/.xls 与 HTML
+function tc_mistral_parseable($name) {
+    $ext = tc_mineru_ext($name);
+    return in_array($ext, array('pdf', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'docx', 'pptx'), true);
+}
+
+// PaddleOCR:POST 文件(base64)到自建 PaddleX serving /ocr 或 AI Studio 托管 API,可选 token 鉴权
+function tc_paddle_parse($url, $key, $name, $bytes) {
+    $url = trim((string) $url);
+    if ($url === '' || !preg_match('#^https?://#i', $url)) return array('ok' => false, 'error' => 'PaddleOCR 服务地址无效', 'code' => 400);
+    // 只填了根地址(无路径)时自动补 /ocr(PaddleX serving 默认端点);带路径的按原样使用
+    $path = (string) parse_url($url, PHP_URL_PATH);
+    if ($path === '' || $path === '/') $url = rtrim($url, '/') . '/ocr';
+    $headers = array('Content-Type' => 'application/json', 'Accept' => 'application/json');
+    if (trim((string) $key) !== '') $headers['Authorization'] = 'token ' . trim((string) $key);
+    $payload = tc_json_encode(array(
+        'file' => base64_encode($bytes),
+        'fileType' => tc_parse_category($name) === 'pdf' ? 0 : 1,
+    ));
+    $res = tc_http_request($url, 'POST', $headers, $payload, 100000, false);
+    if (!$res['ok'] || $res['status'] >= 400) {
+        $msg = !$res['ok'] ? $res['error'] : tc_upstream_error_message($res['body'], $res['status']);
+        return array('ok' => false, 'error' => $msg ?: 'PaddleOCR 解析失败', 'code' => isset($res['status']) && $res['status'] >= 400 ? (int) $res['status'] : 502);
+    }
+    $j = json_decode($res['body'], true);
+    if (!is_array($j)) return array('ok' => false, 'error' => 'PaddleOCR 返回了无法解析的内容', 'code' => 502);
+    $errMsg = isset($j['errorMsg']) ? trim((string) $j['errorMsg']) : '';
+    if ($errMsg !== '') return array('ok' => false, 'error' => 'PaddleOCR: ' . $errMsg, 'code' => 502);
+    $result = (isset($j['result']) && is_array($j['result'])) ? $j['result'] : $j;
+    // 两种服务形态都要兼容:
+    //   纯 OCR 管线(PaddleX ocr / AI Studio PP-OCRv5) -> ocrResults[].prunedResult.rec_texts
+    //   文档解析管线(PP-StructureV3) -> layoutParsingResults[].markdown.text
+    $pages = array();
+    if (isset($result['ocrResults']) && is_array($result['ocrResults'])) $pages = $result['ocrResults'];
+    elseif (isset($result['layoutParsingResults']) && is_array($result['layoutParsingResults'])) $pages = $result['layoutParsingResults'];
+    $texts = array();
+    foreach ($pages as $p) {
+        if (!is_array($p)) continue;
+        $pr = isset($p['prunedResult']) && is_array($p['prunedResult']) ? $p['prunedResult'] : array();
+        if (!empty($pr['rec_texts']) && is_array($pr['rec_texts'])) {
+            $lines = array();
+            foreach ($pr['rec_texts'] as $t) if (trim((string) $t) !== '') $lines[] = trim((string) $t);
+            if ($lines) { $texts[] = implode("\n", $lines); continue; }
+        }
+        if (!empty($p['markdown']['text'])) $texts[] = (string) $p['markdown']['text'];
+        elseif (!empty($p['markdown']) && is_string($p['markdown'])) $texts[] = $p['markdown'];
+    }
+    if (!$texts) return array('ok' => false, 'error' => 'PaddleOCR 没有识别到文字（若你的服务返回结构调整过，请把响应示例发给开发者适配）', 'code' => 502);
+    return array('ok' => true, 'markdown' => tc_mineru_clip(implode("\n\n", $texts)), 'mode' => 'paddle', 'name' => $name);
+}
+
+// Mistral OCR:cloud API /v1/ocr,文件以 data-URI 内联,返回分页 markdown
+function tc_mistral_parse($name, $bytes, $key) {
+    $key = trim((string) $key);
+    if ($key === '') return array('ok' => false, 'error' => '请先在后台填写 Mistral OCR API Key', 'code' => 400);
+    if (!tc_mistral_parseable($name)) {
+        return array('ok' => false, 'error' => 'Mistral OCR 不支持这个格式（仅 PDF/图片/DOCX/PPTX），这类文件请改用 MinerU 通道', 'code' => 400);
+    }
+    $ext = tc_mineru_ext($name);
+    $mimes = array(
+        'pdf' => 'application/pdf',
+        'png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'webp' => 'image/webp',
+        'gif' => 'image/gif', 'bmp' => 'image/bmp',
+        'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'pptx' => 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    );
+    $mime = isset($mimes[$ext]) ? $mimes[$ext] : 'application/octet-stream';
+    if (strlen($bytes) > 50 * 1024 * 1024) {
+        return array('ok' => false, 'error' => 'Mistral OCR 单文件不超过 50MB', 'code' => 400);
+    }
+    // 官方 schema:document 是判别联合,必须带 type(document_url / image_url) 与对应字段
+    $isImage = tc_parse_category($name) === 'image';
+    $docType = $isImage ? 'image_url' : 'document_url';
+    $body = tc_json_encode(array(
+        'model' => 'mistral-ocr-latest',
+        'document' => array(
+            'type' => $docType,
+            $docType => 'data:' . $mime . ';base64,' . base64_encode($bytes),
+        ),
+    ));
+    $base = rtrim((string) (getenv('TC_MISTRAL_OCR_BASE') ?: 'https://api.mistral.ai'), '/');
+    $res = tc_http_request($base . '/v1/ocr', 'POST', array(
+        'Content-Type' => 'application/json',
+        'Accept' => 'application/json',
+        'Authorization' => 'Bearer ' . $key,
+    ), $body, 120000, false);
+    if (!$res['ok'] || $res['status'] >= 400) {
+        $msg = !$res['ok'] ? $res['error'] : tc_upstream_error_message($res['body'], $res['status']);
+        return array('ok' => false, 'error' => $msg ?: 'Mistral OCR 解析失败', 'code' => isset($res['status']) && $res['status'] >= 400 ? (int) $res['status'] : 502);
+    }
+    $j = json_decode($res['body'], true);
+    $pages = (is_array($j) && isset($j['pages']) && is_array($j['pages'])) ? $j['pages'] : array();
+    $texts = array();
+    foreach ($pages as $p) {
+        if (is_array($p) && isset($p['markdown']) && trim((string) $p['markdown']) !== '') $texts[] = (string) $p['markdown'];
+    }
+    if (!$texts) return array('ok' => false, 'error' => 'Mistral OCR 没有识别到内容', 'code' => 502);
+    return array('ok' => true, 'markdown' => tc_mineru_clip(implode("\n\n", $texts)), 'mode' => 'mistral', 'name' => $name);
+}
+
 function tc_prepare_upstream_body($b, $provider, $format) {
     $out = array();
     foreach ($b as $k => $v) {
@@ -832,6 +948,136 @@ function tc_search_searxng_failover($raw, $query, $max, $timeoutMs = 12000) {
     return array('ok' => false, 'error' => implode('；', array_slice($errors, 0, 3)));
 }
 
+// Brave Search:独立索引,中文尚可;免费档 2000 次/月,Key 在 brave.com/search/api 申请。
+// 基址可用环境变量 TC_BRAVE_SEARCH_BASE 覆盖(测试/代理用)。
+function tc_search_brave($key, $query, $max, $timeoutMs = 18000) {
+    $key = trim((string) $key);
+    if ($key === '') return array('ok' => false, 'error' => '请先填写 Brave Search API Key');
+    $base = rtrim((string) (getenv('TC_BRAVE_SEARCH_BASE') ?: 'https://api.search.brave.com'), '/');
+    $url = $base . '/res/v1/web/search?' . http_build_query(array(
+        'q' => $query,
+        'count' => min(20, max(1, (int) $max)),
+    ));
+    $res = tc_http_request($url, 'GET', array(
+        'Accept' => 'application/json',
+        'X-Subscription-Token' => $key,
+    ), null, $timeoutMs, false);
+    if (!$res['ok'] || $res['status'] >= 400) {
+        $msg = !$res['ok'] ? $res['error'] : tc_upstream_error_message($res['body'], $res['status']);
+        return array('ok' => false, 'error' => $msg ?: 'Brave 搜索失败');
+    }
+    $j = json_decode($res['body'], true);
+    $rows = (is_array($j) && isset($j['web']['results']) && is_array($j['web']['results'])) ? $j['web']['results'] : array();
+    return array('ok' => true, 'hits' => tc_normalize_search_hits($rows, $max));
+}
+
+// DuckDuckGo HTML 端点:免 Key,抓结果页解析;有速率限制,被弹验证码时会把错误透传给前端。
+// 基址可用环境变量 TC_DDG_HTML_BASE 覆盖(测试/代理用)。
+function tc_search_ddg($query, $max, $timeoutMs = 18000) {
+    $base = rtrim((string) (getenv('TC_DDG_HTML_BASE') ?: 'https://html.duckduckgo.com'), '/');
+    $url = $base . '/html/?' . http_build_query(array('q' => $query));
+    $res = tc_http_request($url, 'GET', array(
+        'Accept' => 'text/html,application/xhtml+xml',
+        'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    ), null, $timeoutMs, false);
+    if (!$res['ok'] || $res['status'] >= 400) {
+        $msg = !$res['ok'] ? $res['error'] : tc_upstream_error_message($res['body'], $res['status']);
+        return array('ok' => false, 'error' => $msg ?: 'DuckDuckGo 搜索失败');
+    }
+    $hits = tc_parse_ddg_html((string) $res['body'], $max);
+    if (!$hits) {
+        return array('ok' => false, 'error' => 'DuckDuckGo 没有返回结果（可能被限流或触发验证码，稍后重试或改用其他检索源）');
+    }
+    return array('ok' => true, 'hits' => $hits);
+}
+
+// 解析 DuckDuckGo HTML 结果页。标题锚点带跳转包装(/l/?uddg=<urlencoded>),需解包;
+// 广告结果(y.js / ad_provider)直接跳过。结果片段锚点与标题按出现顺序对齐。
+function tc_parse_ddg_html($html, $max) {
+    $rows = array();
+    if (!preg_match_all('#<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]*)"[^>]*>(.*?)</a>#is', (string) $html, $ms, PREG_SET_ORDER)) {
+        return array();
+    }
+    preg_match_all('#<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>#is', (string) $html, $sm);
+    $snips = isset($sm[1]) ? $sm[1] : array();
+    foreach ($ms as $i => $m) {
+        $href = html_entity_decode((string) $m[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        if (strpos($href, 'duckduckgo.com/y.js') !== false || strpos($href, 'ad_provider=') !== false) continue;
+        $url = $href;
+        if (preg_match('#[?&]uddg=([^&]+)#i', $href, $um)) {
+            $url = rawurldecode($um[1]);
+        } elseif (strpos($url, '//') === 0) {
+            $url = 'https:' . $url;
+        }
+        if (!preg_match('#^https?://#i', $url)) continue;
+        $title = tc_plain_text(strip_tags((string) $m[2]), 200);
+        if ($title === '') continue;
+        $snippet = isset($snips[$i]) ? tc_plain_text(strip_tags((string) $snips[$i]), 400) : '';
+        $rows[] = array('url' => $url, 'title' => $title, 'snippet' => $snippet);
+        if (count($rows) >= $max) break;
+    }
+    return tc_normalize_search_hits($rows, $max);
+}
+
+// Jina AI 搜索(s.jina.ai):返回 LLM 友好的结构化结果;无 Key 可用但有速率限制,填 Key 提升配额。
+// X-Respond-With: no-content 只要检索摘要、不读整页,保证速度。基址可用 TC_JINA_SEARCH_BASE 覆盖。
+function tc_search_jina($key, $query, $max, $timeoutMs = 25000) {
+    $base = rtrim((string) (getenv('TC_JINA_SEARCH_BASE') ?: 'https://s.jina.ai'), '/');
+    $url = $base . '/' . rawurlencode(trim((string) $query));
+    $headers = array(
+        'Accept' => 'application/json',
+        'X-Respond-With' => 'no-content',
+    );
+    if (trim((string) $key) !== '') $headers['Authorization'] = 'Bearer ' . trim((string) $key);
+    $res = tc_http_request($url, 'GET', $headers, null, $timeoutMs, false);
+    if (!$res['ok'] || $res['status'] >= 400) {
+        $msg = !$res['ok'] ? $res['error'] : tc_upstream_error_message($res['body'], $res['status']);
+        return array('ok' => false, 'error' => $msg ?: 'Jina 搜索失败');
+    }
+    $rows = tc_parse_jina_rows((string) $res['body']);
+    $hits = tc_normalize_search_hits($rows, $max);
+    if (!$hits) {
+        return array('ok' => false, 'error' => 'Jina 没有返回结果（免 Key 额度可能已用尽，填入自己的 Key 可提升配额）');
+    }
+    return array('ok' => true, 'hits' => $hits);
+}
+
+// 兼容三种返回:JSON({data:[{title,url,description}]})、JSON({data:{单个对象}}),以及 markdown([标题](链接) 列表)兜底。
+function tc_parse_jina_rows($body) {
+    $j = json_decode((string) $body, true);
+    if (is_array($j)) {
+        $data = (isset($j['data']) && is_array($j['data'])) ? $j['data'] : ((isset($j[0]) && is_array($j[0])) ? $j : array());
+        // data 也可能是单个对象(assoc 带 url/title),统一成列表
+        if ($data && !isset($data[0]) && (isset($data['url']) || isset($data['title']))) $data = array($data);
+        $rows = array();
+        foreach ($data as $r) {
+            if (!is_array($r)) continue;
+            $url = trim((string) (isset($r['url']) ? $r['url'] : ''));
+            if ($url === '') continue;
+            $rows[] = array(
+                'url' => $url,
+                'title' => (string) (isset($r['title']) ? $r['title'] : $url),
+                'snippet' => (string) (isset($r['description']) ? $r['description'] : (isset($r['content']) ? $r['content'] : '')),
+            );
+        }
+        if ($rows) return $rows;
+    }
+    // markdown 兜底:抓 [标题](链接),其后最近一段非空文本当摘要
+    $rows = array();
+    $lines = preg_split('/\r?\n/', (string) $body);
+    $n = is_array($lines) ? count($lines) : 0;
+    for ($i = 0; $i < $n; $i++) {
+        if (!preg_match('#\[([^\]]+)\]\((https?://[^)\s]+)\)#', (string) $lines[$i], $m)) continue;
+        $snippet = '';
+        for ($k = $i + 1; $k < min($n, $i + 4); $k++) {
+            $line = trim(strip_tags((string) $lines[$k]));
+            if ($line !== '' && strpos($line, '](') === false) { $snippet = $line; break; }
+        }
+        $rows[] = array('url' => $m[2], 'title' => $m[1], 'snippet' => $snippet);
+    }
+    return $rows;
+}
+
 function tc_search_local_verdict($query) {
     $q = trim((string) $query);
     if ($q === '') return false;
@@ -901,8 +1147,18 @@ function tc_run_web_search($settings, $query) {
     if ($query === '') return array('ok' => false, 'error' => '没有可检索的问题');
     if (!tc_web_search_ready($settings)) return array('ok' => false, 'error' => '管理员尚未配置联网搜索');
     $max = isset($settings['webSearchMaxResults']) ? (int) $settings['webSearchMaxResults'] : 5;
-    if ($settings['webSearchProvider'] === 'searxng') {
+    $prov = isset($settings['webSearchProvider']) ? (string) $settings['webSearchProvider'] : 'tavily';
+    if ($prov === 'searxng') {
         return tc_search_searxng_failover($settings['webSearchSearxUrl'], $query, $max);
+    }
+    if ($prov === 'brave') {
+        return tc_search_brave(isset($settings['webSearchBraveKey']) ? $settings['webSearchBraveKey'] : '', $query, $max);
+    }
+    if ($prov === 'ddg') {
+        return tc_search_ddg($query, $max);
+    }
+    if ($prov === 'jina') {
+        return tc_search_jina(isset($settings['webSearchJinaKey']) ? $settings['webSearchJinaKey'] : '', $query, $max);
     }
     return tc_search_tavily($settings['webSearchTavilyKey'], $query, $max);
 }
@@ -1396,6 +1652,12 @@ function tc_probe_search_endpoint($provider, $query, $key, $url, $max, $timeoutM
     $started = tc_now();
     if ($provider === 'searxng') {
         $found = tc_search_searxng($url, $query, $max, $timeoutMs);
+    } elseif ($provider === 'brave') {
+        $found = tc_search_brave($key, $query, $max, $timeoutMs);
+    } elseif ($provider === 'ddg') {
+        $found = tc_search_ddg($query, $max, $timeoutMs);
+    } elseif ($provider === 'jina') {
+        $found = tc_search_jina($key, $query, $max, $timeoutMs);
     } else {
         $found = tc_search_tavily($key, $query, $max, $timeoutMs);
     }
@@ -1405,10 +1667,16 @@ function tc_probe_search_endpoint($provider, $query, $key, $url, $max, $timeoutM
     foreach (array_slice($hits, 0, 3) as $h) {
         $sample[] = array('title' => $h['title'], 'url' => $h['url']);
     }
+    $provUrl = array(
+        'tavily' => 'https://api.tavily.com',
+        'brave' => rtrim((string) (getenv('TC_BRAVE_SEARCH_BASE') ?: 'https://api.search.brave.com'), '/'),
+        'ddg' => rtrim((string) (getenv('TC_DDG_HTML_BASE') ?: 'https://html.duckduckgo.com'), '/'),
+        'jina' => rtrim((string) (getenv('TC_JINA_SEARCH_BASE') ?: 'https://s.jina.ai'), '/'),
+    );
     return array(
         'ok' => !empty($found['ok']) && count($hits) > 0,
         'provider' => $provider,
-        'url' => $provider === 'searxng' ? rtrim((string) $url, '/') : 'https://api.tavily.com',
+        'url' => $provider === 'searxng' ? rtrim((string) $url, '/') : (isset($provUrl[$provider]) ? $provUrl[$provider] : $provUrl['tavily']),
         'ms' => $ms,
         'count' => count($hits),
         'error' => !empty($found['ok']) ? (count($hits) ? '' : '没有返回可用结果') : (isset($found['error']) ? (string) $found['error'] : '搜索失败'),
@@ -1421,15 +1689,24 @@ function tc_api_admin_test_search() {
         tc_require_admin($db);
         $b = tc_read_json_body();
         $provider = strtolower(trim((string) (isset($b['provider']) ? $b['provider'] : 'tavily')));
-        if ($provider !== 'searxng') $provider = 'tavily';
+        if (!in_array($provider, array('tavily', 'searxng', 'brave', 'ddg', 'jina'), true)) $provider = 'tavily';
         $query = tc_plain_text(isset($b['query']) ? $b['query'] : 'openai', 120);
         if ($query === '') $query = 'openai';
         $max = isset($b['max']) ? (int) $b['max'] : 3;
         $max = min(5, max(1, $max ?: 3));
         $scan = !empty($b['scan']);
         $key = trim((string) (isset($b['apiKey']) ? $b['apiKey'] : ''));
+        // 掩码 Key(回显的 •••)或未填时回退到已保存的对应源 Key;ddg 不需要 Key
         if ($key === '' || strpos($key, '••') !== false) {
-            $key = isset($db['settings']['webSearchTavilyKey']) ? (string) $db['settings']['webSearchTavilyKey'] : '';
+            $keyMap = array(
+                'tavily' => 'webSearchTavilyKey',
+                'brave' => 'webSearchBraveKey',
+                'jina' => 'webSearchJinaKey',
+            );
+            $key = '';
+            if (isset($keyMap[$provider])) {
+                $key = isset($db['settings'][$keyMap[$provider]]) ? (string) $db['settings'][$keyMap[$provider]] : '';
+            }
         }
         $url = trim((string) (isset($b['url']) ? $b['url'] : ''));
         if ($url === '') $url = isset($db['settings']['webSearchSearxUrl']) ? (string) $db['settings']['webSearchSearxUrl'] : '';
@@ -1446,6 +1723,16 @@ function tc_api_admin_test_search() {
     if ($ctx['provider'] === 'tavily') {
         if ($ctx['key'] === '') tc_fail(400, '请先填写 Tavily API Key');
         tc_json(200, array('result' => tc_probe_search_endpoint('tavily', $ctx['query'], $ctx['key'], '', $ctx['max'])));
+    }
+    if ($ctx['provider'] === 'brave') {
+        if ($ctx['key'] === '') tc_fail(400, '请先填写 Brave Search API Key');
+        tc_json(200, array('result' => tc_probe_search_endpoint('brave', $ctx['query'], $ctx['key'], '', $ctx['max'])));
+    }
+    if ($ctx['provider'] === 'ddg') {
+        tc_json(200, array('result' => tc_probe_search_endpoint('ddg', $ctx['query'], '', '', $ctx['max'])));
+    }
+    if ($ctx['provider'] === 'jina') {
+        tc_json(200, array('result' => tc_probe_search_endpoint('jina', $ctx['query'], $ctx['key'], '', $ctx['max'])));
     }
     if (!$ctx['scan']) {
         $mine = tc_searx_url_list($ctx['url']);
