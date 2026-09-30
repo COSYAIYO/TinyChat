@@ -3469,6 +3469,9 @@ quotaEl.classList.toggle('low', !quotaIsUnlimited(state.user.quota) && state.use
   quotaEl.title = tip || '剩余可用次数';
   $('admin-link').hidden = !state.user.admin;
   $('admin-link').classList.toggle('hidden', !state.user.admin);
+  // 用户信息就绪后:按「是否已有密码」调整改密表单,并刷新第三方绑定列表
+  if (window.OCAccountSync) window.OCAccountSync();
+  if (window.OCAccountOauth) window.OCAccountOauth();
 }
 function usageTodayText() {
   const today = new Date().toISOString().slice(0, 10);
@@ -4401,7 +4404,10 @@ async function saveToolSource(patch) {
     const oldPwd = $('acc-old-pwd').value;
     const newPwd = $('acc-new-pwd').value;
     const newPwd2 = $('acc-new-pwd2').value;
-    if (!oldPwd || !newPwd) return toast('请填写当前密码和新密码', true);
+    // 第三方登录建号、尚未设置密码的账号:不要求「当前密码」,直接设新密码即可
+    const needsOldPwd = !!(state.user && state.user.hasPassword);
+    if (needsOldPwd && !oldPwd) return toast('请填写当前密码', true);
+    if (!newPwd) return toast('请填写新密码', true);
     if (newPwd.length < 4) return toast('新密码至少 4 个字符', true);
     if (newPwd !== newPwd2) return toast('两次输入的新密码不一致', true);
     const btn = $('acc-save-pwd');
@@ -4431,16 +4437,23 @@ async function saveToolSource(patch) {
   function renderAccountOauth(data) {
     const box = $('acc-oauth-list');
     if (!box) return;
-    const list = (data && Array.isArray(data.providers)) ? data.providers.filter((p) => p.enabled || p.bound) : [];
+    // 全部平台都列出:已绑定 / 未绑定 / 未启用(管理员未开启) 三种状态一目了然
+    const list = (data && Array.isArray(data.providers)) ? data.providers : [];
     if (!list.length) {
-      box.innerHTML = '<p class="muted small" style="margin:0">管理员尚未开启任何第三方登录方式。</p>';
+      box.innerHTML = '<p class="muted small" style="margin:0">暂无可用的第三方登录方式。</p>';
       return;
     }
     box.innerHTML = list.map((p) => {
-      const label = p.bound ? '已绑定' + (p.boundName ? '（' + escapeHtml(p.boundName) + '）' : '') : '未绑定';
-      const act = p.bound
-        ? '<button class="btn small" type="button" data-oauth-unbind="' + escapeHtml(p.id) + '">解绑</button>'
-        : '<button class="btn small primary" type="button" data-oauth-bind="' + escapeHtml(p.id) + '">绑定</button>';
+      let label;
+      if (p.bound) label = '已绑定' + (p.boundName ? '（' + escapeHtml(p.boundName) + '）' : '');
+      else if (p.enabled) label = '未绑定';
+      else label = '未启用（管理员未开启）';
+      let act = '';
+      if (p.bound) {
+        act = '<button class="btn small" type="button" data-oauth-unbind="' + escapeHtml(p.id) + '">解绑</button>';
+      } else if (p.enabled) {
+        act = '<button class="btn small primary" type="button" data-oauth-bind="' + escapeHtml(p.id) + '">绑定</button>';
+      }
       return '<div class="row-between" style="padding:8px 0;border-bottom:1px solid var(--hairline,#eee)">'
         + '<div style="display:flex;align-items:center;gap:8px"><img src="' + escapeHtml(p.logo) + '" alt="" style="width:18px;height:18px;border-radius:4px;object-fit:contain">'
         + '<div><div>' + escapeHtml(p.name) + '</div><div class="muted small">' + label + '</div></div></div>'
@@ -4454,6 +4467,9 @@ async function saveToolSource(patch) {
       if (r.ok) renderAccountOauth(d);
     } catch (e) { /* 忽略 */ }
   }
+  // 暴露给 renderUser(用户信息加载完成后联动刷新)
+  window.OCAccountSync = syncPasswordFormForOauth;
+  window.OCAccountOauth = loadAccountOauth;
   const oauthList = $('acc-oauth-list');
   if (oauthList) {
     oauthList.addEventListener('click', async (e) => {
@@ -4484,7 +4500,9 @@ async function saveToolSource(patch) {
 
   // 第三方登录建号的用户还没有密码:此时隐藏「当前密码」输入并提示直接设置
   function syncPasswordFormForOauth() {
-    const u = state.user || {};
+    // 用户信息还没拉到(启动早期)时保持默认显示,避免误藏输入框
+    if (!state.user) return;
+    const u = state.user;
     const hasPwd = !!u.hasPassword;
     const oldRow = $('acc-old-pwd-row');
     if (oldRow) oldRow.style.display = hasPwd ? '' : 'none';

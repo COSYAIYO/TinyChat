@@ -9,15 +9,15 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./logo-icon.svg">
-<link rel="stylesheet" href="./static/css/style.css?v=20261007.12">
+<link rel="stylesheet" href="./static/css/style.css?v=20261007.14">
 <link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
 <link rel="stylesheet" href="./vendor/katex/katex.min.css">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.12">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261007.12">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.12">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261007.12">
-<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.12">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.12">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.14">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261007.14">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.14">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261007.14">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.14">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.14">
 <script>
 (function () {
   try {
@@ -806,6 +806,12 @@
         </label>
         <p class="muted small" id="uf-demo-hint">演示管理员可修改站点设置、模型授权等大部分内容，<b>但不可修改公告、账号与密码，也不能查看用户对话</b>。<b>勾选并保存的这一刻即为计时起点</b>：此后演示管理员改动的设置，以及他名下的对话与额度，都会在到点时恢复为这一刻的状态。真实管理员的改动即时生效，并会成为新的恢复基准，不会被演示还原冲掉。额度可在创建时自定义（留空则给一个很大的演示值）。</p>
       </div>
+      <!-- 第三方绑定管理:编辑已有用户时可用 -->
+      <div id="uf-oauth-wrap" hidden>
+        <div class="section-title" style="margin-top:14px">第三方账号绑定</div>
+        <p class="muted small" style="margin:0 0 6px">可代用户解除绑定，或复制绑定链接发给用户（由用户本人完成授权，管理员不接触其第三方凭据）。</p>
+        <div id="uf-oauth-list"></div>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn" id="user-form-cancel" type="button">取消</button>
@@ -881,16 +887,16 @@
   </div>
 </div>
 </form>
-<script src="./static/js/config.js?v=20261007.12"></script>
-<script src="./static/js/icons.js?v=20261007.12"></script>
+<script src="./static/js/config.js?v=20261007.14"></script>
+<script src="./static/js/icons.js?v=20261007.14"></script>
 <script defer src="./vendor/markdown-it/markdown-it.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-footnote.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-emoji.min.js"></script>
 <script defer src="./vendor/katex/katex.min.js"></script>
 <script defer src="./vendor/highlight/highlight.min.js"></script>
-<script src="./static/js/ui.js?v=20261007.12"></script>
-<script src="./static/js/components.js?v=20261007.12"></script>
-<script src="./static/js/renderer.js?v=20261007.12"></script>
-<script src="./static/js/admin.js?v=20261007.12"></script>
+<script src="./static/js/ui.js?v=20261007.14"></script>
+<script src="./static/js/components.js?v=20261007.14"></script>
+<script src="./static/js/renderer.js?v=20261007.14"></script>
+<script src="./static/js/admin.js?v=20261007.14"></script>
 </body>
 </html>
