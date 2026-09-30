@@ -38,6 +38,8 @@ jobs:
         run: php tests/demo-revert.php
       - name: 生图响应解析自检(各平台返回形态)
         run: php tests/image-parse.php
+      - name: 网页正文提取自检(裸 < 不吞正文 / 导航瘦身 / 注释清理)
+        run: php tests/html-text.php
       - name: 上游地址拼接自检(补 /v1 / 不重复)
         run: php tests/upstream-url.php
       - name: 署名完整性守卫自检(篡改拦截 / 合法放行)

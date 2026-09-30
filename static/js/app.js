@@ -7115,21 +7115,33 @@ async function consumeOauthTicketOnBoot() {
 function openOauthProfileGate(token, user) {
   const mask = document.createElement('div');
   mask.className = 'modal-mask';
-  mask.innerHTML = '<div class="modal" role="dialog" aria-modal="true" style="max-width:420px">'
-    + '<h3 style="margin:0 0 6px">完善账号信息</h3>'
-    + '<p class="muted small" style="margin:0 0 14px">本站要求补全用户名与密码；完成后你也可以直接用用户名密码登录。</p>'
+  const closeIcon = (window.OC && OC.icon) ? OC.icon('close', 16) : '';
+  mask.innerHTML = '<div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="og-title">'
+    + '<div class="modal-header">'
+    + '<h3 id="og-title">完善账号信息</h3>'
+    + '<button class="icon-btn" type="button" id="og-x" aria-label="关闭">' + closeIcon + '</button>'
+    + '</div>'
+    + '<div class="modal-body">'
+    + '<p class="muted small pg-tip">本站要求补全用户名与密码；完成后你也可以直接用用户名密码登录。</p>'
     + '<label class="field"><span>用户名</span><input type="text" id="og-name" maxlength="32" placeholder="2-32 位（字母/数字/中文/._@-）" autocomplete="off"></label>'
     + '<label class="field"><span>密码（至少 4 位）</span><input type="password" id="og-pwd" autocomplete="new-password"></label>'
     + '<label class="field"><span>确认密码</span><input type="password" id="og-pwd2" autocomplete="new-password"></label>'
-    + '<div class="hidden" id="og-err" style="color:#dc2626;font-size:13px;margin:6px 0"></div>'
-    + '<button type="button" class="btn primary w-full" id="og-save" style="margin-top:10px">保存并进入</button>'
+    + '<div class="hidden pg-err" id="og-err" role="alert" aria-live="polite"></div>'
+    + '</div>'
+    + '<div class="modal-footer">'
+    + '<button type="button" class="btn primary" id="og-save">保存并进入</button>'
+    + '</div>'
     + '</div>';
   document.body.appendChild(mask);
   const nameInput = mask.querySelector('#og-name');
   if (nameInput && user && user.name) nameInput.value = user.name;
   const errBox = mask.querySelector('#og-err');
   const showErr = (m) => { errBox.textContent = m; errBox.classList.remove('hidden'); };
+  // 已有登录态,选择暂不完善就收起弹窗直接使用(不是死路)
+  const xBtn = mask.querySelector('#og-x');
+  if (xBtn) xBtn.addEventListener('click', () => mask.remove());
   const btn = mask.querySelector('#og-save');
+  if (nameInput) nameInput.focus();
   // 用可变变量保存当前 token:设置密码会递增 tv 使旧 token 立即失效(服务端安全设计),
   // 后续请求必须用上一步返回的新 token,否则会「未登录或登录已过期」。
   let activeToken = token;

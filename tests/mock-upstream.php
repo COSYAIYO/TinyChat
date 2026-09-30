@@ -41,6 +41,30 @@ if (strpos($uri, '/jina-markdown') !== false) {
     echo "Search results:\n\nTitle From Markdown\n\n[MD:" . $q . "](https://example.com/jina-md)\n\nMD 摘要内容 " . $q . "\n";
     return;
 }
+// ---- 网页正文 mock(配合 TC_PAGE_FETCH_BASE,验证搜索结果正文真的进了模型上下文) ----
+// 页面刻意做成「导航在前、正文在后,且正文里带裸 < 与 HTML 注释」:
+// 裸 < 曾让 strip_tags 吞掉后面整段正文(真实缺陷),这里作为回归样本保留。
+if (strpos($uri, '/page/') !== false) {
+    header('Content-Type: text/html; charset=UTF-8');
+    $nav = '';
+    foreach (array('首页', '预报', '预警', '雷达', '云图', '天气地图', '专业产品', '资讯') as $i => $t) {
+        $nav .= '<a href="/nav' . $i . '">' . $t . '</a>';
+    }
+    echo '<!doctype html><html><head><title>mock page</title>'
+        . '<script>var hidden="MOCK-SCRIPT-SHOULD-NOT-APPEAR";</script>'
+        . '<style>.x{color:red}</style></head><body>'
+        . '<div class="nav">' . $nav . '</div>'
+        . '<!-- MOCK-COMMENT-SHOULD-NOT-APPEAR -->'
+        . '<div class="content">'
+        . '<h1>上海市气象局 今日天气</h1>'
+        . '<p>今天上海小雨，气温 21℃，风力<3级，湿度 78%。</p>'
+        . '<p>明天阴，24℃/19℃，东北风 3 级。</p>'
+        . '<p>后天阴，23℃/19℃。</p>'
+        . '<p>本段用于确保正文长度超过提取阈值，避免被当作空页面丢弃。</p>'
+        . '<p>MOCK-PAGE-BODY-OK</p>'
+        . '</div></body></html>';
+    return;
+}
 // ---- 文档解析 mock(PaddleOCR serving /ocr 与 Mistral /v1/ocr) ----
 $rPath = (string) parse_url($uri, PHP_URL_PATH);
 if ($rPath === '/ocr') {
@@ -169,6 +193,37 @@ if (strpos($uri, '/models') !== false && strpos($uri, 'chat') === false) {
 if (is_array($body) && isset($body['model']) && strpos((string) $body['model'], 'mock-image') !== false) {
     http_response_code(400);
     echo json_encode(array('error' => array('message' => $body['model'] . ' is an image model. Use /v1/images/generations instead.')));
+    return;
+}
+// 对话接口:正文回显收到的 system 上下文,便于 e2e 断言「搜索结果正文真的注入了」。
+// 仅在请求模型是 mock-echo-system 时开启,不影响其它用例的固定回复。
+$sysText = '';
+if (is_array($body) && isset($body['messages']) && is_array($body['messages'])) {
+    foreach ($body['messages'] as $m) {
+        if (!is_array($m) || (isset($m['role']) ? $m['role'] : '') !== 'system') continue;
+        $c = isset($m['content']) ? $m['content'] : '';
+        if (is_string($c)) $sysText .= $c . "\n";
+        elseif (is_array($c)) {
+            foreach ($c as $part) if (is_array($part) && isset($part['text'])) $sysText .= $part['text'] . "\n";
+        }
+    }
+}
+$echoSystem = is_array($body) && isset($body['model']) && $body['model'] === 'mock-echo-system';
+if ($echoSystem) {
+    // 把收到的 system 上下文原样落盘(含中文,便于测试直接 grep 真实内容;
+    // 放 JSON 响应里会被 \uXXXX 转义,断言不好写)
+    $dumpFile = getenv('TC_MOCK_ECHO_FILE');
+    if ($dumpFile) @file_put_contents($dumpFile, $sysText);
+    echo json_encode(array(
+        'id' => 'mock-echo',
+        'object' => 'chat.completion',
+        'model' => 'mock-echo-system',
+        'choices' => array(array('index' => 0, 'message' => array(
+            'role' => 'assistant',
+            'content' => 'MOCK-ECHO-OK',
+        ), 'finish_reason' => 'stop')),
+        'usage' => array('prompt_tokens' => 10, 'completion_tokens' => 10),
+    ));
     return;
 }
 if (is_array($body) && !empty($body['stream'])) {
