@@ -9,15 +9,15 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./logo-icon.svg">
-<link rel="stylesheet" href="./static/css/style.css?v=20261007.7">
+<link rel="stylesheet" href="./static/css/style.css?v=20261007.8">
 <link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
 <link rel="stylesheet" href="./vendor/katex/katex.min.css">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.7">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261007.7">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.7">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261007.7">
-<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.7">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.7">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.8">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261007.8">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.8">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261007.8">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.8">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.8">
 <script>
 (function () {
   try {
@@ -665,7 +665,9 @@
         <span>要求补全用户名与密码（第三方登录后强制填写，之后可脱离第三方用密码登录）</span>
       </label>
       <div id="oauth-providers"></div>
-      <p class="muted small" style="margin:14px 0 0">回调地址需在第三方平台登记为本站：<code id="oauth-callback-hint">—</code>（每个平台分别是该地址 + 平台标识，例如 <code>/auth/wechat/callback</code>）。</p>
+      <div class="section-title" style="margin:18px 0 6px">回调地址（在各平台申请应用时填写）</div>
+      <p class="muted small" style="margin:0 0 8px">每个平台填**各自对应的那条**，不要互相混用；地址由当前访问域名推导，请用最终对外域名打开本页后再复制。</p>
+      <div id="oauth-callback-list"></div>
       <button class="btn primary" id="oauth-save" type="button" style="margin-top:14px">保存第三方登录设置</button>
     </div>
   </div>
@@ -879,16 +881,16 @@
   </div>
 </div>
 </form>
-<script src="./static/js/config.js?v=20261007.7"></script>
-<script src="./static/js/icons.js?v=20261007.7"></script>
+<script src="./static/js/config.js?v=20261007.8"></script>
+<script src="./static/js/icons.js?v=20261007.8"></script>
 <script defer src="./vendor/markdown-it/markdown-it.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-footnote.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-emoji.min.js"></script>
 <script defer src="./vendor/katex/katex.min.js"></script>
 <script defer src="./vendor/highlight/highlight.min.js"></script>
-<script src="./static/js/ui.js?v=20261007.7"></script>
-<script src="./static/js/components.js?v=20261007.7"></script>
-<script src="./static/js/renderer.js?v=20261007.7"></script>
-<script src="./static/js/admin.js?v=20261007.7"></script>
+<script src="./static/js/ui.js?v=20261007.8"></script>
+<script src="./static/js/components.js?v=20261007.8"></script>
+<script src="./static/js/renderer.js?v=20261007.8"></script>
+<script src="./static/js/admin.js?v=20261007.8"></script>
 </body>
 </html>
