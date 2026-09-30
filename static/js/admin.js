@@ -170,6 +170,88 @@ async function ensureGroups() {
   } catch (e) { /* 打开表单时再试 */ }
 }
 
+// ============ 后台:用户第三方绑定管理 ============
+// 管理员可查看/解除某用户的第三方绑定,也可复制"绑定链接"让用户自己完成授权
+async function loadUserOauth(userId) {
+  const wrap = $('uf-oauth-wrap');
+  const box = $('uf-oauth-list');
+  if (!wrap || !box) return;
+  if (!userId) { wrap.hidden = true; box.innerHTML = ''; return; }
+  wrap.hidden = false;
+  box.innerHTML = '<p class="muted small" style="margin:0">加载中…</p>';
+  try {
+    const r = await api('/api/admin/users/oauth?userId=' + encodeURIComponent(userId));
+    const d = await readJsonSafe(r);
+    if (!r.ok) throw new Error((d.error && d.error.message) || '加载失败');
+    const list = Array.isArray(d.providers) ? d.providers : [];
+    const userInfo = d.user || {};
+    if (!list.some((p) => p.enabled || p.bound)) {
+      box.innerHTML = '<p class="muted small" style="margin:0">后台尚未开启任何第三方登录方式。</p>';
+      return;
+    }
+    box.innerHTML = list.map((p) => {
+      let label, act = '';
+      if (p.bound) {
+        label = '已绑定' + (p.boundName ? '（' + escapeHtml(p.boundName) + '）' : '');
+        act = '<button class="btn small" type="button" data-ao-unbind="' + escapeHtml(p.id) + '">解除</button>';
+      } else if (p.enabled) {
+        label = '未绑定';
+        act = '<button class="btn small" type="button" data-ao-copy="' + escapeHtml(p.bindUrl || '') + '">复制绑定链接</button>';
+      } else {
+        label = '未启用';
+      }
+      return '<div class="row-between" style="padding:8px 0;border-bottom:1px solid var(--line,#eee);gap:8px">'
+        + '<div style="display:flex;align-items:center;gap:8px;min-width:0">'
+        + '<img src="' + escapeHtml(p.logo) + '" alt="" style="width:16px;height:16px;border-radius:4px;object-fit:contain">'
+        + '<div><div>' + escapeHtml(p.name) + '</div><div class="muted small">' + label + '</div></div></div>'
+        + '<div>' + act + '</div></div>';
+    }).join('');
+    if (!userInfo.hasPassword && list.filter((p) => p.bound).length === 1) {
+      box.innerHTML += '<p class="muted small" style="margin:8px 0 0">该用户还没有设置密码，解除唯一绑定后将无法登录，建议先让其在「设置 → 账户」设置密码。</p>';
+    }
+    box.dataset.userId = userId;
+  } catch (e) {
+    box.innerHTML = '<p class="muted small" style="margin:0">加载失败：' + escapeHtml(e.message || '') + '</p>';
+  }
+}
+(function initUserOauthPanel() {
+  const box = $('uf-oauth-list');
+  if (!box) return;
+  box.addEventListener('click', async (e) => {
+    const copyBtn = e.target.closest('[data-ao-copy]');
+    if (copyBtn) {
+      const val = copyBtn.getAttribute('data-ao-copy') || '';
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(val);
+        else {
+          const ta = document.createElement('textarea');
+          ta.value = val; ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+        }
+        const old = copyBtn.textContent;
+        copyBtn.textContent = '已复制';
+        setTimeout(() => { copyBtn.textContent = old; }, 1200);
+      } catch (err) { toast('复制失败，请手动选择复制', true); }
+      return;
+    }
+    const unbindBtn = e.target.closest('[data-ao-unbind]');
+    if (!unbindBtn) return;
+    const pid = unbindBtn.getAttribute('data-ao-unbind');
+    const userId = box.dataset.userId || '';
+    unbindBtn.disabled = true;
+    try {
+      const r = await api('/api/admin/users/' + encodeURIComponent(userId) + '/oauth/' + encodeURIComponent(pid), { method: 'DELETE' });
+      const d = await readJsonSafe(r);
+      if (!r.ok) throw new Error((d.error && d.error.message) || '解除失败');
+      toast('已解除绑定');
+      loadUserOauth(userId);
+    } catch (err) {
+      unbindBtn.disabled = false;
+      toast(err.message || '解除失败', true);
+    }
+  });
+})();
+
 async function openUserForm(user) {
   const modal = $('user-form-modal');
   if (!modal) return;
@@ -193,6 +275,8 @@ async function openUserForm(user) {
     : (user && user.groupId && user.groupId !== adminGroup ? user.groupId : (DEFAULT_GROUP_ID || ''));
   setGroupSelect($('uf-group'), preferred);
   bindGroupSelect($('uf-group'));
+  // 第三方绑定管理(仅编辑已有用户时可用)
+  loadUserOauth(user ? user.id : null);
   if (!$('uf-admin').dataset.boundGroup) {
     $('uf-admin').dataset.boundGroup = '1';
     $('uf-admin').addEventListener('change', () => {

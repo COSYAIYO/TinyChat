@@ -899,8 +899,18 @@ LANDQ=$(oauth_flow qq)
 assert_contains "QQ 登录链路到达前台票据" "$LANDQ" 'oauth_ticket='
 
 # 已登录用户:绑定 / 解绑 / 已绑定列表
+# 注意:解绑唯一绑定需要账号已设置密码(防呆保护),这里先设密码再继续
 BINDUSER=$(printf '%s' "$EX" | python -c "import sys,json;print(json.load(sys.stdin)['user']['id'])" 2>/dev/null)
 BTOKEN=$(printf '%s' "$EX" | python -c "import sys,json;print(json.load(sys.stdin)['token'])" 2>/dev/null)
+cat > "$TMP/bpwd.json" <<'EOF'
+{"oldPassword":"","newPassword":"bindsetup1"}
+EOF
+curl -s -X POST "$BASE/api/auth/password" -H "Authorization: Bearer $BTOKEN" -H "Content-Type: application/json" --data-binary @"$TMP/bpwd.json" > /dev/null
+BUNAME=$(printf '%s' "$EX" | python -c "import sys,json;print(json.load(sys.stdin)['user']['name'])" 2>/dev/null)
+cat > "$TMP/blogin.json" <<EOF9
+{"name":"$BUNAME","password":"bindsetup1"}
+EOF9
+BTOKEN=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" --data-binary @"$TMP/blogin.json" | jget token)
 BIND=$(curl -s "$BASE/api/me/oauth" -H "Authorization: Bearer $BTOKEN")
 assert_contains "绑定列表含 wechat" "$BIND" '"id":"wechat"'
 assert_contains "绑定列表标记已绑定" "$BIND" '"bound":true'
@@ -1064,6 +1074,48 @@ cat > "$TMP/oc_off.json" <<'EOF'
 {"oauthProviders":{"wechat":{"enabled":false},"linuxdo":{"enabled":false},"qq":{"enabled":false},"nodeloc":{"enabled":false}}}
 EOF
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/oc_off.json" > /dev/null
+
+# ---------- 第三方绑定的列表/防呆/后台管理 ----------
+say "== 第三方绑定管理 =="
+cat > "$TMP/ob_cfg.json" <<'EOF'
+{"oauthProviders":{"linuxdo":{"enabled":true}},"oauthAutoRegister":true,"oauthRequireProfile":false}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ob_cfg.json" > /dev/null
+# 全新第三方账号:设密码前「解绑唯一绑定」应被拒(否则账号无法登录)
+OLANDB=$(oauth_flow linuxdo)
+OTKB=$(printf '%s' "$OLANDB" | sed 's/.*oauth_ticket=//' | sed 's/&.*//')
+cat > "$TMP/otkb.json" <<EOF2
+{"ticket":"$OTKB"}
+EOF2
+OEXB=$(curl -s -X POST "$BASE/api/auth/oauth/exchange" -H "Content-Type: application/json" --data-binary @"$TMP/otkb.json")
+OTB=$(printf '%s' "$OEXB" | jget token)
+OUID=$(printf '%s' "$OEXB" | python -c "import sys,json;print(json.load(sys.stdin)['user']['id'])" 2>/dev/null)
+OB="Authorization: Bearer $OTB"
+UNAME_B=$(printf '%s' "$OEXB" | python -c "import sys,json;print(json.load(sys.stdin)['user']['name'])" 2>/dev/null)
+assert_contains "绑定列表返回全部平台" "$(curl -s "$BASE/api/me/oauth" -H "$OB")" '"id":"wechat"'
+assert_contains "绑定列表含未启用的平台" "$(curl -s "$BASE/api/me/oauth" -H "$OB")" '"enabled":false'
+assert_contains "无密码时解绑唯一绑定被拒" "$(curl -s -X DELETE "$BASE/api/me/oauth/linuxdo" -H "$OB")" '还没有设置密码'
+# 管理端:查看该用户绑定(含 bindUrl)
+AUSER=$(curl -s "$BASE/api/admin/users/oauth?userId=$OUID" -H "$AUTH")
+assert_contains "管理端可见用户绑定" "$AUSER" '"bound":true'
+assert_contains "管理端给出绑定链接" "$AUSER" '/auth/linuxdo?bind='
+# 管理端解绑同样受防呆保护
+assert_contains "管理端解绑也受防呆保护" "$(curl -s -X DELETE "$BASE/api/admin/users/$OUID/oauth/linuxdo" -H "$AUTH")" '还没有设置密码'
+# 用户设密码后可解绑
+cat > "$TMP/obpw.json" <<'EOF'
+{"oldPassword":"","newPassword":"bindpass123"}
+EOF
+curl -s -X POST "$BASE/api/auth/password" -H "$OB" -H "Content-Type: application/json" --data-binary @"$TMP/obpw.json" > /dev/null
+cat > "$TMP/oblogin.json" <<EOF10
+{"name":"$UNAME_B","password":"bindpass123"}
+EOF10
+OTB2=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" --data-binary @"$TMP/oblogin.json" | jget token)
+ob='Authorization: Bearer '"$OTB2"
+assert_contains "设密码后可解绑" "$(curl -s -X DELETE "$BASE/api/me/oauth/linuxdo" -H "$ob")" '"ok":true'
+cat > "$TMP/ob_off.json" <<'EOF'
+{"oauthProviders":{"linuxdo":{"enabled":false}}}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ob_off.json" > /dev/null
 
 say ""
 say "结果: $PASS 通过, $FAIL 失败"

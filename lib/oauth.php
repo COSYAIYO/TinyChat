@@ -576,7 +576,72 @@ function tc_api_me_oauth_unbind($id) {
     tc_with_db(true, function (&$db) use ($id) {
         $user = tc_require_auth($db);
         if (!tc_oauth_provider($id)) tc_fail(404, '不支持的登录方式');
+        // 防呆:没有密码、且解绑后就没有任何第三方绑定时,解绑会让账号彻底无法登录。
+        // 明确让用户先设置密码,而不是解绑完才发现登不进来。
+        $hasPwd = isset($user['passwordHash']) && (string) $user['passwordHash'] !== '';
+        $bindings = tc_oauth_user_bindings($user);
+        if (!$hasPwd && count($bindings) <= 1 && isset($bindings[$id])) {
+            tc_fail(400, '你还没有设置密码，解绑后此账号将无法登录。请先在「修改密码」中设置密码，再回来解绑。');
+        }
         if (!tc_oauth_unbind($db, $user['id'], $id)) tc_fail(400, '该账号未绑定此登录方式');
         tc_json(200, array('ok' => true));
+    });
+}
+
+// —— 管理端:查看某个用户的第三方绑定情况(后台用户编辑用) ——
+function tc_api_admin_user_oauth_list() {
+    tc_with_db(false, function ($db) {
+        tc_require_admin($db);
+        $q = tc_query();
+        $userId = trim((string) (isset($q['userId']) ? $q['userId'] : ''));
+        if ($userId === '') tc_fail(400, '缺少 userId');
+        $target = null;
+        foreach ($db['users'] as $u) if ((string) $u['id'] === $userId) { $target = $u; break; }
+        if (!$target) tc_fail(404, '用户不存在');
+        $list = array();
+        foreach (tc_oauth_providers() as $pid => $p) {
+            $bound = !empty($target['oauth'][$pid]);
+            $list[] = array(
+                'id' => $pid,
+                'name' => $p['name'],
+                'logo' => $p['logo'],
+                'enabled' => tc_oauth_ready($db['settings'], $pid),
+                'bound' => $bound,
+                'boundName' => $bound ? (string) (isset($target['oauthName']) ? $target['oauthName'] : '') : '',
+                // 管理员据此生成绑定链接:让用户在自己浏览器里完成授权,管理员不接触第三方凭据
+                'bindUrl' => tc_oauth_start_url_for_admin($pid, $userId),
+            );
+        }
+        $hasPwd = isset($target['passwordHash']) && (string) $target['passwordHash'] !== '';
+        tc_json(200, array(
+            'user' => array('id' => $target['id'], 'name' => $target['name'], 'hasPassword' => $hasPwd),
+            'providers' => $list,
+        ));
+    });
+}
+
+// 生成"由某用户完成绑定"的授权起始链接(管理员复制给用户打开)
+function tc_oauth_start_url_for_admin($providerId, $userId) {
+    return tc_public_base_url() . '/auth/' . rawurlencode($providerId) . '?bind=' . rawurlencode((string) $userId);
+}
+
+// —— 管理端:解除某用户的第三方绑定 ——
+function tc_api_admin_user_oauth_unbind($userId, $providerId) {
+    tc_with_db(true, function (&$db) use ($userId, $providerId) {
+        tc_require_admin($db);
+        $providerId = strtolower((string) $providerId);
+        if (!tc_oauth_provider($providerId)) tc_fail(404, '不支持的登录方式');
+        $target = null;
+        foreach ($db['users'] as $u) if ((string) $u['id'] === (string) $userId) { $target = $u; break; }
+        if (!$target) tc_fail(404, '用户不存在');
+        // 同样防呆:该用户没有密码且这是唯一绑定 → 解绑后他无法登录
+        $hasPwd = isset($target['passwordHash']) && (string) $target['passwordHash'] !== '';
+        $bindings = tc_oauth_user_bindings($target);
+        if (!$hasPwd && count($bindings) <= 1 && isset($bindings[$providerId])) {
+            tc_fail(400, '该用户还没有设置密码，解绑后他将无法登录。请先让他在「设置 → 账户」设置密码。');
+        }
+        if (!tc_oauth_unbind($db, $userId, $providerId)) tc_fail(400, '该用户未绑定此登录方式');
+        foreach ($db['users'] as $u) if ((string) $u['id'] === (string) $userId) { $target = $u; break; }
+        tc_json(200, array('ok' => true, 'user' => tc_sanitize_user($target)));
     });
 }
