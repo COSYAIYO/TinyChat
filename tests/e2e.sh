@@ -1171,6 +1171,60 @@ cat > "$TMP/ob_off.json" <<'EOF'
 EOF
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ob_off.json" > /dev/null
 
+say "== 演示管理员对话自动清除 =="
+# 回归:演示管理员只在前台聊天(不碰后台)时,快照也必须建立并在到期后清除其新对话。
+# 缺陷背景:快照原先只在 tc_require_admin(后台操作)里拍摄,演示管理员纯聊天时不经过那里,
+# 第一次到期还原后快照被消费、永久不再重建 —— 之后产生的对话就再也不会被自动清除。
+# 先清掉早前演示用例遗留的活跃快照:演示快照是「全站单例」,若已有生效中的快照,
+# 新建演示账号时不会重新拍摄,本段就测不到目标账号。这里显式重置,保证用例自洽。
+php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite");
+  $st=$pdo->prepare("DELETE FROM store WHERE k=? OR k=?");
+  $st->execute(array("demoSnapshot","demoBaseline"));
+  $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("users"));
+  $us=json_decode($q->fetchColumn(),true);
+  foreach($us as &$u) if(!empty($u["demo"]) && ($u["name"] ?? "") !== "chatdemo") $u["demo"]=false;
+  unset($u);
+  $up=$pdo->prepare("UPDATE store SET v=? WHERE k=?"); $up->execute(array(json_encode($us),"users"));
+  $up2=$pdo->prepare("UPDATE store SET v=? WHERE k=?"); $up2->execute(array("null","demoSnapshot"));' "$TMP/data"
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"demoExpireMinutes":10}' > /dev/null
+curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"chatdemo","password":"demo1234","demo":true}' > /dev/null
+CDT=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"chatdemo","password":"demo1234"}' | jget token)
+CDA="Authorization: Bearer $CDT"
+demo_chats() { # 读取该演示账号当前的对话条数(对话按 chat:<uid> 行存储)
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("users")); $us=json_decode($q->fetchColumn(),true); $id=""; foreach((array)$us as $u) if(($u["name"]??"")==="chatdemo") $id=$u["id"]; if($id===""){ echo 0; exit; } $q2=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q2->execute(array("chat:".$id)); $ch=json_decode($q2->fetchColumn(),true); echo count(is_array($ch)?$ch:array());' "$1"
+}
+demo_has_snapshot() { # 快照是否存在(直读库,避免走管理接口触发 rebaseline 重拍)
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("demoSnapshot")); $v=$q->fetchColumn(); $j=json_decode($v,true); echo (is_array($j) && !empty($j["expireAt"])) ? "yes" : "no";' "$1"
+}
+demo_expire_now() { # 把演示快照的到期时间拨到过去,模拟「10 分钟已到」
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("demoSnapshot")); $j=json_decode($q->fetchColumn(),true); if(!is_array($j)) exit(1); $j["expireAt"]=1; $st=$pdo->prepare("UPDATE store SET v=? WHERE k=?"); $st->execute(array(json_encode($j),"demoSnapshot"));' "$1"
+}
+demo_del() { # 删除测试用的演示账号
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("users")); foreach((array)json_decode($q->fetchColumn(),true) as $u) if(($u["name"]??"")==="chatdemo"){ echo $u["id"]; break; }' "$1"
+}
+
+# 第一轮:只在前台聊天,完全不碰后台
+cat > "$TMP/cd1.json" <<'EOF'
+{"chats":[{"id":"cd1","title":"演示第一轮","messages":[{"role":"user","content":"你好"}],"createdAt":1790789000000,"updatedAt":1790789000000}]}
+EOF
+curl -s -X POST "$BASE/api/sync/chats" -H "$CDA" -H "Content-Type: application/json" --data-binary @"$TMP/cd1.json" > /dev/null
+assert_eq "演示账号聊天已保存" "$(demo_chats "$TMP/data")" "1"
+assert_eq "聊天即建立还原快照(无需后台操作)" "$(demo_has_snapshot "$TMP/data")" "yes"
+demo_expire_now "$TMP/data"
+curl -s -o /dev/null "$BASE/"
+assert_eq "第一轮到期后对话被清除" "$(demo_chats "$TMP/data")" "0"
+# 第二轮:还原后继续聊天 —— 快照必须自动重建,新对话同样要被清除(核心回归)
+cat > "$TMP/cd2.json" <<'EOF'
+{"chats":[{"id":"cd2","title":"演示第二轮","messages":[{"role":"user","content":"第二轮"}],"createdAt":1790789000000,"updatedAt":1790789000000}]}
+EOF
+curl -s -X POST "$BASE/api/sync/chats" -H "$CDA" -H "Content-Type: application/json" --data-binary @"$TMP/cd2.json" > /dev/null
+assert_eq "第二轮聊天已保存" "$(demo_chats "$TMP/data")" "1"
+assert_eq "快照在消费后自动重建" "$(demo_has_snapshot "$TMP/data")" "yes"
+demo_expire_now "$TMP/data"
+curl -s -o /dev/null "$BASE/"
+assert_eq "第二轮到期后新对话也被清除" "$(demo_chats "$TMP/data")" "0"
+CDID=$(demo_del "$TMP/data")
+[ -n "$CDID" ] && curl -s -X DELETE "$BASE/api/admin/users/$CDID" -H "$AUTH" > /dev/null
 say "== 账号注销 =="
 # 后台三种模式 + 用户自助注销。软注销后原用户名/邮箱必须能被重新注册(核心诉求)。
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"accountDeletionMode":"off"}' > /dev/null

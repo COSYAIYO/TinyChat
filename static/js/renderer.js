@@ -25,11 +25,50 @@
   };
 
   // 归一化代码块语言标识:模型常写成 ```Mermaid / ```MERMAID / ```mmd,统一按小写识别
+  // 内容兜底识别:语言标识缺失或不被认识时,靠首行关键字判断是不是 mermaid 源码。
+  // 只在「第一个非空行」上匹配,避免把正文里提到 xychart 的普通代码块误判成图表。
+  const MERMAID_HEAD = /^(xychart-beta|xychart|pie|gantt|timeline|journey|quadrantchart|quadrant-chart|sankey-beta|sankey|packet-beta|packet|architecture-beta|architecture|block-beta|block|kanban|radar-beta|radar|treemap-beta|treemap|gitgraph|mindmap|requirementdiagram|requirement|erdiagram|er|classdiagram|class|statediagram|stateDiagram-v2|state|sequencediagram|sequence|flowchart-v2|flowchart|graph|info|C4Context|C4Container|C4Component|C4Dynamic|C4Deployment)\b/i;
+  function looksLikeMermaid(code) {
+    const firstLine = String(code || '').split('\n').map((l) => l.trim()).find((l) => l !== '') || '';
+    if (firstLine === '' || firstLine.length > 60) return false;
+    return MERMAID_HEAD.test(firstLine);
+  }
+
+  // 归一化代码块语言标识:模型常写成 ```Mermaid / ```MERMAID / ```mmd,统一按小写识别。
+  // 模型也常直接用 mermaid 的「图类型」当语言名(```xychart-beta / ```pie / ```gantt),
+  // 这些同样要按 mermaid 处理,否则会被当成普通代码块原样显示(图表不渲染)。
+  // 清单覆盖 mermaid 11 支持的全部图类型。
+  const MERMAID_LANGS = {
+    mermaid: 1, mmd: 1,
+    graph: 1, flowchart: 1, 'flowchart-v2': 1,
+    sequence: 1, sequencediagram: 1, class: 1, classdiagram: 1,
+    state: 1, statediagram: 1, 'state-diagram': 1, er: 1, erdiagram: 1,
+    pie: 1, quadrant: 1, quadrantchart: 1, xychart: 1, 'xychart-beta': 1,
+    gantt: 1, timeline: 1, journey: 1,
+    mindmap: 1, mindmap2: 1, gitgraph: 1, requirement: 1, requirementdiagram: 1,
+    c4: 1, c4context: 1, c4container: 1, c4component: 1, c4dynamic: 1, c4deployment: 1,
+    sankey: 1, 'sankey-beta': 1, packet: 1, 'packet-beta': 1,
+    architecture: 1, 'architecture-beta': 1, block: 1, 'block-beta': 1,
+    kanban: 1, radar: 1, 'radar-beta': 1, treemap: 1, 'treemap-beta': 1,
+  };
   function normalizeFenceLang(lang) {
     const l = String(lang == null ? '' : lang).trim().toLowerCase().split(/\s+/)[0] || '';
-    if (l === 'mmd' || l === 'mermaid') return 'mermaid';
-    if (l === 'mind-map' || l === 'mindmap') return 'mindmap';
+    if (MERMAID_LANGS[l]) return 'mermaid';
+    if (l === 'mind-map') return 'mindmap';
     return l;
+  }
+
+  // 围栏语言位写的是「图类型」时(如 xychart-beta),markdown-it 会把它从内容里剥掉,
+  // 而 mermaid 需要它作为首行声明 —— 这里补回去。语言位本来就是 mermaid/mmd 的不用补。
+  function restoreMermaidType(code, lang) {
+    const l = String(lang == null ? '' : lang).trim().split(/\s+/)[0] || '';
+    const lower = l.toLowerCase();
+    if (lower === 'mermaid' || lower === 'mmd' || lower === '') return code;
+    if (!MERMAID_LANGS[lower]) return code;
+    const trimmed = String(code).replace(/^\s*\n/, '');
+    // 内容首行已经是图类型声明时不重复添加
+    if (looksLikeMermaid(trimmed)) return trimmed;
+    return l + '\n' + trimmed;
   }
 
   // ============ markdown-it 实例 ============
@@ -46,7 +85,11 @@
         // Mermaid / 思维导图特殊处理：保留 language-* class 供后续渲染(语言标识大小写不敏感)
         const fenceLang = normalizeFenceLang(lang);
         if (fenceLang === 'mermaid') {
-          return '<pre class="mermaid-pre"><code class="language-mermaid">' + escapeHtml(code) + '</code></pre>';
+          // 重要:模型常把图类型写在围栏语言位上(```xychart-beta / ```pie / ```gantt),
+          // 而 markdown-it 会把围栏语言从内容里剥掉。mermaid 又要求源码第一行必须是图类型声明,
+          // 少了这一行必然解析失败。因此这里把「图类型」补回代码首行。
+          const codeWithType = restoreMermaidType(String(code), lang);
+          return '<pre class="mermaid-pre"><code class="language-mermaid">' + escapeHtml(codeWithType) + '</code></pre>';
         }
         if (fenceLang === 'mindmap') {
           return '<pre class="mindmap-pre"><code class="language-mindmap">' + escapeHtml(code) + '</code></pre>';
@@ -252,6 +295,7 @@
   // ============ Mermaid 渲染 ============
   let mermaidReady = false;
   let mermaidTheme = '';
+  let mermaidSig = '';
 
   const MERMAID_SOFT = ['#ACE0CF', '#8EBCDB', '#A79FCE', '#FE9F69', '#FEC080'];
   const MERMAID_RICH = ['#898988', '#79CB9B', '#FFC48A', '#547AC0', '#A369B0'];
@@ -322,7 +366,15 @@
       // 渲染失败时不注入 mermaid 自带的报错炸弹（由 mermaid-error 降级展示源码）
       suppressErrorRendering: true,
       theme: 'base',
-      themeVariables: mermaidPalette(dark),
+      themeVariables: Object.assign(mermaidPalette(dark), {
+        // xychart 的默认调色板首个颜色是 #FFF4DD(极浅米色),白底上几乎看不见线条。
+        // 注意该键位于 themeVariables.xyChart 下(mermaid 11 的读取路径),放顶层不生效。
+        xyChart: {
+          plotColorPalette: dark
+            ? '#6BA8DC, #F0A868, #7FCFA8, #C79BE0, #E88B8B, #8FB8E8'
+            : '#3B82F6, #F59E0B, #10B981, #8B5CF6, #EF4444, #0EA5E9',
+        },
+      }),
       securityLevel: 'strict',
       fontFamily: 'inherit',
       flowchart: {
@@ -338,9 +390,13 @@
 
   function ensureMermaid() {
     const dark = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
-    if (mermaidReady && mermaidTheme === dark) return true;
+    // 指纹里带上配置版本:调色板/图类型支持等改动后能自动重新初始化,
+    // 否则 mermaid.initialize 只按主题判断会被跳过,新配置不生效(需刷新页面才看到)
+    const sig = dark + '|v2';
+    if (mermaidReady && mermaidSig === sig) return true;
     mermaid.initialize(mermaidConfig());
     mermaidReady = true;
+    mermaidSig = sig;
     mermaidTheme = dark;
     return true;
   }
@@ -429,8 +485,47 @@
   // mermaid 11 的 erDiagram 关系标签含中文等非 ASCII 字符时必须加引号，这里自动补上
   function normalizeMermaidCode(code) {
     const src = String(code || '');
-    if (!/^erDiagram\b/.test(src.trim())) return src;
-    return src.replace(/^(\s*\S+\s+\S+\s+\S+\s*:\s*)(.+)$/gm, (m, head, label) => {
+    const trimmed = src.trim();
+    if (/^erDiagram\b/.test(trimmed)) return fixErDiagramLabels(src);
+    if (/^xychart(-beta)?\b/i.test(trimmed)) return fixXychartSyntax(src);
+    return src;
+  }
+
+  // xychart 语法容错:模型几乎总把带特殊字符的标签写成裸值(如 x-axis [9/30, 10/1] 或中文标签),
+  // 而 mermaid 要求 title / x-axis 的标签 / y-axis 的单位必须加引号,否则整块解析失败、图表不显示。
+  // 这里只给「确实需要引号」的部分补上,数字区间 0 --> 9 与已加引号的内容保持不动。
+  function fixXychartSyntax(src) {
+    const SAFE = /^[A-Za-z0-9_\-]+$/;                 // 无需引号的裸标识符
+    const needQuote = (v) => {
+      const t = String(v).trim();
+      return t !== '' && !/^".*"$/.test(t) && !/^'.*'$/.test(t) && !SAFE.test(t);
+    };
+    const quote = (v) => '"' + String(v).trim().replace(/"/g, '\\"') + '"';
+    const lines = String(src).split('\n');
+    const out = lines.map((line) => {
+      // title 后跟的内容需要引号
+      let m = line.match(/^(\s*title\s+)(.+?)\s*$/i);
+      if (m && needQuote(m[2])) return m[1] + quote(m[2]);
+      // x-axis [a, b, c]:逐项补引号(逗号分隔,方括号包裹)
+      m = line.match(/^(\s*x-axis\s*\[)([^\]]*)(\]\s*)$/i);
+      if (m) {
+        const items = m[2].split(',').map((it) => (needQuote(it) ? quote(it) : it.trim()));
+        return m[1] + items.join(', ') + m[3];
+      }
+      // y-axis "单位" 0 --> 9:只有单位部分需要引号
+      m = line.match(/^(\s*y-axis\s+)(.+?)(\s+\S+\s*-->\s*\S+\s*)$/i);
+      if (m && needQuote(m[2])) return m[1] + quote(m[2]) + m[3];
+      // 纯 y-axis 单位(不带区间)
+      m = line.match(/^(\s*y-axis\s+)([^"'\s][^\s]*)\s*$/i);
+      if (m && needQuote(m[2])) return m[1] + quote(m[2]);
+      return line;
+    });
+    return out.join('\n');
+  }
+
+  // erDiagram 的关系标签含中文等非 ASCII 字符时必须加引号,这里自动补上
+  function fixErDiagramLabels(src) {
+    return String(src).replace(/^(\s*\S+\s+\S+\s+\S+\s*:\s*)(.+)$/gm, (m, head, label) => {
       const t = label.trim();
       if (!t || /^".*"$/.test(t)) return m;
       if (!/[^\x00-\x7F]/.test(t)) return m;
@@ -442,8 +537,14 @@
     // 后台关闭 Mermaid:保留代码块源码显示,不做占位替换(否则会永远停在「渲染图表…」)
     if (window.OC_PERF && window.OC_PERF.noMermaid) return;
     const pending = [];
-    root.querySelectorAll('code.language-mermaid').forEach((el) => {
-      const code = normalizeMermaidCode(el.textContent.trim());
+    // 语言标识为 mermaid 的块(含 xychart-beta / pie 等图类型,已由 normalizeFenceLang 归一化),
+    // 另外兜底:语言未知但内容看着就是 mermaid 的块也按图表渲染
+    root.querySelectorAll('code.language-mermaid, code.language-text, code.language-\\31 , pre:not([data-lang]) > code').forEach((el) => {
+      const raw = el.textContent.trim();
+      if (!raw) return;
+      const isMermaidBlock = el.classList.contains('language-mermaid');
+      if (!isMermaidBlock && !looksLikeMermaid(raw)) return;
+      const code = normalizeMermaidCode(raw);
       if (!code) return;
       const parent = el.closest('pre');
       const prev = parent && parent.previousElementSibling;

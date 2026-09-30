@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.63');
+define('TC_VERSION', '2.0.64');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -709,6 +709,15 @@ function tc_demo_arm(&$db, $user, $force = false) {
     $minutes = (int) (isset($db['settings']['demoExpireMinutes']) ? $db['settings']['demoExpireMinutes'] : 10);
     $minutes = min(1440, max(1, $minutes ?: 10));
     $uid = isset($user['id']) ? (string) $user['id'] : '';
+    // 上一轮还原后遗留的基准:重建快照时必须沿用「最初的干净状态」,而不是把演示期间的
+    // 改动当成新基准 —— 否则那些改动会被永久固化,再也清不掉。
+    $prevBase = null;
+    if (is_array($snap) && !empty($snap['userId']) && (string) $snap['userId'] === $uid) {
+        $prevBase = $snap;
+    } elseif (isset($db['demoBaseline']) && is_array($db['demoBaseline'])
+        && !empty($db['demoBaseline']['userId']) && (string) $db['demoBaseline']['userId'] === $uid) {
+        $prevBase = $db['demoBaseline'];
+    }
     $snapshot = array(
         'expireAt' => tc_now() + $minutes * 60000,
         'userId' => $uid,
@@ -719,11 +728,17 @@ function tc_demo_arm(&$db, $user, $force = false) {
     }
     // 演示管理员的「个人数据」同样在转换那一刻定格:自己的对话与额度,到期后一并恢复。
     $chatsMap = tc_assoc(isset($db['userChats']) ? $db['userChats'] : array());
-    $snapshot['demoChats'] = ($uid !== '' && isset($chatsMap[$uid]) && is_array($chatsMap[$uid])) ? $chatsMap[$uid] : array();
+    if ($prevBase !== null && array_key_exists('demoChats', $prevBase)) {
+        $snapshot['demoChats'] = $prevBase['demoChats'];              // 沿用最初基准
+        $snapshot['demoQuota'] = isset($prevBase['demoQuota']) ? $prevBase['demoQuota'] : 0;
+        $snapshot['demoQuotaGrants'] = isset($prevBase['demoQuotaGrants']) ? $prevBase['demoQuotaGrants'] : array();
+    } else {
+        $snapshot['demoChats'] = ($uid !== '' && isset($chatsMap[$uid]) && is_array($chatsMap[$uid])) ? $chatsMap[$uid] : array();
+        $snapshot['demoQuota'] = isset($user['quota']) ? $user['quota'] : 0;
+        $snapshot['demoQuotaGrants'] = isset($user['quotaGrants']) && is_array($user['quotaGrants']) ? $user['quotaGrants'] : array();
+    }
     $revMap = tc_assoc(isset($db['userChatRevisions']) ? $db['userChatRevisions'] : array());
     $snapshot['demoChatRevision'] = isset($revMap[$uid]) ? (int) $revMap[$uid] : 0;
-    $snapshot['demoQuota'] = isset($user['quota']) ? $user['quota'] : 0;
-    $snapshot['demoQuotaGrants'] = isset($user['quotaGrants']) && is_array($user['quotaGrants']) ? $user['quotaGrants'] : array();
     $db['demoSnapshot'] = $snapshot;
     $db['settings']['demoMode'] = true;
     return true;
@@ -769,6 +784,15 @@ function tc_demo_revert(&$db) {
             unset($u);
         }
     }
+    // 快照已消费:但把「最初的干净基准」留在 demoBaseline 里。
+    // 演示管理员通常还会继续演示(继续聊天/改设置),下一轮 tc_demo_arm 必须沿用这份原始基准,
+    // 否则会把演示期间的改动当成新基准固化下来,那些内容就永远清不掉了。
+    $db['demoBaseline'] = array(
+        'userId' => isset($snap['userId']) ? (string) $snap['userId'] : '',
+        'demoChats' => array_key_exists('demoChats', $snap) ? $snap['demoChats'] : array(),
+        'demoQuota' => array_key_exists('demoQuota', $snap) ? $snap['demoQuota'] : 0,
+        'demoQuotaGrants' => array_key_exists('demoQuotaGrants', $snap) ? $snap['demoQuotaGrants'] : array(),
+    );
     $db['demoSnapshot'] = null;
     return true;
 }
@@ -1788,6 +1812,12 @@ function tc_fail($code, $msg) {
 function tc_require_auth($db) {
     $user = tc_auth_user($db);
     if (!$user) tc_fail(401, '未登录或登录已过期');
+    // 演示管理员:只要在「写」请求里活动(含前台发消息、保存对话),就确保有一张生效中的还原快照。
+    // 关键:快照此前只在 tc_require_admin(后台操作)里拍摄,演示管理员纯聊天时不经过那里,
+    // 于是第一次到期还原后快照被消费、再也不会重建 —— 他之后产生的对话就永久留存、不再自动清除。
+    if (!empty($user['demo']) && !empty($GLOBALS['_tc_db_ctx']['write']) && isset($GLOBALS['_tc_db'])) {
+        tc_demo_arm($GLOBALS['_tc_db'], $user);
+    }
     return $user;
 }
 
