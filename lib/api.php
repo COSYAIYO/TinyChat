@@ -97,9 +97,11 @@ function tc_visible_provider($user, $provider, $allowed) {
     return $copy;
 }
 
-function tc_client_provider($p, $owner = false, $admin = false) {
+// $demo=true 用于演示管理员:供应商密钥连掩码都不下发(掩码仍会泄露密钥长度与首尾字符),
+// 前端拿到空的 apiKey/keys 即按「沿用原有密钥」处理,不影响演示里改配置的体验。
+function tc_client_provider($p, $owner = false, $admin = false, $demo = false) {
     $key = tc_provider_key($p);
-    $showKey = $owner || $admin;
+    $showKey = ($owner || $admin) && !$demo;
     return array(
         'id' => $p['id'],
         'name' => $p['name'],
@@ -114,7 +116,7 @@ function tc_client_provider($p, $owner = false, $admin = false) {
         'ownerId' => isset($p['ownerId']) ? $p['ownerId'] : null,
         'mine' => $owner,
         'order' => isset($p['order']) && is_numeric($p['order']) ? (int) $p['order'] : 0,
-        // 密钥只以掩码形式下发给属主或管理员;其他用户不回传任何密钥信息
+        // 密钥只以掩码形式下发给属主或管理员;其他用户(含演示管理员)不回传任何密钥信息
         'apiKey' => $showKey && $key ? tc_mask_key($key) : '',
         'hasKey' => !!$key,
         // 多密钥:仅属主/管理员可见(含掩码),供前端渲染密钥编辑器与模型绑定列
@@ -240,17 +242,20 @@ function tc_normalize_models($models) {
     return $out;
 }
 
-function tc_normalize_provider_input($b, $base = array()) {
+function tc_normalize_provider_input($b, $base = array(), $demo = false) {
     $p = $base;
     if (array_key_exists('name', $b)) $p['name'] = substr(trim((string) $b['name']), 0, 60);
     if (array_key_exists('baseUrl', $b)) $p['baseUrl'] = rtrim(trim((string) $b['baseUrl']), '/');
-    if (array_key_exists('apiKey', $b)) {
+    // 演示管理员的请求里密钥字段一律为空(接口本就不下发),因此整段跳过密钥处理:
+    // 否则「打开编辑框直接保存」会因 keys=[] 把已有密钥全部清空。
+    $skipKeys = $demo;
+    if (!$skipKeys && array_key_exists('apiKey', $b)) {
         $key = trim((string) $b['apiKey']);
         // 留空或仍是掩码表示「不修改密钥」,保留原值(可能是密文)
         if ($key !== '' && strpos($key, '••') === false) $p['apiKey'] = $key;
     }
     // 多密钥:keys = [{id,name,apiKey}],apiKey 留空/掩码表示沿用原有密文
-    if (array_key_exists('keys', $b) && is_array($b['keys'])) {
+    if (!$skipKeys && array_key_exists('keys', $b) && is_array($b['keys'])) {
         $prevKeys = array();
         foreach (tc_provider_keys($p) as $k) $prevKeys[(string) $k['id']] = $k;
         $next = array();
@@ -857,6 +862,8 @@ function tc_api_public_config($db) {
             'updatedAt' => (int) (isset($s['announcement']['updatedAt']) ? $s['announcement']['updatedAt'] : 0),
         ),
         'registerInviteRequired' => !empty($s['registerInviteRequired']),
+        // 账号注销模式:off=不开放, soft=软注销(改名+标记,原用户名/邮箱可重新注册), hard=删除全部数据
+        'accountDeletionMode' => isset($s['accountDeletionMode']) ? (string) $s['accountDeletionMode'] : 'soft',
         // 演示模式:管理员的改动会在有效期后自动还原,前台据此提示
         'demoMode' => !empty($s['demoMode']),
         'demoExpireMinutes' => isset($s['demoExpireMinutes']) ? (int) $s['demoExpireMinutes'] : 10,
@@ -1156,6 +1163,45 @@ function tc_api_change_password() {
     });
 }
 
+// 用户自助注销账号。后台可配置为「不允许 / 软注销 / 硬注销」。
+// 安全性:有密码的账号必须验证密码;无密码(纯第三方)账号要求输入自己的用户名确认。
+function tc_api_delete_own_account() {
+    tc_with_db(true, function (&$db) {
+        $user = tc_require_auth($db);
+        $b = tc_read_json_body();
+        $mode = isset($db['settings']['accountDeletionMode']) ? (string) $db['settings']['accountDeletionMode'] : 'soft';
+        if ($mode === 'off') tc_fail(403, '本站未开放账号注销');
+        if (tc_is_demo_user($user)) tc_fail(403, '演示账号不允许注销');
+        if (!empty($user['admin']) && !tc_is_demo_user($user)) {
+            // 管理员销号会让站点失去管理入口,要求先取消管理员身份
+            $others = 0;
+            foreach ($db['users'] as $u) {
+                if ($u['id'] === $user['id']) continue;
+                if (!empty($u['admin']) && empty($u['demo'])) $others++;
+            }
+            if ($others === 0) tc_fail(400, '你是唯一的管理员，请先指定另一位管理员再注销');
+        }
+        // 身份确认:有密码走密码,无密码走「输入用户名」
+        $hasPassword = isset($user['passwordHash']) && (string) $user['passwordHash'] !== '';
+        if ($hasPassword) {
+            $pwd = (string) (isset($b['password']) ? $b['password'] : '');
+            if (!tc_verify_password($pwd, $user)) tc_fail(400, '密码不正确');
+        } else {
+            $confirm = trim((string) (isset($b['confirmName']) ? $b['confirmName'] : ''));
+            if ($confirm === '' || $confirm !== (string) $user['name']) tc_fail(400, '请输入当前用户名以确认注销');
+        }
+        if ($mode === 'hard') {
+            $res = tc_purge_user($db, $user['id']);
+            tc_log_auth_event('auth', (string) $user['name'], '注销账号(删除全部数据)', $user['id']);
+            tc_json(200, array('ok' => true, 'mode' => 'hard', 'removedProviders' => $res['removedProviders']));
+        }
+        $res = tc_soft_delete_user($db, $user['id']);
+        if (empty($res['ok'])) tc_fail(500, '注销失败，请稍后重试');
+        tc_log_auth_event('auth', (string) $user['name'], '注销账号(资料已清除，用户名与邮箱可重新注册)', $user['id']);
+        tc_json(200, array('ok' => true, 'mode' => 'soft', 'newName' => $res['name']));
+    });
+}
+
 // 修改用户名(第三方登录建号后常需改成自己习惯的名字)
 function tc_api_change_name() {
     tc_with_db(true, function (&$db) {
@@ -1198,7 +1244,7 @@ function tc_api_list_providers() {
         foreach (tc_visible_providers_of($db, $user) as $p) {
             $vis = tc_visible_provider($user, $p, $allowed);
             if (!$vis) continue;
-            $list[] = tc_client_provider($vis, isset($p['ownerId']) && $p['ownerId'] === $user['id'], !empty($user['admin']));
+            $list[] = tc_client_provider($vis, isset($p['ownerId']) && $p['ownerId'] === $user['id'], !empty($user['admin']), !empty($user['demo']));
             $enabledIds[$p['id']] = true;
             $seen[$p['id']] = true;
         }
@@ -1207,7 +1253,7 @@ function tc_api_list_providers() {
             foreach ($db['providers'] as $p) {
                 if (isset($seen[$p['id']])) continue;
                 if (!(isset($p['scope']) && $p['scope'] === 'global')) continue;
-                $list[] = tc_client_provider($p, false, true);
+                $list[] = tc_client_provider($p, false, true, false);
                 $seen[$p['id']] = true;
             }
         }
@@ -1239,7 +1285,7 @@ function tc_api_create_provider() {
         if (!$wantGlobal && empty($db['settings']['allowUserProviders']) && empty($user['admin'])) {
             tc_fail(403, '管理员已关闭「用户自建供应商」功能');
         }
-        $p = tc_normalize_provider_input($b, array('id' => tc_uid(), 'createdAt' => tc_now()));
+        $p = tc_normalize_provider_input($b, array('id' => tc_uid(), 'createdAt' => tc_now()), !empty($user['demo']));
         $err = tc_validate_provider($p);
         if ($err) tc_fail(400, $err);
         // 新增供应商默认排到末尾,可在后台用上下移动调整顺序
@@ -1260,7 +1306,7 @@ function tc_api_create_provider() {
         }
         $db['providers'][] = $p;
         if ($wantGlobal) tc_grant_all_groups_provider($db, $p['id']);
-        tc_json(200, array('provider' => tc_client_provider($p, true, !empty($user['admin']))));
+        tc_json(200, array('provider' => tc_client_provider($p, true, !empty($user['admin']), !empty($user['demo']))));
     });
 }
 
@@ -1269,7 +1315,7 @@ function tc_api_update_provider($id) {
         $user = tc_require_auth($db);
         $b = tc_read_json_body();
         $p = tc_find_editable_provider($db, $user, $id);
-        $next = tc_normalize_provider_input($b, $p);
+        $next = tc_normalize_provider_input($b, $p, !empty($user['demo']));
         $err = tc_validate_provider($next);
         if ($err) tc_fail(400, $err);
         $next['updatedAt'] = tc_now();
@@ -1277,7 +1323,7 @@ function tc_api_update_provider($id) {
             tc_fail(500, '密钥加密失败，请检查服务器 openssl 环境');
         }
         tc_replace_by_id($db['providers'], $id, $next);
-        tc_json(200, array('provider' => tc_client_provider($next, true, !empty($user['admin']))));
+        tc_json(200, array('provider' => tc_client_provider($next, true, !empty($user['admin']), !empty($user['demo']))));
     });
 }
 
@@ -1297,6 +1343,8 @@ function tc_api_reveal_provider_key($id) {
         $p = null;
         foreach ($db['providers'] as $x) if ($x['id'] === $id) { $p = $x; break; }
         if (!$p) tc_fail(404, '供应商不存在');
+        // 演示管理员一律不可查看明文密钥:本站密钥是运营方的凭据,演示身份不应接触
+        if (!empty($user['demo'])) tc_fail(403, '演示管理员不可查看供应商密钥');
         $isOwner = isset($p['ownerId']) && $p['ownerId'] === $user['id'];
         $isAdminGlobal = !empty($user['admin']) && (isset($p['scope']) && $p['scope'] === 'global');
         if (!$isOwner && !$isAdminGlobal) tc_fail(403, '只能查看自己添加的供应商密钥');
@@ -1317,7 +1365,7 @@ function tc_api_get_global_provider() {
             if (isset($p['scope']) && $p['scope'] === 'global' && tc_provider_enabled($p)) { $g = $p; break; }
         }
         if (!$g) tc_json(200, array('provider' => null));
-        tc_json(200, array('provider' => tc_client_provider($g, false, !empty($user['admin']))));
+        tc_json(200, array('provider' => tc_client_provider($g, false, !empty($user['admin']), !empty($user['demo']))));
     });
 }
 
@@ -1743,7 +1791,8 @@ function tc_api_admin_storage_clean() {
 
 function tc_api_admin_stats() {
     tc_with_db(false, function ($db) {
-        tc_require_admin($db);
+        $admin = tc_require_admin($db);
+        $isDemo = tc_is_demo_user($admin);
         tc_backup_maybe($db);
         $days = tc_last_n_days(14);
         $byDay = tc_assoc($db['stats']['callsByDay']);
@@ -1761,12 +1810,23 @@ function tc_api_admin_stats() {
             return ($a['quota'] < $b['quota']) ? 1 : -1;
         });
         $top = array_slice($top, 0, 5);
+        // 演示管理员不应看到「谁额度最高」这类用户维度排行:匿名化并去掉可定位的 id
+        if ($isDemo) {
+            $top = array_map(function ($row, $i) {
+                return array(
+                    'id' => 'demo-' . ($i + 1), 'name' => '用户 ' . ($i + 1),
+                    'quota' => $row['quota'], 'admin' => false, 'groupId' => null,
+                );
+            }, $top, array_keys($top));
+        }
         $adminCount = 0; $globalCount = 0; $globalDisabled = 0;
         foreach ($db['users'] as $u) if (!empty($u['admin'])) $adminCount++;
         foreach ($db['providers'] as $p) {
             if (!(isset($p['scope']) && $p['scope'] === 'global')) continue;
             if (tc_provider_enabled($p)) $globalCount++; else $globalDisabled++;
         }
+        $daysWindow = tc_last_n_days(14);
+        $usageRows = tc_admin_usage_rows($db, $daysWindow);
         $mem = function_exists('memory_get_usage') ? (int) round(memory_get_usage(true) / 1048576) : 0;
         tc_json(200, array(
             'stats' => array(
@@ -1783,7 +1843,7 @@ function tc_api_admin_stats() {
                 'trend' => $trend,
                 'topUsers' => $top,
                 'modelVotes' => tc_model_vote_rows($db),
-                'usage' => tc_admin_usage_rows($db, tc_last_n_days(14)),
+                'usage' => $isDemo ? tc_demo_anonymize_usage($usageRows) : $usageRows,
                 'uptimeSec' => tc_uptime_sec(),
                 'version' => TC_VERSION,
                 'memoryMB' => $mem,
@@ -1793,6 +1853,18 @@ function tc_api_admin_stats() {
             'settings' => tc_admin_settings_public($db['settings']),
         ));
     });
+}
+
+// 演示管理员看用量明细时把「谁用了多少」匿名化,只保留汇总口径
+function tc_demo_anonymize_usage($rows) {
+    $out = array();
+    foreach ((array) $rows as $i => $row) {
+        if (!is_array($row)) continue;
+        $row['userId'] = 'demo-' . ($i + 1);
+        $row['name'] = '用户 ' . ($i + 1);
+        $out[] = $row;
+    }
+    return $out;
 }
 
 function tc_api_vote() {
@@ -2233,7 +2305,8 @@ function tc_api_me_apikeys_delete($id) {
 // ---- 注册邀请码 ----
 function tc_api_admin_usage_export() {
     tc_with_db(false, function ($db) {
-        tc_require_admin($db);
+        // 按用户姓名导出全站用量属用户行为隐私,演示管理员不可导出
+        tc_demo_guard(tc_require_admin($db), '演示管理员不可导出用户用量明细');
         $ledger = tc_assoc(isset($db['stats']['usageLedger']) ? $db['stats']['usageLedger'] : array());
         $names = array();
         foreach ($db['users'] as $u) $names[(string) $u['id']] = (string) (isset($u['name']) ? $u['name'] : '');
@@ -2511,9 +2584,21 @@ function tc_api_admin_mail_template_defaults() {
 
 function tc_api_admin_logs() {
     tc_with_db(false, function ($db) {
-        tc_require_admin($db);
+        $admin = tc_require_admin($db);
         $q = tc_query();
-        tc_json(200, array('logs' => tc_list_logs(isset($q['limit']) ? $q['limit'] : 100), 'limit' => TC_LOG_LIMIT));
+        $logs = tc_list_logs(isset($q['limit']) ? $q['limit'] : 100);
+        // 演示管理员看日志时剔除与用户隐私相关的字段:
+        //  - ip / userName / userId:来源地址与身份
+        //  - prompt / reply:这两项就是用户对话内容,而演示身份本就被禁止查看用户对话,
+        //    若不剔除等于绕过了该限制(日志详情里能直接读到提示词与模型回复)。
+        if (tc_is_demo_user($admin)) {
+            foreach ($logs as &$row) {
+                if (!is_array($row)) continue;
+                foreach (array('ip', 'userName', 'userId', 'prompt', 'reply') as $k) unset($row[$k]);
+            }
+            unset($row);
+        }
+        tc_json(200, array('logs' => $logs, 'limit' => TC_LOG_LIMIT));
     });
 }
 
@@ -2528,7 +2613,8 @@ function tc_api_admin_delete_logs() {
 // ---- 数据备份 ----
 function tc_api_admin_backup_list() {
     tc_with_db(false, function ($db) {
-        tc_require_admin($db);
+        // 备份文件是整库快照(含密码哈希/对话/密钥),演示管理员一律不可接触
+        tc_demo_guard(tc_require_admin($db), '演示管理员不可下载或管理数据备份');
         tc_backup_maybe($db);
         tc_json(200, array(
             'backups' => tc_backup_list(),
@@ -2540,7 +2626,7 @@ function tc_api_admin_backup_list() {
 
 function tc_api_admin_backup_create() {
     tc_with_db(true, function (&$db) {
-        tc_require_admin($db);
+        tc_demo_guard(tc_require_admin($db), '演示管理员不可下载或管理数据备份');
         $name = tc_backup_create();
         if ($name === null) tc_fail(500, '备份创建失败，请检查 data/backup 目录写权限');
         tc_backup_prune($db['settings']);
@@ -2551,7 +2637,7 @@ function tc_api_admin_backup_create() {
 
 function tc_api_admin_backup_download() {
     tc_with_db(false, function ($db) {
-        tc_require_admin($db);
+        tc_demo_guard(tc_require_admin($db), '演示管理员不可下载或管理数据备份');
         $q = tc_query();
         $full = tc_backup_path(isset($q['id']) ? $q['id'] : '');
         if ($full === '') tc_fail(404, '备份不存在');
@@ -2567,7 +2653,7 @@ function tc_api_admin_backup_download() {
 
 function tc_api_admin_backup_restore() {
     tc_with_db(true, function (&$db) {
-        tc_require_admin($db);
+        tc_demo_guard(tc_require_admin($db), '演示管理员不可下载或管理数据备份');
         $b = tc_read_json_body();
         $full = tc_backup_path(isset($b['id']) ? $b['id'] : '');
         if ($full === '') tc_fail(404, '备份不存在');
@@ -2617,14 +2703,15 @@ function tc_api_admin_user_chats() {
 
 function tc_api_admin_users() {
     tc_with_db(false, function ($db) {
-        tc_require_admin($db);
+        $admin = tc_require_admin($db);
         $q = tc_query();
         $kw = strtolower(trim(isset($q['q']) ? $q['q'] : ''));
         $users = array();
         foreach ($db['users'] as $u) {
             $pc = 0;
             foreach ($db['providers'] as $p) if (isset($p['ownerId']) && $p['ownerId'] === $u['id']) $pc++;
-            $row = tc_sanitize_user($u);
+            // 演示管理员不展示登录 IP 与邮箱(用户隐私),其余字段照常
+            $row = tc_sanitize_user_for($admin, $u);
             $row['chatCount'] = count(tc_chats_of($db, $u['id']));
             $row['providerCount'] = $pc;
             if ($kw !== '' && strpos(strtolower($u['name']), $kw) === false) continue;
@@ -2798,6 +2885,73 @@ function tc_api_admin_set_quota() {
     });
 }
 
+// 彻底删除一个用户及其对话、自建供应商(硬注销与后台删用户共用)
+function tc_purge_user(&$db, $id) {
+    $idx = -1;
+    foreach ($db['users'] as $i => $u) if ($u['id'] === $id) { $idx = $i; break; }
+    if ($idx < 0) return array('removed' => false, 'removedProviders' => 0);
+    array_splice($db['users'], $idx, 1);
+    $map = tc_assoc($db['userChats']);
+    unset($map[$id]);
+    $db['userChats'] = tc_object_map($map);
+    $ownIds = array();
+    foreach ($db['providers'] as $p) if (isset($p['ownerId']) && $p['ownerId'] === $id) $ownIds[] = $p['id'];
+    foreach ($ownIds as $pid) tc_remove_provider($db, $pid);
+    return array('removed' => true, 'removedProviders' => count($ownIds));
+}
+
+// 软注销:清空隐私资料并给用户名/邮箱加「已注销」标记,让原用户名与原邮箱都可被重新注册。
+// 账号本体保留(用户外键、用量台账不至于悬空),但已无法登录。
+function tc_soft_delete_user(&$db, $id) {
+    $stamp = substr(bin2hex(random_bytes(3)), 0, 6);
+    foreach ($db['users'] as &$u) {
+        if (!isset($u['id']) || $u['id'] !== $id) continue;
+        $origName = (string) (isset($u['name']) ? $u['name'] : 'user');
+        // 用户名加后缀:改名后原名字可被重新注册(用户名唯一性校验看的是当前值)
+        $newName = tc_tombstone_name($db, $origName, $stamp);
+        $u['name'] = $newName;
+        // 邮箱同样加标记,使原邮箱不再占用(找回密码/邮箱验证因此不会冲突)
+        if (!empty($u['email'])) $u['email'] = 'deleted+' . $stamp . '+' . $u['email'];
+        $u['emailVerifiedAt'] = 0;
+        // 清空一切可识别与可用凭据
+        $u['passwordHash'] = '';
+        $u['salt'] = '';
+        $u['tools'] = array();
+        $u['oauth'] = array();
+        $u['oauthName'] = '';
+        $u['apiKeys'] = array();
+        $u['lastIp'] = '';
+        $u['deleted'] = true;
+        $u['deletedAt'] = tc_now();
+        $u['tv'] = (int) (isset($u['tv']) ? $u['tv'] : 0) + 1;   // 立即失效所有已签发令牌
+        $u['quota'] = 0;
+        unset($u);
+        // 对话与自建供应商一并清除(用户要求「清除全部数据」)
+        $map = tc_assoc($db['userChats']);
+        unset($map[$id]);
+        $db['userChats'] = tc_object_map($map);
+        $ownIds = array();
+        foreach ($db['providers'] as $p) if (isset($p['ownerId']) && $p['ownerId'] === $id) $ownIds[] = $p['id'];
+        foreach ($ownIds as $pid) tc_remove_provider($db, $pid);
+        return array('ok' => true, 'name' => $newName, 'removedProviders' => count($ownIds));
+    }
+    unset($u);
+    return array('ok' => false);
+}
+
+// 生成不与现有用户重名的注销占位名(如「张三-已注销-a1b2c3」)
+function tc_tombstone_name($db, $orig, $stamp) {
+    $base = mb_substr((string) $orig, 0, 18);
+    $cand = $base . '-已注销-' . $stamp;
+    $taken = array();
+    foreach ($db['users'] as $u) $taken[strtolower((string) (isset($u['name']) ? $u['name'] : ''))] = true;
+    if (!isset($taken[strtolower($cand)])) return $cand;
+    // 极端情况:再补一轮随机
+    do { $cand = $base . '-已注销-' . substr(bin2hex(random_bytes(4)), 0, 8); }
+    while (isset($taken[strtolower($cand)]));
+    return $cand;
+}
+
 function tc_api_admin_delete_user($id) {
     tc_with_db(true, function (&$db) use ($id) {
         $admin = tc_require_admin($db);
@@ -2806,14 +2960,8 @@ function tc_api_admin_delete_user($id) {
         foreach ($db['users'] as $i => $u) if ($u['id'] === $id) { $idx = $i; break; }
         if ($idx < 0) tc_fail(404, '用户不存在');
         if ($db['users'][$idx]['id'] === $admin['id']) tc_fail(400, '不能删除当前登录的管理员账号');
-        array_splice($db['users'], $idx, 1);
-        $map = tc_assoc($db['userChats']);
-        unset($map[$id]);
-        $db['userChats'] = tc_object_map($map);
-        $ownIds = array();
-        foreach ($db['providers'] as $p) if (isset($p['ownerId']) && $p['ownerId'] === $id) $ownIds[] = $p['id'];
-        foreach ($ownIds as $pid) tc_remove_provider($db, $pid);
-        tc_json(200, array('ok' => true, 'removedProviders' => count($ownIds)));
+        $res = tc_purge_user($db, $id);
+        tc_json(200, array('ok' => true, 'removedProviders' => $res['removedProviders']));
     });
 }
 
@@ -3386,7 +3534,7 @@ function tc_api_admin_update_provider($id) {
             unset($pp);
             tc_json(200, array('ok' => true));
         }
-        $next = tc_normalize_provider_input($b, $existing);
+        $next = tc_normalize_provider_input($b, $existing, !empty($admin['demo']));
         $err = tc_validate_provider($next);
         if ($err) tc_fail(400, $err);
         $next['updatedAt'] = tc_now();
@@ -3416,13 +3564,13 @@ function tc_api_admin_update_provider($id) {
             }
             if ($newIds) tc_sync_new_models_access($db, $id, $newIds);
         }
-        tc_json(200, array('provider' => tc_client_provider($next, false, true)));
+        tc_json(200, array('provider' => tc_client_provider($next, false, true, false)));
     });
 }
 
 function tc_api_admin_delete_provider($id) {
     tc_with_db(true, function (&$db) use ($id) {
-        tc_require_admin($db);
+        tc_demo_guard(tc_require_admin($db), '演示管理员不能删除供应商');
         if (!tc_remove_provider($db, $id)) tc_fail(404, '供应商不存在');
         tc_json(200, array('ok' => true));
     });

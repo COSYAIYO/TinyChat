@@ -591,7 +591,8 @@ function tc_api_me_oauth_unbind($id) {
 // —— 管理端:查看某个用户的第三方绑定情况(后台用户编辑用) ——
 function tc_api_admin_user_oauth_list() {
     tc_with_db(false, function ($db) {
-        tc_require_admin($db);
+        // 第三方绑定属账号隐私(能看出某用户的社交/社区身份),演示管理员不可查看
+        tc_demo_guard(tc_require_admin($db), '演示管理员不可查看用户的第三方绑定');
         $q = tc_query();
         $userId = trim((string) (isset($q['userId']) ? $q['userId'] : ''));
         if ($userId === '') tc_fail(400, '缺少 userId');

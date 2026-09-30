@@ -147,6 +147,34 @@ $db2['settings'] = tc_normalize_settings(array('siteName' => 'X'));
 $eq('普通管理员不拍摄', tc_demo_arm($db2, array('id' => 'u', 'admin' => true)), false);
 $eq('无快照时还原为 no-op', tc_demo_revert($db2), false);
 
+// 7) 回归:快照被消费后,演示管理员只要继续活动(如在前台聊天)就要重新拍摄。
+// 缺陷背景:快照原先只在 tc_require_admin(后台操作)里拍摄,演示管理员纯聊天时不经过那里,
+// 第一次到期还原后快照被消费、永久不再重建 —— 他之后产生的对话就再也不会被自动清除。
+$db4 = tc_empty_db();
+$db4['settings'] = tc_normalize_settings(array('siteName' => 'S', 'demoExpireMinutes' => 10));
+$demo4 = array('id' => 'du4', 'name' => 'chatdemo', 'admin' => true, 'demo' => true, 'quota' => 5);
+$db4['users'] = array($demo4);
+$db4['userChats'] = tc_object_map(array('du4' => array()));
+tc_demo_arm($db4, $demo4);
+$eq('首轮快照已建立', is_array($db4['demoSnapshot']), true);
+// 首轮到期:还原并消费快照
+$db4['demoSnapshot']['expireAt'] = 1;
+tc_demo_revert($db4);
+$eq('首轮还原后快照被消费', $db4['demoSnapshot'], null);
+// 演示期间又聊了一轮(模拟前台保存对话触发的写入)
+$map4 = tc_assoc($db4['userChats']);
+$map4['du4'][] = array('id' => 'r2', 'title' => '第二轮对话', 'messages' => array());
+$db4['userChats'] = tc_object_map($map4);
+// 写入路径下必须自动重建快照(修复点)
+$rearm = tc_demo_arm($db4, $demo4);
+$eq('继续活动后快照自动重建', $rearm, true);
+$eq('重建的快照仍是原始基准', count($db4['demoSnapshot']['demoChats']), 0);
+// 第二轮到期:新产生的对话同样被回收
+$db4['demoSnapshot']['expireAt'] = 1;
+tc_demo_revert($db4);
+$after4 = tc_assoc($db4['userChats']);
+$eq('第二轮新对话也被清除', count($after4['du4']), 0);
+
 // 清理
 foreach (glob($dataDir . '/*') as $f) @unlink($f);
 @rmdir($dataDir);

@@ -25,15 +25,15 @@
 </script>
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./logo-icon.svg">
-<link rel="stylesheet" href="./static/css/style.css?v=20261007.21">
+<link rel="stylesheet" href="./static/css/style.css?v=20261007.23">
 <link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
 <link rel="stylesheet" href="./vendor/katex/katex.min.css">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.21">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261007.21">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.21">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261007.21">
-<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.21">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.21">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.23">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261007.23">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.23">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261007.23">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.23">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.23">
 <script>
 /* 在样式表之后立刻刷主题色,避免首屏主按钮仍是默认蓝 */
 (function () {
@@ -72,7 +72,7 @@
 </script>
 <!-- 性能门控:按后台设置决定是否加载渲染依赖(markdown-it 始终加载;KaTeX/highlight 可关)。
      必须在渲染依赖之前同步执行;具体的 <script> 标签由 perf.js 用 document.write 注入。 -->
-<script src="./static/js/perf.js?v=20261007.21"></script>
+<script src="./static/js/perf.js?v=20261007.23"></script>
 </head>
 <body>
   <!-- 移动端侧边栏遮罩 -->
@@ -408,6 +408,13 @@
             <span class="muted small" id="usage2-log-note"></span>
             <button class="btn small hidden" id="usage2-more" type="button">加载更多</button>
           </div>
+          <div class="section-title" style="margin-top:18px">余量明细</div>
+          <p class="muted small" style="margin:0 0 8px" id="usage2-quota-summary">逐笔记录额度的来源与消耗（含生成标题、跟进建议等辅助调用），便于核对。滚动到底部会自动加载更早的记录。</p>
+          <div id="usage2-quota-list" class="apikey-list"></div>
+          <div id="usage2-quota-sentinel" class="usage2-sentinel" aria-hidden="true"></div>
+          <div class="form-actions" id="usage2-quota-more-wrap" style="display:none">
+            <button class="btn small" id="usage2-quota-more" type="button">加载更早的记录</button>
+          </div>
         </section>
 
         <!-- 账户 -->
@@ -435,11 +442,10 @@
           <div class="section-title">第三方账号绑定</div>
           <div id="acc-oauth-list" class="apikey-list"></div>
 
-          <div class="section-title">余量明细</div>
-          <p class="muted small" style="margin:0 0 8px" id="acc-quota-summary">逐笔记录额度的来源与消耗，便于核对。</p>
-          <div id="acc-quota-list" class="apikey-list"></div>
-          <div class="form-actions" id="acc-quota-more-wrap" style="display:none">
-            <button class="btn small" id="acc-quota-more" type="button">加载更多</button>
+          <div id="acc-danger-zone" class="acc-danger-zone hidden">
+            <div class="section-title">注销账号</div>
+            <p class="muted small" style="margin:0 0 10px" id="acc-delete-note"></p>
+            <button class="btn danger small" id="acc-delete-account" type="button">注销我的账号</button>
           </div>
 
         </section>
@@ -890,19 +896,19 @@
     <button class="btn small primary" id="guest-bar-login" type="button">登录 / 注册</button>
   </div>
 
-  <script src="./static/js/config.js?v=20261007.21"></script>
-  <script src="./static/js/icons.js?v=20261007.21"></script>
-  <script src="./static/js/logos.js?v=20261007.21"></script>
-  <script src="./static/js/components.js?v=20261007.21"></script>
-  <script src="./static/js/ui.js?v=20261007.21"></script>
-  <script src="./static/js/assistants.js?v=20261007.21"></script>
-  <script src="./static/js/conversations.js?v=20261007.21"></script>
-  <script src="./static/js/renderer.js?v=20261007.21"></script>
-  <script src="./static/js/reasoning.js?v=20261007.21"></script>
-  <script src="./static/js/office-formula-copy.js?v=20261007.21"></script>
-  <script src="./static/js/citations.js?v=20261007.21"></script>
-  <script src="./static/js/messages.js?v=20261007.21"></script>
-  <script src="./static/js/multimodal.js?v=20261007.21"></script>
-  <script src="./static/js/app.js?v=20261007.21"></script>
+  <script src="./static/js/config.js?v=20261007.23"></script>
+  <script src="./static/js/icons.js?v=20261007.23"></script>
+  <script src="./static/js/logos.js?v=20261007.23"></script>
+  <script src="./static/js/components.js?v=20261007.23"></script>
+  <script src="./static/js/ui.js?v=20261007.23"></script>
+  <script src="./static/js/assistants.js?v=20261007.23"></script>
+  <script src="./static/js/conversations.js?v=20261007.23"></script>
+  <script src="./static/js/renderer.js?v=20261007.23"></script>
+  <script src="./static/js/reasoning.js?v=20261007.23"></script>
+  <script src="./static/js/office-formula-copy.js?v=20261007.23"></script>
+  <script src="./static/js/citations.js?v=20261007.23"></script>
+  <script src="./static/js/messages.js?v=20261007.23"></script>
+  <script src="./static/js/multimodal.js?v=20261007.23"></script>
+  <script src="./static/js/app.js?v=20261007.23"></script>
 </body>
 </html>

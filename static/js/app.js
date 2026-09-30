@@ -3708,7 +3708,12 @@ function openSettings(tab) {
 function switchSettingsTab(name) {
   document.querySelectorAll('#settings-tabs .settings-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
   document.querySelectorAll('#settings-modal .settings-panel').forEach((p) => p.classList.toggle('active', p.id === 'sp-' + name));
-  if (name === 'usage2') { usage2Limit = USAGE2_PAGE_SIZE; try { renderUsagePanel(); } catch (e) { console.error(e); } }
+  if (name === 'usage2') {
+    usage2Limit = USAGE2_PAGE_SIZE;
+    try { renderUsagePanel(); } catch (e) { console.error(e); }
+    // 余量明细也在这个面板:切进来时重新拉第一页,保证数据是最新的
+    try { if (window.OCLoadQuotaLedger) window.OCLoadQuotaLedger(true); } catch (e) { console.error(e); }
+  }
 }
 function closeSettings() {
   // 关闭即清除已生成密钥明文,避免重新打开设置仍能看到
@@ -4482,6 +4487,61 @@ async function saveToolSource(patch) {
     });
   });
 
+  // 注销账号:后台可配置为不允许 / 软注销 / 硬注销,具体文案随模式变化
+  const delAcc = $('acc-delete-account');
+  if (delAcc) {
+    delAcc.addEventListener('click', async () => {
+      const mode = String((state.config && state.config.accountDeletionMode) || 'soft');
+      const hasPwd = !!(state.user && state.user.hasPassword);
+      const soft = mode !== 'hard';
+      const note = soft
+        ? '将立即清除你的账号资料、全部对话与自建供应商，并把用户名改为「原名-已注销-随机码」；账号记录保留以便追溯。完成后原用户名与原邮箱都可重新注册。'
+        : '将立即删除你的账号及其全部数据（对话、自建供应商、API 密钥等），此操作不可恢复。';
+      const ok = window.OCUI && window.OCUI.confirm
+        ? await window.OCUI.confirm({ title: '注销账号', message: note + '确定继续？', danger: true, confirmText: '继续注销' })
+        : window.confirm(note + '\n\n确定继续？');
+      if (!ok) return;
+      // 二次确认:有密码验密码,无密码要求手输用户名
+      const fields = hasPwd
+        ? [{ label: '当前密码（确认身份）', type: 'password' }]
+        : [{ label: '输入当前用户名以确认', placeholder: String((state.user && state.user.name) || ''), maxlength: 32 }];
+      openAccountDialog('确认注销账号', fields, async (vals, showErr) => {
+        const body = hasPwd ? { password: vals[0] || '' } : { confirmName: (vals[0] || '').trim() };
+        if (hasPwd && !body.password) throw new Error('请输入当前密码');
+        if (!hasPwd && !body.confirmName) throw new Error('请输入当前用户名');
+        const r = await api('/api/auth/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const d = await readJsonSafe(r);
+        if (!r.ok) throw new Error((d.error && d.error.message) || '注销失败');
+        try { localStorage.removeItem('oc_token'); } catch (e) { /* 忽略 */ }
+        state.token = '';
+        state.user = null;
+        try { sessionStorage.setItem('oc_just_deleted', d.mode === 'hard' ? '1' : 'soft'); } catch (e) { /* 忽略 */ }
+        location.replace('/login');
+      });
+    });
+  }
+
+  // 注销入口可见性与文案:后端关掉时不显示
+  function renderDeleteAccount() {
+    const zone = $('acc-danger-zone');
+    if (!zone) return;
+    const mode = String((state.config && state.config.accountDeletionMode) || 'soft');
+    if (mode === 'off') { zone.classList.add('hidden'); return; }
+    zone.classList.remove('hidden');
+    const note = $('acc-delete-note');
+    if (note) {
+      note.textContent = mode === 'hard'
+        ? '注销会永久删除你的账号与全部数据（对话、自建供应商、API 密钥），不可恢复。'
+        : '注销会清除你的账号资料、全部对话与自建供应商；用户名会被加上「已注销」标记，之后原名与原邮箱都可重新注册。';
+    }
+  }
+  window.OCRefreshDeleteAccount = renderDeleteAccount;
+  renderDeleteAccount();
+
   // 修改用户名(用户名旁的小按钮 → 弹窗)
   const editName = $('acc-edit-name');
   if (editName) {
@@ -4576,9 +4636,12 @@ async function saveToolSource(patch) {
     loadAccountOauth();
   }
 
-  // 余量明细:逐笔展示额度增减,支持分页
+  // 余量明细:逐笔展示额度增减,分页 + 滚动加载
   let quotaLedgerOffset = 0;
-  const QUOTA_PAGE = 50;
+  let quotaLedgerLoading = false;
+  let quotaLedgerTotal = 0;      // 服务端报告的总条数(用于判断是否还有下一页)
+  let quotaLedgerMax = 300;      // 自动加载的条数上限,超过后只允许手动继续,避免长列表拖慢页面
+  const QUOTA_PAGE = 30;
   function quotaEntryHtml(e) {
     const amt = Number(e.amount) || 0;
     const sign = amt > 0 ? '+' : '';
@@ -4591,9 +4654,14 @@ async function saveToolSource(patch) {
       + '<div class="muted small">' + when + '</div></div>'
       + '<div style="text-align:right;white-space:nowrap"><b style="' + cls + '">' + sign + amt + '</b><br>' + flow + '</div></div>';
   }
+  // 余量明细:分页拉取 + 滚动到底自动加载。
+  // 台账可能积累上万条,一次性渲染会卡死页面:这里每页 30 条,并且给自动加载设条数上限,
+  // 超过上限后停止自动加载(改为手动按钮),保证长期使用也不会越滚越卡。
   async function loadQuotaLedger(reset) {
-    const box = $('acc-quota-list');
+    const box = $('usage2-quota-list');
     if (!box) return;
+    if (quotaLedgerLoading) return;
+    quotaLedgerLoading = true;
     if (reset) { quotaLedgerOffset = 0; box.innerHTML = '<p class="muted small">加载中…</p>'; }
     try {
       const r = await api('/api/me/quota/ledger?limit=' + QUOTA_PAGE + '&offset=' + quotaLedgerOffset);
@@ -4607,20 +4675,49 @@ async function saveToolSource(patch) {
         box.insertAdjacentHTML('beforeend', rows.map(quotaEntryHtml).join(''));
       }
       quotaLedgerOffset += rows.length;
-      const sum = $('acc-quota-summary');
+      const sum = $('usage2-quota-summary');
       if (sum && typeof d.gained === 'number') {
         sum.textContent = '当前余额 ' + d.quota + ' · 累计获得 ' + d.gained + ' · 累计消耗 ' + d.spent
           + '（逐笔记录含生成标题、跟进建议等辅助调用）';
       }
-      const moreWrap = $('acc-quota-more-wrap');
-      if (moreWrap) moreWrap.style.display = (quotaLedgerOffset < (d.total || 0)) ? '' : 'none';
+      const total = d.total || 0;
+      quotaLedgerTotal = total;
+      const overflow = quotaLedgerOffset >= quotaLedgerMax && quotaLedgerOffset < total;
+      const moreWrap = $('usage2-quota-more-wrap');
+      if (moreWrap) {
+        moreWrap.style.display = overflow ? '' : 'none';
+        const moreBtn = $('usage2-quota-more');
+        if (moreBtn && overflow) moreBtn.textContent = '已加载 ' + quotaLedgerOffset + ' / ' + total + ' 条，继续加载';
+      }
+      const note = $('usage2-quota-note');
+      if (note) note.textContent = '';
     } catch (e) {
       if (reset) box.innerHTML = '<p class="muted small">加载失败：' + escapeHtml(e.message || '') + '</p>';
+    } finally {
+      quotaLedgerLoading = false;
     }
   }
-  const moreBtn = $('acc-quota-more');
-  if (moreBtn) moreBtn.addEventListener('click', () => loadQuotaLedger(false));
-  if ($('sp-account')) {
+  // 滚动进入视口即自动加载下一页(达到上限后不再自动触发)
+  const quotaSentinel = $('usage2-quota-sentinel');
+  if (quotaSentinel && typeof IntersectionObserver === 'function') {
+    const io = new IntersectionObserver((ents) => {
+      ents.forEach((en) => {
+        if (!en.isIntersecting) return;
+        if (quotaLedgerOffset >= quotaLedgerMax) return;
+        if (quotaLedgerOffset >= quotaLedgerTotal) return;
+        loadQuotaLedger(false);
+      });
+    }, { rootMargin: '120px' });
+    io.observe(quotaSentinel);
+  }
+  const moreBtn = $('usage2-quota-more');
+  if (moreBtn) moreBtn.addEventListener('click', () => {
+    // 手动继续:同时放宽上限,否则点一次就又被卡住
+    quotaLedgerMax += QUOTA_PAGE * 5;
+    loadQuotaLedger(false);
+  });
+  window.OCLoadQuotaLedger = loadQuotaLedger;
+  if ($('sp-usage2')) {
     loadQuotaLedger(true);
   }
 
@@ -5311,6 +5408,9 @@ $('admin-link').addEventListener('click', () => location.href = apiUrl('/admin')
   };
   window.OCGetAnnouncement = () => current;
   fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
+    state.config = cfg || {};
+    // 注销入口按后台设置显隐(该配置在打开设置面板时才用得到,这里顺带刷新)
+    if (window.OCRefreshDeleteAccount) window.OCRefreshDeleteAccount();
     // 第三方账号绑定回跳:提示结果并刷新绑定列表
     if (location.hash.indexOf('oauth_bound=') >= 0) {
       const pid = decodeURIComponent((location.hash.split('oauth_bound=')[1] || '').split('&')[0]);

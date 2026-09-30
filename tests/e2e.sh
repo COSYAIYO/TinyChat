@@ -528,6 +528,39 @@ assert_eq "真实管理员改动写入演示基准" "$(snap_site "$TMP/data")" "
 curl -s -X POST "$BASE/api/admin/settings" -H "$DAUTH" -H "Content-Type: application/json" -d '{"siteName":"DEMOTMP"}' > /dev/null
 assert_eq "演示管理员改动不污染基准" "$(snap_site "$TMP/data")" "REALBASE"
 assert_contains "config 暴露 demoMode" "$(curl -s "$BASE/api/config")" '"demoMode":true'
+# 演示管理员的隐私边界:登录 IP / 邮箱 / 密钥 / 备份 / 日志内容 / 第三方绑定 一律不可见
+DEMOUSERS=$(curl -s "$BASE/api/admin/users" -H "$DAUTH")
+assert_contains "演示管理员看不到用户登录 IP" "$DEMOUSERS" '"lastIp":""'
+assert_contains "演示管理员看不到用户邮箱" "$DEMOUSERS" '"email":""'
+# 真实管理员仍应看到 IP(否则这次修复就过头了)
+assert_contains "真实管理员仍可见用户 IP" "$(curl -s "$BASE/api/admin/users" -H "$AUTH")" '"lastIp":"127.0.0.1"'
+# 供应商密钥:演示管理员连掩码都不下发
+DEMOPROV=$(curl -s "$BASE/api/providers" -H "$DAUTH")
+assert_contains "演示管理员看不到供应商密钥掩码" "$DEMOPROV" '"apiKey":""'
+assert_has "演示管理员看不到多密钥列表" "$DEMOPROV" '"keys":[]'
+assert_contains "演示管理员不可查看明文密钥" "$(curl -s -X POST "$BASE/api/providers/$PROV/key" -H "$DAUTH")" '演示管理员不可查看供应商密钥'
+assert_contains "演示管理员不可删除供应商" "$(curl -s -X DELETE "$BASE/api/admin/providers/$PROV" -H "$DAUTH")" '演示管理员不能删除供应商'
+# 备份是整库快照(含密码哈希/对话/密钥),演示管理员完全不可接触
+assert_contains "演示管理员不可列出备份" "$(curl -s "$BASE/api/admin/backup" -H "$DAUTH")" '演示管理员不可下载或管理数据备份'
+assert_contains "演示管理员不可下载备份" "$(curl -s "$BASE/api/admin/backup/download?id=x" -H "$DAUTH")" '演示管理员不可下载或管理数据备份'
+assert_contains "演示管理员不可恢复备份" "$(curl -s -X POST "$BASE/api/admin/backup/restore" -H "$DAUTH" -H "Content-Type: application/json" -d '{"id":"x"}')" '演示管理员不可下载或管理数据备份'
+# 日志:IP/用户名/对话正文都要剔除(日志里能读到提示词=绕过「不可查看用户对话」)
+DEMOLOG=$(curl -s "$BASE/api/admin/logs?limit=20" -H "$DAUTH")
+if printf '%s' "$DEMOLOG" | grep -qF '"ip"'; then bad "演示管理员日志里仍有 IP"; else ok "演示管理员日志不含 IP"; fi
+if printf '%s' "$DEMOLOG" | grep -qF '"prompt":"'; then bad "演示管理员日志里仍有对话正文"; else ok "演示管理员日志不含对话正文"; fi
+if printf '%s' "$DEMOLOG" | grep -qF '"reply":"'; then bad "演示管理员日志里仍有模型回复"; else ok "演示管理员日志不含模型回复"; fi
+if printf '%s' "$DEMOLOG" | grep -qF '"userName"'; then bad "演示管理员日志里仍有用户名"; else ok "演示管理员日志不含用户名"; fi
+assert_contains "真实管理员日志仍含 IP" "$(curl -s "$BASE/api/admin/logs?limit=1" -H "$AUTH")" '"ip":'
+# 用户第三方绑定属账号隐私
+assert_contains "演示管理员不可查看用户第三方绑定" "$(curl -s "$BASE/api/admin/users/oauth?userId=$GID1" -H "$DAUTH")" '演示管理员不可查看用户的第三方绑定'
+# 用量导出与用户维度排行
+assert_contains "演示管理员不可导出用户用量" "$(curl -s "$BASE/api/admin/usage/export" -H "$DAUTH")" '演示管理员不可导出用户用量明细'
+assert_has "演示管理员看到的额度排行已匿名" "$(curl -s "$BASE/api/admin/stats" -H "$DAUTH")" '"name":"用户 '
+# 演示管理员保存供应商时必须保留既有密钥(接口不下发密钥,提交里 keys 为空也不能清空)
+curl -s -X POST "$BASE/api/admin/providers/$PROV" -H "$DAUTH" -H "Content-Type: application/json" -d '{"name":"Demo Renamed","apiKey":"","keys":[]}' > /dev/null
+assert_contains "演示改供应商后密钥仍在" "$(curl -s "$BASE/api/providers" -H "$AUTH")" '"hasKey":true'
+curl -s -X POST "$BASE/api/admin/providers/$PROV" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"MockAI"}' > /dev/null
+
 # 已有用户可随时转为/取消演示管理员(不限于创建时)
 plain=$(curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"plainadmin","password":"pass1234","admin":true}')
 PLAINID=$(printf '%s' "$plain" | jget id)
@@ -1137,6 +1170,110 @@ cat > "$TMP/ob_off.json" <<'EOF'
 {"oauthProviders":{"linuxdo":{"enabled":false}}}
 EOF
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ob_off.json" > /dev/null
+
+say "== 演示管理员对话自动清除 =="
+# 回归:演示管理员只在前台聊天(不碰后台)时,快照也必须建立并在到期后清除其新对话。
+# 缺陷背景:快照原先只在 tc_require_admin(后台操作)里拍摄,演示管理员纯聊天时不经过那里,
+# 第一次到期还原后快照被消费、永久不再重建 —— 之后产生的对话就再也不会被自动清除。
+# 先清掉早前演示用例遗留的活跃快照:演示快照是「全站单例」,若已有生效中的快照,
+# 新建演示账号时不会重新拍摄,本段就测不到目标账号。这里显式重置,保证用例自洽。
+php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite");
+  $st=$pdo->prepare("DELETE FROM store WHERE k=? OR k=?");
+  $st->execute(array("demoSnapshot","demoBaseline"));
+  $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("users"));
+  $us=json_decode($q->fetchColumn(),true);
+  foreach($us as &$u) if(!empty($u["demo"]) && ($u["name"] ?? "") !== "chatdemo") $u["demo"]=false;
+  unset($u);
+  $up=$pdo->prepare("UPDATE store SET v=? WHERE k=?"); $up->execute(array(json_encode($us),"users"));
+  $up2=$pdo->prepare("UPDATE store SET v=? WHERE k=?"); $up2->execute(array("null","demoSnapshot"));' "$TMP/data"
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"demoExpireMinutes":10}' > /dev/null
+curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"chatdemo","password":"demo1234","demo":true}' > /dev/null
+CDT=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"chatdemo","password":"demo1234"}' | jget token)
+CDA="Authorization: Bearer $CDT"
+demo_chats() { # 读取该演示账号当前的对话条数(对话按 chat:<uid> 行存储)
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("users")); $us=json_decode($q->fetchColumn(),true); $id=""; foreach((array)$us as $u) if(($u["name"]??"")==="chatdemo") $id=$u["id"]; if($id===""){ echo 0; exit; } $q2=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q2->execute(array("chat:".$id)); $ch=json_decode($q2->fetchColumn(),true); echo count(is_array($ch)?$ch:array());' "$1"
+}
+demo_has_snapshot() { # 快照是否存在(直读库,避免走管理接口触发 rebaseline 重拍)
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("demoSnapshot")); $v=$q->fetchColumn(); $j=json_decode($v,true); echo (is_array($j) && !empty($j["expireAt"])) ? "yes" : "no";' "$1"
+}
+demo_expire_now() { # 把演示快照的到期时间拨到过去,模拟「10 分钟已到」
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("demoSnapshot")); $j=json_decode($q->fetchColumn(),true); if(!is_array($j)) exit(1); $j["expireAt"]=1; $st=$pdo->prepare("UPDATE store SET v=? WHERE k=?"); $st->execute(array(json_encode($j),"demoSnapshot"));' "$1"
+}
+demo_del() { # 删除测试用的演示账号
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("users")); foreach((array)json_decode($q->fetchColumn(),true) as $u) if(($u["name"]??"")==="chatdemo"){ echo $u["id"]; break; }' "$1"
+}
+
+# 第一轮:只在前台聊天,完全不碰后台
+cat > "$TMP/cd1.json" <<'EOF'
+{"chats":[{"id":"cd1","title":"演示第一轮","messages":[{"role":"user","content":"你好"}],"createdAt":1790789000000,"updatedAt":1790789000000}]}
+EOF
+curl -s -X POST "$BASE/api/sync/chats" -H "$CDA" -H "Content-Type: application/json" --data-binary @"$TMP/cd1.json" > /dev/null
+assert_eq "演示账号聊天已保存" "$(demo_chats "$TMP/data")" "1"
+assert_eq "聊天即建立还原快照(无需后台操作)" "$(demo_has_snapshot "$TMP/data")" "yes"
+demo_expire_now "$TMP/data"
+curl -s -o /dev/null "$BASE/"
+assert_eq "第一轮到期后对话被清除" "$(demo_chats "$TMP/data")" "0"
+# 第二轮:还原后继续聊天 —— 快照必须自动重建,新对话同样要被清除(核心回归)
+cat > "$TMP/cd2.json" <<'EOF'
+{"chats":[{"id":"cd2","title":"演示第二轮","messages":[{"role":"user","content":"第二轮"}],"createdAt":1790789000000,"updatedAt":1790789000000}]}
+EOF
+curl -s -X POST "$BASE/api/sync/chats" -H "$CDA" -H "Content-Type: application/json" --data-binary @"$TMP/cd2.json" > /dev/null
+assert_eq "第二轮聊天已保存" "$(demo_chats "$TMP/data")" "1"
+assert_eq "快照在消费后自动重建" "$(demo_has_snapshot "$TMP/data")" "yes"
+demo_expire_now "$TMP/data"
+curl -s -o /dev/null "$BASE/"
+assert_eq "第二轮到期后新对话也被清除" "$(demo_chats "$TMP/data")" "0"
+CDID=$(demo_del "$TMP/data")
+[ -n "$CDID" ] && curl -s -X DELETE "$BASE/api/admin/users/$CDID" -H "$AUTH" > /dev/null
+say "== 账号注销 =="
+# 后台三种模式 + 用户自助注销。软注销后原用户名/邮箱必须能被重新注册(核心诉求)。
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"accountDeletionMode":"off"}' > /dev/null
+assert_has "config 下发注销模式" "$(curl -s "$BASE/api/config")" '"accountDeletionMode":"off"'
+# 建一个独占账号用于注销测试
+curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"delme1","password":"del12345","quota":30}' > /dev/null
+D1T=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"delme1","password":"del12345"}' | jget token)
+D1A="Authorization: Bearer $D1T"
+assert_contains "关闭注销时接口拒绝" "$(curl -s -X POST "$BASE/api/auth/delete" -H "$D1A" -H "Content-Type: application/json" -d '{"password":"del12345"}')" '未开放账号注销'
+# 软注销
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"accountDeletionMode":"soft"}' > /dev/null
+assert_contains "错误密码被拒" "$(curl -s -X POST "$BASE/api/auth/delete" -H "$D1A" -H "Content-Type: application/json" -d '{"password":"wrongpass"}')" '密码不正确'
+DELRES=$(curl -s -X POST "$BASE/api/auth/delete" -H "$D1A" -H "Content-Type: application/json" -d '{"password":"del12345"}')
+assert_contains "软注销成功" "$DELRES" '"mode":"soft"'
+assert_contains "软注销后用户名带已注销标记" "$DELRES" 'delme1-已注销-'
+# 旧 token 失效
+assert_contains "注销后旧令牌失效" "$(curl -s "$BASE/api/auth/me" -H "$D1A")" '未登录'
+# 核心:原用户名可重新注册(本栈开启邀请码,故带上邀请码走真实注册路径)
+curl -s -X POST "$BASE/api/admin/invites" -H "$AUTH" -H "Content-Type: application/json" -d '{"count":1}' > /dev/null
+INVD=$(curl -s "$BASE/api/admin/invites" -H "$AUTH" | python -c "
+import sys,json
+d=json.load(sys.stdin)
+# 取一张「仍可用」的邀请码(列表里有已用尽的,不能盲取第一条)
+for c in d.get('codes',[]):
+    if c.get('usable'): print(c.get('code','')); break
+")
+cat > "$TMP/redel.json" <<EOF
+{"name":"delme1","password":"brandnew1","invite":"$INVD","agreementAccepted":true}
+EOF
+RE1=$(curl -s -X POST "$BASE/api/auth/register" -H "Content-Type: application/json" --data-binary @"$TMP/redel.json")
+assert_contains "原用户名可重新注册" "$RE1" '"token":'
+assert_contains "新账号已成功登录态" "$(curl -s "$BASE/api/auth/me" -H "Authorization: Bearer $(printf '%s' "$RE1" | jget token)")" '"name":"delme1"'
+# 被注销账号仍在(软注销语义),但已改名且不可登录
+assert_contains "软注销账号保留在用户列表" "$(curl -s "$BASE/api/admin/users" -H "$AUTH")" 'delme1-已注销-'
+# 硬注销:账号彻底消失
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"accountDeletionMode":"hard"}' > /dev/null
+curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"delme2","password":"del23456","quota":30}' > /dev/null
+D2T=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"delme2","password":"del23456"}' | jget token)
+assert_contains "硬注销成功" "$(curl -s -X POST "$BASE/api/auth/delete" -H "Authorization: Bearer $D2T" -H "Content-Type: application/json" -d '{"password":"del23456"}')" '"mode":"hard"'
+if curl -s "$BASE/api/admin/users" -H "$AUTH" | grep -qF '"delme2"'; then bad "硬注销后账号仍存在"; else ok "硬注销后账号彻底消失"; fi
+# 真实管理员仍可正常注销(管理员保护只在「唯一管理员」时生效,此处站内有多个管理员)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"accountDeletionMode":"soft"}' > /dev/null
+
+say "== 余量明细分页 =="
+LED1=$(curl -s "$BASE/api/me/quota/ledger?limit=5&offset=0" -H "$UAUTH")
+LED2=$(curl -s "$BASE/api/me/quota/ledger?limit=5&offset=5" -H "$UAUTH")
+assert_contains "余量明细返回总数" "$LED1" '"total":'
+assert_contains "余量明细返回分页条目" "$LED1" '"entries":'
+assert_contains "第二页可独立请求" "$LED2" '"entries":'
 
 say "== 服务器状态看板 =="
 SYS=$(curl -s "$BASE/api/admin/system" -H "$AUTH")

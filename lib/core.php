@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.62');
+define('TC_VERSION', '2.0.64');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -145,6 +145,11 @@ $TC_SETTINGS_DEFAULTS = array(
     'registerInviteRequired' => false,
     // 注册限流:每 IP 每小时最大注册尝试次数
     'registerLimitPerHour' => 5,
+    // 账号注销:用户可自行注销账号
+    //   off   = 不允许注销
+    //   soft  = 软注销:清空资料并改名为「原名-已注销-xxxx」「邮箱+已注销」,邮箱/用户名可被重新注册
+    //   hard  = 硬注销:直接删除账号及其对话、自建供应商等全部数据
+    'accountDeletionMode' => 'soft',
     // 性能优化(默认关闭,开启后减少前台加载体积;改动在用户下次访问时生效)
     // 不加载内置网页字体(思源宋体/阿里巴巴普惠体等,合计约 19MB);不加载 KaTeX 公式渲染;
     // 不加载代码高亮 highlight.js;不加载 Mermaid 图表。
@@ -491,6 +496,9 @@ function tc_normalize_settings($raw) {
     $s['guestRounds'] = min(1000, max(1, (int) (isset($s['guestRounds']) ? $s['guestRounds'] : 3) ?: 3));
     $s['registerInviteRequired'] = !empty($s['registerInviteRequired']);
     $s['registerLimitPerHour'] = min(1000, max(1, (int) (isset($s['registerLimitPerHour']) ? $s['registerLimitPerHour'] : 5) ?: 5));
+    // 注销模式:仅接受 off/soft/hard,其余一律回落软注销(默认值)
+    $adMode = isset($s['accountDeletionMode']) ? (string) $s['accountDeletionMode'] : 'soft';
+    $s['accountDeletionMode'] = in_array($adMode, array('off', 'soft', 'hard'), true) ? $adMode : 'soft';
     return $s;
 }
 
@@ -701,6 +709,15 @@ function tc_demo_arm(&$db, $user, $force = false) {
     $minutes = (int) (isset($db['settings']['demoExpireMinutes']) ? $db['settings']['demoExpireMinutes'] : 10);
     $minutes = min(1440, max(1, $minutes ?: 10));
     $uid = isset($user['id']) ? (string) $user['id'] : '';
+    // 上一轮还原后遗留的基准:重建快照时必须沿用「最初的干净状态」,而不是把演示期间的
+    // 改动当成新基准 —— 否则那些改动会被永久固化,再也清不掉。
+    $prevBase = null;
+    if (is_array($snap) && !empty($snap['userId']) && (string) $snap['userId'] === $uid) {
+        $prevBase = $snap;
+    } elseif (isset($db['demoBaseline']) && is_array($db['demoBaseline'])
+        && !empty($db['demoBaseline']['userId']) && (string) $db['demoBaseline']['userId'] === $uid) {
+        $prevBase = $db['demoBaseline'];
+    }
     $snapshot = array(
         'expireAt' => tc_now() + $minutes * 60000,
         'userId' => $uid,
@@ -711,11 +728,17 @@ function tc_demo_arm(&$db, $user, $force = false) {
     }
     // 演示管理员的「个人数据」同样在转换那一刻定格:自己的对话与额度,到期后一并恢复。
     $chatsMap = tc_assoc(isset($db['userChats']) ? $db['userChats'] : array());
-    $snapshot['demoChats'] = ($uid !== '' && isset($chatsMap[$uid]) && is_array($chatsMap[$uid])) ? $chatsMap[$uid] : array();
+    if ($prevBase !== null && array_key_exists('demoChats', $prevBase)) {
+        $snapshot['demoChats'] = $prevBase['demoChats'];              // 沿用最初基准
+        $snapshot['demoQuota'] = isset($prevBase['demoQuota']) ? $prevBase['demoQuota'] : 0;
+        $snapshot['demoQuotaGrants'] = isset($prevBase['demoQuotaGrants']) ? $prevBase['demoQuotaGrants'] : array();
+    } else {
+        $snapshot['demoChats'] = ($uid !== '' && isset($chatsMap[$uid]) && is_array($chatsMap[$uid])) ? $chatsMap[$uid] : array();
+        $snapshot['demoQuota'] = isset($user['quota']) ? $user['quota'] : 0;
+        $snapshot['demoQuotaGrants'] = isset($user['quotaGrants']) && is_array($user['quotaGrants']) ? $user['quotaGrants'] : array();
+    }
     $revMap = tc_assoc(isset($db['userChatRevisions']) ? $db['userChatRevisions'] : array());
     $snapshot['demoChatRevision'] = isset($revMap[$uid]) ? (int) $revMap[$uid] : 0;
-    $snapshot['demoQuota'] = isset($user['quota']) ? $user['quota'] : 0;
-    $snapshot['demoQuotaGrants'] = isset($user['quotaGrants']) && is_array($user['quotaGrants']) ? $user['quotaGrants'] : array();
     $db['demoSnapshot'] = $snapshot;
     $db['settings']['demoMode'] = true;
     return true;
@@ -761,6 +784,15 @@ function tc_demo_revert(&$db) {
             unset($u);
         }
     }
+    // 快照已消费:但把「最初的干净基准」留在 demoBaseline 里。
+    // 演示管理员通常还会继续演示(继续聊天/改设置),下一轮 tc_demo_arm 必须沿用这份原始基准,
+    // 否则会把演示期间的改动当成新基准固化下来,那些内容就永远清不掉了。
+    $db['demoBaseline'] = array(
+        'userId' => isset($snap['userId']) ? (string) $snap['userId'] : '',
+        'demoChats' => array_key_exists('demoChats', $snap) ? $snap['demoChats'] : array(),
+        'demoQuota' => array_key_exists('demoQuota', $snap) ? $snap['demoQuota'] : 0,
+        'demoQuotaGrants' => array_key_exists('demoQuotaGrants', $snap) ? $snap['demoQuotaGrants'] : array(),
+    );
     $db['demoSnapshot'] = null;
     return true;
 }
@@ -1507,6 +1539,17 @@ function tc_sanitize_user($u) {
     );
 }
 
+// 演示管理员看到的用户资料:登录 IP 与邮箱属用户隐私,演示场景一律不展示。
+// 注意不要改动上面的 tc_sanitize_user 默认行为(真实管理员与用户本人仍需要这些字段)。
+function tc_sanitize_user_for($viewer, $u) {
+    $pub = tc_sanitize_user($u);
+    if (is_array($viewer) && !empty($viewer['demo'])) {
+        $pub['lastIp'] = '';
+        $pub['email'] = '';
+    }
+    return $pub;
+}
+
 // 演示管理员敏感操作守卫:账号管理、查看对话、公告等一律拒绝,并给出统一提示。
 // $reason 传入完整的拒绝原因文案。
 function tc_demo_guard($user, $reason = '演示管理员不可修改此处') {
@@ -1769,6 +1812,12 @@ function tc_fail($code, $msg) {
 function tc_require_auth($db) {
     $user = tc_auth_user($db);
     if (!$user) tc_fail(401, '未登录或登录已过期');
+    // 演示管理员:只要在「写」请求里活动(含前台发消息、保存对话),就确保有一张生效中的还原快照。
+    // 关键:快照此前只在 tc_require_admin(后台操作)里拍摄,演示管理员纯聊天时不经过那里,
+    // 于是第一次到期还原后快照被消费、再也不会重建 —— 他之后产生的对话就永久留存、不再自动清除。
+    if (!empty($user['demo']) && !empty($GLOBALS['_tc_db_ctx']['write']) && isset($GLOBALS['_tc_db'])) {
+        tc_demo_arm($GLOBALS['_tc_db'], $user);
+    }
     return $user;
 }
 

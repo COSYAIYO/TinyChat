@@ -147,6 +147,7 @@ function tc_dispatch($method, $path) {
         array('GET', '#^/api/admin/usage/export$#', 'tc_api_admin_usage_export'),
         array('POST', '#^/api/auth/password$#', 'tc_api_change_password'),
         array('POST', '#^/api/auth/name$#', 'tc_api_change_name'),
+        array('POST', '#^/api/auth/delete$#', 'tc_api_delete_own_account'),
         array('GET', '#^/api/providers$#', 'tc_api_list_providers'),
         array('POST', '#^/api/providers$#', 'tc_api_create_provider'),
         array('GET', '#^/api/providers/global$#', 'tc_api_get_global_provider'),

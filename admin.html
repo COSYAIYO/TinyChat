@@ -9,15 +9,15 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./logo-icon.svg">
-<link rel="stylesheet" href="./static/css/style.css?v=20261007.21">
+<link rel="stylesheet" href="./static/css/style.css?v=20261007.23">
 <link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
 <link rel="stylesheet" href="./vendor/katex/katex.min.css">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.21">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261007.21">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.21">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261007.21">
-<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.21">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.21">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.23">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261007.23">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.23">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261007.23">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.23">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.23">
 <script>
 (function () {
   try {
@@ -416,6 +416,15 @@
         <label class="field"><span>登录锁定时长（秒）</span><input id="login-lock-sec" type="number" min="0" max="3600" value="60"></label>
       </div>
       <label class="user-form-admin" style="margin-top:8px"><span class="switch"><input type="checkbox" id="user-providers-allowed"><span class="slider"></span></span><span>允许用户添加自己的供应商（自带 Key，不计站点次数）</span></label>
+      <h3>账号注销</h3>
+      <p class="muted small" style="margin:0 0 8px">用户在「设置 → 账户」可自助注销。<b>软注销</b>会清除其资料、对话与自建供应商，并把用户名改为「原名-已注销-随机码」、邮箱加 <code>deleted+</code> 前缀 —— 因此原用户名与原邮箱都可被重新注册；账号记录保留，便于后台追溯。<b>硬注销</b>则直接删除账号及其全部数据，不可恢复。</p>
+      <label class="field"><span>注销方式</span>
+        <select id="account-deletion-mode">
+          <option value="off">不允许注销</option>
+          <option value="soft">软注销（保留记录，原用户名/邮箱可重新注册）</option>
+          <option value="hard">硬注销（删除全部数据，不可恢复）</option>
+        </select>
+      </label>
       <h3>游客体验</h3>
       <p class="muted small" style="margin:0 0 8px">开启后，未登录访客访问首页即可直接对话。每位访客会自动创建一个独立游客账号（命名如「游客A1B2C」并归入「游客」用户组），便于在「用户」列表里单独管理与清理。游客额度在「模型授权」中按游客组控制，轮数在下方设置。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="guest-enabled"><span class="slider"></span></span><span>允许游客免登录体验对话</span></label>
@@ -928,16 +937,16 @@
   </div>
 </div>
 </form>
-<script src="./static/js/config.js?v=20261007.21"></script>
-<script src="./static/js/icons.js?v=20261007.21"></script>
+<script src="./static/js/config.js?v=20261007.23"></script>
+<script src="./static/js/icons.js?v=20261007.23"></script>
 <script defer src="./vendor/markdown-it/markdown-it.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-footnote.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-emoji.min.js"></script>
 <script defer src="./vendor/katex/katex.min.js"></script>
 <script defer src="./vendor/highlight/highlight.min.js"></script>
-<script src="./static/js/ui.js?v=20261007.21"></script>
-<script src="./static/js/components.js?v=20261007.21"></script>
-<script src="./static/js/renderer.js?v=20261007.21"></script>
-<script src="./static/js/admin.js?v=20261007.21"></script>
+<script src="./static/js/ui.js?v=20261007.23"></script>
+<script src="./static/js/components.js?v=20261007.23"></script>
+<script src="./static/js/renderer.js?v=20261007.23"></script>
+<script src="./static/js/admin.js?v=20261007.23"></script>
 </body>
 </html>
