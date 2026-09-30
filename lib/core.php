@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.51');
+define('TC_VERSION', '2.0.52');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -93,7 +93,7 @@ $TC_SETTINGS_DEFAULTS = array(
     'mistralOcrKey' => '',
     'parseChannels' => array('pdf' => 'mineru', 'image' => 'mineru', 'office' => 'mineru'),
     'defaultGroupId' => '',
-    'contextMessages' => 40,
+    'contextMessages' => 12,
     'maxContextMessages' => 200,
     'maxOutputTokens' => 8192,
     // 全局采样温度: null = 不发送该参数(用模型默认);设置后 0-2
@@ -935,6 +935,15 @@ function tc_default_register_group($db) {
 function tc_migrate_db($raw) {
     $base = tc_empty_db();
     $db = array_merge($base, is_array($raw) ? $raw : array());
+    // 默认值一次性迁移(v2.0.52):把「仍等于旧默认值」的存量设置顺移到新默认值。
+    // 仅当字段确实存在且等于旧默认值时才改——管理员自定义过的值一律不动。
+    // 用独立标记键避免重复执行(该键会由逐键比对机制自动落库)。
+    if (empty($db['settingsMigrated52']) && isset($db['settings']) && is_array($db['settings'])) {
+        if (array_key_exists('contextMessages', $db['settings']) && (int) $db['settings']['contextMessages'] === 40) {
+            $db['settings']['contextMessages'] = 12;
+        }
+    }
+    $db['settingsMigrated52'] = true;
     $db['version'] = TC_DB_VERSION;
     foreach (array('users', 'providers', 'userGroups', 'accessRules', 'assistantCategories', 'assistants', 'packages', 'redemptionCodes', 'quotaLedger', 'inviteCodes') as $k) {
         $db[$k] = isset($db[$k]) && is_array($db[$k]) ? array_values($db[$k]) : array();
