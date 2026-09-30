@@ -3470,7 +3470,6 @@ quotaEl.classList.toggle('low', !quotaIsUnlimited(state.user.quota) && state.use
   $('admin-link').hidden = !state.user.admin;
   $('admin-link').classList.toggle('hidden', !state.user.admin);
   // 用户信息就绪后:按「是否已有密码」调整改密表单,并刷新第三方绑定列表
-  if (window.OCAccountSync) window.OCAccountSync();
   if (window.OCAccountOauth) window.OCAccountOauth();
 }
 function usageTodayText() {
@@ -4398,56 +4397,126 @@ async function saveToolSource(patch) {
 })();
 
 // ============ 账户操作:改密 / 导出 / 清空 ============
+// 账户面板:改用户名/改密码改为「点击弹窗」,不再把长表单铺在面板里
 (function bindAccountActions() {
-  const savePwd = $('acc-save-pwd');
-  if (savePwd) savePwd.addEventListener('click', async () => {
-    const oldPwd = $('acc-old-pwd').value;
-    const newPwd = $('acc-new-pwd').value;
-    const newPwd2 = $('acc-new-pwd2').value;
-    // 第三方登录建号、尚未设置密码的账号:不要求「当前密码」,直接设新密码即可
-    const needsOldPwd = !!(state.user && state.user.hasPassword);
-    if (needsOldPwd && !oldPwd) return toast('请填写当前密码', true);
-    if (!newPwd) return toast('请填写新密码', true);
-    if (newPwd.length < 4) return toast('新密码至少 4 个字符', true);
-    if (newPwd !== newPwd2) return toast('两次输入的新密码不一致', true);
-    const btn = $('acc-save-pwd');
-    btn.disabled = true;
-    btn.textContent = '更新中...';
-    try {
+  // 通用小弹窗:标题 + 若干输入项 + 确定/取消
+  function openAccountDialog(title, fields, onSubmit) {
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask';
+    const inputs = fields.map((f, idx) =>
+      '<label class="field"><span>' + escapeHtml(f.label) + '</span>'
+      + '<input type="' + (f.type || 'text') + '" id="acd-' + idx + '"'
+      + (f.placeholder ? ' placeholder="' + escapeHtml(f.placeholder) + '"' : '')
+      + (f.maxlength ? ' maxlength="' + f.maxlength + '"' : '')
+      + ' autocomplete="' + (f.type === 'password' ? 'new-password' : 'off') + '"></label>').join('');
+    mask.innerHTML = '<div class="modal" role="dialog" aria-modal="true" style="max-width:380px">'
+      + '<h3 style="margin:0 0 12px">' + escapeHtml(title) + '</h3>'
+      + inputs
+      + '<div class="hidden" id="acd-err" style="color:#dc2626;font-size:13px;margin:4px 0"></div>'
+      + '<div class="form-actions" style="margin-top:12px">'
+      + '<button class="btn" type="button" id="acd-cancel">取消</button>'
+      + '<button class="btn primary" type="button" id="acd-ok">确定</button>'
+      + '</div></div>';
+    document.body.appendChild(mask);
+    const close = () => { try { document.body.removeChild(mask); } catch (e) { /* 忽略 */ } };
+    const errBox = mask.querySelector('#acd-err');
+    const showErr = (m) => { errBox.textContent = m; errBox.classList.remove('hidden'); };
+    const first = mask.querySelector('#acd-0');
+    if (first) first.focus();
+    mask.querySelector('#acd-cancel').addEventListener('click', close);
+    mask.addEventListener('click', (e) => { if (e.target === mask) close(); });
+    const okBtn = mask.querySelector('#acd-ok');
+    okBtn.addEventListener('click', async () => {
+      const vals = fields.map((f, idx) => (mask.querySelector('#acd-' + idx).value || ''));
+      okBtn.disabled = true; const label = okBtn.textContent; okBtn.textContent = '提交中…';
+      try {
+        await onSubmit(vals, showErr);
+        close();
+      } catch (e) {
+        showErr((e && e.message) || '操作失败');
+      } finally {
+        okBtn.disabled = false; okBtn.textContent = label;
+      }
+    });
+  }
+
+  // 修改密码(按钮 → 弹窗)
+  const changePwd = $('acc-change-pwd');
+  if (changePwd) changePwd.addEventListener('click', () => {
+    const needsOld = !!(state.user && state.user.hasPassword);
+    const fields = [];
+    if (needsOld) fields.push({ label: '当前密码', type: 'password' });
+    fields.push({ label: '新密码（至少 4 位）', type: 'password' });
+    fields.push({ label: '确认新密码', type: 'password' });
+    openAccountDialog(needsOld ? '修改密码' : '设置密码', fields, async (vals, showErr) => {
+      const off = needsOld ? 1 : 0;
+      const oldPwd = needsOld ? vals[0] : '';
+      const newPwd = vals[off];
+      const newPwd2 = vals[off + 1];
+      if (needsOld && !oldPwd) throw new Error('请填写当前密码');
+      if (!newPwd) throw new Error('请填写新密码');
+      if (newPwd.length < 4) throw new Error('新密码至少 4 个字符');
+      if (newPwd !== newPwd2) throw new Error('两次输入的新密码不一致');
       const r = await api('/api/auth/password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ oldPassword: oldPwd, newPassword: newPwd }),
       });
-      const data = await r.json();
-      if (!r.ok) return toast((data.error && data.error.message) || '修改失败', true);
+      const data = await readJsonSafe(r);
+      if (!r.ok) throw new Error((data.error && data.error.message) || '修改失败');
       state.token = data.token;
-      localStorage.setItem('oc_token', data.token);
-      toast('密码已更新');
-      $('acc-old-pwd').value = ''; $('acc-new-pwd').value = ''; $('acc-new-pwd2').value = '';
-    } catch (e) {
-      toast('修改失败: ' + e.message, true);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = '更新密码';
-    }
+      try { localStorage.setItem('oc_token', data.token); } catch (e) { /* 忽略 */ }
+      if (state.user) state.user.hasPassword = true;
+      renderAccountPanel();
+      toast('密码已更新，其它设备上的登录已失效');
+    });
   });
+
+  // 修改用户名(用户名旁的小按钮 → 弹窗)
+  const editName = $('acc-edit-name');
+  if (editName) {
+    if (window.OC && OC.icon) editName.innerHTML = OC.icon('edit', 15);
+    editName.addEventListener('click', () => {
+      const needsPwd = !!(state.user && state.user.hasPassword);
+      const fields = [{ label: '新用户名', maxlength: 32, placeholder: '2-32 位（字母/数字/中文/._@-）' }];
+      if (needsPwd) fields.push({ label: '当前密码（确认身份）', type: 'password' });
+      openAccountDialog('修改用户名', fields, async (vals, showErr) => {
+        const name = (vals[0] || '').trim();
+        const pwd = needsPwd ? vals[1] : '';
+        if (!name) throw new Error('请输入新用户名');
+        const r = await api('/api/auth/name', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name, password: pwd }),
+        });
+        const d = await readJsonSafe(r);
+        if (!r.ok) throw new Error((d.error && d.error.message) || '修改失败');
+        if (d.token) {
+          state.token = d.token;
+          try { localStorage.setItem('oc_token', d.token); } catch (e) { /* 忽略 */ }
+        }
+        if (d.user) state.user = d.user;
+        renderUser();
+        renderAccountPanel();
+        toast('用户名已更新，下次请用新用户名登录');
+      });
+    });
+  }
 
   // 第三方账号绑定:列出提供商与绑定状态,可解绑
   function renderAccountOauth(data) {
     const box = $('acc-oauth-list');
     if (!box) return;
-    // 全部平台都列出:已绑定 / 未绑定 / 未启用(管理员未开启) 三种状态一目了然
-    const list = (data && Array.isArray(data.providers)) ? data.providers : [];
+    // 只展示管理员已启用的平台:未启用的对用户没有意义(既不显示也不占位)。
+    // 已绑定的即便被管理员停用也保留显示,否则用户没法自行解绑。
+    const list = (data && Array.isArray(data.providers)) ? data.providers.filter((p) => p.enabled || p.bound) : [];
     if (!list.length) {
-      box.innerHTML = '<p class="muted small" style="margin:0">暂无可用的第三方登录方式。</p>';
+      box.innerHTML = '<p class="muted small" style="margin:0">管理员尚未开启第三方登录。</p>';
       return;
     }
     box.innerHTML = list.map((p) => {
-      let label;
-      if (p.bound) label = '已绑定' + (p.boundName ? '（' + escapeHtml(p.boundName) + '）' : '');
-      else if (p.enabled) label = '未绑定';
-      else label = '未启用（管理员未开启）';
+      let label = p.bound ? '已绑定' + (p.boundName ? '（' + escapeHtml(p.boundName) + '）' : '') : '未绑定';
+      if (!p.enabled) label += '（该方式已停用）';
       let act = '';
       if (p.bound) {
         act = '<button class="btn small" type="button" data-oauth-unbind="' + escapeHtml(p.id) + '">解绑</button>';
@@ -4468,7 +4537,6 @@ async function saveToolSource(patch) {
     } catch (e) { /* 忽略 */ }
   }
   // 暴露给 renderUser(用户信息加载完成后联动刷新)
-  window.OCAccountSync = syncPasswordFormForOauth;
   window.OCAccountOauth = loadAccountOauth;
   const oauthList = $('acc-oauth-list');
   if (oauthList) {
@@ -4497,49 +4565,6 @@ async function saveToolSource(patch) {
     });
     loadAccountOauth();
   }
-
-  // 第三方登录建号的用户还没有密码:此时隐藏「当前密码」输入并提示直接设置
-  function syncPasswordFormForOauth() {
-    // 用户信息还没拉到(启动早期)时保持默认显示,避免误藏输入框
-    if (!state.user) return;
-    const u = state.user;
-    const hasPwd = !!u.hasPassword;
-    const oldRow = $('acc-old-pwd-row');
-    if (oldRow) oldRow.style.display = hasPwd ? '' : 'none';
-    const namePwdRow = $('acc-name-pwd-row');
-    if (namePwdRow) namePwdRow.style.display = hasPwd ? '' : 'none';
-    const hint = $('acc-pwd-hint');
-    if (hint) hint.textContent = hasPwd ? '修改后其它设备上的登录会失效' : '你还没有设置密码，设置后即可用用户名密码登录';
-  }
-
-  // 修改用户名
-  const saveName = $('acc-save-name');
-  if (saveName) saveName.addEventListener('click', async () => {
-    const name = (($('acc-new-name') && $('acc-new-name').value) || '').trim();
-    if (!name) return toast('请输入新用户名', true);
-    const pwd = (($('acc-name-pwd') && $('acc-name-pwd').value) || '');
-    const btn = saveName;
-    btn.disabled = true; const label = btn.textContent; btn.textContent = '提交中…';
-    try {
-      const r = await api('/api/auth/name', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name, password: pwd }),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error((d.error && d.error.message) || '修改失败');
-      if (d.token) { state.token = d.token; try { localStorage.setItem('oc_token', d.token); } catch (e) { /* 忽略 */ } }
-      if (d.user) state.user = d.user;
-      if ($('acc-new-name')) $('acc-new-name').value = '';
-      if ($('acc-name-pwd')) $('acc-name-pwd').value = '';
-      if (typeof renderAccountHead === 'function') renderAccountHead();
-      toast('用户名已更新');
-    } catch (e) {
-      toast(e.message || '修改失败', true);
-    } finally {
-      btn.disabled = false; btn.textContent = label;
-    }
-  });
 
   // 余量明细:逐笔展示额度增减,支持分页
   let quotaLedgerOffset = 0;
@@ -4587,7 +4612,6 @@ async function saveToolSource(patch) {
   if (moreBtn) moreBtn.addEventListener('click', () => loadQuotaLedger(false));
   if ($('sp-account')) {
     loadQuotaLedger(true);
-    syncPasswordFormForOauth();
   }
 
   function chatToMarkdown(c) {

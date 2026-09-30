@@ -1093,7 +1093,8 @@ OUID=$(printf '%s' "$OEXB" | python -c "import sys,json;print(json.load(sys.stdi
 OB="Authorization: Bearer $OTB"
 UNAME_B=$(printf '%s' "$OEXB" | python -c "import sys,json;print(json.load(sys.stdin)['user']['name'])" 2>/dev/null)
 assert_contains "绑定列表返回全部平台" "$(curl -s "$BASE/api/me/oauth" -H "$OB")" '"id":"wechat"'
-assert_contains "绑定列表含未启用的平台" "$(curl -s "$BASE/api/me/oauth" -H "$OB")" '"enabled":false'
+# 接口返回 enabled 标记(前端据此过滤:未启用的平台对用户不可见,已绑定的除外)
+assert_contains "绑定接口带 enabled 标记供前端过滤" "$(curl -s "$BASE/api/me/oauth" -H "$OB")" '"enabled":false'
 assert_contains "无密码时解绑唯一绑定被拒" "$(curl -s -X DELETE "$BASE/api/me/oauth/linuxdo" -H "$OB")" '还没有设置密码'
 # 管理端:查看该用户绑定(含 bindUrl)
 AUSER=$(curl -s "$BASE/api/admin/users/oauth?userId=$OUID" -H "$AUTH")

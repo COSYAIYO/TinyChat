@@ -3874,3 +3874,10 @@ body.is-demo-admin [data-chats] { display: none !important; }
 .oauth-icon:hover { transform: translateY(-1px); border-color: var(--primary, #3b82f6); box-shadow: 0 2px 8px rgba(0,0,0,.06); }
 .oauth-icon:disabled { opacity: .5; cursor: default; transform: none; }
 .oauth-icon img { width: 22px; height: 22px; object-fit: contain; border-radius: 4px; }
+
+
+/* 账户面板:用户名旁的小编辑按钮 + 账号安全行(替代原先两个长表单) */
+.acc-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.acc-name-edit { flex: 0 0 auto; opacity: .55; }
+.acc-name-edit:hover { opacity: 1; }
+.acc-secure-row { display: flex; gap: 8px; margin: 10px 0 4px; }
