@@ -3863,3 +3863,14 @@ body.is-demo-admin [data-chats] { display: none !important; }
     flex: 0 0 auto;
   }
 }
+
+
+/* 第三方一键登录:登录/注册表单下方的分隔线与图标按钮 */
+.oauth-login { margin: 14px 0 2px; }
+.oauth-sep { display: flex; align-items: center; gap: 10px; color: var(--muted, #94a3b8); font-size: 12px; margin: 6px 0 12px; }
+.oauth-sep::before, .oauth-sep::after { content: ''; flex: 1; height: 1px; background: var(--line, #e5e7eb); }
+.oauth-icons { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.oauth-icon { width: 42px; height: 42px; border-radius: 11px; border: 1px solid var(--line, #e5e7eb); background: var(--surface, #fff); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; transition: transform .12s ease, border-color .12s ease, box-shadow .12s ease; }
+.oauth-icon:hover { transform: translateY(-1px); border-color: var(--primary, #3b82f6); box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+.oauth-icon:disabled { opacity: .5; cursor: default; transform: none; }
+.oauth-icon img { width: 22px; height: 22px; object-fit: contain; border-radius: 4px; }

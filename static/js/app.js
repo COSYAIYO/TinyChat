@@ -4419,6 +4419,61 @@ async function saveToolSource(patch) {
     }
   });
 
+  // 第三方账号绑定:列出提供商与绑定状态,可解绑
+  function renderAccountOauth(data) {
+    const box = $('acc-oauth-list');
+    if (!box) return;
+    const list = (data && Array.isArray(data.providers)) ? data.providers.filter((p) => p.enabled || p.bound) : [];
+    if (!list.length) {
+      box.innerHTML = '<p class="muted small" style="margin:0">管理员尚未开启任何第三方登录方式。</p>';
+      return;
+    }
+    box.innerHTML = list.map((p) => {
+      const label = p.bound ? '已绑定' + (p.boundName ? '（' + escapeHtml(p.boundName) + '）' : '') : '未绑定';
+      const act = p.bound
+        ? '<button class="btn small" type="button" data-oauth-unbind="' + escapeHtml(p.id) + '">解绑</button>'
+        : '<button class="btn small primary" type="button" data-oauth-bind="' + escapeHtml(p.id) + '">绑定</button>';
+      return '<div class="row-between" style="padding:8px 0;border-bottom:1px solid var(--hairline,#eee)">'
+        + '<div style="display:flex;align-items:center;gap:8px"><img src="' + escapeHtml(p.logo) + '" alt="" style="width:18px;height:18px;border-radius:4px;object-fit:contain">'
+        + '<div><div>' + escapeHtml(p.name) + '</div><div class="muted small">' + label + '</div></div></div>'
+        + '<div>' + act + '</div></div>';
+    }).join('');
+  }
+  async function loadAccountOauth() {
+    try {
+      const r = await api('/api/me/oauth');
+      const d = await r.json();
+      if (r.ok) renderAccountOauth(d);
+    } catch (e) { /* 忽略 */ }
+  }
+  const oauthList = $('acc-oauth-list');
+  if (oauthList) {
+    oauthList.addEventListener('click', async (e) => {
+      const bindBtn = e.target.closest('[data-oauth-bind]');
+      if (bindBtn) {
+        // 绑定:带上本站用户 id 跳授权端点,回调走绑定分支
+        const uid = (state.user && state.user.id) ? state.user.id : '';
+        location.href = '/auth/' + encodeURIComponent(bindBtn.getAttribute('data-oauth-bind')) + '?bind=' + encodeURIComponent(uid);
+        return;
+      }
+      const unbindBtn = e.target.closest('[data-oauth-unbind]');
+      if (!unbindBtn) return;
+      const id = unbindBtn.getAttribute('data-oauth-unbind');
+      unbindBtn.disabled = true;
+      try {
+        const r = await api('/api/me/oauth/' + encodeURIComponent(id), { method: 'DELETE' });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error((d.error && d.error.message) || '解绑失败');
+        toast('已解绑');
+        loadAccountOauth();
+      } catch (err) {
+        unbindBtn.disabled = false;
+        toast(err.message || '解绑失败', true);
+      }
+    });
+    loadAccountOauth();
+  }
+
   function chatToMarkdown(c) {
     const lines = ['# ' + ((c && c.title) || '未命名对话'), ''];
     ((c && c.messages) || []).forEach((m) => {
@@ -5106,6 +5161,12 @@ $('admin-link').addEventListener('click', () => location.href = apiUrl('/admin')
   };
   window.OCGetAnnouncement = () => current;
   fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
+    // 第三方账号绑定回跳:提示结果并刷新绑定列表
+    if (location.hash.indexOf('oauth_bound=') >= 0) {
+      const pid = decodeURIComponent((location.hash.split('oauth_bound=')[1] || '').split('&')[0]);
+      try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* 忽略 */ }
+      setTimeout(() => toast('已绑定第三方账号' + (pid ? '：' + pid : '')), 500);
+    }
     const ann = cfg && cfg.announcement;
     // 自动弹出:公告启用且内容比上次已读更新时
     if (!ann || !ann.enabled || !ann.text) {
