@@ -2272,6 +2272,9 @@ body.share-page {
   cursor: pointer;
   user-select: none;
 }
+/* 演示管理员时「设为管理员」被锁定:视觉上弱化,提示不可单独取消 */
+.user-form-admin:has(input:disabled) { cursor: default; color: var(--text-tertiary); }
+.user-form-admin input:disabled + .slider { opacity: 0.55; cursor: not-allowed; }
 @media (max-width: 640px) {
   .user-form-grid { grid-template-columns: 1fr; }
   .users-head { flex-direction: column; align-items: stretch; }

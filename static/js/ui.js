@@ -16,6 +16,11 @@
   UI.version = '2.0.0';
 
   const PREF_KEY = 'oc_prefs';
+  // 后台「内置字体默认不加载」开启时,默认字体用系统字体(不下载 ~19MB),
+  // 用户仍可在「外观」里自行切换为思源宋体/阿里巴巴普惠体等内置字体(切换后会按需加载)。
+  function ocNoWebfonts() { return !!(window.OC_PERF && window.OC_PERF.noWebfonts); }
+  function ocDefaultCjkFont() { return ocNoWebfonts() ? 'system' : 'source-han-serif'; }
+  function ocDefaultLatinFont() { return ocNoWebfonts() ? 'system' : 'alibaba-sans'; }
   const PREF_DEFAULTS = {
     stream: true,          // 流式输出
     followups: false,      // AI 跟进建议(会额外扣费,默认关闭)
@@ -42,6 +47,9 @@
     pinnedProviderId: null, // 置顶供应商：新建对话使用
     pinnedModel: null,      // 置顶模型：新建对话使用
   };
+  PREF_DEFAULTS.fontCjk = ocDefaultCjkFont();
+  PREF_DEFAULTS.fontLatin = ocDefaultLatinFont();
+  PREF_DEFAULTS.fontFamily = ocDefaultCjkFont();
 
   let prefs = null;
   const prefListeners = [];
@@ -61,17 +69,17 @@
       if (legacyTheme) prefs.theme = legacyTheme;
       if (localStorage.getItem('oc_sidebar_collapsed') === '1') prefs.sidebarCollapsed = true;
     }
-    // 旧版本只有一组字体设置:非默认字体同时迁移到两组,默认英文字体使用 AlibabaSans。
+    // 旧版本只有一组字体设置:非默认字体同时迁移到两组,默认字体用当前后台默认(可能为系统字体)。
     if (!raw || typeof raw !== 'object' || !Object.prototype.hasOwnProperty.call(raw, 'fontCjk')) {
       const legacy = String(raw && raw.fontFamily != null ? raw.fontFamily : '').trim();
-      prefs.fontCjk = legacy && legacy !== 'source-han-serif' ? legacy : 'source-han-serif';
+      prefs.fontCjk = (legacy && legacy !== 'system' && legacy !== 'source-han-serif') ? legacy : ocDefaultCjkFont();
     }
     if (!raw || typeof raw !== 'object' || !Object.prototype.hasOwnProperty.call(raw, 'fontLatin')) {
       const legacy = String(raw && raw.fontFamily != null ? raw.fontFamily : '').trim();
-      prefs.fontLatin = legacy && legacy !== 'source-han-serif' ? legacy : 'alibaba-sans';
+      prefs.fontLatin = (legacy && legacy !== 'system' && legacy !== 'source-han-serif') ? legacy : ocDefaultLatinFont();
     } else if (raw.fontLatin === 'times-new-roman' && raw.fontFamily === 'source-han-serif') {
       // 仅迁移上一版的默认组合,不覆盖用户明确选择的其他字体。
-      prefs.fontLatin = 'alibaba-sans';
+      prefs.fontLatin = ocDefaultLatinFont();
     }
     // 旧版「命名方式 / 追问判定模型」并入统一的 AI 工具判定模型:
     // 若用户曾单独指定过 (titleModel 或 autoImageModel),迁移到 judgeModel。
@@ -490,18 +498,16 @@ UI.toggleTheme = function () {
     root.style.setProperty('--fs', fs + 'px');
     root.style.setProperty('--oc-ui-zoom', String(zoom));
 
-    // 2. 中文与英文/希腊字母按 unicode-range 分流,字体未就绪时由 swap 使用系统回退
-    // 后台开启「不加载内置网页字体」时跳过内置字体,直接用系统字体(避免下载 ~19MB)
-    const noWebfonts = !!(window.OC_PERF && window.OC_PERF.noWebfonts);
-    const cjkValue = String(prefs.fontCjk == null || prefs.fontCjk === '' ? 'source-han-serif' : prefs.fontCjk).trim();
-    const latinValue = String(prefs.fontLatin == null || prefs.fontLatin === '' ? 'alibaba-sans' : prefs.fontLatin).trim();
-    if (noWebfonts) {
-      const rules = document.getElementById(FONT_RULE_ID);
-      if (rules) rules.textContent = '';
-    } else {
-      applyFontRules(cjkValue, latinValue);
-    }
-    const uiStack = (noWebfonts ? '' : '"TinyChat Text", ') + FONT_SYSTEM_STACK;
+    // 2. 中文与英文/希腊字母按 unicode-range 分流,字体未就绪时由 swap 使用系统回退。
+    // 后台「内置字体默认不加载」开启时,默认值是「系统字体」(不下载内置字体);
+    // 但用户若在「外观」里明确选了思源宋体等内置字体,仍按选择加载,不做硬屏蔽。
+    const cjkValue = String(prefs.fontCjk == null || prefs.fontCjk === '' ? ocDefaultCjkFont() : prefs.fontCjk).trim();
+    const latinValue = String(prefs.fontLatin == null || prefs.fontLatin === '' ? ocDefaultLatinFont() : prefs.fontLatin).trim();
+    applyFontRules(cjkValue, latinValue);
+    // 仅当选择的是内置网页字体时才把 "TinyChat Text" 放进字体栈(系统字体无需该族名)
+    const usesWebfont = cjkValue === 'source-han-serif' || cjkValue === 'alibaba-puhuiti'
+      || latinValue === 'alibaba-sans' || latinValue === 'times-new-roman' || latinValue === 'helvetica';
+    const uiStack = (usesWebfont ? '"TinyChat Text", ' : '') + FONT_SYSTEM_STACK;
     root.style.setProperty('--oc-font-family', uiStack);
     root.style.setProperty('--oc-ui-font', uiStack);
     root.style.setProperty('--oc-latin-font', uiStack);

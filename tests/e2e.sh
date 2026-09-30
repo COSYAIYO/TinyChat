@@ -580,6 +580,10 @@ say "== 性能优化开关 =="
 perfcfg=$(curl -s "$BASE/api/config")
 assert_contains "config 下发 perf 开关" "$perfcfg" '"perf"'
 assert_contains "性能开关默认不加载字体为 false" "$perfcfg" '"noWebfonts":false'
+# 开启「内置字体默认不加载」后,前台配置应据此把默认字体切到系统字体(用户仍可自选)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"perfNoWebfonts":true}' > /dev/null
+assert_contains "内置字体默认不加载可开启" "$(curl -s "$BASE/api/config")" '"noWebfonts":true'
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"perfNoWebfonts":false}' > /dev/null
 # 打开若干开关后应下发 true,并能读回
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"perfNoWebfonts":true,"perfNoKatex":true,"perfNoHighlight":true,"perfNoMermaid":true}' > /dev/null
 perfcfg2=$(curl -s "$BASE/api/config")

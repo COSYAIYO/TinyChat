@@ -196,24 +196,51 @@ async function openUserForm(user) {
   if (!$('uf-admin').dataset.boundGroup) {
     $('uf-admin').dataset.boundGroup = '1';
     $('uf-admin').addEventListener('change', () => {
+      // 演示管理员必然也是管理员:不允许单独取消「设为管理员」
+      if ($('uf-demo') && $('uf-demo').checked && !$('uf-admin').checked) {
+        $('uf-admin').checked = true;
+        toast('演示管理员默认也是管理员，请先取消「演示管理员」', true);
+        return;
+      }
       const nextAdmin = (GROUPS.find((g) => g.role === 'admin') || {}).id || '';
       const current = $('uf-group').getAttribute('data-value') || '';
       if ($('uf-admin').checked) setGroupSelect($('uf-group'), nextAdmin);
       else if (!current || current === nextAdmin) setGroupSelect($('uf-group'), DEFAULT_GROUP_ID || '');
     });
   }
+  // 演示管理员 = 管理员:勾选「演示管理员」会自动勾选并锁定「设为管理员」,并把用户组切到管理员组。
+  const syncDemoPair = () => {
+    const demoOn = !!($('uf-demo') && $('uf-demo').checked);
+    const adminEl = $('uf-admin');
+    const groupEl = $('uf-group');
+    const adminGroup = (GROUPS.find((g) => g.role === 'admin') || {}).id || '';
+    if (demoOn) {
+      // 记下切换前的用户组,取消演示时原样还原
+      if (groupEl && groupEl.dataset.preDemoGroup === undefined) {
+        groupEl.dataset.preDemoGroup = groupEl.getAttribute('data-value') || '';
+      }
+      if (adminEl && !adminEl.checked) { adminEl.dataset.forcedByDemo = '1'; adminEl.checked = true; }
+      if (adminEl) adminEl.disabled = true;
+      setGroupSelect(groupEl, adminGroup);
+    } else if (adminEl) {
+      adminEl.disabled = false;
+      // 若「管理员」是随演示自动带上的,取消演示时一并取消,避免残留为正式管理员
+      if (adminEl.dataset.forcedByDemo === '1') {
+        adminEl.checked = false;
+        adminEl.dataset.forcedByDemo = '';
+        const prev = groupEl && groupEl.dataset.preDemoGroup !== undefined ? groupEl.dataset.preDemoGroup : '';
+        setGroupSelect(groupEl, prev && prev !== adminGroup ? prev : (DEFAULT_GROUP_ID || ''));
+      }
+      if (groupEl) delete groupEl.dataset.preDemoGroup;
+    }
+    if ($('uf-demo-options')) $('uf-demo-options').hidden = !demoOn;
+  };
   if ($('uf-demo') && !$('uf-demo').dataset.boundDemo) {
     $('uf-demo').dataset.boundDemo = '1';
-    $('uf-demo').addEventListener('change', () => {
-      // 演示管理员必须是管理员,勾选后自动带入管理员组
-      if ($('uf-demo').checked) {
-        $('uf-admin').checked = true;
-        const nextAdmin = (GROUPS.find((g) => g.role === 'admin') || {}).id || '';
-        setGroupSelect($('uf-group'), nextAdmin);
-      }
-      if ($('uf-demo-options')) $('uf-demo-options').hidden = !$('uf-demo').checked;
-    });
+    $('uf-demo').addEventListener('change', syncDemoPair);
   }
+  // 打开表单时按现有状态同步一次(编辑已有演示管理员时应已锁定「设为管理员」)
+  syncDemoPair();
   modal.classList.remove('hidden');
   setTimeout(() => $('uf-name').focus(), 30);
 }
