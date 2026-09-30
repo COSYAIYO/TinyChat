@@ -2,6 +2,25 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.50] - 2026-09-30
+
+### 新增
+
+- **联网搜索新增三个检索源**：**Brave Search**（独立索引，免费 2000 次/月，填 Key 即用）、**DuckDuckGo**（免 Key，抓结果页；兼容 `uddg=` 跳转解包并过滤广告位，有速率限制）、**Jina AI**（免 Key 可用，填 Key 提升配额；兼容 JSON 与 markdown 两种返回）。管理后台全局配置与用户「设置 → 工具」自备检索均可选这五个源（Tavily / SearXNG / Brave / DDG / Jina），Brave / Jina 的 Key 掩码回显、•• 不回写；管理端「测试当前接口」按所选源逐个实测。
+- **文档解析新增两个通道，并支持按文件类型指定**：后台「文档解析」可分别指定 **PDF / 图片 / Office** 三类文件走哪个通道——**MinerU**（全格式，原有）、**PaddleOCR**（仅 PDF/图片；自建 PaddleX serving 或 AI Studio 托管 API，兼容纯 OCR 与 PP-StructureV3 两种返回结构）、**Mistral OCR**（PDF/图片/DOCX/PPTX，按量计费）。路由到未配置的通道时给出可定位提示；日志按通道记录来源。
+
+### 修复
+
+- **Mistral OCR 请求体缺判别字段**：`document` 必须是带 `type`（`document_url` / `image_url`）的判别联合，此前漏传导致配好 Key 也会被上游拒绝。已按官方 schema 修正，并让测试 mock 严格校验该字段防止回归。
+- **解析通道路由部分更新会重置未提及类别**：只改「Office」通道时，先前会把 PDF/图片静默重置回 MinerU。现改为按类别合并，未提及的类别保持原值。
+- **Mistral OCR 图片 MIME 缺 `bmp`**：BMP 图片会以 `application/octet-stream` 上传被拒，已补齐。
+- **DDG / Jina 空结果提示**：无结果时不再返回空列表，而是给出可操作提示（DDG 可能是限流/验证码；Jina 可能是免 Key 额度用尽）。
+
+### 测试
+
+- E2E 全量 **218 通过 / 0 失败**（新增 22 例：多源搜索 12 例 + 解析通道路由 10 例；搜索与 OCR 均通过 mock 上游全链路覆盖）。
+- 浏览器实测：后台「联网搜索」「文档解析」两页新选项的保存/回显/联动；8080 实例上 PDF 经 PaddleOCR 与 Mistral 通道解析的完整链路均验证通过。
+
 ## [2.0.49] - 2026-09-30
 
 ### 变更

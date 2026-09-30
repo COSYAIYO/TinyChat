@@ -588,6 +588,12 @@
       <label class="field" id="ws-tavily-row"><span>Tavily API Key</span>
         <input id="ws-tavily-key" type="password" placeholder="tvly-..." autocomplete="off">
       </label>
+      <label class="field hidden" id="ws-brave-row"><span>Brave Search API Key</span>
+        <input id="ws-brave-key" type="password" placeholder="BSA..." autocomplete="off">
+      </label>
+      <label class="field hidden" id="ws-jina-row"><span>Jina API Key（可选）</span>
+        <input id="ws-jina-key" type="password" placeholder="留空用免登录额度，填 Key 提升配额" autocomplete="off">
+      </label>
       <label class="field hidden" id="ws-searx-row"><span>SearXNG 地址</span>
         <textarea id="ws-searx-url" rows="4" placeholder="每行一个，例如&#10;https://sx.xo.st&#10;https://search.example.com" autocomplete="off" spellcheck="false"></textarea>
       </label>
@@ -603,7 +609,7 @@
         <span class="muted small" id="ws-test-status"></span>
       </div>
       <div class="probe-result hidden" id="ws-test-result"></div>
-      <p class="muted small" id="ws-hint">Tavily 需在 tavily.com 申请 Key。SearXNG 每行一个实例根地址，需开启 JSON 格式（format=json）；对话检索按顺序尝试，当前实例失败或没有结果时自动换下一个。探测会拉取 searx.space 使用的官方公共目录（约 80 个 HTTPS 实例）并分批测试，可用的排在前面，点「填入」会追加到列表。</p>
+      <p class="muted small" id="ws-hint">Tavily 需在 tavily.com 申请 Key（免费 1000 次/月）。Brave 在 brave.com/search/api 申请（免费 2000 次/月）。DuckDuckGo 与 Jina 免 Key（DuckDuckGo 抓结果页，有速率限制；Jina 免登录额度有限，填 Key 更稳）。SearXNG 每行一个实例根地址，需开启 JSON 格式（format=json）；对话检索按顺序尝试，当前实例失败或没有结果时自动换下一个。探测会拉取 searx.space 使用的官方公共目录（约 80 个 HTTPS 实例）并分批测试，可用的排在前面，点「填入」会追加到列表。</p>
       <button class="btn primary" id="ws-save" type="button">保存联网设置</button>
     </div>
   </div>
@@ -613,10 +619,29 @@
   <div class="admin-panel" id="panel-docs">
     <div class="admin-card">
       <h2>文档解析</h2>
-      <p class="muted small">支持 PDF、图片、Word、PPT、Excel、HTML。Token 留空走 MinerU 轻量解析；填入后改用精准解析。解析不扣对话次数。</p>
+      <p class="muted small">支持 PDF、图片、Word、PPT、Excel、HTML。可按文件类型分别指定解析通道；解析不扣对话次数。</p>
+      <div class="field" style="margin:0 0 6px"><span>PDF 文件解析通道</span>
+        <div class="select-box" id="parse-route-pdf" data-value="mineru" role="button" tabindex="0"><span class="sb-label">MinerU</span></div>
+      </div>
+      <div class="field" style="margin:0 0 6px"><span>图片解析通道</span>
+        <div class="select-box" id="parse-route-image" data-value="mineru" role="button" tabindex="0"><span class="sb-label">MinerU</span></div>
+      </div>
+      <div class="field" style="margin:0 0 14px"><span>Office 文档解析通道</span>
+        <div class="select-box" id="parse-route-office" data-value="mineru" role="button" tabindex="0"><span class="sb-label">MinerU</span></div>
+      </div>
+      <p class="muted small" style="margin:0 0 14px" id="parse-route-hint">通道说明：MinerU 全格式（PDF/图片/Office/HTML）；PaddleOCR 仅 PDF 与图片（自建 PaddleX serving 或 AI Studio API）；Mistral OCR 支持 PDF/图片/DOCX/PPTX。路由到某通道但未配置时，该类文件解析会报错提示。</p>
+      <label class="field"><span>PaddleOCR 服务地址（完整端点）</span>
+        <input id="paddle-url" type="text" placeholder="例如 http://127.0.0.1:8080/ocr 或 AI Studio 托管 API 地址" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="field"><span>PaddleOCR Token（可选）</span>
+        <input id="paddle-key" type="password" placeholder="自建 serving 通常留空；托管 API 填 token" autocomplete="off">
+      </label>
+      <label class="field"><span>Mistral OCR API Key</span>
+        <input id="mistral-key" type="password" placeholder="在 console.mistral.ai 申请" autocomplete="off">
+      </label>
       <label class="user-form-admin" style="margin:14px 0 18px">
         <span class="switch"><input type="checkbox" id="mineru-allow-user"><span class="slider"></span></span>
-        <span>允许用户改用自己的 MinerU Token</span>
+        <span>允许用户改用自己的 MinerU Token（仅对 MinerU 通道生效）</span>
       </label>
       <label class="field"><span>MinerU Token（可选）</span>
         <input id="mineru-token" type="password" placeholder="留空则使用免登录轻量解析" autocomplete="off">

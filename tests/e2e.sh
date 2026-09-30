@@ -37,7 +37,12 @@ cleanup() {
 trap cleanup EXIT
 
 say "== 启动服务 (app :$PORT / mock :$MOCK_PORT) =="
-DATA_DIR="$TMP/data" ADMIN_NAME=admin ADMIN_PASSWORD=e2e-pass php -S "127.0.0.1:$PORT" router.php >"$TMP/app.log" 2>&1 &
+DATA_DIR="$TMP/data" ADMIN_NAME=admin ADMIN_PASSWORD=e2e-pass \
+  TC_BRAVE_SEARCH_BASE="http://127.0.0.1:$MOCK_PORT" \
+  TC_DDG_HTML_BASE="http://127.0.0.1:$MOCK_PORT" \
+  TC_JINA_SEARCH_BASE="http://127.0.0.1:$MOCK_PORT" \
+  TC_MISTRAL_OCR_BASE="http://127.0.0.1:$MOCK_PORT" \
+  php -S "127.0.0.1:$PORT" router.php >"$TMP/app.log" 2>&1 &
 APP_PID=$!
 php -S "127.0.0.1:$MOCK_PORT" tests/mock-upstream.php >"$TMP/mock.log" 2>&1 &
 MOCK_PID=$!
@@ -685,6 +690,97 @@ if printf '%s' "$acc_after" | grep -q "\"groupId\":\"$GID1\""; then bad "全量�
 # 用基准快照整体回滚,验证全量替换可用于安全的批量导入
 curl -s -X POST "$BASE/api/admin/access" -H "$AUTH" -H "Content-Type: application/json" -d "{\"rules\":$(printf '%s' "$baseline" | sed 's/^{"rules"://; s/}$//')}" > /dev/null
 assert_eq "基准快照可整体回滚" "$(curl -s "$BASE/api/admin/access" -H "$AUTH" | grep -o '"groupId"' | wc -l | tr -d ' ')" "$basecount"
+
+# ---------- 多源联网搜索(brave / ddg / jina,走 mock) ----------
+say "== 多源联网搜索 =="
+# 注意:请求体含中文,一律走文件(--data-binary),避免 Windows 终端把内联中文转成错误编码
+cat > "$TMP/ws_q.json" <<'EOF'
+{"query":"上海天气","max":3}
+EOF
+cat > "$TMP/ws_chat.json" <<EOF
+{"providerId":"$PROV","model":"mock-model","webSearch":"1","messages":[{"role":"user","content":"上海天气"}]}
+EOF
+# brave:key 保存后掩码回显,config 暴露 provider,测试端点命中 mock
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchEnabled":true,"webSearchProvider":"brave","webSearchBraveKey":"BSA-e2e-key-12345","webSearchMaxResults":3}' > /dev/null
+assert_contains "brave 供应商可保存" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"webSearchProvider":"brave"'
+assert_has "brave key 掩码回显" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"webSearchBraveKey":"BSA'
+assert_contains "config 暴露 brave" "$(curl -s "$BASE/api/config")" '"provider":"brave"'
+cat > "$TMP/ws_brave.json" <<'EOF'
+{"provider":"brave","query":"上海天气","max":3}
+EOF
+BRAVE=$(curl -s -X POST "$BASE/api/admin/search/test" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ws_brave.json")
+assert_contains "brave 测试命中 mock" "$BRAVE" '"ok":true'
+assert_contains "brave 结果带查询词" "$BRAVE" 'Brave:上海天气'
+# ddg:免 key;广告被过滤、uddg 跳转解包
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchProvider":"ddg"}' > /dev/null
+cat > "$TMP/ws_ddg.json" <<'EOF'
+{"provider":"ddg","query":"上海天气","max":3}
+EOF
+DDG=$(curl -s -X POST "$BASE/api/admin/search/test" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ws_ddg.json")
+assert_contains "ddg 测试命中 mock" "$DDG" '"ok":true'
+assert_contains "ddg 广告被过滤(只剩 2 条)" "$DDG" '"count":2'
+assert_contains "ddg uddg 解包" "$DDG" 'example.com/ddg1'
+# jina:免 key 也可测,JSON 解析
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchProvider":"jina","webSearchJinaKey":""}' > /dev/null
+cat > "$TMP/ws_jina.json" <<'EOF'
+{"provider":"jina","query":"上海天气","max":3}
+EOF
+JINA=$(curl -s -X POST "$BASE/api/admin/search/test" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ws_jina.json")
+assert_contains "jina 免 key 可用" "$JINA" '"ok":true'
+assert_contains "jina JSON 解析" "$JINA" 'Jina:上海天气'
+# 对话链路:brave 无 key → ready=false,搜索请求 502 且可定位;ddg → 搜索走通,回复正常
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchProvider":"brave","webSearchBraveKey":""}' > /dev/null
+CHATNS=$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ws_chat.json")
+assert_contains "brave 无 key 时搜索失败可定位" "$CHATNS" '联网搜索失败'
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchProvider":"ddg"}' > /dev/null
+CHATDS=$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ws_chat.json")
+assert_contains "ddg 搜索走通对话正常" "$CHATDS" 'MOCK-REPLY'
+# 用户自备源:ddg 免 key 即 ready
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchAllowUser":true}' > /dev/null
+TOOLS=$(curl -s -X POST "$BASE/api/me/tools" -H "$UAUTH" -H "Content-Type: application/json" -d '{"webSearchSource":"own","webSearchProvider":"ddg"}')
+assert_contains "用户自备 ddg 即 ready" "$TOOLS" '"ownReady":true'
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchAllowUser":false}' > /dev/null
+
+# ---------- 文档解析通道(PaddleOCR / Mistral OCR,按类别路由,走 mock) ----------
+say "== 文档解析通道路由 =="
+# 路由与凭据保存:pdf->mistral, image->paddle, office->mineru;key 掩码回显
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"parseChannels":{"pdf":"mistral","image":"paddle","office":"mineru"},"mistralOcrKey":"sk-mistral-e2e","paddleOcrUrl":"http://127.0.0.1:'"$MOCK_PORT"'/ocr","paddleOcrKey":""}' > /dev/null
+SR=$(curl -s "$BASE/api/admin/settings" -H "$AUTH")
+assert_contains "路由表保存" "$SR" '"parseChannels":{"pdf":"mistral","image":"paddle","office":"mineru"}'
+assert_has "mistral key 掩码回显" "$SR" '"mistralOcrKey":"sk-m'
+assert_contains "config 暴露路由" "$(curl -s "$BASE/api/config")" '"routes":{"pdf":"mistral","image":"paddle","office":"mineru"}'
+# 造测试文件(内容不校验,mock 只看路由与请求形状)
+printf '%%PDF-1.4 mock pdf bytes' > "$TMP/doc.pdf"
+printf 'PNG-mock-image-bytes' > "$TMP/img.png"
+printf 'DOCX-mock-bytes' > "$TMP/notes.docx"
+# 上传解析:原生 curl 读不了 -F 里 MSYS 风格的 /tmp 路径,统一在 $TMP 下用相对路径发起
+parse_upload() { # $1=文件名(位于 $TMP) $2=token
+  ( cd "$TMP" && curl -s -X POST "$BASE/api/documents/parse" -H "Authorization: Bearer $2" -F "file=@$1;filename=$1" )
+}
+# 图片走 paddle:两页 rec_texts 拼接
+PADDLE=$(parse_upload img.png "$TOKEN")
+assert_contains "图片走 PaddleOCR 通道" "$PADDLE" '"channel":"paddle"'
+assert_contains "paddle rec_texts 拼接成 markdown" "$PADDLE" 'PaddleOCR 识别 第一行'
+assert_contains "paddle 多页合并" "$PADDLE" '第二页识别'
+# pdf 走 mistral:分页 markdown 拼接
+MIST=$(parse_upload doc.pdf "$TOKEN")
+assert_contains "pdf 走 Mistral 通道" "$MIST" '"channel":"mistral"'
+assert_contains "mistral 分页 markdown" "$MIST" 'Mistral 第一页'
+assert_contains "mistral 第二页合并" "$MIST" '第二页内容'
+# 错误路由:office 指到 paddle → 明确报格式不支持
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"parseChannels":{"office":"paddle"}}' > /dev/null
+MISR=$(parse_upload notes.docx "$TOKEN")
+assert_contains "office 误路由 paddle 报格式不支持" "$MISR" 'PaddleOCR 仅支持 PDF 与图片'
+# 通道未配置:清空 paddle 地址后图片解析报可定位错误
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"paddleOcrUrl":""}' > /dev/null
+NOP=$(parse_upload img.png "$TOKEN")
+assert_contains "paddle 未配置报可定位错误" "$NOP" '还没有填写服务地址'
+# mistral 坏 key:上游 401 透传
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"mistralOcrKey":"sk-bad-mistral"}' > /dev/null
+BADK=$(parse_upload doc.pdf "$TOKEN")
+assert_contains "mistral 坏 key 错误透传" "$BADK" 'invalid mistral key'
+# 恢复默认路由
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"parseChannels":{"pdf":"mineru","image":"mineru","office":"mineru"},"mistralOcrKey":"","paddleOcrUrl":"http://127.0.0.1:'"$MOCK_PORT"'/ocr"}' > /dev/null
 
 say ""
 say "结果: $PASS 通过, $FAIL 失败"

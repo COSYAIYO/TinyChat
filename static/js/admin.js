@@ -1108,16 +1108,23 @@ card.querySelector('[data-edit]')?.addEventListener('click', () => {
 const WS_PROVIDERS = [
   { value: 'tavily', label: 'Tavily', sub: '官方搜索 API，填 Key 即可' },
   { value: 'searxng', label: 'SearXNG', sub: '自建元搜索，填实例地址' },
+  { value: 'brave', label: 'Brave Search', sub: '独立索引，免费 2000 次/月' },
+  { value: 'ddg', label: 'DuckDuckGo', sub: '免 Key，抓结果页，有速率限制' },
+  { value: 'jina', label: 'Jina AI', sub: '免 Key 可用，填 Key 提升配额' },
 ];
+const WS_PROVIDER_NAMES = { tavily: 'Tavily', searxng: 'SearXNG', brave: 'Brave Search', ddg: 'DuckDuckGo', jina: 'Jina AI' };
 function setWsProvider(val) {
   const box = $('ws-provider');
   if (!box) return;
-  const next = val === 'searxng' ? 'searxng' : 'tavily';
+  const known = WS_PROVIDERS.some((x) => x.value === val);
+  const next = known ? val : 'tavily';
   box.setAttribute('data-value', next);
   const f = WS_PROVIDERS.find((x) => x.value === next);
   const lab = box.querySelector('.sb-label');
   if (lab) lab.textContent = f ? f.label : next;
   if ($('ws-tavily-row')) $('ws-tavily-row').classList.toggle('hidden', next !== 'tavily');
+  if ($('ws-brave-row')) $('ws-brave-row').classList.toggle('hidden', next !== 'brave');
+  if ($('ws-jina-row')) $('ws-jina-row').classList.toggle('hidden', next !== 'jina');
   if ($('ws-searx-row')) $('ws-searx-row').classList.toggle('hidden', next !== 'searxng');
 }
 // 「对话设置」面板专用加载:此前该页签没有 loader,直接打开会显示 HTML 默认值,
@@ -1174,6 +1181,8 @@ async function loadSearchSettings() {
   if ($('ws-url-read-max')) $('ws-url-read-max').value = Math.min(5, Math.max(1, parseInt(s.urlReadMax, 10) || 3));
   setWsProvider(s.webSearchProvider || 'tavily');
   if ($('ws-tavily-key') && s.webSearchTavilyKey) $('ws-tavily-key').value = s.webSearchTavilyKey;
+  if ($('ws-brave-key') && s.webSearchBraveKey) $('ws-brave-key').value = s.webSearchBraveKey;
+  if ($('ws-jina-key') && s.webSearchJinaKey) $('ws-jina-key').value = s.webSearchJinaKey;
   if ($('ws-searx-url')) $('ws-searx-url').value = s.webSearchSearxUrl || '';
   if ($('ws-max')) $('ws-max').value = s.webSearchMaxResults || 5;
   fillMineruSettings(s);
@@ -1265,9 +1274,11 @@ function fillChatLimits(s) {
   }
   const save = $('ws-save');
   function wsPayload(scan) {
-    const key = ($('ws-tavily-key') && $('ws-tavily-key').value || '').trim();
+    const provider = ($('ws-provider') && $('ws-provider').getAttribute('data-value')) || 'tavily';
+    const keyFor = { tavily: 'ws-tavily-key', brave: 'ws-brave-key', jina: 'ws-jina-key' };
+    const key = (keyFor[provider] && $(keyFor[provider]) && $(keyFor[provider]).value || '').trim();
     const payload = {
-      provider: ($('ws-provider') && $('ws-provider').getAttribute('data-value')) || 'tavily',
+      provider: provider,
       url: ($('ws-searx-url') && $('ws-searx-url').value || '').trim(),
       query: ($('ws-query') && $('ws-query').value || '').trim() || 'openai',
       max: Math.min(5, parseInt($('ws-max') && $('ws-max').value, 10) || 3),
@@ -1288,7 +1299,7 @@ function fillChatLimits(s) {
     box.classList.remove('hidden');
     box.innerHTML = rows.map((row) => {
       const ok = !!row.ok;
-      const title = escapeHtml(row.url || (row.provider === 'tavily' ? 'Tavily' : 'SearXNG'));
+      const title = escapeHtml(row.url || WS_PROVIDER_NAMES[row.provider] || row.provider);
       const detail = ok
         ? ('返回 ' + (row.count || 0) + ' 条' + (row.sample && row.sample[0] ? ' · ' + row.sample[0].title : ''))
         : (row.error || '不可用');
@@ -1353,6 +1364,8 @@ function fillChatLimits(s) {
   });
   if (save) save.addEventListener('click', async () => {
     const key = ($('ws-tavily-key') && $('ws-tavily-key').value || '').trim();
+    const braveKey = ($('ws-brave-key') && $('ws-brave-key').value || '').trim();
+    const jinaKey = ($('ws-jina-key') && $('ws-jina-key').value || '').trim();
     const payload = {
       webSearchEnabled: !!($('ws-enabled') && $('ws-enabled').checked),
       webSearchAllowUser: !!($('ws-allow-user') && $('ws-allow-user').checked),
@@ -1363,6 +1376,8 @@ function fillChatLimits(s) {
       webSearchMaxResults: parseInt($('ws-max') && $('ws-max').value, 10) || 5,
     };
     if (key && key.indexOf('••') < 0) payload.webSearchTavilyKey = key;
+    if (braveKey && braveKey.indexOf('••') < 0) payload.webSearchBraveKey = braveKey;
+    if (jinaKey && jinaKey.indexOf('••') < 0) payload.webSearchJinaKey = jinaKey;
     save.disabled = true;
     try {
       const r = await api('/api/admin/settings', {
@@ -1378,6 +1393,8 @@ function fillChatLimits(s) {
         if ($('ws-enabled')) $('ws-enabled').checked = !!data.settings.webSearchEnabled;
         if ($('ws-allow-user')) $('ws-allow-user').checked = !!data.settings.webSearchAllowUser;
         if ($('ws-tavily-key') && data.settings.webSearchTavilyKey) $('ws-tavily-key').value = data.settings.webSearchTavilyKey;
+        if ($('ws-brave-key') && data.settings.webSearchBraveKey) $('ws-brave-key').value = data.settings.webSearchBraveKey;
+        if ($('ws-jina-key') && data.settings.webSearchJinaKey) $('ws-jina-key').value = data.settings.webSearchJinaKey;
         if ($('ws-searx-url')) $('ws-searx-url').value = data.settings.webSearchSearxUrl || '';
         if ($('ws-max')) $('ws-max').value = data.settings.webSearchMaxResults || 5;
       }
@@ -1397,15 +1414,51 @@ function fillMineruSettings(s) {
   const token = (s && s.mineruToken) || '';
   if ($('mineru-token') && token) $('mineru-token').value = token;
   const mode = $('mineru-mode');
-  if (!mode) return;
   const precise = shownHasMask(token);
   const allow = $('mineru-allow-user');
   if (allow) allow.checked = !!(s && s.mineruAllowUser);
-  mode.textContent = precise
+  if (mode) mode.textContent = precise
     ? '当前：精准解析。单文件不超过 200MB、200 页，Token 仅保存在服务器。'
     : '当前：轻量解析。单文件不超过 10MB、20 页，同一 IP 每分钟有次数限制。用户上传后直接解析，只有超限或失败时才会看到限制。';
+  // 解析通道路由 + 新源配置回填
+  const routes = (s && s.parseChannels) || {};
+  if ($('paddle-url') && s.paddleOcrUrl != null) $('paddle-url').value = s.paddleOcrUrl;
+  if ($('paddle-key') && s.paddleOcrKey) $('paddle-key').value = s.paddleOcrKey;
+  if ($('mistral-key') && s.mistralOcrKey) $('mistral-key').value = s.mistralOcrKey;
+  setParseRoute('parse-route-pdf', routes.pdf);
+  setParseRoute('parse-route-image', routes.image);
+  setParseRoute('parse-route-office', routes.office);
+}
+const PARSE_CHANNELS = [
+  { value: 'mineru', label: 'MinerU', sub: '全格式：PDF/图片/Office/HTML' },
+  { value: 'paddle', label: 'PaddleOCR', sub: '仅 PDF 与图片（自建 serving 或托管 API）' },
+  { value: 'mistral', label: 'Mistral OCR', sub: 'PDF/图片/DOCX/PPTX，效果好，按量计费' },
+];
+const PARSE_CHANNEL_NAMES = { mineru: 'MinerU', paddle: 'PaddleOCR', mistral: 'Mistral OCR' };
+function setParseRoute(boxId, val) {
+  const box = $(boxId);
+  if (!box) return;
+  const next = PARSE_CHANNEL_NAMES[val] ? val : 'mineru';
+  box.setAttribute('data-value', next);
+  const lab = box.querySelector('.sb-label');
+  if (lab) lab.textContent = PARSE_CHANNEL_NAMES[next];
 }
 (function initMineruSettings() {
+  // 三个路由下拉共用一套通道选项
+  ['parse-route-pdf', 'parse-route-image', 'parse-route-office'].forEach((id) => {
+    const box = $(id);
+    if (!box) return;
+    const open = () => {
+      OC.openSelect(box, PARSE_CHANNELS, {
+        selected: box.getAttribute('data-value') || 'mineru',
+        onSelect: (val) => setParseRoute(id, val),
+      });
+    };
+    box.addEventListener('click', open);
+    box.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+    });
+  });
   const save = $('mineru-save');
   if (!save) return;
   save.addEventListener('click', async () => {
@@ -1413,6 +1466,16 @@ function fillMineruSettings(s) {
     const payload = { mineruAllowUser: !!($('mineru-allow-user') && $('mineru-allow-user').checked) };
     if (!key) payload.mineruToken = '';
     else if (key.indexOf('••') < 0) payload.mineruToken = key;
+    payload.parseChannels = {
+      pdf: ($('parse-route-pdf') && $('parse-route-pdf').getAttribute('data-value')) || 'mineru',
+      image: ($('parse-route-image') && $('parse-route-image').getAttribute('data-value')) || 'mineru',
+      office: ($('parse-route-office') && $('parse-route-office').getAttribute('data-value')) || 'mineru',
+    };
+    payload.paddleOcrUrl = ($('paddle-url') && $('paddle-url').value || '').trim();
+    const paddleKey = ($('paddle-key') && $('paddle-key').value || '').trim();
+    if (paddleKey.indexOf('••') < 0) payload.paddleOcrKey = paddleKey;
+    const mistralKey = ($('mistral-key') && $('mistral-key').value || '').trim();
+    if (mistralKey.indexOf('••') < 0) payload.mistralOcrKey = mistralKey;
     save.disabled = true;
     try {
       const r = await api('/api/admin/settings', {
@@ -1422,7 +1485,7 @@ function fillMineruSettings(s) {
       });
       const data = await r.json();
       if (!r.ok) return toast((data.error && data.error.message) || '保存失败', true);
-      toast(key ? '文档解析设置已保存' : '已切换为轻量解析');
+      toast('文档解析设置已保存');
       if (data.settings) fillMineruSettings(data.settings);
     } catch (e) {
       toast('保存失败: ' + e.message, true);

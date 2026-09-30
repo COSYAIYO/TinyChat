@@ -1100,11 +1100,22 @@ function tc_api_save_tools() {
         $cur = tc_user_tools($user);
         $next = $cur;
         if (isset($b['webSearchSource'])) $next['webSearchSource'] = $b['webSearchSource'] === 'own' ? 'own' : 'platform';
-        if (isset($b['webSearchProvider'])) $next['webSearchProvider'] = $b['webSearchProvider'] === 'searxng' ? 'searxng' : 'tavily';
+        $prov = strtolower(trim((string) (isset($b['webSearchProvider']) ? $b['webSearchProvider'] : '')));
+        if ($prov !== '') $next['webSearchProvider'] = in_array($prov, array('tavily', 'searxng', 'brave', 'ddg', 'jina'), true) ? $prov : 'tavily';
         if (isset($b['webSearchTavilyKey'])) {
             $key = trim((string) $b['webSearchTavilyKey']);
             if ($key !== '' && strpos($key, '••') === false) $next['webSearchTavilyKey'] = substr($key, 0, 200);
             if ($key === '') $next['webSearchTavilyKey'] = '';
+        }
+        if (isset($b['webSearchBraveKey'])) {
+            $key = trim((string) $b['webSearchBraveKey']);
+            if ($key !== '' && strpos($key, '••') === false) $next['webSearchBraveKey'] = substr($key, 0, 200);
+            if ($key === '') $next['webSearchBraveKey'] = '';
+        }
+        if (isset($b['webSearchJinaKey'])) {
+            $key = trim((string) $b['webSearchJinaKey']);
+            if ($key !== '' && strpos($key, '••') === false) $next['webSearchJinaKey'] = substr($key, 0, 200);
+            if ($key === '') $next['webSearchJinaKey'] = '';
         }
         if (isset($b['webSearchSearxUrl'])) $next['webSearchSearxUrl'] = tc_searx_urls_text($b['webSearchSearxUrl']);
         if (isset($b['webSearchMaxResults'])) $next['webSearchMaxResults'] = (int) $b['webSearchMaxResults'];
@@ -1943,6 +1954,25 @@ function tc_api_admin_save_settings() {
         }
         if (isset($src['webSearchTavilyKey']) && strpos((string) $src['webSearchTavilyKey'], '••') !== false) {
             unset($src['webSearchTavilyKey']);
+        }
+        if (isset($src['paddleOcrKey']) && strpos((string) $src['paddleOcrKey'], '••') !== false) {
+            unset($src['paddleOcrKey']);
+        }
+        if (isset($src['mistralOcrKey']) && strpos((string) $src['mistralOcrKey'], '••') !== false) {
+            unset($src['mistralOcrKey']);
+        }
+        // 解析通道路由按类别合并:只传部分类别时,未提及的类别保持原值,
+        // 不能整表替换——否则「只改 office」会静默把 pdf/image 重置回 MinerU。
+        if (array_key_exists('parseChannels', $src)) {
+            if (!is_array($src['parseChannels'])) tc_fail(400, '解析通道路由格式不正确');
+            $curChannels = isset($db['settings']['parseChannels']) && is_array($db['settings']['parseChannels']) ? $db['settings']['parseChannels'] : array();
+            $src['parseChannels'] = array_merge($curChannels, $src['parseChannels']);
+        }
+        if (isset($src['webSearchBraveKey']) && strpos((string) $src['webSearchBraveKey'], '••') !== false) {
+            unset($src['webSearchBraveKey']);
+        }
+        if (isset($src['webSearchJinaKey']) && strpos((string) $src['webSearchJinaKey'], '••') !== false) {
+            unset($src['webSearchJinaKey']);
         }
         if (isset($src['mineruToken']) && strpos((string) $src['mineruToken'], '••') !== false) {
             unset($src['mineruToken']);
@@ -2977,24 +3007,68 @@ function tc_api_parse_document() {
         $tmp = isset($file['tmp_name']) ? (string) $file['tmp_name'] : '';
         if ($tmp === '' || !is_uploaded_file($tmp)) tc_fail(400, '文件上传无效');
         $name = tc_mineru_safe_name(isset($file['name']) ? $file['name'] : '');
-        if (!tc_mineru_parseable($name)) tc_fail(400, 'MinerU 不支持这个格式');
-        $token = tc_user_mineru_token($user, $db['settings']);
-        $precise = $token !== '';
+        if (!tc_mineru_parseable($name)) tc_fail(400, '不支持这个格式');
         $size = isset($file['size']) ? (int) $file['size'] : 0;
-        $limit = $precise ? 200 * 1024 * 1024 : 10 * 1024 * 1024;
         if ($size <= 0) tc_fail(400, '文件是空的');
-        if ($size > $limit) tc_fail(400, $precise ? '文件超过精准解析 200MB 上限' : '轻量解析单文件不超过 10MB、20 页');
         $bytes = file_get_contents($tmp);
         if ($bytes === false || $bytes === '') tc_fail(400, '文件读取失败');
+        // 按文件类别路由解析通道:pdf/image/office 可在后台分别指定;html 只有 MinerU 支持
+        $s = $db['settings'];
+        $cat = tc_parse_category($name);
+        $channels = isset($s['parseChannels']) && is_array($s['parseChannels']) ? $s['parseChannels'] : array();
+        $channel = isset($channels[$cat]) ? (string) $channels[$cat] : 'mineru';
+        if (!in_array($channel, array('mineru', 'paddle', 'mistral'), true)) $channel = 'mineru';
+        if ($cat === 'html') $channel = 'mineru';
+        $provider = 'MinerU';
+        $mode = tc_mineru_token($s) !== '' ? 'precise' : 'lite';
+        $limits = $mode === 'precise'
+            ? array('maxBytes' => 200 * 1024 * 1024, 'maxPages' => 200)
+            : array('maxBytes' => 10 * 1024 * 1024, 'maxPages' => 20);
+        if ($channel === 'paddle') {
+            $provider = 'PaddleOCR';
+            $mode = 'paddle';
+            $limits = array('maxBytes' => 100 * 1024 * 1024, 'maxPages' => 0);
+            if (trim((string) (isset($s['paddleOcrUrl']) ? $s['paddleOcrUrl'] : '')) === '') {
+                tc_fail(400, '后台已将 ' . strtoupper($cat) . ' 类文件指定为 PaddleOCR 通道，但还没有填写服务地址');
+            }
+            if (!tc_paddle_parseable($name)) {
+                tc_fail(400, 'PaddleOCR 仅支持 PDF 与图片，' . $name . ' 请由管理员改用 MinerU 或 Mistral 通道');
+            }
+        } elseif ($channel === 'mistral') {
+            $provider = 'Mistral OCR';
+            $mode = 'mistral';
+            $limits = array('maxBytes' => 50 * 1024 * 1024, 'maxPages' => 1000);
+            if (trim((string) (isset($s['mistralOcrKey']) ? $s['mistralOcrKey'] : '')) === '') {
+                tc_fail(400, '后台已将 ' . strtoupper($cat) . ' 类文件指定为 Mistral OCR 通道，但还没有填写 API Key');
+            }
+            if (!tc_mistral_parseable($name)) {
+                tc_fail(400, 'Mistral OCR 不支持 ' . $name . '（仅 PDF/图片/DOCX/PPTX），请改用 MinerU 通道');
+            }
+        } else {
+            // MinerU 通道:用户自备 Token 仅在该通道生效
+            $token = tc_user_mineru_token($user, $s);
+            $mode = $token !== '' ? 'precise' : 'lite';
+            $limits = $mode === 'precise'
+                ? array('maxBytes' => 200 * 1024 * 1024, 'maxPages' => 200)
+                : array('maxBytes' => 10 * 1024 * 1024, 'maxPages' => 20);
+        }
+        if ($size > (int) $limits['maxBytes']) {
+            tc_fail(400, '文件超过 ' . ($provider === 'MinerU' && $mode === 'lite' ? '轻量解析 10MB、20 页上限' : $provider . ' 的 ' . round($limits['maxBytes'] / 1048576) . 'MB 上限'));
+        }
         $started = tc_now();
-        $parsed = tc_mineru_parse($name, $bytes, $token, 110);
+        if ($channel === 'paddle') {
+            $parsed = tc_paddle_parse($s['paddleOcrUrl'], isset($s['paddleOcrKey']) ? $s['paddleOcrKey'] : '', $name, $bytes);
+        } elseif ($channel === 'mistral') {
+            $parsed = tc_mistral_parse($name, $bytes, $s['mistralOcrKey']);
+        } else {
+            $parsed = tc_mineru_parse($name, $bytes, tc_user_mineru_token($user, $s), 110);
+        }
         $ms = tc_now() - $started;
-        $mode = $precise ? 'precise' : 'lite';
         if (empty($parsed['ok'])) {
             $msg = isset($parsed['error']) ? (string) $parsed['error'] : '文档解析失败';
             tc_push_log(array(
                 'kind' => 'parse', 'userName' => $user['name'], 'userId' => $user['id'],
-                'provider' => 'MinerU', 'model' => $mode, 'status' => isset($parsed['code']) ? (int) $parsed['code'] : 502,
+                'provider' => $provider, 'model' => $mode, 'status' => isset($parsed['code']) ? (int) $parsed['code'] : 502,
                 'ms' => $ms, 'cost' => 0, 'error' => substr($name . ' · ' . $msg, 0, 240),
             ));
             tc_fail(isset($parsed['code']) && (int) $parsed['code'] >= 400 && (int) $parsed['code'] < 600 ? (int) $parsed['code'] : 502, $msg);
@@ -3002,18 +3076,17 @@ function tc_api_parse_document() {
         $chars = function_exists('mb_strlen') ? mb_strlen($parsed['markdown'], 'UTF-8') : strlen($parsed['markdown']);
         tc_push_log(array(
             'kind' => 'parse', 'userName' => $user['name'], 'userId' => $user['id'],
-            'provider' => 'MinerU', 'model' => $mode, 'status' => 200,
+            'provider' => $provider, 'model' => $mode, 'status' => 200,
             'ms' => $ms, 'cost' => 0, 'ip' => tc_client_ip(),
             'note' => $name . ' · ' . $chars . ' 字',
         ));
         tc_json(200, array(
             'name' => $name,
             'mode' => $mode,
+            'channel' => $channel,
             'markdown' => $parsed['markdown'],
             'chars' => $chars,
-            'limits' => $precise
-                ? array('maxBytes' => 200 * 1024 * 1024, 'maxPages' => 200)
-                : array('maxBytes' => 10 * 1024 * 1024, 'maxPages' => 20),
+            'limits' => $limits,
         ));
     });
 }
