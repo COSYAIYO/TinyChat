@@ -4409,11 +4409,19 @@ async function saveToolSource(patch) {
       + (f.placeholder ? ' placeholder="' + escapeHtml(f.placeholder) + '"' : '')
       + (f.maxlength ? ' maxlength="' + f.maxlength + '"' : '')
       + ' autocomplete="' + (f.type === 'password' ? 'new-password' : 'off') + '"></label>').join('');
-    mask.innerHTML = '<div class="modal" role="dialog" aria-modal="true" style="max-width:380px">'
-      + '<h3 style="margin:0 0 12px">' + escapeHtml(title) + '</h3>'
+    // 用应用统一的弹窗三段式(modal-header/body/footer):padding、标题与底部按钮对齐
+    // 都由既有样式提供,与「添加助手」等弹窗保持一致
+    const closeIcon = (window.OC && OC.icon) ? OC.icon('close', 16) : '';
+    mask.innerHTML = '<div class="modal modal-sm" role="dialog" aria-modal="true">'
+      + '<div class="modal-header">'
+      + '<h3>' + escapeHtml(title) + '</h3>'
+      + '<button class="icon-btn" type="button" id="acd-x" aria-label="关闭">' + closeIcon + '</button>'
+      + '</div>'
+      + '<div class="modal-body">'
       + inputs
       + '<div class="hidden" id="acd-err" style="color:#dc2626;font-size:13px;margin:4px 0"></div>'
-      + '<div class="form-actions" style="margin-top:12px">'
+      + '</div>'
+      + '<div class="modal-footer">'
       + '<button class="btn" type="button" id="acd-cancel">取消</button>'
       + '<button class="btn primary" type="button" id="acd-ok">确定</button>'
       + '</div></div>';
@@ -4423,6 +4431,8 @@ async function saveToolSource(patch) {
     const showErr = (m) => { errBox.textContent = m; errBox.classList.remove('hidden'); };
     const first = mask.querySelector('#acd-0');
     if (first) first.focus();
+    const xBtn = mask.querySelector('#acd-x');
+    if (xBtn) xBtn.addEventListener('click', close);
     mask.querySelector('#acd-cancel').addEventListener('click', close);
     mask.addEventListener('click', (e) => { if (e.target === mask) close(); });
     const okBtn = mask.querySelector('#acd-ok');

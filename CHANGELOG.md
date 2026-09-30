@@ -2,6 +2,16 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.59] - 2026-09-30
+
+### 修复
+
+- **账户面板的两个弹窗样式与全站不统一**：改用户名 / 改密码弹窗此前是自己拼的简易结构，缺少应用统一的弹窗骨架（`modal-header` / `modal-body` / `modal-footer`），结果是**标题紧贴边框、字段挤在一起、底部按钮左对齐、没有右上角关闭按钮**，与「添加助手」等弹窗明显不一致。现已改用统一三段式结构：标题与关闭按钮进 header、字段进 body、取消/确定进 footer（右对齐），宽度取 `modal-sm`（400px），padding 与圆角沿用全站规范。
+
+### 测试
+
+- 浏览器实测：两个弹窗的 `modal-header`/`modal-body`/`modal-footer` 结构完整，标题 16px、body padding `4px 22px 24px`、footer `justify-content: flex-end`、宽度 400px、圆角 18px，与「添加助手」弹窗一致；右上角关闭按钮可正常关闭。
+
 ## [2.0.58] - 2026-09-30
 
 ### 变更
