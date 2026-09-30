@@ -166,11 +166,11 @@ async function loadStorage() {
   catEl.innerHTML = (d.categories || []).map((c) => stRow(c.name,
     c.desc + (c.exists ? '' : '（当前不存在）') + (c.files ? ' · ' + c.files + ' 个文件' : ''), c.bytes, total)).join('');
   const cl = [];
-  if (byKey.imgcache && byKey.imgcache.bytes > 0) cl.push(['imagecache', '图片代理缓存', byKey.imgcache.bytes + ' 可释放']);
+  if (byKey.imgcache && byKey.imgcache.bytes > 0) cl.push(['imagecache', '图片代理缓存（' + (byKey.imgcache.files || 0) + ' 个文件）', fmtBytesBig(byKey.imgcache.bytes) + ' 可释放']);
   if (d.images.count > 0) cl.push(['images', '生图留存（' + d.images.count + ' 个文件）', fmtBytesBig(d.images.bytes) + ' 可释放']);
   if (d.backups.count > 0) cl.push(['backups', '数据备份（' + d.backups.count + ' 个文件）', fmtBytesBig(d.backups.bytes) + ' 可释放']);
   if (byKey.logs && byKey.logs.bytes > 0) cl.push(['logs', '运行日志（' + d.logs.count + ' 条）', fmtBytesBig(byKey.logs.bytes) + ' 可释放']);
-  if (byKey.update && byKey.update.bytes > 0) cl.push(['updates', '更新残留', fmtBytesBig(byKey.update.bytes) + ' 可释放']);
+  if (byKey.update && byKey.update.bytes > 0) cl.push(['updates', '更新残留（' + (byKey.update.files || 0) + ' 个文件）', fmtBytesBig(byKey.update.bytes) + ' 可释放']);
   if ($('st-clean')) $('st-clean').innerHTML = cl.length ? cl.map((x) =>
     '<div class="st-row"><div class="st-row-main"><div class="st-row-name">' + escapeHtml(x[1]) + '</div>'
     + '<div class="st-row-desc">' + escapeHtml(x[2]) + '</div></div>'

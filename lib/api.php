@@ -1705,11 +1705,14 @@ function tc_api_admin_storage_clean() {
         $target = strtolower(trim((string) (isset($b['target']) ? $b['target'] : '')));
         $data = tc_data_dir();
         $removed = 0; $freed = 0; $label = '';
-        $rmDir = function ($dir) use (&$removed, &$freed) {
+        // 注意:闭包必须把自己也 use 进来才能递归。PHP 匿名函数不继承外层作用域,
+        // 之前漏了 &$rmDir,遇到子目录(如 data/update/backup/)会以「null 不可调用」致命失败,
+        // 表现为「更新残留清理不了」。
+        $rmDir = function ($dir) use (&$removed, &$freed, &$rmDir) {
             foreach ((array) @scandir($dir) as $f) {
                 if ($f === '.' || $f === '..') continue;
                 $p = $dir . '/' . $f;
-                if (is_dir($p)) { $rmDir($p); @rmdir($p); continue; }
+                if (is_dir($p) && !is_link($p)) { $rmDir($p); @rmdir($p); continue; }
                 $sz = @filesize($p);
                 if (@unlink($p)) { $removed++; if ($sz !== false) $freed += (int) $sz; }
             }

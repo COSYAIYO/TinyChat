@@ -860,9 +860,12 @@ curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: applicat
 # 全链路(Nodeloc):发起 -> 授权 -> 回调 -> 票据 -> 换登录态
 oauth_flow() { # $1=provider, 输出最终 location
   local pid="$1"
-  local auth=$(curl -s -D - -o /dev/null "$BASE/auth/$pid" | grep -i '^location:' | sed 's/^[Ll]ocation: //' | tr -d '')
-  local cb=$(curl -s -D - -o /dev/null "$auth" | grep -i '^location:' | sed 's/^[Ll]ocation: //' | tr -d '')
-  curl -s -D - -o /dev/null "$cb" | grep -i '^location:' | sed 's/^[Ll]ocation: //' | tr -d ''
+  local auth=$(curl -s -D - -o /dev/null "$BASE/auth/$pid" | grep -i '^location:' | sed 's/^[Ll]ocation: //' | tr -d '
+')
+  local cb=$(curl -s -D - -o /dev/null "$auth" | grep -i '^location:' | sed 's/^[Ll]ocation: //' | tr -d '
+')
+  curl -s -D - -o /dev/null "$cb" | grep -i '^location:' | sed 's/^[Ll]ocation: //' | tr -d '
+'
 }
 NODEID=""
 for pid in nodeloc linuxdo; do
@@ -1192,6 +1195,32 @@ cat > "$TMP/st_logs.json" <<'EOF'
 {"target":"logs"}
 EOF
 assert_contains "清理运行日志成功" "$(curl -s -X POST "$BASE/api/admin/storage/clean" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/st_logs.json")" '"ok":true'
+# 更新残留:目录里含子目录(真实结构是 update/backup/lib/... + update/package/...)。
+# 递归删除曾因闭包未 use 自身而致命失败(「更新残留清理不了」),这里专门覆盖多级嵌套。
+mkdir -p "$TMP/data/update/backup/lib" "$TMP/data/update/package/src" "$TMP/data/imgcache/nested/deep"
+php -r '$d=$argv[1];
+file_put_contents($d."/update/update-check.json","root");
+file_put_contents($d."/update/backup/lib/core.php","backup-a");
+file_put_contents($d."/update/backup/CHANGELOG.md","backup-b");
+file_put_contents($d."/update/package/src/index.php","pkg");
+file_put_contents($d."/imgcache/nested/deep/cache.bin","cache");' "$TMP/data"
+ST3=$(curl -s "$BASE/api/admin/storage" -H "$AUTH")
+assert_contains "多级子目录文件被计入占用" "$ST3" '"key":"update"'
+cat > "$TMP/st_updates.json" <<'EOF'
+{"target":"updates"}
+EOF
+CL3=$(curl -s -X POST "$BASE/api/admin/storage/clean" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/st_updates.json")
+assert_contains "更新残留(含子目录)清理成功" "$CL3" '"ok":true'
+assert_contains "更新残留递归删到 4 个文件(含两级子目录)" "$CL3" '"removed":4'
+assert_contains "更新残留标签正确" "$CL3" '"label":"更新残留"'
+assert_contains "更新残留清理后归零" "$(curl -s "$BASE/api/admin/storage" -H "$AUTH")" '"key":"update"'
+# 图片代理缓存的子目录同样要能清掉
+cat > "$TMP/st_ic2.json" <<'EOF'
+{"target":"imagecache"}
+EOF
+CL4=$(curl -s -X POST "$BASE/api/admin/storage/clean" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/st_ic2.json")
+assert_contains "图片缓存(含子目录)清理成功" "$CL4" '"ok":true'
+assert_contains "图片缓存递归删到 1 个文件" "$CL4" '"removed":1'
 # 系统接口在清理后依然可用(不因日志/缓存被清而 500)
 assert_contains "清理后系统接口仍正常" "$(curl -s "$BASE/api/admin/system" -H "$AUTH")" '"server"'
 say ""
