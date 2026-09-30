@@ -1401,6 +1401,343 @@ function tc_api_get_share($id) {
     });
 }
 
+// ============ 服务器实时指标(后台概览顶部看板) ============
+// 采集 CPU / 内存 / 磁盘 / 负载 / 在线人数 / 站点统计等。
+// 所有取值都做了「函数不可用/无权限」的兜底,取不到就返回 null,前端隐藏该项而不是显示 0(避免误导)。
+
+// 读取 Linux 的 /proc 数据(Windows 上不存在,会返回 null 由上层兜底)
+function tc_sys_meminfo() {
+    static $cache = null;
+    if ($cache !== null) return $cache;
+    $cache = array();
+    if (is_readable('/proc/meminfo')) {
+        $txt = (string) @file_get_contents('/proc/meminfo');
+        foreach (explode("\n", $txt) as $line) {
+            if (preg_match('/^(\w+):\s+(\d+)\s*kB/i', trim($line), $m)) {
+                $cache[$m[1]] = (int) $m[2] * 1024;
+            }
+        }
+    }
+    return $cache;
+}
+
+// CPU 使用率:取两次 /proc/stat 采样对比(约 120ms 开销,后台页面可接受)
+function tc_sys_cpu_percent() {
+    if (!is_readable('/proc/stat')) return null;
+    $read = function () {
+        $line = (string) @file_get_contents('/proc/stat');
+        if (!preg_match('/^cpu\s+(.+)$/m', $line, $m)) return null;
+        $parts = preg_split('/\s+/', trim($m[1]));
+        $vals = array_map('intval', array_slice($parts, 0, 8));
+        $idle = ($vals[3] ?? 0) + ($vals[4] ?? 0);
+        return array('total' => array_sum($vals), 'idle' => $idle);
+    };
+    $a = $read();
+    if (!$a) return null;
+    usleep(120000);
+    $b = $read();
+    if (!$b) return null;
+    $dt = $b['total'] - $a['total'];
+    $di = $b['idle'] - $a['idle'];
+    if ($dt <= 0) return null;
+    return max(0, min(100, (int) round(($dt - $di) * 100 / $dt)));
+}
+
+function tc_sys_loadavg() {
+    if (!function_exists('sys_getloadavg')) return null;
+    $la = @sys_getloadavg();
+    if (!is_array($la) || count($la) < 3) return null;
+    return array(round($la[0], 2), round($la[1], 2), round($la[2], 2));
+}
+
+// 递归统计目录占用(带深度与文件数保护,避免超大目录拖慢后台)
+function tc_dir_usage($dir, $maxFiles = 20000) {
+    $out = array('bytes' => 0, 'files' => 0, 'truncated' => false);
+    $dir = rtrim((string) $dir, '/\\');
+    if ($dir === '' || !is_dir($dir)) return $out;
+    $stack = array($dir);
+    $seen = 0;
+    while ($stack) {
+        $cur = array_pop($stack);
+        $items = @scandir($cur);
+        if (!is_array($items)) continue;
+        foreach ($items as $it) {
+            if ($it === '.' || $it === '..') continue;
+            $path = $cur . DIRECTORY_SEPARATOR . $it;
+            if (@is_dir($path)) { $stack[] = $path; continue; }
+            $sz = @filesize($path);
+            if ($sz !== false) $out['bytes'] += (int) $sz;
+            $out['files']++;
+            if (++$seen >= $maxFiles) { $out['truncated'] = true; return $out; }
+        }
+    }
+    return $out;
+}
+
+function tc_sys_disk() {
+    $dir = tc_data_dir();
+    $out = array('path' => $dir);
+    $out['totalBytes'] = function_exists('disk_total_space') ? (@disk_total_space($dir) ?: null) : null;
+    $out['freeBytes'] = function_exists('disk_free_space') ? (@disk_free_space($dir) ?: null) : null;
+    return $out;
+}
+
+// 存储分类:每项给出路径、是否存在、文件数与占用
+function tc_storage_categories() {
+    $data = tc_data_dir();
+    $dirs = array(
+        array('key' => 'database', 'name' => '数据库', 'path' => $data . '/tinychat.sqlite', 'file' => true,
+              'desc' => '站点全部数据（用户、对话、配置，SQLite 单文件）'),
+        array('key' => 'imgstore', 'name' => '生图留存', 'path' => $data . '/imgstore',
+              'desc' => '生图结果本地留存（防止上游链接过期）'),
+        array('key' => 'imgcache', 'name' => '图片代理缓存', 'path' => $data . '/imgcache',
+              'desc' => '同源代理抓取的图片缓存'),
+        array('key' => 'backup', 'name' => '数据备份', 'path' => $data . '/backup',
+              'desc' => '后台备份产生的数据快照'),
+        array('key' => 'tasks', 'name' => '任务记录', 'path' => $data . '/tasks',
+              'desc' => '生视频/异步任务的状态文件'),
+        array('key' => 'logs', 'name' => '运行日志', 'path' => $data . '/logs.json', 'file' => true,
+              'desc' => '后台「运行日志」页展示的记录'),
+        array('key' => 'update', 'name' => '更新残留', 'path' => $data . '/update',
+              'desc' => '在线更新下载的包与旧版本备份'),
+        array('key' => 'other', 'name' => '其它数据目录文件', 'path' => $data, 'shallowFilesOnly' => true,
+              'desc' => 'data/ 根目录下的零散文件（密钥、限流计数等）'),
+    );
+    $out = array();
+    foreach ($dirs as $d) {
+        $row = array('key' => $d['key'], 'name' => $d['name'], 'desc' => $d['desc'], 'exists' => file_exists($d['path']));
+        if (!empty($d['file'])) {
+            $sz = $row['exists'] ? @filesize($d['path']) : 0;
+            $row['bytes'] = (int) ($sz ?: 0);
+            $row['files'] = $row['exists'] ? 1 : 0;
+        } elseif ($row['exists'] && is_dir($d['path'])) {
+            if (!empty($d['shallowFilesOnly'])) {
+                $bytes = 0; $files = 0;
+                foreach ((array) @scandir($d['path']) as $it) {
+                    if ($it === '.' || $it === '..') continue;
+                    $p = $d['path'] . '/' . $it;
+                    if (is_dir($p)) continue; // 子目录单独归类
+                    $sz = @filesize($p);
+                    if ($sz !== false) $bytes += (int) $sz;
+                    $files++;
+                }
+                $row['bytes'] = $bytes; $row['files'] = $files;
+            } else {
+                $u = tc_dir_usage($d['path']);
+                $row['bytes'] = $u['bytes']; $row['files'] = $u['files']; $row['truncated'] = $u['truncated'];
+            }
+        } else {
+            $row['bytes'] = 0; $row['files'] = 0;
+        }
+        $out[] = $row;
+    }
+    return $out;
+}
+
+// 在线用户:lastSeen 在 N 分钟内的算在线(默认 5 分钟)
+function tc_online_users($db, $minutes = 5) {
+    $cut = tc_now() - $minutes * 60000;
+    $online = 0; $recent = 0;
+    $now = tc_now();
+    foreach ($db['users'] as $u) {
+        $seen = isset($u['lastSeen']) ? (float) $u['lastSeen'] : 0;
+        if ($seen <= 0) continue;
+        if ($seen >= $cut) $online++;
+        if ($seen >= $now - 24 * 3600000) $recent++;
+    }
+    return array('online' => $online, 'active24h' => $recent);
+}
+
+function tc_api_admin_system() {
+    tc_with_db(false, function ($db) {
+        tc_require_admin($db);
+        $mem = tc_sys_meminfo();
+        $totalMem = isset($mem['MemTotal']) ? (int) $mem['MemTotal'] : null;
+        $availMem = isset($mem['MemAvailable']) ? (int) $mem['MemAvailable']
+            : (isset($mem['MemFree']) ? (int) $mem['MemFree'] : null);
+        $usedMem = ($totalMem !== null && $availMem !== null) ? max(0, $totalMem - $availMem) : null;
+        $disk = tc_sys_disk();
+        // PHP 进程自身内存(所有环境都有)
+        $procMem = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : null;
+        $online = tc_online_users($db);
+        // 今日调用与近 7 天
+        $byDay = tc_assoc($db['stats']['callsByDay']);
+        $sum7 = 0;
+        foreach (tc_last_n_days(7) as $d) $sum7 += isset($byDay[$d]) ? (int) $byDay[$d] : 0;
+        $pdo = null; // 数据库版本单独取,避免污染主连接
+        $sqliteVer = '';
+        try {
+            $sqliteVer = (string) (new PDO('sqlite::memory:'))->query('select sqlite_version()')->fetchColumn();
+        } catch (Throwable $e) { $sqliteVer = ''; }
+        tc_json(200, array(
+            'server' => array(
+                'os' => php_uname('s') . ' ' . php_uname('r'),
+                'host' => function_exists('gethostname') ? (string) @gethostname() : '',
+                'phpVersion' => PHP_VERSION,
+                'sqliteVersion' => $sqliteVer,
+                'sapi' => PHP_SAPI,
+                'arch' => php_uname('m'),
+                'serverTime' => tc_now(),
+                'timezone' => date_default_timezone_get(),
+            ),
+            'cpu' => array(
+                'cores' => (function () {
+                    if (is_readable('/proc/cpuinfo')) {
+                        $n = substr_count((string) @file_get_contents('/proc/cpuinfo'), 'processor');
+                        if ($n > 0) return $n;
+                    }
+                    // Windows 没有 /proc,系统环境变量里有核心数
+                    $env = getenv('NUMBER_OF_PROCESSORS');
+                    if ($env !== false && (int) $env > 0) return (int) $env;
+                    return null;
+                })(),
+                'percent' => tc_sys_cpu_percent(),
+                'loadavg' => tc_sys_loadavg(),
+            ),
+            'memory' => array(
+                'totalBytes' => $totalMem,
+                'usedBytes' => $usedMem,
+                'phpBytes' => $procMem,
+                'phpLimitBytes' => (function () {
+                    $v = ini_get('memory_limit');
+                    if ($v === false || $v === '' || $v === '-1') return null;
+                    $unit = strtolower(substr($v, -1));
+                    $num = (int) $v;
+                    if ($unit === 'g') return $num * 1073741824;
+                    if ($unit === 'm') return $num * 1048576;
+                    if ($unit === 'k') return $num * 1024;
+                    return $num;
+                })(),
+            ),
+            'disk' => $disk,
+            'storage' => tc_storage_categories(),
+            'users' => array(
+                'total' => count($db['users']),
+                'online' => $online['online'],
+                'active24h' => $online['active24h'],
+                'onlineWindowMin' => 5,
+            ),
+            'calls' => array(
+                'total' => isset($db['stats']['totalCalls']) ? (int) $db['stats']['totalCalls'] : 0,
+                'today' => isset($byDay[tc_today_key()]) ? (int) $byDay[tc_today_key()] : 0,
+                'last7d' => $sum7,
+            ),
+            'content' => array(
+                'chats' => tc_count_all_chats($db),
+                'providers' => count($db['providers']),
+                'groups' => count($db['userGroups']),
+                'assistants' => count($db['assistants']),
+            ),
+            'uptimeSec' => tc_uptime_sec(),
+            'version' => TC_VERSION,
+        ));
+    });
+}
+
+// 统计全部对话数(userChats 按用户分片)
+function tc_count_all_chats($db) {
+    $n = 0;
+    foreach (tc_assoc(isset($db['userChats']) ? $db['userChats'] : array()) as $rows) {
+        if (is_array($rows)) $n += count($rows);
+    }
+    return $n;
+}
+
+// ============ 存储管理 ============
+// action=list(默认) 分类占用 + 可清理项预览;action=clean 执行清理
+function tc_api_admin_storage() {
+    tc_with_db(false, function ($db) {
+        tc_require_admin($db);
+        $q = tc_query();
+        $action = isset($q['action']) ? (string) $q['action'] : 'list';
+        $data = tc_data_dir();
+        $cats = tc_storage_categories();
+        $total = 0;
+        foreach ($cats as $c) $total += (int) $c['bytes'];
+        $disk = tc_sys_disk();
+        // 备份与更新残留的详细信息(可单独清理)
+        $backups = array();
+        $bdir = $data . '/backup';
+        if (is_dir($bdir)) {
+            foreach ((array) @scandir($bdir) as $f) {
+                if ($f === '.' || $f === '..') continue;
+                $p = $bdir . '/' . $f;
+                if (!is_file($p)) continue;
+                $backups[] = array('name' => $f, 'bytes' => (int) @filesize($p), 'mtime' => (int) @filemtime($p) * 1000);
+            }
+            usort($backups, function ($a, $b) { return $b['mtime'] - $a['mtime']; });
+        }
+        // 生图留存:文件数 + 最近若干条(便于人工辨认)
+        $imgFiles = array();
+        $idir = $data . '/imgstore';
+        if (is_dir($idir)) {
+            foreach ((array) @scandir($idir) as $f) {
+                if ($f === '.' || $f === '..') continue;
+                $p = $idir . '/' . $f;
+                if (!is_file($p)) continue;
+                $imgFiles[] = array('name' => $f, 'bytes' => (int) @filesize($p), 'mtime' => (int) @filemtime($p) * 1000);
+            }
+            usort($imgFiles, function ($a, $b) { return $b['mtime'] - $a['mtime']; });
+        }
+        $logCount = 0;
+        foreach ((array) tc_list_logs(TC_LOG_LIMIT) as $l) $logCount++;
+        tc_json(200, array(
+            'categories' => $cats,
+            'totalBytes' => $total,
+            'disk' => $disk,
+            'dataDir' => $data,
+            'backups' => array('items' => array_slice($backups, 0, 30), 'count' => count($backups),
+                               'bytes' => array_sum(array_column($backups, 'bytes'))),
+            'images' => array('items' => array_slice($imgFiles, 0, 30), 'count' => count($imgFiles),
+                              'bytes' => array_sum(array_column($imgFiles, 'bytes'))),
+            'logs' => array('count' => $logCount, 'bytes' => (int) (@filesize($data . '/logs.json') ?: 0), 'limit' => TC_LOG_LIMIT),
+            'quotaMb' => isset($db['settings']['imageArchiveQuotaMb']) ? (int) $db['settings']['imageArchiveQuotaMb'] : 500,
+            'archiveEnabled' => !empty($db['settings']['imageArchiveEnabled']),
+        ));
+    });
+}
+
+// 清理:imageCache(图片代理缓存) / images(生图留存) / backups(全部备份) / logs(运行日志)
+function tc_api_admin_storage_clean() {
+    tc_with_db(false, function ($db) {
+        $admin = tc_require_admin($db);
+        $b = tc_read_json_body();
+        $target = strtolower(trim((string) (isset($b['target']) ? $b['target'] : '')));
+        $data = tc_data_dir();
+        $removed = 0; $freed = 0; $label = '';
+        $rmDir = function ($dir) use (&$removed, &$freed) {
+            foreach ((array) @scandir($dir) as $f) {
+                if ($f === '.' || $f === '..') continue;
+                $p = $dir . '/' . $f;
+                if (is_dir($p)) { $rmDir($p); @rmdir($p); continue; }
+                $sz = @filesize($p);
+                if (@unlink($p)) { $removed++; if ($sz !== false) $freed += (int) $sz; }
+            }
+        };
+        if ($target === 'imagecache') {
+            $label = '图片代理缓存';
+            $rmDir($data . '/imgcache');
+        } elseif ($target === 'images') {
+            $label = '生图留存';
+            $rmDir($data . '/imgstore');
+        } elseif ($target === 'backups') {
+            $label = '数据备份';
+            $rmDir($data . '/backup');
+        } elseif ($target === 'logs') {
+            $label = '运行日志';
+            $p = $data . '/logs.json';
+            if (is_file($p)) { $sz = (int) @filesize($p); if (@unlink($p)) { $removed = 1; $freed = $sz; } }
+        } elseif ($target === 'updates') {
+            $label = '更新残留';
+            $rmDir($data . '/update');
+        } else {
+            tc_fail(400, '未知的清理目标');
+        }
+        tc_log_auth_event('admin', isset($admin['name']) ? $admin['name'] : '', '清理' . $label . '（' . $removed . ' 个文件 / ' . round($freed / 1048576, 2) . 'MB）', isset($admin['id']) ? $admin['id'] : '');
+        tc_json(200, array('ok' => true, 'removed' => $removed, 'freedBytes' => $freed, 'label' => $label));
+    });
+}
+
 function tc_api_admin_stats() {
     tc_with_db(false, function ($db) {
         tc_require_admin($db);

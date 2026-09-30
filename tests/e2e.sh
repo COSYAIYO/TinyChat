@@ -1118,6 +1118,62 @@ cat > "$TMP/ob_off.json" <<'EOF'
 EOF
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ob_off.json" > /dev/null
 
+say "== 服务器状态看板 =="
+SYS=$(curl -s "$BASE/api/admin/system" -H "$AUTH")
+assert_contains "系统接口返回服务器信息" "$SYS" '"phpVersion"'
+assert_contains "系统接口返回磁盘信息" "$SYS" '"freeBytes"'
+assert_contains "系统接口返回存储分类" "$SYS" '"storage"'
+assert_contains "统计在线用户" "$SYS" '"online"'
+assert_contains "统计总用户" "$SYS" '"total":'
+assert_contains "统计今日调用" "$SYS" '"today"'
+assert_contains "统计对话总数" "$SYS" '"chats"'
+assert_contains "返回版本号" "$SYS" '"version"'
+# 非管理员不可访问
+assert_contains "非管理员访问系统接口被拒" "$(curl -s "$BASE/api/admin/system" -H "$UAUTH")" '需要管理员权限'
+assert_contains "非管理员访问存储接口被拒" "$(curl -s "$BASE/api/admin/storage" -H "$UAUTH")" '需要管理员权限'
+
+say "== 存储管理 =="
+ST=$(curl -s "$BASE/api/admin/storage" -H "$AUTH")
+assert_contains "存储接口返回分类占用" "$ST" '"categories"'
+assert_contains "存储接口返回数据目录" "$ST" '"dataDir"'
+assert_contains "存储接口返回备份清单" "$ST" '"backups"'
+assert_contains "存储接口返回生图留存清单" "$ST" '"images"'
+assert_contains "存储接口返回日志统计" "$ST" '"logs"'
+assert_contains "分类含数据库" "$ST" '"key":"database"'
+assert_contains "分类含生图留存" "$ST" '"key":"imgstore"'
+assert_contains "分类含运行日志" "$ST" '"key":"logs"'
+# 时间戳是毫秒(前端直接 new Date 即可,避免 1970 显示)
+assert_contains "文件时间戳为毫秒" "$(printf '%s' "$ST" | grep -o '"mtime":[0-9]\{13\}' | head -1)" '"mtime":'
+# 未知清理目标应报错
+cat > "$TMP/st_bad.json" <<'EOF'
+{"target":"nope"}
+EOF
+assert_contains "未知清理目标被拒" "$(curl -s -X POST "$BASE/api/admin/storage/clean" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/st_bad.json")" '未知的清理目标'
+# 写入图片缓存与生图留存文件,验证清理真实生效
+mkdir -p "$TMP/data/imgcache" "$TMP/data/imgstore"
+php -r '$d=$argv[1];file_put_contents($d."/imgcache/e2e-cache.bin",str_repeat("x",2048));file_put_contents($d."/imgstore/e2e-img.bin",str_repeat("y",4096));' "$TMP/data"
+ST2=$(curl -s "$BASE/api/admin/storage" -H "$AUTH")
+assert_contains "生图留存清单可读" "$ST2" '"images":{"items":'
+assert_contains "写入的生图留存文件出现在清单" "$ST2" 'e2e-img.bin'
+cat > "$TMP/st_imgcache.json" <<'EOF'
+{"target":"imagecache"}
+EOF
+CL1=$(curl -s -X POST "$BASE/api/admin/storage/clean" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/st_imgcache.json")
+assert_contains "清理图片缓存成功" "$CL1" '"ok":true'
+assert_contains "清理图片缓存统计到 1 个文件" "$CL1" '"removed":1'
+assert_contains "清理后缓存占用归零" "$(curl -s "$BASE/api/admin/storage" -H "$AUTH")" '"key":"imgcache"'
+cat > "$TMP/st_images.json" <<'EOF'
+{"target":"images"}
+EOF
+CL2=$(curl -s -X POST "$BASE/api/admin/storage/clean" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/st_images.json")
+assert_contains "清理生图留存成功" "$CL2" '"ok":true'
+assert_contains "生图留存清理标签正确" "$CL2" '"label":"生图留存"'
+cat > "$TMP/st_logs.json" <<'EOF'
+{"target":"logs"}
+EOF
+assert_contains "清理运行日志成功" "$(curl -s -X POST "$BASE/api/admin/storage/clean" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/st_logs.json")" '"ok":true'
+# 系统接口在清理后依然可用(不因日志/缓存被清而 500)
+assert_contains "清理后系统接口仍正常" "$(curl -s "$BASE/api/admin/system" -H "$AUTH")" '"server"'
 say ""
 say "结果: $PASS 通过, $FAIL 失败"
 [ "$FAIL" -eq 0 ]
