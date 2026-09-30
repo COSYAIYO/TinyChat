@@ -23,18 +23,18 @@
   function ocDefaultLatinFont() { return ocNoWebfonts() ? 'system' : 'alibaba-sans'; }
   const PREF_DEFAULTS = {
     stream: true,          // 流式输出
-    followups: false,      // AI 跟进建议(会额外扣费,默认关闭)
+    followups: true,       // AI 跟进建议(默认开启;会额外扣费,可在设置中关闭)
     followupsModel: '',    // 跟进建议所用模型:'' = 跟随当前模型;否则 "providerId\nmodelId"
     autotitle: true,       // 自动生成会话标题(新建对话时)
     titleModel: '',        // [已并入 AI 工具判定] 旧字段,仅作迁移回退
     judgeModel: '',        // AI 工具判定所用模型:'' = 跟随当前对话模型;否则 "providerId\nmodelId"
     imageModel: '',        // 默认生图模型:'' = 用第一个可用生图模型;否则 "providerId\nmodelId"
-    autoImageMode: 'rough', // 对话中自动出图:off=关闭 | rough=粗略关键词识别 | ai=智能判定(用判定模型)
+    autoImageMode: 'auto', // 对话中自动出图:off=关闭 | rough=粗略关键词识别 | auto=智能判定(默认)
     autoImageModel: '',    // [已并入 AI 工具判定] 旧字段,仅作迁移回退
     elapsed: true,         // 显示生成耗时
     reasoning: true,       // 请求并展示思维链
     reasoningEffort: 'medium', // off | low | medium | high
-    contextMessages: 40,       // 每次请求带上的最近消息条数
+    contextMessages: 12,       // 每次请求带上的最近消息条数(默认 12)
     webSearchMode: 'auto',     // auto | on | off
     theme: 'system',       // system | light | dark
     fontSize: 14,          // 消息区字号(px)
@@ -53,6 +53,18 @@
 
   let prefs = null;
   const prefListeners = [];
+
+  // 默认值迁移:老浏览器里 oc_prefs 一旦被完整序列化过(改任意偏好时发生),
+  // 就会固化当时的默认值,后续改 PREF_DEFAULTS 对这些用户不再生效。
+  // 这里按版本号做一次性顺移,并用 oc_prefs_touched 记录用户显式改过的键(绝不覆盖)。
+  const PREF_SCHEMA_VERSION = 2;
+  const PREF_SCHEMA_KEY = 'oc_prefs_schema';
+  const PREF_TOUCHED_KEY = 'oc_prefs_touched';
+  const PREF_DEFAULT_MIGRATIONS = [
+    ['followups', false, true],          // AI 跟进建议:默认关闭 -> 默认开启
+    ['autoImageMode', 'rough', 'auto'],  // 自动出图:粗略识别 -> 智能判定
+    ['contextMessages', 40, 12],         // AI 上下文条数:默认 40 -> 12
+  ];
 
   // ============ 偏好 ============
   function loadPrefs() {
@@ -89,12 +101,44 @@
       if (legacyTitle && legacyTitle !== 'current') prefs.judgeModel = legacyTitle;
       else if (legacyAuto) prefs.judgeModel = legacyAuto;
     }
+    // 默认值一次性迁移(仅当值仍等于旧默认值时顺移;touched 里的键一律跳过)
+    let schema = 0;
+    try { schema = Number(localStorage.getItem(PREF_SCHEMA_KEY) || 0) || 0; } catch (e) { /* 存储不可用 */ }
+    if (schema < PREF_SCHEMA_VERSION) {
+      let touched = [];
+      try {
+        const t = JSON.parse(localStorage.getItem(PREF_TOUCHED_KEY) || '[]');
+        if (Array.isArray(t)) touched = t.map((x) => String(x));
+      } catch (e) { /* 忽略损坏数据 */ }
+      let changed = false;
+      PREF_DEFAULT_MIGRATIONS.forEach((m) => {
+        const key = m[0], oldVal = m[1], newVal = m[2];
+        if (touched.indexOf(key) >= 0) return; // 用户显式设置过,不覆盖
+        if (!raw || !Object.prototype.hasOwnProperty.call(raw, key)) return;
+        if (prefs[key] !== oldVal) return;
+        prefs[key] = newVal;
+        changed = true;
+      });
+      try { localStorage.setItem(PREF_SCHEMA_KEY, String(PREF_SCHEMA_VERSION)); } catch (e) { /* 存储不可用 */ }
+      if (changed) {
+        try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch (e) { /* 存储不可用 */ }
+      }
+    }
     return prefs;
   }
   UI.getPrefs = function () { return Object.assign({}, loadPrefs()); };
   UI.getPref = function (key) { return loadPrefs()[key]; };
   UI.setPref = function (key, value) {
     const p = loadPrefs();
+    // 记录显式改过:默认值迁移据此跳过,避免覆盖用户自己的选择
+    try {
+      const t = JSON.parse(localStorage.getItem(PREF_TOUCHED_KEY) || '[]');
+      const arr = Array.isArray(t) ? t.map((x) => String(x)) : [];
+      if (arr.indexOf(String(key)) < 0) {
+        arr.push(String(key));
+        localStorage.setItem(PREF_TOUCHED_KEY, JSON.stringify(arr));
+      }
+    } catch (e) { /* 存储不可用 */ }
     if (p[key] === value) return value;
     p[key] = value;
     try { localStorage.setItem(PREF_KEY, JSON.stringify(p)); } catch (e) { /* 存储不可用 */ }

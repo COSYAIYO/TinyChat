@@ -25,15 +25,15 @@
 </script>
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./logo-icon.svg">
-<link rel="stylesheet" href="./static/css/style.css?v=20261007.3">
+<link rel="stylesheet" href="./static/css/style.css?v=20261007.4">
 <link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
 <link rel="stylesheet" href="./vendor/katex/katex.min.css">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.3">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261007.3">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.3">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261007.3">
-<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.3">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.3">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.4">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261007.4">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.4">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261007.4">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.4">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.4">
 <script>
 /* 在样式表之后立刻刷主题色,避免首屏主按钮仍是默认蓝 */
 (function () {
@@ -72,7 +72,7 @@
 </script>
 <!-- 性能门控:按后台设置决定是否加载渲染依赖(markdown-it 始终加载;KaTeX/highlight 可关)。
      必须在渲染依赖之前同步执行;具体的 <script> 标签由 perf.js 用 document.write 注入。 -->
-<script src="./static/js/perf.js?v=20261007.3"></script>
+<script src="./static/js/perf.js?v=20261007.4"></script>
 </head>
 <body>
   <!-- 移动端侧边栏遮罩 -->
@@ -600,8 +600,8 @@
               <div class="pref-desc">识别到「要画图/改图」时自动改用生图模型出图并带上参考图。「智能判定」用上面的判定模型，更准</div>
             </div>
             <div class="theme-seg" id="pref-auto-image" role="radiogroup" aria-label="对话中自动出图">
-              <button type="button" class="seg-btn" data-autoimage="auto">智能判定</button>
-              <button type="button" class="seg-btn active" data-autoimage="rough">粗略</button>
+              <button type="button" class="seg-btn active" data-autoimage="auto">智能判定</button>
+              <button type="button" class="seg-btn" data-autoimage="rough">粗略</button>
               <button type="button" class="seg-btn" data-autoimage="off">关闭</button>
             </div>
           </div>
@@ -631,7 +631,7 @@
             </div>
             <div class="stepper" id="pref-context-step">
               <button type="button" class="seg-btn" id="pref-context-minus" aria-label="减少上下文条数">−</button>
-              <input type="text" inputmode="numeric" id="pref-context" value="40" aria-label="AI 上下文条数" autocomplete="off">
+              <input type="text" inputmode="numeric" id="pref-context" value="12" aria-label="AI 上下文条数" autocomplete="off">
               <button type="button" class="seg-btn" id="pref-context-plus" aria-label="增加上下文条数">+</button>
             </div>
           </div>
@@ -885,19 +885,19 @@
     <button class="btn small primary" id="guest-bar-login" type="button">登录 / 注册</button>
   </div>
 
-  <script src="./static/js/config.js?v=20261007.3"></script>
-  <script src="./static/js/icons.js?v=20261007.3"></script>
-  <script src="./static/js/logos.js?v=20261007.3"></script>
-  <script src="./static/js/components.js?v=20261007.3"></script>
-  <script src="./static/js/ui.js?v=20261007.3"></script>
-  <script src="./static/js/assistants.js?v=20261007.3"></script>
-  <script src="./static/js/conversations.js?v=20261007.3"></script>
-  <script src="./static/js/renderer.js?v=20261007.3"></script>
-  <script src="./static/js/reasoning.js?v=20261007.3"></script>
-  <script src="./static/js/office-formula-copy.js?v=20261007.3"></script>
-  <script src="./static/js/citations.js?v=20261007.3"></script>
-  <script src="./static/js/messages.js?v=20261007.3"></script>
-  <script src="./static/js/multimodal.js?v=20261007.3"></script>
-  <script src="./static/js/app.js?v=20261007.3"></script>
+  <script src="./static/js/config.js?v=20261007.4"></script>
+  <script src="./static/js/icons.js?v=20261007.4"></script>
+  <script src="./static/js/logos.js?v=20261007.4"></script>
+  <script src="./static/js/components.js?v=20261007.4"></script>
+  <script src="./static/js/ui.js?v=20261007.4"></script>
+  <script src="./static/js/assistants.js?v=20261007.4"></script>
+  <script src="./static/js/conversations.js?v=20261007.4"></script>
+  <script src="./static/js/renderer.js?v=20261007.4"></script>
+  <script src="./static/js/reasoning.js?v=20261007.4"></script>
+  <script src="./static/js/office-formula-copy.js?v=20261007.4"></script>
+  <script src="./static/js/citations.js?v=20261007.4"></script>
+  <script src="./static/js/messages.js?v=20261007.4"></script>
+  <script src="./static/js/multimodal.js?v=20261007.4"></script>
+  <script src="./static/js/app.js?v=20261007.4"></script>
 </body>
 </html>

@@ -26,7 +26,7 @@ const state = {
   webSearchAvailable: false,
   tools: null,
   mineru: { enabled: true, mode: 'lite' },
-  chatLimits: { contextMessages: 40, maxContextMessages: 200, maxOutputTokens: 8192 },
+  chatLimits: { contextMessages: 12, maxContextMessages: 200, maxOutputTokens: 8192 },
 };
 
 window.OCState = state;
@@ -36,7 +36,7 @@ function uiPref(key, def) {
   return (window.OCUI && window.OCUI.getPref(key) !== undefined) ? window.OCUI.getPref(key) : def;
 }
 function streamEnabled() { return !!uiPref('stream', true); }
-function followUpsEnabled() { return !!uiPref('followups', false); }
+function followUpsEnabled() { return !!uiPref('followups', true); }
 function autoTitleEnabled() { return !!uiPref('autotitle', true); }
 // 解析「辅助任务(跟进建议/命名)」指定的模型。
 // pref 形如 'providerId\nmodelId';空值返回 null(调用方回退当前模型/本地截取)。
@@ -333,7 +333,7 @@ function videoModelsOfCurrentProvider() {
   return p.models.filter((m) => m && m.id && modelIsVideo(m.id));
 }
 function videoModelLogo() {
-  return 'static/logo/picture.svg';
+  return (window.OC && OC.videoLogo) ? OC.videoLogo() : 'static/logo/video-camera.svg';
 }
 // 生图 / 生视频都「不使用助手」,也不参与 @助手 候选
 function modelIsVisual(modelId) {
@@ -403,15 +403,18 @@ function parseVideoSpec() {
   const ratio = VIDEO_RATIOS.indexOf(rawRatio) >= 0 ? rawRatio : '16:9';
   return { seconds, ratio };
 }
-// 助手头像按消息所属模型匹配图标:生图/生视频模型统一用 picture.svg,其余匹配厂商 logo,未命中回退站点 logo
+// 助手头像按消息所属模型匹配图标:生图模型用 picture.svg、生视频模型用 video-camera.svg,
+// 其余匹配厂商 logo,未命中回退站点 logo
 function aiAvatarHtml(modelText) {
   const raw = String(modelText || '').trim();
   // 生图结果的消息模型名形如 "xxx (图像)",生视频形如 "xxx (视频)"
   const isImageMsg = /\(图像\)\s*$/.test(raw);
   const isVideoMsg = /\(视频\)\s*$/.test(raw);
   const modelId = raw.replace(/\s*\((图像|视频)\)\s*$/, '');
-  if (window.OC && window.OC.logoImg && (isImageMsg || isVideoMsg || (modelId && (modelIsImage(modelId) || modelIsVideo(modelId))))) {
-    const html = window.OC.logoImg(imageModelLogo(), 'avatar-logo-img');
+  const isVid = isVideoMsg || (!!modelId && modelIsVideo(modelId));
+  const isImg = isImageMsg || (!isVid && !!modelId && modelIsImage(modelId));
+  if (window.OC && window.OC.logoImg && (isImg || isVid)) {
+    const html = window.OC.logoImg(isVid ? videoModelLogo() : imageModelLogo(), 'avatar-logo-img');
     if (html) return html;
   }
   if (raw && window.OC && window.OC.logoImg && window.OC.modelLogo) {
@@ -1619,7 +1622,7 @@ async function loadProviders() {
   state.mineru = (data.mineru && data.mineru.mode) ? data.mineru : { enabled: true, mode: 'lite' };
   if (data.chatLimits) {
     state.chatLimits = {
-      contextMessages: Math.min(500, Math.max(2, Number(data.chatLimits.contextMessages) || 40)),
+      contextMessages: Math.min(500, Math.max(2, Number(data.chatLimits.contextMessages) || 12)),
       maxContextMessages: Math.min(500, Math.max(2, Number(data.chatLimits.maxContextMessages) || 200)),
       maxOutputTokens: Math.min(128000, Math.max(256, Number(data.chatLimits.maxOutputTokens) || 8192)),
     };
@@ -1809,7 +1812,7 @@ function availableModelItems() {
         ? !!m.image
         : !!((window.OC && OC.isImageModelName) ? OC.isImageModelName(id) : false));
       const logo = (window.OC && OC.modelIcon)
-        ? OC.modelIcon(id + ' ' + name, provider.name, isImage || isVideo)
+        ? OC.modelIcon(id + ' ' + name, provider.name, isImage, isVideo)
         : '';
       const item = {
         value: provider.id + '\n' + id, providerId: provider.id, modelId: id,
@@ -1893,7 +1896,7 @@ function chatSystemPrompt(chat) {
 function contextLimitNow() {
   const site = state.chatLimits || {};
   const cap = Math.min(500, Math.max(2, Number(site.maxContextMessages) || 200));
-  const fallback = Math.min(cap, Math.max(2, Number(site.contextMessages) || 40));
+  const fallback = Math.min(cap, Math.max(2, Number(site.contextMessages) || 12));
   const chosen = Number(uiPref('contextMessages', fallback));
   return Math.min(cap, Math.max(2, isFinite(chosen) ? chosen : fallback));
 }
@@ -2184,7 +2187,7 @@ function refersToPrevImage(text) {
 }
 // 对话中自动出图的模式:off=关闭 | rough=粗略关键词识别 | auto=智能判定(用统一工具判定模型)
 function autoImageMode() {
-  const v = String(uiPref('autoImageMode', 'rough') || 'rough').toLowerCase();
+  const v = String(uiPref('autoImageMode', 'auto') || 'auto').toLowerCase();
   if (v === 'off' || v === 'rough' || v === 'auto' || v === 'ai') return v === 'ai' ? 'auto' : v;
   return 'rough';
 }
@@ -3878,7 +3881,7 @@ function syncPrefsPanel() {
   if (effortRow) effortRow.style.opacity = reasoningEnabled() ? '1' : '0.45';
   const ctxInput = $('pref-context');
   const ctxCap = Math.min(500, Math.max(2, Number((state.chatLimits || {}).maxContextMessages) || 200));
-  const ctxDefault = Math.min(ctxCap, Math.max(2, Number((state.chatLimits || {}).contextMessages) || 40));
+  const ctxDefault = Math.min(ctxCap, Math.max(2, Number((state.chatLimits || {}).contextMessages) || 12));
   if (ctxInput) {
     ctxInput.min = '2';
     ctxInput.max = String(ctxCap);

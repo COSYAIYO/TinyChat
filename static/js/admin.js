@@ -1191,7 +1191,7 @@ async function loadSearchSettings() {
 function fillChatLimits(s) {
   const src = s || {};
   const maxCtx = Math.min(500, Math.max(2, parseInt(src.maxContextMessages, 10) || 200));
-  const ctx = Math.min(maxCtx, Math.max(2, parseInt(src.contextMessages, 10) || 40));
+  const ctx = Math.min(maxCtx, Math.max(2, parseInt(src.contextMessages, 10) || 12));
   const output = Math.min(128000, Math.max(256, parseInt(src.maxOutputTokens, 10) || 12800));
   if ($('chat-context-max')) $('chat-context-max').value = maxCtx;
   if ($('chat-context')) $('chat-context').value = ctx;
