@@ -17,6 +17,16 @@ jobs:
         with:
           php-version: '8.3'
           coverage: none
+      - name: 脚本换行符自检(tests/*.sh 不得含裸 CR)
+        # 裸 CR 会在 Linux 上破坏脚本(曾导致 tr 剥离回车失效,批量 OAuth 用例失败);
+        # 需要剔除 CR 时请写 tr -d '\r' 的转义形式,不要嵌真的控制字符。
+        run: |
+          fail=0
+          for f in $(git ls-files 'tests/*.sh'); do
+            n=$(tr -cd '\r' < "$f" | wc -c)
+            if [ "$n" -gt 0 ]; then echo "$f 含 $n 处裸 CR"; fail=1; fi
+          done
+          exit $fail
       - name: PHP lint(全部 PHP 文件)
         run: |
           fail=0

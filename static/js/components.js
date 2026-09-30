@@ -132,7 +132,17 @@
           if (pinBtn) pinBtn.addEventListener('mousedown', (e) => {
             e.preventDefault();
             e.stopPropagation();
+            // 置顶是开关:同一项再点一次取消,不同项则改为置顶它。
+            // 这里就地更新 opts.pinned 与按钮高亮——菜单是一次性渲染的,
+            // 之前只改了偏好、没刷新按钮,导致要点完关闭再打开才看到蓝色。
+            const nowPinned = opts.pinned === it.value ? null : String(it.value);
             if (opts.onPin) opts.onPin(it.value, it);
+            opts.pinned = nowPinned;
+            list.querySelectorAll('.oc-menu-pin').forEach((b) => {
+              const on = b.dataset.pin === nowPinned;
+              b.classList.toggle('active', on);
+              b.title = on ? '取消置顶' : '置顶，新建对话使用此模型';
+            });
           });
           row.addEventListener('mousedown', (e) => {
             if (e.target.closest('.oc-menu-pin')) return;
