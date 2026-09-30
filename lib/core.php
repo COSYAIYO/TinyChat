@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.62');
+define('TC_VERSION', '2.0.63');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -145,6 +145,11 @@ $TC_SETTINGS_DEFAULTS = array(
     'registerInviteRequired' => false,
     // 注册限流:每 IP 每小时最大注册尝试次数
     'registerLimitPerHour' => 5,
+    // 账号注销:用户可自行注销账号
+    //   off   = 不允许注销
+    //   soft  = 软注销:清空资料并改名为「原名-已注销-xxxx」「邮箱+已注销」,邮箱/用户名可被重新注册
+    //   hard  = 硬注销:直接删除账号及其对话、自建供应商等全部数据
+    'accountDeletionMode' => 'soft',
     // 性能优化(默认关闭,开启后减少前台加载体积;改动在用户下次访问时生效)
     // 不加载内置网页字体(思源宋体/阿里巴巴普惠体等,合计约 19MB);不加载 KaTeX 公式渲染;
     // 不加载代码高亮 highlight.js;不加载 Mermaid 图表。
@@ -491,6 +496,9 @@ function tc_normalize_settings($raw) {
     $s['guestRounds'] = min(1000, max(1, (int) (isset($s['guestRounds']) ? $s['guestRounds'] : 3) ?: 3));
     $s['registerInviteRequired'] = !empty($s['registerInviteRequired']);
     $s['registerLimitPerHour'] = min(1000, max(1, (int) (isset($s['registerLimitPerHour']) ? $s['registerLimitPerHour'] : 5) ?: 5));
+    // 注销模式:仅接受 off/soft/hard,其余一律回落软注销(默认值)
+    $adMode = isset($s['accountDeletionMode']) ? (string) $s['accountDeletionMode'] : 'soft';
+    $s['accountDeletionMode'] = in_array($adMode, array('off', 'soft', 'hard'), true) ? $adMode : 'soft';
     return $s;
 }
 
@@ -1505,6 +1513,17 @@ function tc_sanitize_user($u) {
         // 是否已设密码:第三方登录建号的用户为 false,前端据此隐藏「当前密码」并允许直接设置
         'hasPassword' => isset($u['passwordHash']) && (string) $u['passwordHash'] !== '',
     );
+}
+
+// 演示管理员看到的用户资料:登录 IP 与邮箱属用户隐私,演示场景一律不展示。
+// 注意不要改动上面的 tc_sanitize_user 默认行为(真实管理员与用户本人仍需要这些字段)。
+function tc_sanitize_user_for($viewer, $u) {
+    $pub = tc_sanitize_user($u);
+    if (is_array($viewer) && !empty($viewer['demo'])) {
+        $pub['lastIp'] = '';
+        $pub['email'] = '';
+    }
+    return $pub;
 }
 
 // 演示管理员敏感操作守卫:账号管理、查看对话、公告等一律拒绝,并给出统一提示。
