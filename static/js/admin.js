@@ -1412,12 +1412,15 @@ function shownHasMask(token) {
 }
 
 // ============ 第三方一键登录 ============
-// 提供商元数据(字段名/显示名/图标/申请入口)与后端 tc_oauth_providers() 对应
+// 提供商元数据(字段名/显示名/图标/申请入口/回调路径)与后端 tc_oauth_providers() 对应
+// callbackPath 必须与后端 tc_oauth_providers()[id] 的路由一致(/auth/<id>/callback)
 const OAUTH_PROVIDERS = [
   {
     id: 'wechat', name: '微信', logo: 'static/logo/weixin.svg',
     hint: '需在微信开放平台创建「网站应用」并通过审核，回调域需与备案域名一致',
     docs: 'https://open.weixin.qq.com',
+    callbackPath: '/auth/wechat/callback',
+    callbackWhere: '填在「网站应用 → 授权回调域」，只需填域名（如 example.com），不要带路径',
     fields: [
       { key: 'appId', label: 'AppID', placeholder: 'wx开头的应用 ID' },
       { key: 'appSecret', label: 'AppSecret', placeholder: '应用密钥', secret: true },
@@ -1427,6 +1430,8 @@ const OAUTH_PROVIDERS = [
     id: 'qq', name: 'QQ', logo: 'static/logo/qq.svg',
     hint: '需在 QQ 互联（connect.qq.com）创建网站应用，审核通过后获得 AppID 与 AppKey',
     docs: 'https://connect.qq.com',
+    callbackPath: '/auth/qq/callback',
+    callbackWhere: '填在「网站应用 → 回调地址」，需填完整地址（含 /auth/qq/callback）',
     fields: [
       { key: 'appId', label: 'AppID', placeholder: '数字 AppID' },
       { key: 'appKey', label: 'AppKey', placeholder: '应用密钥', secret: true },
@@ -1436,6 +1441,8 @@ const OAUTH_PROVIDERS = [
     id: 'linuxdo', name: 'LINUX DO', logo: 'static/logo/linuxdo.png',
     hint: '在 connect.linux.do 创建应用；scope 使用 openid profile email',
     docs: 'https://connect.linux.do',
+    callbackPath: '/auth/linuxdo/callback',
+    callbackWhere: '填在应用的 Redirect URI / 回调地址',
     fields: [
       { key: 'clientId', label: 'Client ID', placeholder: '应用 Client ID' },
       { key: 'clientSecret', label: 'Client Secret', placeholder: '应用密钥', secret: true },
@@ -1445,6 +1452,8 @@ const OAUTH_PROVIDERS = [
     id: 'nodeloc', name: 'NodeLoc', logo: 'static/logo/nodeloc.png',
     hint: '在 nodeloc.com/oauth-provider/applications 创建应用（需 TL2 及以上）',
     docs: 'https://www.nodeloc.com/oauth-provider/applications',
+    callbackPath: '/auth/nodeloc/callback',
+    callbackWhere: '填在应用的 Redirect URI / 回调地址',
     fields: [
       { key: 'clientId', label: 'Client ID', placeholder: '应用 Client ID' },
       { key: 'clientSecret', label: 'Client Secret', placeholder: '应用密钥', secret: true },
@@ -1478,8 +1487,26 @@ function renderOauthProviders(s) {
       + '<div class="oauth-fields" style="' + (on ? '' : 'display:none') + '">' + fields + '</div>'
       + '</div>';
   }).join('');
-  const hint = $('oauth-callback-hint');
-  if (hint) hint.textContent = location.origin + '/auth/';
+  renderOauthCallbacks();
+}
+
+// 逐平台列出「该填哪条回调地址」——各平台不能共用,具体路径见 OAUTH_PROVIDERS[].callbackPath
+function renderOauthCallbacks() {
+  const box = $('oauth-callback-list');
+  if (!box) return;
+  const origin = location.origin;
+  box.innerHTML = OAUTH_PROVIDERS.map((p) => {
+    const url = origin + p.callbackPath;
+    return '<div class="row-between" style="gap:10px;padding:8px 0;border-bottom:1px solid var(--line,#eee);align-items:flex-start">'
+      + '<div style="min-width:0;flex:1">'
+      + '<div><img src="' + p.logo + '" alt="" style="width:16px;height:16px;border-radius:4px;object-fit:contain;vertical-align:-3px;margin-right:5px">'
+      + '<b>' + escapeHtml(p.name) + '</b>'
+      + '<span class="muted small"> · ' + escapeHtml(p.callbackWhere) + '</span></div>'
+      + '<code style="word-break:break-all;font-size:12px">' + escapeHtml(url) + '</code>'
+      + '</div>'
+      + '<button class="btn small" type="button" data-copy-cb="' + escapeHtml(url) + '">复制</button>'
+      + '</div>';
+  }).join('');
 }
 function fillOauthSettings(s) {
   if ($('oauth-auto-register')) $('oauth-auto-register').checked = (s && s.oauthAutoRegister) !== false;
@@ -1504,6 +1531,28 @@ async function loadOauthSettings() {
       const fields = row.querySelector('.oauth-fields');
       if (fields) fields.style.display = en.checked ? '' : 'none';
       row.querySelectorAll('[data-oauth]').forEach((inp) => { inp.disabled = !en.checked; });
+    });
+  }
+  // 回调地址一键复制
+  const cbList = $('oauth-callback-list');
+  if (cbList) {
+    cbList.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-copy-cb]');
+      if (!btn) return;
+      const val = btn.getAttribute('data-copy-cb') || '';
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(val);
+        else {
+          const ta = document.createElement('textarea');
+          ta.value = val; ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+        }
+        const old = btn.textContent;
+        btn.textContent = '已复制';
+        setTimeout(() => { btn.textContent = old; }, 1200);
+      } catch (err) {
+        toast('复制失败，请手动选择复制', true);
+      }
     });
   }
   const save = $('oauth-save');
