@@ -1943,12 +1943,19 @@ function tc_api_admin_test_model() {
             }
         }
         if ($apiKey === '') tc_fail(400, '请先填写 API Key');
+        // 单次测试的超时(秒)。模型可能因上游慢/模型不存在而长时间不响应,
+        // 允许管理员按需调小,便于批量测试时快速跳过不可用的模型。
+        // 未传时用 25 秒;传了(含 0/负数)一律夹紧到 3~120,不再回退默认值 ——
+        // 否则传 0 会被当成「没填」而变回 25 秒,与预期不符。
+        $timeoutSec = array_key_exists('timeoutSec', $b) ? (int) $b['timeoutSec'] : 25;
+        $timeoutSec = min(120, max(3, $timeoutSec));
         return array(
             'baseUrl' => $baseUrl,
             'format' => $format,
             'model' => substr($model, 0, 120),
             'prompt' => $prompt,
             'apiKey' => $apiKey,
+            'timeoutMs' => $timeoutSec * 1000,
         );
     });
     // 视频模型:建任务即可判定连通(不等待出片),返回任务 ID / 状态
@@ -1978,14 +1985,22 @@ function tc_api_admin_test_model() {
         $headers['Authorization'] = 'Bearer ' . $ctx['apiKey'];
     }
     $started = tc_now();
-    $res = tc_http_request($url, 'POST', $headers, tc_json_encode($body), 25000, false);
+    $res = tc_http_request($url, 'POST', $headers, tc_json_encode($body), (int) $ctx['timeoutMs'], false);
     $ms = tc_now() - $started;
     if (!$res['ok']) {
+        $failMsg = tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : '');
+        // 超时要单独说清楚:这是「等太久主动放弃」,不是模型一定不可用,
+        // 批量测试时据此自动跳到下一个模型,避免整批卡在同一个慢模型上。
+        $isTimeout = ($ms >= (int) $ctx['timeoutMs'] - 500)
+            || preg_match('/timed?\s*out|timeout|超时/i', (string) (isset($res['error']) ? $res['error'] : ''));
         tc_json(200, array('result' => array(
             'ok' => false,
             'model' => $ctx['model'],
             'ms' => $ms,
-            'error' => tc_upstream_fail_message($res, isset($provider['name']) ? $provider['name'] : ''),
+            'timeout' => (bool) $isTimeout,
+            'error' => $isTimeout
+                ? ('请求超过 ' . round((int) $ctx['timeoutMs'] / 1000) . ' 秒仍未响应，已判定为超时（可在上方调小超时时间，或在后台加大上限后重试）')
+                : $failMsg,
         )));
     }
     if ($res['status'] >= 400) {

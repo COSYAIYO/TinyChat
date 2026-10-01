@@ -346,7 +346,6 @@
     opts = opts || {};
     const checked = opts.checked ? ' checked' : '';
     const attr = opts.stale ? 'data-stale' : 'data-mid';
-    const cls = 'model-row' + (opts.stale ? ' is-stale' : '');
     const numCells = MODEL_NUM_COLS.map((col) => '<td class="' + (col.cls === 'mtokens' ? 'col-mtok' : 'col-ctx') + '">'
       + modelNumCell(m, col, !opts.stale) + '</td>').join('');
     const costCell = opts.showCost === false ? '' : '<td class="col-cost">' + modelCostCell(m, !opts.stale) + '</td>';
@@ -360,6 +359,8 @@
     const videoCell = opts.stale
       ? '<td class="col-img">' + (isVideo ? '<span class="img-flag video-flag">视频</span>' : '<i class="muted">—</i>') + '</td>'
       : '<td class="col-img"><input type="checkbox" class="mvideo" data-mid="' + escapeHtml(m.id) + '" title="标记为视频生成模型"' + (isVideo ? ' checked' : '') + '></td>';
+    // is-on:已勾选的行加左侧色条(样式见 chrome.css),长列表里一眼看出哪些会被保存
+    const cls = 'model-row' + (opts.stale ? ' is-stale' : '') + (checked && !opts.stale ? ' is-on' : '');
     return '<tr class="' + cls + '">'
       + '<td class="col-check"><input type="checkbox" ' + attr + '="' + escapeHtml(m.id) + '"' + checked + '></td>'
       + '<td class="col-id"><span class="mid">' + escapeHtml(m.id) + '</span></td>'

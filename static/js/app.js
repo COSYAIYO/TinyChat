@@ -3934,7 +3934,7 @@ function syncToolSourcePanel() {
   if (parseOwn) parseOwn.classList.toggle('hidden', !parse.allowOwn || parse.source !== 'own');
   const provider = $('pref-search-provider');
   const SEARCH_NAMES = { tavily: 'Tavily', searxng: 'SearXNG', brave: 'Brave Search', ddg: 'DuckDuckGo', jina: 'Jina AI' };
-  const providerVal = SEARCH_NAMES[search.provider] ? search.provider : 'tavily';
+  const providerVal = SEARCH_NAMES[search.provider] ? search.provider : 'ddg';
   if (provider) {
     provider.setAttribute('data-value', providerVal);
     const lab = provider.querySelector('.sb-label');
@@ -4014,17 +4014,17 @@ async function saveToolSource(patch) {
   const provider = $('pref-search-provider');
   if (provider && window.OC && window.OC.openSelect) {
     const SEARCH_PROVIDERS = [
+      { value: 'ddg', label: 'DuckDuckGo', sub: '免 Key，默认；有速率限制' },
       { value: 'tavily', label: 'Tavily', sub: '官方搜索 API，填自己的 Key' },
       { value: 'searxng', label: 'SearXNG', sub: '自建元搜索，填实例地址' },
       { value: 'brave', label: 'Brave Search', sub: '独立索引，填自己的 Key' },
-      { value: 'ddg', label: 'DuckDuckGo', sub: '免 Key，有速率限制' },
       { value: 'jina', label: 'Jina AI', sub: '免 Key 可用，填 Key 提升配额' },
     ];
     const open = () => {
       window.OC.openSelect(provider, SEARCH_PROVIDERS, {
-        selected: provider.getAttribute('data-value') || 'tavily',
+        selected: provider.getAttribute('data-value') || 'ddg',
         onSelect: (val) => {
-          const next = SEARCH_NAMES[val] ? val : 'tavily';
+          const next = SEARCH_NAMES[val] ? val : 'ddg';
           provider.setAttribute('data-value', next);
           const lab = provider.querySelector('.sb-label');
           if (lab) lab.textContent = SEARCH_NAMES[next];
@@ -4044,7 +4044,7 @@ async function saveToolSource(patch) {
   if (save) save.addEventListener('click', async () => {
     const search = (state.tools && state.tools.webSearch) || {};
     const body = {
-      webSearchProvider: (provider && provider.getAttribute('data-value')) || 'tavily',
+      webSearchProvider: (provider && provider.getAttribute('data-value')) || 'ddg',
       webSearchSearxUrl: ($('pref-search-url') && $('pref-search-url').value) || '',
     };
     const key = ($('pref-search-key') && $('pref-search-key').value || '').trim();
