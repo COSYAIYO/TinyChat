@@ -57,7 +57,11 @@ if ($path === '/api' || strpos($path, '/api/') === 0 || $path === '/v1' || strpo
     try {
         tc_dispatch($method, $path);
     } catch (Exception $e) {
-        if (!headers_sent()) tc_fail(500, '服务器内部错误: ' . $e->getMessage());
+        // 对外只给固定文案:异常消息可能带绝对路径等敏感信息,详情写运行日志供后台排查
+        try {
+            tc_push_log(array('kind' => 'err', 'userName' => 'system', 'action' => '服务器异常(' . $method . ' ' . $path . '): ' . $e->getMessage(), 'error' => true));
+        } catch (Throwable $t) { /* 日志不可用时不影响响应 */ }
+        if (!headers_sent()) tc_fail(500, '服务器开小差了，请稍后重试');
     }
     exit;
 }
@@ -97,7 +101,7 @@ if ($method === 'GET' || $method === 'HEAD') {
 
 http_response_code(404);
 header('Content-Type: application/json; charset=utf-8');
-echo tc_json_encode(array('error' => array('message' => 'Not Found')));
+echo tc_json_encode(array('error' => array('message' => '页面或接口不存在')));
 exit;
 
 function tc_send_page($file) {
@@ -127,6 +131,7 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/auth/login$#', 'tc_api_login'),
         array('POST', '#^/api/auth/guest$#', 'tc_api_guest_login'),
         array('POST', '#^/api/auth/oauth/exchange$#', 'tc_api_oauth_exchange'),
+        array('POST', '#^/api/auth/oauth/bind-ticket$#', 'tc_api_oauth_bind_ticket'),
         array('GET', '#^/api/me/oauth$#', 'tc_api_me_oauth'),
         array('GET', '#^/api/me/quota/ledger$#', 'tc_api_me_quota_ledger'),
         array('DELETE', '#^/api/me/oauth/([^/]+)$#', 'tc_api_me_oauth_unbind'),
@@ -150,6 +155,7 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/auth/delete$#', 'tc_api_delete_own_account'),
         array('GET', '#^/api/providers$#', 'tc_api_list_providers'),
         array('POST', '#^/api/providers$#', 'tc_api_create_provider'),
+        // 保留:管理端/第三方客户端可用的全局供应商查询端点(当前内置前端未调用)
         array('GET', '#^/api/providers/global$#', 'tc_api_get_global_provider'),
         array('POST', '#^/api/providers/test$#', 'tc_api_user_test_model'),
         array('POST', '#^/api/providers/([^/]+)/key$#', 'tc_api_reveal_provider_key'),
@@ -229,6 +235,7 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/admin/providers/([^/]+)$#', 'tc_api_admin_update_provider'),
         array('DELETE', '#^/api/admin/providers/([^/]+)$#', 'tc_api_admin_delete_provider'),
         array('POST', '#^/api/documents/parse$#', 'tc_api_parse_document'),
+        // 保留:任务详情查询端点(内置前端只用 /events 与 /cancel,第三方客户端可用)
         array('GET', '#^/api/proxy/tasks/([^/]+)$#', 'tc_api_proxy_task'),
         array('GET', '#^/api/proxy/tasks/([^/]+)/events$#', 'tc_api_proxy_task_events'),
         array('POST', '#^/api/proxy/tasks/([^/]+)/cancel$#', 'tc_api_proxy_task_cancel'),

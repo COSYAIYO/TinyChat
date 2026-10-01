@@ -10,6 +10,44 @@ if (window.OCUI && typeof window.OCUI.initTheme === 'function') {
 function showError(msg) {
   const el = $('auth-error');
   el.textContent = msg;
+  // 登录被「邮箱未验证」挡住时,就地给出重发验证邮件的入口
+  const stale = document.getElementById('resend-verify-row');
+  if (stale) stale.remove();
+  if (/验证邮箱/.test(String(msg))) {
+    const row = document.createElement('div');
+    row.id = 'resend-verify-row';
+    row.style.marginTop = '8px';
+    const link = document.createElement('a');
+    link.href = '#';
+    link.textContent = '重发验证邮件';
+    link.addEventListener('click', async (e) => {
+      e.preventDefault();
+      let email = ($('login-name') ? $('login-name').value : '').trim();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        const typed = (window.OCUI && OCUI.prompt)
+          ? await OCUI.prompt({ title: '重发验证邮件', message: '请输入注册时填写的邮箱地址', confirmText: '发送' })
+          : window.prompt('请输入注册时填写的邮箱地址', '');
+        if (typed === null) return;
+        email = String(typed).trim();
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showError('请先在「用户名」里输入注册邮箱，或点击链接后按提示填写'); return; }
+      link.textContent = '发送中…';
+      try {
+        const r = await fetch(apiUrl('/api/auth/resend-verification'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { showError((d.error && d.error.message) || '发送失败'); return; }
+        showError('验证邮件已重新发送，请查收后完成验证再登录');
+      } catch (err) {
+        showError('网络错误，请稍后再试');
+      }
+    });
+    row.appendChild(link);
+    el.appendChild(row);
+  }
   el.classList.remove('hidden');
   el.style.animation = 'none';
   void el.offsetWidth;

@@ -1,5 +1,5 @@
 /* ============================================================
-   Markdown — AI 回复排版层(最终加载)
+   Markdown — AI 回复排版层(倒数第二加载,其后 chrome.css 仍会覆盖)
    选择器一律带 .msg.assistant .md-prose,压过 style/enhanced/refine/redesign
    中散落的 .msg.assistant p / table / th / td 等旧规则。
    界面 chrome 不动。

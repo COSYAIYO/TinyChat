@@ -994,7 +994,17 @@ R.render = function (text) {
           lb = document.createElement('div');
           lb.className = 'lightbox';
           lb.innerHTML = '<img alt=""><button class="lightbox-close" aria-label="关闭">' + window.OC.icon('close', 16) + '</button>';
-          lb.addEventListener('click', (e) => { if (e.target === lb || e.target.classList.contains('lightbox-close')) lb.classList.remove('show'); });
+          const hideLb = () => lb.classList.remove('show');
+          lb.addEventListener('click', (e) => { if (e.target === lb || e.target.classList.contains('lightbox-close')) hideLb(); });
+          // Esc 关闭灯箱:只在灯箱可见时拦截,且不与弹窗 Esc 冲突
+          lb._escHandler = (e) => {
+            if (e.key !== 'Escape' || !lb.classList.contains('show')) return;
+            if (window.OCUI && window.OCUI.isModalOpen && window.OCUI.isModalOpen()) return;
+            e.preventDefault();
+            e.stopPropagation();
+            hideLb();
+          };
+          document.addEventListener('keydown', lb._escHandler, true);
           document.body.appendChild(lb);
         }
         lb.querySelector('img').src = img.getAttribute('data-lightbox');

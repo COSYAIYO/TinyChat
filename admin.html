@@ -9,15 +9,15 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./logo-icon.svg">
-<link rel="stylesheet" href="./static/css/style.css?v=20261007.23">
+<link rel="stylesheet" href="./static/css/style.css?v=20261007.24">
 <link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
 <link rel="stylesheet" href="./vendor/katex/katex.min.css">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.23">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261007.23">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.23">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261007.23">
-<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.23">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.23">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.24">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261007.24">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.24">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261007.24">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.24">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.24">
 <script>
 (function () {
   try {
@@ -251,7 +251,10 @@
           <h2>用户</h2>
           <p class="users-count" id="users-count">—</p>
         </div>
-        <button class="btn primary" id="user-create-btn" type="button">创建用户</button>
+        <div class="users-head-actions">
+          <button class="btn small" id="users-refresh" type="button" title="重新拉取用户列表">刷新</button>
+          <button class="btn primary" id="user-create-btn" type="button">创建用户</button>
+        </div>
       </div>
       <div class="admin-toolbar users-toolbar">
         <label class="users-search">
@@ -285,6 +288,11 @@
           </thead>
           <tbody id="users-tbody"></tbody>
         </table>
+      </div>
+      <div class="users-pager" id="users-pager" hidden>
+        <button class="btn small" id="users-page-prev" type="button">上一页</button>
+        <span class="muted small" id="users-page-info"></span>
+        <button class="btn small" id="users-page-next" type="button">下一页</button>
       </div>
     </div>
   </div>
@@ -394,7 +402,11 @@
             </div>
             <div class="probe-result hidden" id="ap-test-result"></div>
           </div>
-          <button class="btn primary" id="ap-save" type="button">保存供应商</button>
+          <div class="form-actions">
+            <button class="btn primary" id="ap-save" type="button">保存供应商</button>
+            <button class="btn hidden" id="ap-cancel-edit" type="button">取消编辑</button>
+            <span class="muted small" id="ap-editing-note" hidden>正在编辑已有供应商，保存会覆盖其配置</span>
+          </div>
         </div>
       </details>
     </div>
@@ -928,7 +940,7 @@
     <div class="modal-body">
       <div class="admin-toolbar" style="margin-bottom:12px">
         <select id="user-chats-select" class="search-input" style="flex:1;min-width:140px;cursor:pointer">
-          <option value="">选择用户(可输入筛选)</option>
+          <option value="">选择用户</option>
         </select>
         <button class="btn small" id="user-chats-reload" type="button">↻ 加载</button>
       </div>
@@ -937,16 +949,16 @@
   </div>
 </div>
 </form>
-<script src="./static/js/config.js?v=20261007.23"></script>
-<script src="./static/js/icons.js?v=20261007.23"></script>
+<script src="./static/js/config.js?v=20261007.24"></script>
+<script src="./static/js/icons.js?v=20261007.24"></script>
 <script defer src="./vendor/markdown-it/markdown-it.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-footnote.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-emoji.min.js"></script>
 <script defer src="./vendor/katex/katex.min.js"></script>
 <script defer src="./vendor/highlight/highlight.min.js"></script>
-<script src="./static/js/ui.js?v=20261007.23"></script>
-<script src="./static/js/components.js?v=20261007.23"></script>
-<script src="./static/js/renderer.js?v=20261007.23"></script>
-<script src="./static/js/admin.js?v=20261007.23"></script>
+<script src="./static/js/ui.js?v=20261007.24"></script>
+<script src="./static/js/components.js?v=20261007.24"></script>
+<script src="./static/js/renderer.js?v=20261007.24"></script>
+<script src="./static/js/admin.js?v=20261007.24"></script>
 </body>
 </html>

@@ -14,6 +14,7 @@ const state = {
   currentModel: null,
   streaming: false,
   abortController: null,
+  _followStream: true, // 流式期间是否自动吸底(用户上翻时暂停)
   chats: [], // {id, title, messages: [{role, content}]}
   currentChatId: null,
   deletedIds: [], // 本端已删除的聊天 id(墓碑,合并云端时排除,防止删除记录复活)
@@ -683,6 +684,8 @@ function renderChatList() {
         ? await window.OCUI.confirm({ title: '删除对话', message: '确认删除此对话？删除后不可恢复。', danger: true, confirmText: '删除' })
         : confirm('确认删除此对话?');
       if (!ok) return;
+      // 正在流式输出的会话被删除:先停止,否则内容会画进切换后的新会话里
+      if (state.streaming && state.currentChatId === c.id) stopStreaming();
       state.chats = state.chats.filter((x) => x.id !== c.id);
       // 记墓碑:避免删除后与云端/其它页面合并时把这条又合并回来
       if (!state.deletedIds.includes(c.id)) state.deletedIds.push(c.id);
@@ -707,6 +710,8 @@ function renderChatList() {
     },
     onShare: (c) => shareConversation(c),
     onBranch: (c) => {
+      // 分支复制当前消息(含流式中的占位):先停流,避免内容继续写进新分支
+      if (state.streaming && state.currentChatId === c.id) stopStreaming();
       // 在新对话中复制全部消息作为分支起点
       const branch = {
         id: 'c' + Date.now() + Math.random().toString(36).slice(2, 6),
@@ -2252,7 +2257,7 @@ async function aiJudgeTools(text, ctx) {
 }
 
 async function sendMessage() {
-  if (state.streaming) return;
+  if (state.streaming) { toast('正在生成中，请稍候', true); return; }
   const input = $('input');
   const text = input.value.trim();
   const attachments = (state.pendingAttachments || []).slice();
@@ -2262,8 +2267,13 @@ async function sendMessage() {
   }
   if (!text && !attachments.length) return;
 
-  if (!state.user || !state.currentProviderId || !state.currentModel) {
+  if (!state.user) {
     openAuthModal();
+    return;
+  }
+  if (!state.currentProviderId || !state.currentModel) {
+    // 已登录但没有可用供应商/模型(后台清空、加载失败等):明确提示,而不是把人往登录框赶
+    toast('暂无可用的模型，请联系管理员或稍后重试', true);
     return;
   }
   if (!quotaIsUnlimited(state.user.quota) && state.user.quota <= 0) {
@@ -2439,6 +2449,7 @@ function providerFormat() {
 // 流式请求
 async function streamRequest(format, body, chat, assistantMsg) {
   state.streaming = true;
+  state._followStream = true;
   document.documentElement.classList.add('oc-streaming');
   assistantMsg._streaming = true;
   assistantMsg.interrupted = false;
@@ -2617,7 +2628,7 @@ function paintStreamingText(assistantMsg) {
   let root = contentEl.querySelector(':scope > .stream-answer');
   if (!assistantMsg.content) {
     if (root) root.remove();
-    scrollToBottom();
+    if (state._followStream !== false) scrollToBottom();
     return;
   }
   if (!root) {
@@ -2631,7 +2642,8 @@ function paintStreamingText(assistantMsg) {
     root.classList.add('stream-inline');
     root.innerHTML = escapeHtml(assistantMsg.content || '') + '<span class="stream-cursor"></span>';
   }
-  scrollToBottom();
+  // 用户向上翻阅时暂停吸底,拉回底部附近即恢复跟随
+  if (state._followStream !== false) scrollToBottom();
 }
 function updateStreamingText(assistantMsg) {
   if (!assistantMsg || !assistantMsg._streaming) return;
@@ -2867,11 +2879,7 @@ function noteModelFailure(msg, reason) {
 async function continueInterrupted(msg, chat) {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
   if (!msg || !chat) return;
-  const model = String(msg.model || state.currentModel || '').trim();
-  if (/claude-haiku-4\.5/i.test(model)) {
-    toast(model + ' 的通道当前不可用，请换一个模型后再继续', true);
-    return;
-  }
+  // 通道级故障由请求失败路径统一提示(noteModelFailure),不再对特定模型名一刀切拒绝
   msg.content = stripInterruptMarks(msg.content);
   msg.interrupted = false;
   msg.error = false;
@@ -2988,11 +2996,19 @@ async function requestAssistantReply(chat, userMsg, extra) {
       await streamRequest(format, body, chat, assistantMsg);
     } else {
       assistantMsg._streaming = true;
+      // 非流式同样要可停止、防重复发送:与流式共用发送/停止按钮与 abort 通道
+      state.streaming = true;
+      state._followStream = true;
+      document.documentElement.classList.add('oc-streaming');
+      $('send-btn').classList.add('hidden');
+      $('stop-btn').classList.remove('hidden');
+      state.abortController = new AbortController();
       renderMessages();
       const r = await api(ENDPOINT_BY_FORMAT[format], {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal: state.abortController.signal,
       });
       const data = await r.json();
       if (!r.ok) throw new Error((data.error && data.error.message) || ('HTTP ' + r.status));
@@ -3006,12 +3022,15 @@ async function requestAssistantReply(chat, userMsg, extra) {
       refreshMe();
     }
   } catch (e) {
+    const aborted = !!(e && e.name === 'AbortError');
     const kept = stripInterruptMarks(assistantMsg.content);
     assistantMsg.content = kept;
-    assistantMsg.error = true;
     assistantMsg.interrupted = true;
-    noteModelFailure(assistantMsg, (e && e.message) || '请求失败');
-    if (!kept && !assistantMsg.reasoning) assistantMsg.content = assistantMsg.failNote + '（本次请求未扣费）';
+    if (!aborted) {
+      assistantMsg.error = true;
+      noteModelFailure(assistantMsg, (e && e.message) || '请求失败');
+      if (!kept && !assistantMsg.reasoning) assistantMsg.content = assistantMsg.failNote + '（本次请求未扣费）';
+    }
   } finally {
     cancelStreamPaint();
     assistantMsg._streaming = false;
@@ -3621,9 +3640,19 @@ function logout() {
   if (menu) menu.classList.add('hidden');
   const chip = $('account-chip');
   if (chip) { chip.classList.remove('menu-open'); chip.setAttribute('aria-expanded', 'false'); }
-  localStorage.removeItem('oc_token');
-  localStorage.removeItem('oc_user');
-  location.href = apiUrl('/login');
+  // 先让服务端吊销会话(审计留痕、token 立即失效),再清本地跳转
+  const done = () => {
+    localStorage.removeItem('oc_token');
+    localStorage.removeItem('oc_user');
+    location.href = apiUrl('/login');
+  };
+  try {
+    fetch(apiUrl('/api/auth/logout'), { method: 'POST', headers: { 'Authorization': 'Bearer ' + (state.token || '') } })
+      .catch(() => {})
+      .finally(done);
+    // 网络异常时也要保证 2s 内完成登出跳转
+    setTimeout(done, 2000);
+  } catch (e) { done(); }
 }
 
 // ============ 主题切换(委托 OCUI 统一管理;ui.js 未加载时走旧逻辑) ============
@@ -3688,6 +3717,8 @@ if (announceMenuBtn) announceMenuBtn.addEventListener('click', () => {
   if (window.OCShowAnnouncement) window.OCShowAnnouncement();
 });
 const modal = $('settings-modal');
+// Esc 走 OCUI.closeModal 时也要清密钥明文:挂 _onClose,统一覆盖所有关闭路径
+modal._onClose = () => { if (typeof resetApiKeySecret === 'function') resetApiKeySecret(); };
 function openSettings(tab) {
   // 每次打开都从干净状态开始:上次生成的密钥明文不再保留在 DOM 中
   if (typeof resetApiKeySecret === 'function') resetApiKeySecret();
@@ -4431,7 +4462,9 @@ async function saveToolSource(patch) {
       + '<button class="btn primary" type="button" id="acd-ok">确定</button>'
       + '</div></div>';
     document.body.appendChild(mask);
-    const close = () => { try { document.body.removeChild(mask); } catch (e) { /* 忽略 */ } };
+    // 纳入统一弹窗栈:支持 Esc 关闭
+    const rawClose = () => { try { document.body.removeChild(mask); } catch (e) { /* 忽略 */ } };
+    const close = (window.OCUI && window.OCUI.adoptModal) ? window.OCUI.adoptModal(mask, rawClose) : rawClose;
     const errBox = mask.querySelector('#acd-err');
     const showErr = (m) => { errBox.textContent = m; errBox.classList.remove('hidden'); };
     const first = mask.querySelector('#acd-0');
@@ -4613,9 +4646,19 @@ async function saveToolSource(patch) {
     oauthList.addEventListener('click', async (e) => {
       const bindBtn = e.target.closest('[data-oauth-bind]');
       if (bindBtn) {
-        // 绑定:带上本站用户 id 跳授权端点,回调走绑定分支
+        // 绑定:先带登录态换一次性绑定票据,再跳授权端点(导航请求不带 Bearer 头,票据即身份证明)
+        const pid = bindBtn.getAttribute('data-oauth-bind');
         const uid = (state.user && state.user.id) ? state.user.id : '';
-        location.href = '/auth/' + encodeURIComponent(bindBtn.getAttribute('data-oauth-bind')) + '?bind=' + encodeURIComponent(uid);
+        try {
+          bindBtn.disabled = true;
+          const r = await api('/api/auth/oauth/bind-ticket', { method: 'POST', body: JSON.stringify({ provider: pid }) });
+          const d = await readJsonSafe(r);
+          if (!r.ok || !d.ticket) throw new Error((d.error && d.error.message) || '获取绑定票据失败');
+          location.href = '/auth/' + encodeURIComponent(pid) + '?bind=' + encodeURIComponent(uid) + '&t=' + encodeURIComponent(d.ticket);
+        } catch (err) {
+          bindBtn.disabled = false;
+          toast('发起绑定失败：' + ((err && err.message) || '未知错误'), true);
+        }
         return;
       }
       const unbindBtn = e.target.closest('[data-oauth-unbind]');
@@ -4689,8 +4732,6 @@ async function saveToolSource(patch) {
         const moreBtn = $('usage2-quota-more');
         if (moreBtn && overflow) moreBtn.textContent = '已加载 ' + quotaLedgerOffset + ' / ' + total + ' 条，继续加载';
       }
-      const note = $('usage2-quota-note');
-      if (note) note.textContent = '';
     } catch (e) {
       if (reset) box.innerHTML = '<p class="muted small">加载失败：' + escapeHtml(e.message || '') + '</p>';
     } finally {
@@ -4833,21 +4874,7 @@ async function saveToolSource(patch) {
 })();
 
 // ============ 顶栏导出当前对话 ============
-(function bindExportChat() {
-  const btn = $('export-chat-btn');
-  if (!btn) return;
-  btn.addEventListener('click', () => {
-    const chat = currentChat();
-    if (!chat || !chat.messages.length) return toast('当前对话为空');
-    const lines = ['# ' + chat.title, ''];
-    (chat.messages || []).forEach((m) => {
-      if (m.error) return;
-      lines.push('## ' + (m.role === 'user' ? '用户' : 'AI'), '', m.content || '', '');
-    });
-    window.OCUI && window.OCUI.download((chat.title || '对话') + '.md', lines.join('\n'), 'text/markdown');
-    toast('已导出当前对话');
-  });
-})();
+// (index.html 当前没有导出入口,保留函数化能力时再挂载)
 
 function renderProviderList() {
   const list = $('provider-list');
@@ -4916,7 +4943,7 @@ function renderProviderList() {
         ? await window.OCUI.confirm({ title: '删除供应商', message: '确认删除该供应商？', danger: true, confirmText: '删除' })
         : confirm('确认删除该供应商？');
       if (!ok) return;
-      const r = await api('/api/providers/' + p.id, { method: 'DELETE' });
+      const r = await api('/api/providers/' + encodeURIComponent(p.id), { method: 'DELETE' });
       if (r.ok) {
         if (providerEditingId === p.id) resetProviderForm();
         toast('已删除'); await loadProviders(); renderProviderList();
@@ -5941,7 +5968,9 @@ function openImageDialog() {
     + '</div>'
     + '</div>';
   document.body.appendChild(mask);
-  const close = () => mask.remove();
+  // 纳入统一弹窗栈:支持 Esc 关闭与焦点管理
+  const rawClose = () => mask.remove();
+  const close = (window.OCUI && window.OCUI.adoptModal) ? window.OCUI.adoptModal(mask, rawClose) : rawClose;
   mask.addEventListener('click', (e) => { if (e.target === mask || e.target.closest('[data-act="close"]')) close(); });
 
   // 自定义下拉:模型 + 尺寸
@@ -6124,7 +6153,9 @@ function openVideoDialog() {
     + '</div>'
     + '</div>';
   document.body.appendChild(mask);
-  const close = () => mask.remove();
+  // 纳入统一弹窗栈:支持 Esc 关闭与焦点管理
+  const rawClose = () => mask.remove();
+  const close = (window.OCUI && window.OCUI.adoptModal) ? window.OCUI.adoptModal(mask, rawClose) : rawClose;
   mask.addEventListener('click', (e) => { if (e.target === mask || e.target.closest('[data-act="close"]')) close(); });
 
   // 自定义下拉:模型 / 模式 / 时长 / 比例
@@ -6362,12 +6393,18 @@ async function sendImageTurn(prompt, imageAtts, opts) {
   // 图片规格沿用「绘图弹窗」里最近一次的选择(尺寸或宽高比),两条入口共用同一偏好
   const spec = parseImageSpec(localStorage.getItem('oc_image_size') || '');
   state.streaming = true;
+  state._followStream = true;
+  document.documentElement.classList.add('oc-streaming');
+  $('send-btn').classList.add('hidden');
+  $('stop-btn').classList.remove('hidden');
+  state.abortController = new AbortController();
   updateSendBtn();
   try {
     const r = await api('/api/proxy/images', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ providerId, model, prompt: text, n: 1, size: spec.size, ratio: spec.ratio, images: refUrls }),
+      signal: state.abortController.signal,
     });
     const d = await r.json();
     if (!r.ok) throw new Error((d.error && d.error.message) || ('HTTP ' + r.status));
@@ -6384,14 +6421,20 @@ async function sendImageTurn(prompt, imageAtts, opts) {
     await refreshMe();
   } catch (e) {
     placeholder.imagePending = false;
-    placeholder.error = true;
-    placeholder.content = '生图失败：' + ((e && e.message) || '未知错误');
-    saveChats();
-    renderMessages();
-    toast('生图失败: ' + ((e && e.message) || '未知错误'), true);
+    if (e && e.name === 'AbortError') {
+      placeholder.content = '已停止生成。';
+      saveChats();
+      renderMessages();
+      toast('已停止生成');
+    } else {
+      placeholder.error = true;
+      placeholder.content = '生图失败：' + ((e && e.message) || '未知错误');
+      saveChats();
+      renderMessages();
+      toast('生图失败: ' + ((e && e.message) || '未知错误'), true);
+    }
   } finally {
-    state.streaming = false;
-    updateSendBtn();
+    initStreamingState();
     refreshModelHealth();
   }
 }
@@ -6432,7 +6475,6 @@ async function sendVideoTurn(prompt, imageAtts) {
   const refAtts = atts.map((a, i) => Object.assign({}, a, { dataUrl: refUrls[i] || a.dataUrl }));
   const hasRefs = refUrls.length > 0;
   if (!text && !hasRefs) { toast('请输入画面描述', true); return; }
-  if (!hasRefs && !text) { toast('请输入画面描述', true); return; }
 
   const parts = [];
   if (text) parts.push(text);
@@ -6454,12 +6496,18 @@ async function sendVideoTurn(prompt, imageAtts) {
   // 视频规格沿用绘图弹窗里最近一次的选择(时长 / 比例)
   const spec = parseVideoSpec();
   state.streaming = true;
+  state._followStream = true;
+  document.documentElement.classList.add('oc-streaming');
+  $('send-btn').classList.add('hidden');
+  $('stop-btn').classList.remove('hidden');
+  state.abortController = new AbortController();
   updateSendBtn();
   try {
     const r = await api('/api/proxy/videos', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ providerId, model, prompt: text, mode: hasRefs ? 'reference' : 'text', seconds: spec.seconds, aspect_ratio: spec.ratio, images: refUrls }),
+      signal: state.abortController.signal,
     });
     const d = await r.json();
     if (!r.ok) throw new Error((d.error && d.error.message) || ('HTTP ' + r.status));
@@ -6475,14 +6523,20 @@ async function sendVideoTurn(prompt, imageAtts) {
     await refreshMe();
   } catch (e) {
     placeholder.imagePending = false;
-    placeholder.error = true;
-    placeholder.content = '生视频失败：' + ((e && e.message) || '未知错误');
-    saveChats();
-    renderMessages();
-    toast('生视频失败: ' + ((e && e.message) || '未知错误'), true);
+    if (e && e.name === 'AbortError') {
+      placeholder.content = '已停止生成。';
+      saveChats();
+      renderMessages();
+      toast('已停止生成');
+    } else {
+      placeholder.error = true;
+      placeholder.content = '生视频失败：' + ((e && e.message) || '未知错误');
+      saveChats();
+      renderMessages();
+      toast('生视频失败: ' + ((e && e.message) || '未知错误'), true);
+    }
   } finally {
-    state.streaming = false;
-    updateSendBtn();
+    initStreamingState();
     refreshModelHealth();
   }
 }
@@ -6556,8 +6610,11 @@ function openCompareDialog() {
   const input = $('input');
   if (qEl && input && input.value.trim()) qEl.value = input.value.trim();
   if (qEl) setTimeout(() => qEl.focus(), 60);
+  // 纳入统一弹窗栈:支持 Esc 关闭
+  const rawClose = () => mask.remove();
+  const closeCompare = (window.OCUI && window.OCUI.adoptModal) ? window.OCUI.adoptModal(mask, rawClose) : rawClose;
   mask.addEventListener('click', (e) => {
-    if (e.target === mask || e.target.closest('[data-act="close"]')) mask.remove();
+    if (e.target === mask || e.target.closest('[data-act="close"]')) closeCompare();
   });
   mask.querySelector('#compare-run').addEventListener('click', async () => {
     const question = (qEl && qEl.value.trim()) || '';
@@ -6613,12 +6670,21 @@ function openCompareDialog() {
         const voteBtn = actions.querySelector('[data-vote]');
         if (voteBtn) voteBtn.addEventListener('click', async () => {
           voteBtn.disabled = true;
-          voteBtn.textContent = '已投票 ✓';
-          try { await api('/api/votes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: picks[i].model, to: 'up' }) }); } catch (e) { /* 投票失败不影响对比 */ }
+          voteBtn.textContent = '投票中…';
+          try {
+            await api('/api/votes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: picks[i].model, to: 'up' }) });
+            voteBtn.textContent = '已投票 ✓';
+          } catch (e) {
+            voteBtn.disabled = false;
+            voteBtn.textContent = '👍 这个更好';
+            toast('投票失败，请稍后再试', true);
+          }
         });
         const copyBtn = actions.querySelector('[data-copy]');
-        if (copyBtn) copyBtn.addEventListener('click', () => {
-          if (navigator.clipboard) navigator.clipboard.writeText(res).then(() => toast('已复制')).catch(() => {});
+        if (copyBtn) copyBtn.addEventListener('click', async () => {
+          const ok = (window.OCUI && OCUI.copyText) ? await OCUI.copyText(res) : false;
+          if (ok) { copyBtn.textContent = '已复制'; toast('已复制'); setTimeout(() => { copyBtn.textContent = '复制'; }, 1600); }
+          else toast('复制失败，请手动选择文本复制', true);
         });
       }
     });
@@ -6702,6 +6768,9 @@ function toggleSidebar() {
   }
   if (area) {
     area.addEventListener('scroll', () => {
+      // 流式吸底跟随:离开底部 80px 以上视为用户在翻阅,暂停自动滚动
+      const gap = area.scrollHeight - area.scrollTop - area.clientHeight;
+      state._followStream = gap < 80;
       if (syncTocTimer) cancelAnimationFrame(syncTocTimer);
       syncTocTimer = requestAnimationFrame(syncTocActive);
     }, { passive: true });
@@ -7042,6 +7111,9 @@ if (mentionPop) {
   });
 }
 inputEl.addEventListener('keydown', (e) => {
+  // 中文输入法组词期间的 Enter 是「确认候选词」,不能当成发送;
+  // isComposing 之外的 keyCode===229 兜底旧版 Safari。
+  if (e.isComposing || e.keyCode === 229) return;
   if (state.mention.open) {
     const items = mentionCandidates(state.mention.q);
     if (e.key === 'ArrowDown') {
@@ -7239,7 +7311,9 @@ function openOauthProfileGate(token, user) {
   const showErr = (m) => { errBox.textContent = m; errBox.classList.remove('hidden'); };
   // 已有登录态,选择暂不完善就收起弹窗直接使用(不是死路)
   const xBtn = mask.querySelector('#og-x');
-  if (xBtn) xBtn.addEventListener('click', () => mask.remove());
+  const rawGateClose = () => mask.remove();
+  const gateClose = (window.OCUI && window.OCUI.adoptModal) ? window.OCUI.adoptModal(mask, rawGateClose) : rawGateClose;
+  if (xBtn) xBtn.addEventListener('click', gateClose);
   const btn = mask.querySelector('#og-save');
   if (nameInput) nameInput.focus();
   // 用可变变量保存当前 token:设置密码会递增 tv 使旧 token 立即失效(服务端安全设计),
@@ -7296,7 +7370,7 @@ function enterReadonlyHome() {
   }
   const send = $('send-btn');
   if (send) send.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openAuthModal(); }, true);
-  document.querySelectorAll('#new-chat, #assistant-lib-btn, #account-chip').forEach((el) => {
+  document.querySelectorAll('#new-chat-btn, #assistant-lib-btn, #account-chip').forEach((el) => {
     el.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openAuthModal(); }, true);
   });
 }

@@ -91,6 +91,7 @@ function tc_oauth_landing_url() {
 }
 
 // —— state:HMAC 签名,防 CSRF;不依赖 PHP Session ——
+// 回调侧另有一次性消费(usedOauthStates),同一 state 二次回调会被拒,防重放
 function tc_oauth_make_state($id, $bindUserId = '') {
     $payload = tc_b64url(tc_json_encode(array(
         'p' => (string) $id,
@@ -113,6 +114,31 @@ function tc_oauth_check_state($state) {
     // 10 分钟有效期
     if ((int) $json['t'] < (int) floor(tc_now() / 1000) - 600) return null;
     return $json;
+}
+
+// state 一次性消费:成功校验后把随机 nonce 记入已用清单(带 15 分钟剪枝)。
+// 放在绑定/建号的同一写事务里调用,避免额外加锁。
+function tc_oauth_consume_state(&$db, $state) {
+    $parts = explode('.', (string) $state);
+    if (count($parts) !== 2) return;
+    $json = json_decode(tc_b64url_decode($parts[0]), true);
+    if (!is_array($json) || empty($json['n'])) return;
+    $nonce = (string) $json['n'];
+    $used = (isset($db['usedOauthStates']) && is_array($db['usedOauthStates'])) ? $db['usedOauthStates'] : array();
+    if (!empty($used[$nonce])) return; // 已消费:调用方会把 result 置为失败
+    $now = tc_now();
+    foreach ($used as $n => $t) if ((int) $t < $now - 900000) unset($used[$n]);
+    $used[$nonce] = $now;
+    $db['usedOauthStates'] = $used;
+}
+
+function tc_oauth_state_was_used(&$db, $state) {
+    $parts = explode('.', (string) $state);
+    if (count($parts) !== 2) return false;
+    $json = json_decode(tc_b64url_decode($parts[0]), true);
+    if (!is_array($json) || empty($json['n'])) return false;
+    $used = (isset($db['usedOauthStates']) && is_array($db['usedOauthStates'])) ? $db['usedOauthStates'] : array();
+    return !empty($used[(string) $json['n']]);
 }
 
 // —— 一次性登录票据:短时效 JWT + 服务端已用清单,避免重放 ——
@@ -405,6 +431,25 @@ function tc_oauth_redirect_error($msg) {
     exit;
 }
 
+// —— 绑定票据:证明「发起绑定的浏览器就是该账号本人」——
+// 绑定入口是导航跳转(不带 Authorization 头),所以前端先带 token 调
+// /api/auth/oauth/bind-ticket 换取票据,再带着票据跳转;5 分钟内有效、绑定 uid+provider。
+function tc_oauth_make_bind_ticket($userId, $providerId) {
+    return tc_jwt_sign(array(
+        'sub' => (string) $userId,
+        'bt' => 1,
+        'pv' => (string) $providerId,
+        'jti' => bin2hex(random_bytes(8)),
+        'exp' => tc_now() + 300000,
+    ));
+}
+
+function tc_oauth_check_bind_ticket($ticket, $userId, $providerId) {
+    $d = tc_jwt_verify((string) $ticket);
+    return is_array($d) && !empty($d['bt']) && (string) $d['sub'] === (string) $userId
+        && (string) $d['pv'] === (string) $providerId;
+}
+
 // —— 入口一:发起授权 GET /auth/<provider> ——
 function tc_oauth_start($id) {
     $id = strtolower((string) $id);
@@ -416,8 +461,15 @@ function tc_oauth_start($id) {
         tc_oauth_redirect_error('该登录方式未启用或配置不完整');
     }
     $cfg = $settings['oauthProviders'][$id];
-    // 绑定模式:设置页发起绑定时带 ?bind=<uid>,回调据此走"绑定到已有账号"分支
+    // 绑定模式:设置页发起绑定时带 ?bind=<uid>&t=<票据>,回调据此走"绑定到已有账号"分支。
+    // 必须校验本人:否则任何人拿到目标 uid 就能把自己的第三方身份绑上去接管账号。
     $bindUserId = isset($_GET['bind']) ? trim((string) $_GET['bind']) : '';
+    if ($bindUserId !== '') {
+        $bindTicket = isset($_GET['t']) ? trim((string) $_GET['t']) : '';
+        if ($bindTicket === '' || !tc_oauth_check_bind_ticket($bindTicket, $bindUserId, $id)) {
+            tc_oauth_redirect_error('绑定请求无效或已过期，请在设置页重新发起绑定');
+        }
+    }
     $state = tc_oauth_make_state($id, $bindUserId);
     $url = tc_oauth_authorize_url($id, $cfg, $state);
     if ($url === '') tc_oauth_redirect_error('无法生成授权地址');
@@ -454,7 +506,13 @@ function tc_oauth_callback($id) {
     $result = array('ok' => false, 'error' => '登录失败');
     $userId = '';
     $bindUid = isset($st['b']) ? (string) $st['b'] : '';
-    tc_with_db(true, function (&$db) use ($id, $profile, $bindUid, &$result, &$userId) {
+    tc_with_db(true, function (&$db) use ($id, $profile, $bindUid, $state, &$result, &$userId) {
+        // state 一次性消费:同一授权回调只能成功走一次,防截获 state 重放
+        if (tc_oauth_state_was_used($db, $state)) {
+            $result = array('ok' => false, 'error' => '登录状态已失效，请重新发起');
+            return;
+        }
+        tc_oauth_consume_state($db, $state);
         // 绑定模式:把第三方账号挂到指定本站账号上(要求该账号存在且未被占用)
         if ($bindUid !== '') {
             $target = null;

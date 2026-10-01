@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.64');
+define('TC_VERSION', '2.0.65');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -173,6 +173,10 @@ function tc_load_config() {
         'cors_origin' => getenv('CORS_ORIGIN') ?: '*',
         'data_dir' => getenv('DATA_DIR') ?: '',
         'site_url' => getenv('SITE_URL') ?: '',
+        // 站点是否部署在反向代理(Nginx/CDN/宝塔)之后:
+        // 只有设为 true 时才信任 X-Forwarded-For 取真实客户端 IP;
+        // 默认 false——直连部署下该头可被任意伪造,会绕过注册/游客/找回密码的按 IP 限流
+        'trust_proxy' => getenv('TRUST_PROXY') === '1' ?: false,
     );
     $file = TC_ROOT . '/config.php';
     if (is_file($file)) {
@@ -1753,7 +1757,9 @@ function tc_migrate_provider_keys(&$db) {
 }
 
 function tc_client_ip() {
-    if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+    // 仅在 config.php 显式声明 trust_proxy => true(部署在可信反代后)时才采信
+    // X-Forwarded-For;直连部署下盲信该头等于允许任何人伪造 IP 绕过按 IP 限流
+    if (tc_cfg('trust_proxy') && !empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
         $parts = explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']);
         return trim($parts[0]);
     }

@@ -205,7 +205,13 @@
     const onDoc = (e) => {
       if (!menu.contains(e.target) && e.target !== trigger) closeOpenMenu();
     };
-    const onKey = (e) => { if (e.key === 'Escape') { closeOpenMenu(); } };
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      // 捕获阶段拦截:只关菜单,不让同一个 Esc 再把底层弹窗也关掉
+      e.preventDefault();
+      e.stopPropagation();
+      closeOpenMenu();
+    };
     const onScroll = (e) => {
       const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
       if (menu.contains(e.target) || path.indexOf(menu) >= 0) return;
@@ -226,15 +232,15 @@
 
     menu._cleanup = () => {
       document.removeEventListener('mousedown', onDoc);
-      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('keydown', onKey, true);
       window.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('resize', onResize);
     };
-
+    // 捕获阶段注册:保证先于 OCUI 的弹窗 Esc(document 冒泡)触发
     setTimeout(() => {
       // 冒泡阶段监听：菜单项的 mousedown/click 通过 stopPropagation 阻止关闭
       document.addEventListener('mousedown', onDoc);
-      document.addEventListener('keydown', onKey);
+      document.addEventListener('keydown', onKey, true);
       window.addEventListener('scroll', onScroll, true);
       window.addEventListener('resize', onResize);
     }, 0);
@@ -1149,6 +1155,16 @@
 
   const titleObserver = new MutationObserver((recs) => {
     recs.forEach((rec) => {
+      // 运行时改 title(如思考强度「中→高」、模型健康度)要同步到 data-tip,
+      // 否则自定义提示永远停留在初次转换时的旧文案
+      if (rec.type === 'attributes' && rec.attributeName === 'title') {
+        const el = rec.target;
+        const text = (el.getAttribute('title') || '').trim();
+        if (!text) return;
+        el.setAttribute('data-tip', text);
+        el.removeAttribute('title');
+        return;
+      }
       rec.addedNodes.forEach((n) => {
         if (n.nodeType !== 1) return;
         if (n.hasAttribute && n.hasAttribute('title')) restyleNativeTitles(n);
@@ -1156,7 +1172,7 @@
       });
     });
   });
-  titleObserver.observe(document.documentElement, { childList: true, subtree: true });
+  titleObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['title'] });
 
   // 生图模型名启发式(与后端 tc_image_model_name_hint 对应):供前后台共同复用。
   // 仅用于 UI 默认勾选/下拉建议,最终以后台显式标记(image 字段)为准。

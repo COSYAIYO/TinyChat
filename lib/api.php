@@ -373,6 +373,32 @@ function tc_sanitize_chats($chats) {
                     'role' => $role,
                     'content' => substr((string) (array_key_exists('content', $m) && $m['content'] !== null ? $m['content'] : ''), 0, 200000),
                 );
+                // 原始输入文本与附件(图片 dataUrl / 解析正文)必须随同步保留,
+                // 否则多端合并(云端按 updatedAt 覆盖)会凭空丢附件、编辑/重发失效
+                if (array_key_exists('text', $m) && $m['text'] !== null && $m['text'] !== '') {
+                    $msg['text'] = substr((string) $m['text'], 0, 200000);
+                }
+                if (isset($m['attachments']) && is_array($m['attachments'])) {
+                    $atts = array();
+                    foreach (array_slice($m['attachments'], 0, 8) as $a) {
+                        if (!is_array($a)) continue;
+                        $att = array(
+                            'type' => (isset($a['type']) && $a['type'] === 'image') ? 'image' : 'file',
+                            'name' => substr((string) (isset($a['name']) ? $a['name'] : ''), 0, 200),
+                            'size' => isset($a['size']) && is_numeric($a['size']) ? (int) $a['size'] : 0,
+                        );
+                        if (!empty($a['mediaType'])) $att['mediaType'] = substr((string) $a['mediaType'], 0, 120);
+                        // dataUrl 是 base64 图片本体,放行但设上限(约 8MB 编码后)
+                        if (!empty($a['dataUrl']) && is_string($a['dataUrl'])) {
+                            $att['dataUrl'] = strlen($a['dataUrl']) > 8 * 1024 * 1024 ? '' : $a['dataUrl'];
+                        }
+                        if (!empty($a['content']) && is_string($a['content'])) $att['content'] = substr($a['content'], 0, 200000);
+                        if (!empty($a['imageAsText'])) $att['imageAsText'] = true;
+                        if (isset($a['meta']) && is_array($a['meta'])) $att['meta'] = $a['meta'];
+                        $atts[] = $att;
+                    }
+                    if ($atts) $msg['attachments'] = $atts;
+                }
                 foreach (array('vote', 'followUps', 'citations', 'model', 'reasoning', 'error', 'interrupted', 'failNote', 'elapsedMs', 'createdAt', 'usage', 'contextCount', 'contextLimit', 'taskId', 'taskSeq', 'taskStatus', 'taskFormat') as $k) {
                     if (array_key_exists($k, $m) && $m[$k] !== null) $msg[$k] = $m[$k];
                 }
@@ -887,7 +913,7 @@ function tc_api_setup() {
         $name = trim((string) (isset($b['name']) ? $b['name'] : 'admin'));
         $password = (string) (isset($b['password']) ? $b['password'] : '');
         if (!tc_valid_name($name)) tc_fail(400, '用户名需 2-32 位（字母/数字/中文/._@-）');
-        if (strlen($password) < 4) tc_fail(400, '密码至少 4 个字符');
+        if (strlen($password) < 4 || strlen($password) > 128) tc_fail(400, '密码长度需为 4-128 个字符');
         if (strlen($password) > 128) tc_fail(400, '密码过长');
         foreach ($db['users'] as $u) {
             if (strtolower($u['name']) === strtolower($name)) tc_fail(409, '用户名已存在');
@@ -932,7 +958,7 @@ function tc_api_register() {
         $email = strtolower(trim((string) ($b['email'] ?? '')));
         if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) tc_fail(400, '邮箱格式不正确');
         if (!tc_valid_name($name)) tc_fail(400, '用户名需 2-32 位（字母/数字/中文/._@-）');
-        if (strlen($password) < 4) tc_fail(400, '密码至少 4 个字符');
+        if (strlen($password) < 4 || strlen($password) > 128) tc_fail(400, '密码长度需为 4-128 个字符');
         if (strlen($password) > 128) tc_fail(400, '密码过长');
         foreach ($db['users'] as $u) {
             if (strtolower($u['name']) === strtolower($name)) tc_fail(409, '用户名已存在');
@@ -980,7 +1006,9 @@ function tc_api_login() {
             tc_fail(401, '用户名或密码错误');
         }
         tc_clear_login_fail($name);
-        if (!empty($db['settings']['emailVerificationEnabled']) && empty($found['emailVerifiedAt'])) tc_fail(403, '请先验证邮箱后再登录');
+        // 邮箱验证只约束「有邮箱且未验证」的用户;管理员代建的无邮箱账号不存在可验证的邮箱,
+        // 若被此检查拦截将永远无法登录(历史版本创建的账号没有 emailVerifiedAt 字段)
+        if (!empty($db['settings']['emailVerificationEnabled']) && empty($found['emailVerifiedAt']) && !empty($found['email'])) tc_fail(403, '请先验证邮箱后再登录');
         $user = $found;
         $settings = $db['settings'];
     });
@@ -1059,6 +1087,10 @@ function tc_api_verify_email() {
 
 function tc_api_resend_verification() {
     tc_with_db(true, function (&$db) {
+        // 每 IP 每小时 10 次,防邮件轰炸(邮件本身另有 60s/次的频控)
+        if (!tc_rate_limit_check('resend-verify:' . tc_client_ip(), 10, 3600000)) {
+            tc_fail(429, '请求过于频繁，请稍后再试');
+        }
         $b = tc_read_json_body(); $email = strtolower(trim((string) ($b['email'] ?? ''))); if (!filter_var($email, FILTER_VALIDATE_EMAIL)) tc_fail(400, '邮箱格式不正确');
         foreach ($db['users'] as &$u) if (strtolower((string) ($u['email'] ?? '')) === $email) { if (!empty($u['emailLastSentAt']) && tc_now() - (int) $u['emailLastSentAt'] < 60000) tc_fail(429, '邮件发送过于频繁，请稍后再试'); $token = bin2hex(random_bytes(24)); $u['emailLastSentAt'] = tc_now(); $u['emailTokenHash'] = hash('sha256', $token); $u['emailTokenExpires'] = tc_now() + 86400000; $link = tc_public_base_url() . '/login?verify=' . rawurlencode($token); [$subject, $html] = tc_render_mail_template($db['settings'], 'verify', isset($u['name']) ? $u['name'] : '', $link, '24 小时'); if (!tc_mail_send($db['settings'], $email, $subject, $html)) tc_fail(503, '验证邮件发送失败'); break; }
         unset($u); tc_json(200, array('ok' => true));
@@ -1092,6 +1124,21 @@ function tc_api_logout() {
         $user = tc_auth_user($db);
         if ($user) tc_log_auth_event('auth', $user['name'], '退出登录', $user['id']);
         tc_json(200, array('ok' => true));
+    });
+}
+
+// 换取一次性「第三方绑定票据」:绑定入口是导航跳转(无 Authorization 头),
+// 前端先带登录态调这里拿票据,再跳 /auth/<provider>?bind=<uid>&t=<票据>
+function tc_api_oauth_bind_ticket() {
+    $b = tc_read_json_body(4 * 1024);
+    $provider = strtolower(trim((string) (isset($b['provider']) ? $b['provider'] : '')));
+    if ($provider === '') tc_fail(400, '缺少 provider');
+    tc_with_db(false, function ($db) use ($provider) {
+        $user = tc_require_auth($db);
+        $cfg = isset($db['settings']['oauthProviders'][$provider]) && is_array($db['settings']['oauthProviders'][$provider])
+            ? $db['settings']['oauthProviders'][$provider] : array();
+        if (empty($cfg['enabled'])) tc_fail(400, '该登录方式未启用');
+        tc_json(200, array('ok' => true, 'ticket' => tc_oauth_make_bind_ticket($user['id'], $provider)));
     });
 }
 
@@ -1386,7 +1433,7 @@ function tc_api_sync_save_chats() {
         if (!tc_rate_limit_check('sync:' . $user['id'], 60)) {
             tc_fail(429, '同步过于频繁，请稍后再试');
         }
-        $b = tc_read_json_body(50 * 1024 * 1024);
+        $b = tc_read_json_body(16 * 1024 * 1024); // 16MB 上限:含图片附件的对话同步足够用,防止超大包体长时间占用写锁
         // 隐私模式:服务器不保存对话记录,客户端仅本地留存
         if (isset($db['settings']['persistChats']) && !$db['settings']['persistChats']) {
             tc_db_skip_write();
@@ -1422,10 +1469,22 @@ function tc_api_sync_clear_chats() {
 function tc_api_create_share() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
+        // 限流与总量保护:分享是 8MB 级的永久数据,不设防会被恶意撑大数据库
+        if (!tc_rate_limit_check('share:' . $user['id'], 20, 3600000)) {
+            tc_fail(429, '创建分享过于频繁，请稍后再试');
+        }
         $b = tc_read_json_body(8 * 1024 * 1024);
         $title = substr(trim((string) (isset($b['title']) ? $b['title'] : '未命名对话')), 0, 120) ?: '未命名对话';
         $messages = tc_sanitize_share_messages(isset($b['messages']) ? $b['messages'] : array());
         if (!$messages) tc_fail(400, '对话为空，无法分享');
+        // 每用户最多保留 200 条分享:超出时删除该用户最早的一条(分享链接随之失效)
+        $mine = array();
+        foreach ($db['shares'] as $sid => $s) if ((string) ($s['ownerId'] ?? '') === (string) $user['id']) $mine[$sid] = $s;
+        if (count($mine) >= 200) {
+            uasort($mine, function ($x, $y) { return ((int) ($x['createdAt'] ?? 0)) <=> ((int) ($y['createdAt'] ?? 0)); });
+            $drop = array_key_first($mine);
+            unset($db['shares'][$drop]);
+        }
         $share = array(
             'id' => tc_uid(12),
             'ownerId' => $user['id'],
@@ -1469,9 +1528,12 @@ function tc_sys_meminfo() {
     return $cache;
 }
 
-// CPU 使用率:取两次 /proc/stat 采样对比(约 120ms 开销,后台页面可接受)
+// CPU 使用率:取两次 /proc/stat 采样对比。单次采样要睡 120ms,
+// 用 5 秒结果缓存,避免每次打开后台看板都阻塞一个 PHP 进程
 function tc_sys_cpu_percent() {
     if (!is_readable('/proc/stat')) return null;
+    static $cache = null;
+    if ($cache !== null && tc_now() - $cache['t'] < 5000) return $cache['v'];
     $read = function () {
         $line = (string) @file_get_contents('/proc/stat');
         if (!preg_match('/^cpu\s+(.+)$/m', $line, $m)) return null;
@@ -1488,7 +1550,9 @@ function tc_sys_cpu_percent() {
     $dt = $b['total'] - $a['total'];
     $di = $b['idle'] - $a['idle'];
     if ($dt <= 0) return null;
-    return max(0, min(100, (int) round(($dt - $di) * 100 / $dt)));
+    $v = max(0, min(100, (int) round(($dt - $di) * 100 / $dt)));
+    $cache = array('t' => tc_now(), 'v' => $v);
+    return $v;
 }
 
 function tc_sys_loadavg() {
@@ -1696,8 +1760,6 @@ function tc_count_all_chats($db) {
 function tc_api_admin_storage() {
     tc_with_db(false, function ($db) {
         tc_require_admin($db);
-        $q = tc_query();
-        $action = isset($q['action']) ? (string) $q['action'] : 'list';
         $data = tc_data_dir();
         $cats = tc_storage_categories();
         $total = 0;
@@ -1999,7 +2061,7 @@ function tc_api_admin_save_package() {
         $limitPerUser = (int) (isset($b['limitPerUser']) ? $b['limitPerUser'] : 1);
         $limitPerUser = max(-1, min(999, $limitPerUser));
         $p = array('id' => $id ?: tc_uid(8), 'name' => substr(trim((string) ($b['name'] ?? '')), 0, 80), 'quota' => ((string) ($b['quota'] ?? '') === '-1' ? -1 : max(0, (int) ($b['quota'] ?? 0))), 'priceLabel' => substr(trim((string) ($b['priceLabel'] ?? '')), 0, 60), 'price' => $price, 'validityDays' => $validityDays, 'limitPerUser' => $limitPerUser, 'description' => substr(trim((string) ($b['description'] ?? '')), 0, 500), 'purchaseUrl' => preg_match('/^https?:\/\//i', trim((string) ($b['purchaseUrl'] ?? ''))) ? substr(trim((string) ($b['purchaseUrl'] ?? '')), 0, 500) : '', 'enabled' => !empty($b['enabled']), 'createdAt' => tc_now());
-        if ($p['name'] === '' || ($p['quota'] === 0 && $p['quota'] !== -1)) tc_fail(400, '套餐名称和额度不能为空');
+        if ($p['name'] === '' || $p['quota'] === 0) tc_fail(400, '套餐名称和额度不能为空');
         if ($id === '') { foreach ($db['packages'] as $old) if ($old['id'] === $p['id']) tc_fail(409, '套餐 ID 冲突'); }
         $found = false; foreach ($db['packages'] as $i => $old) if ($old['id'] === $p['id']) { $p['createdAt'] = $old['createdAt'] ?? $p['createdAt']; $db['packages'][$i] = $p; $found = true; }
         if (!$found) $db['packages'][] = $p;
@@ -2211,7 +2273,10 @@ function tc_api_me_quota_ledger() {
                 $extra = trim((string) (isset($e['model']) ? $e['model'] : ''));
                 if ($extra !== '' && strpos($title, $extra) === false) $title .= ' · ' . $extra;
             } elseif ($src === 'fixed_code') {
-                $title = '固定兑换码' . (isset($e['code']) && $e['code'] !== '' ? ' ' . $e['code'] : '');
+                // 固定码落库存的是 packageName='固定兑换码 <码面>'(老数据没有 code 字段)
+                $codeFace = isset($e['code']) && $e['code'] !== '' ? (string) $e['code']
+                    : trim(preg_replace('/^固定兑换码\s*/', '', (string) (isset($e['packageName']) ? $e['packageName'] : '')));
+                $title = '固定兑换码' . ($codeFace !== '' ? ' ' . $codeFace : '');
             } elseif ($src === 'package_redeem' || $src === 'package') {
                 // 'package' 是兑换码核销落库时使用的历史值
                 $title = '兑换码 · ' . (string) (isset($e['packageName']) ? $e['packageName'] : '套餐');
@@ -2357,7 +2422,6 @@ function tc_api_admin_invites_list() {
 
 function tc_api_admin_invites_create() {
     tc_with_db(true, function (&$db) {
-        tc_require_admin($db);
         $demoAdmin = tc_require_admin($db);
         tc_demo_guard($demoAdmin, '演示管理员不能管理邀请码');
         $b = tc_read_json_body();
@@ -2382,7 +2446,6 @@ function tc_api_admin_invites_create() {
 
 function tc_api_admin_invites_delete($code) {
     tc_with_db(true, function (&$db) use ($code) {
-        tc_require_admin($db);
         $demoAdmin = tc_require_admin($db);
         tc_demo_guard($demoAdmin, '演示管理员不能管理邀请码');
         $code = strtoupper(trim((string) $code));
@@ -2668,24 +2731,25 @@ function tc_api_admin_backup_restore() {
 
 function tc_api_admin_user_chats() {
     tc_with_db(false, function ($db) {
-        tc_require_admin($db);
         tc_demo_guard(tc_require_admin($db), '演示管理员不能查看用户对话');
         $q = tc_query();
         $userId = isset($q['userId']) ? $q['userId'] : '';
-        $targets = array();
         if ($userId) {
-            foreach ($db['users'] as $u) if ($u['id'] === $userId) { $targets[] = $u; break; }
-            if (!$targets) tc_fail(404, '用户不存在');
-        } else {
-            $targets = $db['users'];
+            $found = false;
+            foreach ($db['users'] as $u) if ($u['id'] === $userId) { $found = true; break; }
+            if (!$found) tc_fail(404, '用户不存在');
         }
         $out = array();
-        foreach ($targets as $u) {
-            // 指定用户:完整下发(不截断条数/正文字符,带推理/引用/版本),
-            // 后台可像前台一样完整还原对话(复用与云同步相同的清洗规则)。
-            $chats = tc_sanitize_chats(tc_chats_of($db, $u['id']));
+        // 「全部用户」模式兜底:最多处理 100 个用户,防止大站点一次响应数十 MB、长占读事务
+        $usersCap = $userId ? PHP_INT_MAX : 100;
+        $seen = 0;
+        foreach ($db['users'] as $u) {
+            if ($userId && $u['id'] !== $userId) continue;
+            if (++$seen > $usersCap) break;
+            $chats = tc_chats_of($db, $u['id']);
             if (!$userId) {
-                // 「全部用户」模式:按最近更新时间取前 20 个对话、每个最多 200 条,避免整站数据过大
+                // 「全部用户」模式:先在清洗前预裁剪(最近 20 个对话、每个最多 200 条),
+                // 再走统一清洗,避免先清洗全部再丢弃的开销
                 usort($chats, function ($a, $b) {
                     return (isset($b['updatedAt']) ? $b['updatedAt'] : 0) <=> (isset($a['updatedAt']) ? $a['updatedAt'] : 0);
                 });
@@ -2695,6 +2759,9 @@ function tc_api_admin_user_chats() {
                 }
                 unset($c);
             }
+            // 指定用户:完整下发(不截断条数/正文字符,带推理/引用/版本),
+            // 后台可像前台一样完整还原对话(复用与云同步相同的清洗规则)。
+            $chats = tc_sanitize_chats($chats);
             if ($chats || $userId) $out[] = array('user' => tc_sanitize_user($u), 'chats' => $chats);
         }
         tc_json(200, array('total' => count($out), 'usersChats' => $out, 'single' => !!$userId));
@@ -2724,13 +2791,12 @@ function tc_api_admin_users() {
 
 function tc_api_admin_create_user() {
     tc_with_db(true, function (&$db) {
-        tc_require_admin($db);
         tc_demo_guard(tc_require_admin($db), '演示管理员不能管理用户账号');
         $b = tc_read_json_body();
         $name = trim((string) (isset($b['name']) ? $b['name'] : ''));
         $password = (string) (isset($b['password']) ? $b['password'] : '');
         if (!tc_valid_name($name)) tc_fail(400, '用户名需 2-32 位（字母/数字/中文/._@-）');
-        if (strlen($password) < 4) tc_fail(400, '密码至少 4 个字符');
+        if (strlen($password) < 4 || strlen($password) > 128) tc_fail(400, '密码长度需为 4-128 个字符');
         foreach ($db['users'] as $u) if (strtolower($u['name']) === strtolower($name)) tc_fail(409, '用户名已存在');
         $isDemo = !empty($b['demo']);
         $isAdmin = !empty($b['admin']) || $isDemo;
@@ -2741,6 +2807,9 @@ function tc_api_admin_create_user() {
                 ? (($ag = tc_find_builtin_group($db, 'admin')) ? $ag['id'] : tc_default_register_group($db))
                 : tc_default_register_group($db),
             'tv' => 0,
+            // 管理员代建账号视为已验证:大多没有邮箱,一旦开启邮箱验证
+            // 这批用户会被「请先验证邮箱后再登录」永久挡在门外且无法自助验证
+            'emailVerifiedAt' => 1,
         );
         // 演示管理员默认额度:未显式填写时给一个很大的值,方便演示;填了就以填写值为准
         $quota = array_key_exists('quota', $b)
@@ -2852,7 +2921,6 @@ function tc_api_admin_update_user() {
 
 function tc_api_admin_set_quota() {
     tc_with_db(true, function (&$db) {
-        tc_require_admin($db);
         tc_demo_guard(tc_require_admin($db), '演示管理员不能调整用户额度');
         $b = tc_read_json_body();
         $user = null;
@@ -3118,7 +3186,6 @@ function tc_api_admin_set_default_group() {
 
 function tc_api_admin_set_user_group() {
     tc_with_db(true, function (&$db) {
-        tc_require_admin($db);
         tc_demo_guard(tc_require_admin($db), '演示管理员不能修改用户组');
         $b = tc_read_json_body();
         $user = null;
@@ -3201,9 +3268,10 @@ function tc_api_admin_set_access() {
 }
 
 function tc_api_list_assistants() {
-    tc_with_db(true, function (&$db) {
+    // 内置助手已在每次请求的启动阶段播种(index.php),这里只读即可:
+    // 之前每次打开助手面板都抢一次全局写锁(BEGIN IMMEDIATE)
+    tc_with_db(false, function ($db) {
         $user = tc_require_auth($db);
-        tc_seed_default_assistants($db);
         tc_json(200, tc_merge_assistant_catalog($db, $user));
     });
 }
