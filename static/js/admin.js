@@ -1476,10 +1476,10 @@ card.querySelector('[data-edit]')?.addEventListener('click', () => {
 }
 
 const WS_PROVIDERS = [
+  { value: 'ddg', label: 'DuckDuckGo', sub: '免 Key，默认；抓结果页，有速率限制' },
   { value: 'tavily', label: 'Tavily', sub: '官方搜索 API，填 Key 即可' },
   { value: 'searxng', label: 'SearXNG', sub: '自建元搜索，填实例地址' },
   { value: 'brave', label: 'Brave Search', sub: '独立索引，免费 2000 次/月' },
-  { value: 'ddg', label: 'DuckDuckGo', sub: '免 Key，抓结果页，有速率限制' },
   { value: 'jina', label: 'Jina AI', sub: '免 Key 可用，填 Key 提升配额' },
 ];
 const WS_PROVIDER_NAMES = { tavily: 'Tavily', searxng: 'SearXNG', brave: 'Brave Search', ddg: 'DuckDuckGo', jina: 'Jina AI' };
@@ -1487,7 +1487,7 @@ function setWsProvider(val) {
   const box = $('ws-provider');
   if (!box) return;
   const known = WS_PROVIDERS.some((x) => x.value === val);
-  const next = known ? val : 'tavily';
+  const next = known ? val : 'ddg';
   box.setAttribute('data-value', next);
   const f = WS_PROVIDERS.find((x) => x.value === next);
   const lab = box.querySelector('.sb-label');
@@ -1549,7 +1549,7 @@ async function loadSearchSettings() {
   if ($('ws-allow-user')) $('ws-allow-user').checked = !!s.webSearchAllowUser;
   if ($('ws-url-read')) $('ws-url-read').checked = s.urlReadEnabled !== false;
   if ($('ws-url-read-max')) $('ws-url-read-max').value = Math.min(5, Math.max(1, parseInt(s.urlReadMax, 10) || 3));
-  setWsProvider(s.webSearchProvider || 'tavily');
+  setWsProvider(s.webSearchProvider || 'ddg');
   if ($('ws-tavily-key') && s.webSearchTavilyKey) $('ws-tavily-key').value = s.webSearchTavilyKey;
   if ($('ws-brave-key') && s.webSearchBraveKey) $('ws-brave-key').value = s.webSearchBraveKey;
   if ($('ws-jina-key') && s.webSearchJinaKey) $('ws-jina-key').value = s.webSearchJinaKey;
@@ -1634,7 +1634,7 @@ function fillChatLimits(s) {
   if (box) {
     box.addEventListener('click', () => {
       OC.openSelect(box, WS_PROVIDERS, {
-        selected: box.getAttribute('data-value') || 'tavily',
+        selected: box.getAttribute('data-value') || 'ddg',
         onSelect: (val) => setWsProvider(val),
       });
     });
@@ -1644,7 +1644,7 @@ function fillChatLimits(s) {
   }
   const save = $('ws-save');
   function wsPayload(scan) {
-    const provider = ($('ws-provider') && $('ws-provider').getAttribute('data-value')) || 'tavily';
+    const provider = ($('ws-provider') && $('ws-provider').getAttribute('data-value')) || 'ddg';
     const keyFor = { tavily: 'ws-tavily-key', brave: 'ws-brave-key', jina: 'ws-jina-key' };
     const key = (keyFor[provider] && $(keyFor[provider]) && $(keyFor[provider]).value || '').trim();
     const payload = {
@@ -1741,7 +1741,7 @@ function fillChatLimits(s) {
       webSearchAllowUser: !!($('ws-allow-user') && $('ws-allow-user').checked),
       urlReadEnabled: !!($('ws-url-read') && $('ws-url-read').checked),
       urlReadMax: Math.min(5, Math.max(1, parseInt($('ws-url-read-max') && $('ws-url-read-max').value, 10) || 3)),
-      webSearchProvider: ($('ws-provider') && $('ws-provider').getAttribute('data-value')) || 'tavily',
+      webSearchProvider: ($('ws-provider') && $('ws-provider').getAttribute('data-value')) || 'ddg',
       webSearchSearxUrl: ($('ws-searx-url') && $('ws-searx-url').value || '').trim(),
       webSearchMaxResults: parseInt($('ws-max') && $('ws-max').value, 10) || 5,
     };

@@ -1170,7 +1170,7 @@ function tc_api_save_tools() {
         $next = $cur;
         if (isset($b['webSearchSource'])) $next['webSearchSource'] = $b['webSearchSource'] === 'own' ? 'own' : 'platform';
         $prov = strtolower(trim((string) (isset($b['webSearchProvider']) ? $b['webSearchProvider'] : '')));
-        if ($prov !== '') $next['webSearchProvider'] = in_array($prov, array('tavily', 'searxng', 'brave', 'ddg', 'jina'), true) ? $prov : 'tavily';
+        if ($prov !== '') $next['webSearchProvider'] = in_array($prov, array('tavily', 'searxng', 'brave', 'ddg', 'jina'), true) ? $prov : 'ddg';
         if (isset($b['webSearchTavilyKey'])) {
             $key = trim((string) $b['webSearchTavilyKey']);
             if ($key !== '' && strpos($key, '••') === false) $next['webSearchTavilyKey'] = substr($key, 0, 200);

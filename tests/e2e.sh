@@ -867,6 +867,22 @@ assert_contains "用户自备 ddg 即 ready" "$TOOLS" '"ownReady":true'
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchAllowUser":false}' > /dev/null
 
 # ---------- 文档解析通道(PaddleOCR / Mistral OCR,按类别路由,走 mock) ----------
+say "== 联网搜索默认值 =="
+# 新站点默认:联网开启 + 默认用免 Key 的 DuckDuckGo(开箱即可用)
+SETTINGS_WS=$(curl -s "$BASE/api/admin/settings" -H "$AUTH")
+assert_has "联网搜索默认开启" "$SETTINGS_WS" '"webSearchEnabled":true'
+assert_has "默认检索源是 DuckDuckGo" "$SETTINGS_WS" '"webSearchProvider":"ddg"'
+assert_has "config 下发默认检索源" "$(curl -s "$BASE/api/config")" '"provider":"ddg"'
+# 非法检索源回退到默认值 ddg,而不是 tavily
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchProvider":"nonsense"}' > /dev/null
+assert_has "非法检索源回退到 ddg" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"webSearchProvider":"ddg"'
+# 管理员显式改回 tavily 时必须被尊重(默认值不能覆盖存量配置)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchEnabled":false,"webSearchProvider":"tavily"}' > /dev/null
+SETTINGS_WS2=$(curl -s "$BASE/api/admin/settings" -H "$AUTH")
+assert_has "显式选择 tavily 被保留" "$SETTINGS_WS2" '"webSearchProvider":"tavily"'
+assert_has "显式关闭联网被保留" "$SETTINGS_WS2" '"webSearchEnabled":false'
+# 恢复默认,避免影响后续用例
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchEnabled":true,"webSearchProvider":"ddg"}' > /dev/null
 say "== 搜索结果正文抓取 =="
 # 用 mock 页面验证整条链路:搜索结果 -> 抓正文 -> 注入模型上下文。
 # mock 页面刻意把导航放前面、正文里带裸 "<"(曾让 strip_tags 吞掉整段正文)。

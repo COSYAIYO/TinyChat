@@ -2,6 +2,19 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.77] - 2026-10-02
+
+### 变更
+
+- **联网搜索默认开启，默认检索源改为 DuckDuckGo**：此前默认是 Tavily，而 Tavily 必须填 API Key 才能用 —— 新部署的站点默认处于「联网不可用」状态。DuckDuckGo 免 Key、无需任何配置即可检索，因此改为默认：**部署完就能直接用联网搜索**。
+- 前后台的下拉选项都把 DuckDuckGo 提到第一位并标注「默认」；所有内部回退值同步为 ddg，避免界面显示与实际生效不一致。
+- **不改动存量配置**：管理员显式选择的检索源（例如已配好 Key 的 Tavily）与显式关闭的状态都会被原样保留；只有非法值才回退到默认的 ddg。
+
+### 测试
+
+- E2E 全量 **399 通过 / 0 失败**（新增 6 条：联网默认开启、默认检索源为 ddg、config 下发一致、非法值回退到 ddg、显式选择 tavily 被保留、显式关闭被保留）。
+- 实测全新站点：`webSearch {enabled: true, provider: "ddg"}`，且 `tc_web_search_ready` 对 ddg 返回可用、对无 Key 的 tavily 返回不可用 —— 印证了改默认值的必要性。
+
 ## [2.0.76] - 2026-10-02
 
 ### 新增

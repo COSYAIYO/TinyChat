@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.76');
+define('TC_VERSION', '2.0.77');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -82,8 +82,9 @@ $TC_SETTINGS_DEFAULTS = array(
     'oauthAutoRegister' => true,
     // 自动建号/首次绑定后是否强制补全用户名与密码(补全后即可脱离第三方用密码登录)
     'oauthRequireProfile' => false,
-    'webSearchEnabled' => false,
-    'webSearchProvider' => 'tavily',
+    // 默认开启联网搜索:默认检索源用 DuckDuckGo(免 Key、无需配置即可用)
+    'webSearchEnabled' => true,
+    'webSearchProvider' => 'ddg',
     'webSearchTavilyKey' => '',
     'webSearchBraveKey' => '',
     'webSearchJinaKey' => '',
@@ -443,8 +444,8 @@ function tc_normalize_settings($raw) {
     $s['oauthRequireProfile'] = !empty($s['oauthRequireProfile']);
     $s['loginLockMs'] = min(3600000, max(0, (int) $s['loginLockMs']));
     $s['webSearchEnabled'] = !empty($s['webSearchEnabled']);
-    $prov = strtolower(trim((string) (isset($s['webSearchProvider']) ? $s['webSearchProvider'] : 'tavily')));
-    $s['webSearchProvider'] = in_array($prov, array('tavily', 'searxng', 'brave', 'ddg', 'jina'), true) ? $prov : 'tavily';
+    $prov = strtolower(trim((string) (isset($s['webSearchProvider']) ? $s['webSearchProvider'] : 'ddg')));
+    $s['webSearchProvider'] = in_array($prov, array('tavily', 'searxng', 'brave', 'ddg', 'jina'), true) ? $prov : 'ddg';
     $s['webSearchTavilyKey'] = substr(trim((string) (isset($s['webSearchTavilyKey']) ? $s['webSearchTavilyKey'] : '')), 0, 200);
     $s['webSearchBraveKey'] = substr(trim((string) (isset($s['webSearchBraveKey']) ? $s['webSearchBraveKey'] : '')), 0, 200);
     $s['webSearchJinaKey'] = substr(trim((string) (isset($s['webSearchJinaKey']) ? $s['webSearchJinaKey'] : '')), 0, 200);
@@ -565,7 +566,7 @@ function tc_searx_url_list($raw) {
 
 function tc_web_search_ready($s) {
     if (empty($s['webSearchEnabled'])) return false;
-    $prov = isset($s['webSearchProvider']) ? (string) $s['webSearchProvider'] : 'tavily';
+    $prov = isset($s['webSearchProvider']) ? (string) $s['webSearchProvider'] : 'ddg';
     if ($prov === 'searxng') {
         return tc_searx_url_list(isset($s['webSearchSearxUrl']) ? $s['webSearchSearxUrl'] : '') !== array();
     }
@@ -586,8 +587,8 @@ function tc_user_tools($u) {
     $raw = (isset($u['tools']) && is_array($u['tools'])) ? $u['tools'] : array();
     $src = isset($raw['webSearchSource']) ? (string) $raw['webSearchSource'] : 'platform';
     $parse = isset($raw['parseSource']) ? (string) $raw['parseSource'] : 'platform';
-    $provider = strtolower(trim((string) (isset($raw['webSearchProvider']) ? $raw['webSearchProvider'] : 'tavily')));
-    $provider = in_array($provider, array('tavily', 'searxng', 'brave', 'ddg', 'jina'), true) ? $provider : 'tavily';
+    $provider = strtolower(trim((string) (isset($raw['webSearchProvider']) ? $raw['webSearchProvider'] : 'ddg')));
+    $provider = in_array($provider, array('tavily', 'searxng', 'brave', 'ddg', 'jina'), true) ? $provider : 'ddg';
     $max = isset($raw['webSearchMaxResults']) ? (int) $raw['webSearchMaxResults'] : 5;
     return array(
         'webSearchSource' => $src === 'own' ? 'own' : 'platform',
@@ -604,7 +605,7 @@ function tc_user_tools($u) {
 
 // 各检索源「用户自备配置是否已填完整」:ddg/jina 免 Key,恒可用
 function tc_user_search_own_ready($tools) {
-    $prov = isset($tools['webSearchProvider']) ? (string) $tools['webSearchProvider'] : 'tavily';
+    $prov = isset($tools['webSearchProvider']) ? (string) $tools['webSearchProvider'] : 'ddg';
     if ($prov === 'searxng') return $tools['webSearchSearxUrl'] !== '';
     if ($prov === 'brave') return $tools['webSearchBraveKey'] !== '';
     if ($prov === 'ddg' || $prov === 'jina') return true;
@@ -675,10 +676,10 @@ function tc_mineru_public($s) {
 }
 
 function tc_web_search_public($s) {
-    $prov = isset($s['webSearchProvider']) ? (string) $s['webSearchProvider'] : 'tavily';
+    $prov = isset($s['webSearchProvider']) ? (string) $s['webSearchProvider'] : 'ddg';
     return array(
         'enabled' => tc_web_search_ready($s),
-        'provider' => in_array($prov, array('tavily', 'searxng', 'brave', 'ddg', 'jina'), true) ? $prov : 'tavily',
+        'provider' => in_array($prov, array('tavily', 'searxng', 'brave', 'ddg', 'jina'), true) ? $prov : 'ddg',
         'allowOwn' => !empty($s['webSearchAllowUser']),
     );
 }
