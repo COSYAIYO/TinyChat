@@ -1,11 +1,13 @@
 <?php
 /**
- * 测试用模拟 SMTP 服务器:php -S 不支持原始 socket,这里用 stream_socket_server 起独立进程。
+ * 测试用模拟 SMTP 服务器。php -S 不支持原始 socket,这里用 stream_socket_server 起独立进程。
  * 用法:php tests/mock-smtp.php <port> [mode]
- *   mode=ok       正常投递(默认)
- *   mode=authfail 认证失败(535)
- *   mode=reset    连接后立刻断开(模拟端口不通/防火墙)
- * 每轮交互写入 stdout,便于断言。
+ *   ok           正常投递(默认)
+ *   authfail     认证直接失败(535)
+ *   gbk          用 GBK 回错误文本(复现中文服务商:非法 UTF-8 曾让 json_encode 失败)
+ *   gmail535     复现 Gmail 对错误凭据的多行 535 响应
+ *   requirepass  仅当密码(去空格后)是 16 位小写字母时通过 —— 用于验证空格被正确剥离
+ *   reset        连接后立刻断开(模拟端口不通/防火墙)
  */
 $port = (int) ($argv[1] ?? 2525);
 $mode = (string) ($argv[2] ?? 'ok');
@@ -25,31 +27,40 @@ $handle = function ($conn) use ($mode) {
     while (($line = fgets($conn, 2048)) !== false) {
         $cmd = strtoupper(trim($line));
         if ($inData) {
-            if ($cmd === '.') {
-                $inData = false;
-                fwrite($conn, "250 OK queued\r\n");
-                continue;
-            }
+            if ($cmd === '.') { $inData = false; fwrite($conn, "250 OK queued\r\n"); continue; }
             continue;
         }
         if (strpos($cmd, 'EHLO') === 0 || strpos($cmd, 'HELO') === 0) {
             fwrite($conn, "250-mock.local\r\n250-AUTH LOGIN PLAIN\r\n250-STARTTLS\r\n250 SIZE 10485760\r\n");
         } elseif (strpos($cmd, 'STARTTLS') === 0) {
+            // 不真做 TLS 握手:测试只覆盖非 TLS 路径,收到即断开以触发 STARTTLS 失败分支
             fwrite($conn, "220 Ready to start TLS\r\n");
-            // 不真做 TLS 握手:测试只关心「非 TLS 路径」,若客户端发 STARTTLS 我们直接降级
             return;
         } elseif (strpos($cmd, 'AUTH LOGIN') === 0) {
             if ($mode === 'authfail') { fwrite($conn, "535 Authentication failed\r\n"); return; }
-            // gbk: 复现中文邮件服务商用 GBK 回错误文本(非法 UTF-8),曾导致 json_encode 失败、后台只看到 502
+            if ($mode === 'gmail535') {
+                fwrite($conn, "535-5.7.8 Username and Password not accepted. For more information, go to\r\n");
+                fwrite($conn, "535 5.7.8 https://support.google.com/mail/?p=BadCredentials 5a478bee46e8 - gsmtp\r\n");
+                return;
+            }
             if ($mode === 'gbk') {
-                $gbk = "\xd3\xc3\xbb\xa7\xc3\xfb\xbb\xf2\xc3\xdc\xc2\xeb\xb2\xbb\xd5\xfd\xc8\xb7"; // "用户名或密码不正确" 的 GBK 字节
+                $gbk = "\xd3\xc3\xbb\xa7\xc3\xfb\xbb\xf2\xc3\xdc\xc2\xeb\xb2\xbb\xd5\xfd\xc8\xb7"; // GBK:"用户名或密码不正确"
                 fwrite($conn, "535 " . $gbk . "\r\n");
                 return;
             }
+            // 下面几个模式都要走完整的 AUTH LOGIN 两步(334 用户名 → 334 密码)
             fwrite($conn, "334 VXNlcm5hbWU6\r\n");
-            fgets($conn, 2048); // username
+            fgets($conn, 2048); // username(base64)
             fwrite($conn, "334 UGFzc3dvcmQ6\r\n");
-            fgets($conn, 2048); // password
+            $pw = base64_decode(trim((string) fgets($conn, 2048)), true);
+            if ($mode === 'requirepass') {
+                if ($pw === false || !preg_match('/^[a-z]{16}$/', (string) $pw)) {
+                    fwrite($conn, "535 5.7.8 Username and Password not accepted.\r\n");
+                    return;
+                }
+                fwrite($conn, "235 2.7.0 Accepted\r\n");
+                continue; // 继续走完 MAIL/RCPT/DATA
+            }
             fwrite($conn, "235 Authentication successful\r\n");
         } elseif (strpos($cmd, 'MAIL FROM') === 0) {
             fwrite($conn, "250 OK\r\n");

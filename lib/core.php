@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.72');
+define('TC_VERSION', '2.0.73');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -412,7 +412,7 @@ function tc_normalize_settings($raw) {
         $tpl['tplVersion'] = TC_MAIL_TPL_VERSION;
     }
     $s['mailTemplates'] = array_merge($TC_SETTINGS_DEFAULTS['mailTemplates'], $tpl);
-    $s['smtp'] = array('host' => substr(trim((string) ($smtp['host'] ?? '')), 0, 180), 'port' => min(65535, max(1, (int) ($smtp['port'] ?? 587))), 'username' => substr(trim((string) ($smtp['username'] ?? '')), 0, 180), 'password' => (string) ($smtp['password'] ?? ''), 'encryption' => in_array(($smtp['encryption'] ?? 'tls'), array('none','ssl','tls'), true) ? ($smtp['encryption'] ?? 'tls') : 'tls', 'fromName' => substr(trim((string) ($smtp['fromName'] ?? 'TinyChat')), 0, 80), 'fromEmail' => substr(trim((string) ($smtp['fromEmail'] ?? '')), 0, 180));
+    $s['smtp'] = array('host' => substr(trim((string) ($smtp['host'] ?? '')), 0, 180), 'port' => min(65535, max(1, (int) ($smtp['port'] ?? 587))), 'username' => substr(trim((string) ($smtp['username'] ?? '')), 0, 180), 'password' => tc_smtp_normalize_password($smtp['password'] ?? ''), 'encryption' => in_array(($smtp['encryption'] ?? 'tls'), array('none','ssl','tls'), true) ? ($smtp['encryption'] ?? 'tls') : 'tls', 'fromName' => substr(trim((string) ($smtp['fromName'] ?? 'TinyChat')), 0, 80), 'fromEmail' => substr(trim((string) ($smtp['fromEmail'] ?? '')), 0, 180));
     // 「SMTP 密码保存后保持显示」:勾选后可随时在后台点小眼睛取回明文(便于复制到其它系统)，
     // 未勾选则只显示掩码且取不回明文。演示管理员无论该开关如何都不可见。
     $s['smtpKeyRevealable'] = !empty($s['smtpKeyRevealable']);
@@ -1556,6 +1556,47 @@ function tc_set_password(&$user, $password) {
     $user['tv'] = (isset($user['tv']) ? (int) $user['tv'] : 0) + 1;
 }
 
+// SMTP 密码归一化。
+// 两个真实的坑:① 粘贴时容易带上首尾空白(从网页复制的验证码/密码常带空格或换行);
+// ② Google 的应用专用密码在页面上是「abcd efgh ijkl mnop」四组带空格的形式,
+//    用户整段复制就会把空格一起存进去 —— 部分服务端会因此拒绝认证(535)。
+// 对「去掉空白后恰好是 16 位小写字母」的值自动去掉内部空格(这正是 Google 应用专用密码的形态)。
+function tc_smtp_normalize_password($pw) {
+    $pw = trim((string) $pw);
+    if ($pw === '') return '';
+    $stripped = preg_replace('/\s+/', '', $pw);
+    if (is_string($stripped) && $stripped !== $pw && preg_match('/^[a-z]{16}$/', $stripped)) {
+        return $stripped;
+    }
+    return $pw;
+}
+
+// 已知邮箱服务商的专属排查提示(认证被拒时给出,直接可执行)
+function tc_smtp_provider_hint($host, $authUser = '') {
+    // 服务商判定优先看用户名域名(用户填的 smtp 主机可能是别名或自建域名)
+    $u = strtolower((string) $authUser);
+    $hint = strpos($u, '@') !== false ? substr($u, strpos($u, '@') + 1) : '';
+    $h = $hint !== '' ? $hint : strtolower((string) $host);
+    if (strpos($h, 'gmail') !== false || strpos($h, 'googlemail') !== false) {
+        return "\nGmail 请依次核对：\n"
+            . "① 「用户名」必须是完整 Gmail 地址，且与创建应用专用密码的那个账号一致——若你在 Google 账号页顶部切换过账号（网址带 /u/2 这类后缀），很容易把 A 账号的密码配到 B 账号上；\n"
+            . "② 「密码」必须是 16 位应用专用密码（形如 abcd efgh ijkl mnop），不是 Google 账号登录密码；\n"
+            . "③ 该账号必须已开启两步验证——关闭后应用专用密码会立即失效；\n"
+            . "④ 若之后改过 Google 账号密码，所有应用专用密码会被吊销，需要重新生成；\n"
+            . "⑤ 端口建议：SSL 用 465、STARTTLS 用 587。";
+    }
+    if (strpos($h, 'qq.com') !== false || strpos($h, 'exmail') !== false) {
+        return "\nQQ 邮箱请核对：「密码」必须是在「设置 → 账户 → POP3/IMAP/SMTP 服务」里生成的 16 位授权码（不是 QQ 登录密码），并确认已开启 SMTP 服务。端口建议：SSL 465 或 STARTTLS 587。";
+    }
+    if (strpos($h, '163.com') !== false || strpos($h, '126.com') !== false || strpos($h, 'yeah.net') !== false) {
+        return "\n网易邮箱请核对：「密码」必须是客户端授权码（在「设置 → POP3/SMTP/IMAP」中开启服务并生成），不是登录密码；「用户名」需为完整邮箱地址。端口建议：SSL 465 或 STARTTLS 994/587。";
+    }
+    if (strpos($h, 'outlook') !== false || strpos($h, 'office365') !== false || strpos($h, 'hotmail') !== false) {
+        return "\nOutlook / Microsoft 365 请核对：账号需已开启两步验证，并使用「应用密码」；若组织启用了安全默认值，SMTP AUTH 默认被禁用，需要管理员在后台为该邮箱启用 SMTP AUTH。端口：STARTTLS 587。";
+    }
+    return '';
+}
+
 function tc_mail_send($settings, $to, $subject, $html, $text = '', &$err = null) {
     $err = '';
     $smtp = isset($settings['smtp']) && is_array($settings['smtp']) ? $settings['smtp'] : array();
@@ -1565,6 +1606,14 @@ function tc_mail_send($settings, $to, $subject, $html, $text = '', &$err = null)
     $fromName = str_replace(array("\r", "\n"), '', $smtp['fromName'] ?: 'TinyChat');
     $subject = str_replace(array("\r", "\n"), '', $subject);
     if (!filter_var($from, FILTER_VALIDATE_EMAIL)) { $err = '发件人邮箱无效（' . ($from === '' ? '未填写' : $from) . '）：请填写有效的发件人地址，或先填写 SMTP 用户名作为回退'; return false; }
+    // 归一化密码(去首尾空白;Google 应用专用密码去掉内部空格),避免把复制的空格一起拿去认证
+    $authUser = trim((string) (isset($smtp['username']) ? $smtp['username'] : ''));
+    $authPass = tc_smtp_normalize_password(isset($smtp['password']) ? $smtp['password'] : '');
+    // 填了用户名却没密码 = 必然 535,提前给出可读原因,而不是让服务端回一句看不懂的英文
+    if ($authUser !== '' && $authPass === '') {
+        $err = '已填写 SMTP 用户名但密码为空：请把邮箱服务商提供的「授权码 / 应用专用密码」填入密码框后重新保存';
+        return false;
+    }
     $body = "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\nFrom: " . $fromName . " <" . $from . ">\r\nTo: " . $to . "\r\nSubject: =?UTF-8?B?" . base64_encode($subject) . "?=\r\n\r\n" . $html . "\r\n.";
     $transport = $smtp['encryption'] === 'ssl' ? 'ssl://' : '';
     $deadline = microtime(true) + 20; // 整体预算:超过就主动放弃并报错,避免被网关超时截断成 502 HTML 页
@@ -1609,11 +1658,17 @@ function tc_mail_send($settings, $to, $subject, $html, $text = '', &$err = null)
         return $out;
     };
     // SMTP 响应码 → 人话 + 排查方向(直接透传到后台,便于自查)
-    $explain = function ($code, $line) {
+    $explain = function ($code, $line) use ($smtp, $authUser) {
         $hint = '';
-        if ($code === 535 || $code === 534 || $code === 530) $hint = '：用户名或密码不正确，或该账号要求使用「授权码」而非登录密码';
-        elseif ($code === 550 || $code === 553 || $code === 501) $hint = '：发件人地址被服务器拒绝，通常要求发件人邮箱与 SMTP 账号一致';
-        elseif ($code === 554) $hint = '：邮件被判定为垃圾邮件或被策略拒绝，请检查发件人与内容';
+        if ($code === 535 || $code === 534 || $code === 530) {
+            $hint = '：用户名或密码不正确，或该账号要求使用「授权码」而非登录密码';
+            $hint .= tc_smtp_provider_hint(isset($smtp['host']) ? $smtp['host'] : '', $authUser);
+            // 明确回显本次用于登录的账号,方便核对「应用密码是不是这个账号的」
+            $hint .= "
+本次用于登录的账号：" . ($authUser !== '' ? $authUser : '（未填写用户名）');
+        } elseif ($code === 550 || $code === 553 || $code === 501) {
+            $hint = '：发件人地址被服务器拒绝，通常要求发件人邮箱与 SMTP 账号一致。本次发件人：' . (isset($smtp['fromEmail']) && $smtp['fromEmail'] !== '' ? $smtp['fromEmail'] : '(回退为用户名)');
+        } elseif ($code === 554) $hint = '：邮件被判定为垃圾邮件或被策略拒绝，请检查发件人与内容';
         elseif ($code === 421 || $code === 450 || $code === 451 || $code === 452) $hint = '：服务器暂时不可用或触发限流，请稍后重试';
         elseif ($code === 500 || $code === 502 || $code === 504) $hint = '：服务器不支持该指令，请尝试切换加密方式（TLS / SSL / 无）';
         return 'SMTP 服务器拒绝了请求 (' . $code . ')' . $hint . '（服务器原文：' . $line . '）';
@@ -1632,7 +1687,8 @@ function tc_mail_send($settings, $to, $subject, $html, $text = '', &$err = null)
     if (!$ok($read(), array(220))) { fclose($fp); return false; }
     if (!$write('EHLO localhost', array(250))) { fclose($fp); return false; }
     if ($smtp['encryption'] === 'tls') { if (!$write('STARTTLS', array(220)) || @stream_socket_enable_crypto($fp, true, STREAM_CRYPTO_METHOD_TLS_CLIENT) !== true || !$write('EHLO localhost', array(250))) { if ($err === '') $err = 'STARTTLS 加密握手失败：服务器可能不支持 STARTTLS，请把加密方式改为 SSL（端口通常 465）或「无」（端口通常 25）后重试'; fclose($fp); return false; } }
-    if ($smtp['username'] !== '') { if (!$write('AUTH LOGIN', array(334)) || !$write(base64_encode($smtp['username']), array(334)) || !$write(base64_encode($smtp['password']), array(235))) { if ($err === '') $err = 'SMTP 认证失败：请确认「用户名」填的是完整邮箱，且「密码」用的是该邮箱的 SMTP 授权码（多数邮箱不支持用登录密码直接发信）'; fclose($fp); return false; } }
+    if ($authUser !== '') { if (!$write('AUTH LOGIN', array(334)) || !$write(base64_encode($authUser), array(334)) || !$write(base64_encode($authPass), array(235))) { if ($err === '') { $err = 'SMTP 认证失败：请确认「用户名」填的是完整邮箱，且「密码」用的是该邮箱的 SMTP 授权码（多数邮箱不支持用登录密码直接发信）' . tc_smtp_provider_hint(isset($smtp['host']) ? $smtp['host'] : '', $authUser) . "
+本次用于登录的账号：" . $authUser; } fclose($fp); return false; } }
     if (!$write('MAIL FROM:<' . $from . '>', array(250)) || !$write('RCPT TO:<' . $to . '>', array(250,251)) || !$write('DATA', array(354))) { if ($err === '') $err = 'SMTP 会话在传输阶段被中断（发件人或收件人未被服务器接受）'; fclose($fp); return false; }
     if (fwrite($fp, $body . "\r\n") === false || !$ok($read(), array(250))) { if ($err === '') $err = '邮件内容未被服务器接受：可能被判为垃圾邮件，请检查发件人域名与是否配置了 SPF/DKIM'; fclose($fp); return false; }
     $write('QUIT', array(221,250)); fclose($fp); return true;
