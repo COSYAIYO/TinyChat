@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.71');
+define('TC_VERSION', '2.0.72');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -258,8 +258,41 @@ function tc_b64url_decode($str) {
     return base64_decode($b);
 }
 
+// 把可能是非法 UTF-8 的文本转成合法 UTF-8。
+// 典型来源:中文邮件服务商(QQ/163 等)用 GBK 回错误描述、部分系统的 strerror 也是本地编码。
+// 这类字节直接进 json_encode 会整体编码失败 —— 接口会返回空响应体,前端只能看到
+// 「服务器返回了非预期内容」,真实原因被彻底埋掉。
+function tc_utf8_clean($s) {
+    $s = (string) $s;
+    if ($s === '') return '';
+    if (preg_match('//u', $s)) return $s; // 已是合法 UTF-8
+    if (function_exists('mb_convert_encoding')) {
+        $try = @mb_convert_encoding($s, 'UTF-8', 'GBK');
+        if (is_string($try) && $try !== '' && preg_match('//u', $try)) return $try;
+        $try = @mb_convert_encoding($s, 'UTF-8', 'UTF-8');
+        if (is_string($try) && $try !== '' && preg_match('//u', $try)) return $try;
+    }
+    if (function_exists('iconv')) {
+        $try = @iconv('GBK', 'UTF-8//IGNORE', $s);
+        if (is_string($try) && $try !== '' && preg_match('//u', $try)) return $try;
+    }
+    // 兜底:把非法字节替换掉,宁可损失个别字符也不能让整个响应编码失败
+    $out = preg_replace('/[\x80-\xFF]/', '?', $s);
+    return is_string($out) ? $out : '';
+}
+
 function tc_json_encode($obj) {
-    return json_encode($obj, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    // JSON_INVALID_UTF8_SUBSTITUTE:个别非法字节只替换成 U+FFFD,不让整个响应变成空体。
+    // 这是全站兜底——任何来源(上游错误、系统 strerror、用户输入)的脏字节都不该让接口失联。
+    $flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
+    if (defined('JSON_INVALID_UTF8_SUBSTITUTE')) $flags |= JSON_INVALID_UTF8_SUBSTITUTE;
+    $json = json_encode($obj, $flags);
+    if ($json === false) {
+        // 极端情况(递归/资源/超深结构):退化成一条可读的错误,也不要返回空体
+        $json = json_encode(array('error' => array('message' => '响应内容无法编码', 'detail' => tc_utf8_clean(json_last_error_msg()))),
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+    return $json === false ? '{"error":{"message":"响应编码失败"}}' : $json;
 }
 
 // AI 思考策略:全局默认 + 按模型规则(自动学习/手动配置),保证各上游都能接受推理参数
@@ -1534,19 +1567,47 @@ function tc_mail_send($settings, $to, $subject, $html, $text = '', &$err = null)
     if (!filter_var($from, FILTER_VALIDATE_EMAIL)) { $err = '发件人邮箱无效（' . ($from === '' ? '未填写' : $from) . '）：请填写有效的发件人地址，或先填写 SMTP 用户名作为回退'; return false; }
     $body = "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\nFrom: " . $fromName . " <" . $from . ">\r\nTo: " . $to . "\r\nSubject: =?UTF-8?B?" . base64_encode($subject) . "?=\r\n\r\n" . $html . "\r\n.";
     $transport = $smtp['encryption'] === 'ssl' ? 'ssl://' : '';
-    $fp = @stream_socket_client($transport . $smtp['host'] . ':' . (int) $smtp['port'], $errno, $errstr, 8);
+    $deadline = microtime(true) + 20; // 整体预算:超过就主动放弃并报错,避免被网关超时截断成 502 HTML 页
+    $connectAt = microtime(true);
+    $fp = @stream_socket_client($transport . $smtp['host'] . ':' . (int) $smtp['port'], $errno, $errstr, 6);
+    $connectMs = (int) round((microtime(true) - $connectAt) * 1000);
     if (!$fp) {
         // 连接失败即失败:不要回退到 mail()。PHP 的 mail() 在多数环境下返回 true
         // 却把邮件丢给不存在的本地 MTA,会让接口报「发送成功」而用户永远收不到,
         // 同时把这里的真实原因(端口不通/域名解析失败)吞掉,导致完全无法排查。
-        $err = '连接 SMTP 服务器失败：' . ($errstr !== '' ? $errstr : '连接超时')
-            . '（' . $smtp['host'] . ':' . (int) $smtp['port'] . '，加密方式 ' . $smtp['encryption'] . '）'
-            . '。请检查服务器地址、端口、加密方式，以及主机是否允许对外发起连接。';
+        // $errstr 可能带本地编码(中文系统),统一清洗成合法 UTF-8 再拼进消息。
+        $raw = tc_utf8_clean($errstr !== '' ? $errstr : '连接超时');
+        $target = $smtp['host'] . ':' . (int) $smtp['port'];
+        $isResolver = (bool) preg_match('/getaddrinfo|php_network_getaddresses|Name or service not known|no such host|不知道这样的主机/i', $raw);
+        // 超时(耗满 8 秒)= 防火墙/主机商静默丢包,这是「端口被屏蔽」最典型的特征;
+        // 立即被拒 = 目标端口上没有服务在听。两者给不同的处置建议。
+        $isTimeout = ($connectMs >= 5000) || (bool) preg_match('/timed?\s*out|超时/i', $raw);
+        if ($isResolver) {
+            $err = '无法解析 SMTP 服务器域名「' . $smtp['host'] . '」：' . $raw
+                . '。请检查域名拼写；若站点所在主机无法解析外网域名，请改用该邮箱服务商提供的 IP 地址。';
+        } elseif ($isTimeout) {
+            $err = '连接 SMTP 服务器超时（' . $target . '，等待 ' . round($connectMs / 1000, 1) . ' 秒无响应）。'
+                . '目标端口没有回应，通常是被防火墙或主机商屏蔽了出站 SMTP 连接（很多虚拟主机默认封禁 25 / 465 / 587），'
+                . '也可能是地址或端口填错。'
+                . '建议依次尝试：① 换端口（SSL 常用 465、STARTTLS 常用 587、明文常用 25）；'
+                . '② 向主机商确认是否允许对外发信，必要时申请放行或改用其提供的发信服务；'
+                . '③ 换用其它邮箱服务商的 SMTP。';
+        } else {
+            $err = '连接 SMTP 服务器失败（' . $target . '，' . $raw . '）。'
+                . '该端口上可能没有服务在监听，或被对方防火墙拒绝。'
+                . '请核对地址与端口，并按加密方式选择对应端口：SSL→465、STARTTLS→587、无加密→25。';
+        }
         return false;
     }
     stream_set_timeout($fp, 8);
     $lastLine = '';
-    $read = function () use ($fp, &$lastLine) { $out=''; while (($line=fgets($fp, 512)) !== false) { $out.=$line; if (isset($line[3]) && $line[3] === ' ') break; } $lastLine = trim($out); return $out; };
+    // SMTP 服务器原文同样要清洗:中文服务商常用 GBK 回错误描述
+    $read = function () use ($fp, &$lastLine) {
+        $out = '';
+        while (($line = fgets($fp, 512)) !== false) { $out .= $line; if (isset($line[3]) && $line[3] === ' ') break; }
+        $lastLine = tc_utf8_clean(trim($out));
+        return $out;
+    };
     // SMTP 响应码 → 人话 + 排查方向(直接透传到后台,便于自查)
     $explain = function ($code, $line) {
         $hint = '';
@@ -1557,8 +1618,17 @@ function tc_mail_send($settings, $to, $subject, $html, $text = '', &$err = null)
         elseif ($code === 500 || $code === 502 || $code === 504) $hint = '：服务器不支持该指令，请尝试切换加密方式（TLS / SSL / 无）';
         return 'SMTP 服务器拒绝了请求 (' . $code . ')' . $hint . '（服务器原文：' . $line . '）';
     };
-    $ok = function ($response, $codes) use (&$err, &$lastLine, $explain) { $code = (int) substr(trim((string) $response), 0, 3); if (!in_array((int) $code, array_map('intval', $codes), true)) { $err = $explain($code, $lastLine); return false; } return true; };
-    $write = function ($cmd, $codes) use ($fp, $read, $ok) { if (fwrite($fp, $cmd . "\r\n") === false) { $err = 'SMTP 连接中断'; return false; } return $ok($read(), $codes); };
+    $ok = function ($response, $codes) use (&$err, &$lastLine, $explain) {
+        if (trim((string) $response) === '') { $err = 'SMTP 服务器没有响应（连接被中断或超时）'; return false; }
+        $code = (int) substr(trim((string) $response), 0, 3);
+        if (!in_array((int) $code, array_map('intval', $codes), true)) { $err = $explain($code, $lastLine); return false; }
+        return true;
+    };
+    $write = function ($cmd, $codes) use ($fp, $read, $ok, $deadline) {
+        if (microtime(true) > $deadline) { $err = '发送超时（累计超过 20 秒）：服务器响应过慢，请检查网络、SMTP 地址与端口是否正确'; return false; }
+        if (fwrite($fp, $cmd . "\r\n") === false) { $err = 'SMTP 连接中断'; return false; }
+        return $ok($read(), $codes);
+    };
     if (!$ok($read(), array(220))) { fclose($fp); return false; }
     if (!$write('EHLO localhost', array(250))) { fclose($fp); return false; }
     if ($smtp['encryption'] === 'tls') { if (!$write('STARTTLS', array(220)) || @stream_socket_enable_crypto($fp, true, STREAM_CRYPTO_METHOD_TLS_CLIENT) !== true || !$write('EHLO localhost', array(250))) { if ($err === '') $err = 'STARTTLS 加密握手失败：服务器可能不支持 STARTTLS，请把加密方式改为 SSL（端口通常 465）或「无」（端口通常 25）后重试'; fclose($fp); return false; } }

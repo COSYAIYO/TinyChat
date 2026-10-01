@@ -14,16 +14,34 @@ function api(path, opts = {}) {
     return r;
   });
 }
-// 容错解析 JSON:响应不是 JSON(服务器返回 HTML 错误页)时给出可读提示,而不是抛 "Unexpected token '<'"
+// 容错解析 JSON:响应不是 JSON(服务器返回 HTML 错误页 / 网关拦截页)时,
+// 把 HTTP 状态与响应片段一并带出——否则「非预期内容」四个字根本没法排查。
 async function readJsonSafe(res) {
   let text = '';
   try { text = await res.text(); } catch (e) { text = ''; }
   const trimmed = text.trim();
-  if (!trimmed) return {};
+  if (!trimmed) {
+    return {
+      error: {
+        message: '服务器未返回任何内容（HTTP ' + res.status + '）。'
+          + '常见原因：请求被网关截断（如邮件发送耗时超过网关超时）、或后端进程异常退出。请查看服务器错误日志。',
+      },
+    };
+  }
   if (trimmed.charAt(0) === '{' || trimmed.charAt(0) === '[') {
     try { return JSON.parse(trimmed); } catch (e) { /* noop */ }
   }
-  return { error: { message: '服务器返回了非预期内容（HTTP ' + res.status + '），请检查站点配置或稍后重试' } };
+  // 剥掉标签只留文字,便于在提示区里直接读
+  const plain = trimmed.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  const hint = /502|503|504/.test(String(res.status))
+    ? '（网关返回的错误页，通常是后端超时或异常退出）'
+    : '';
+  return {
+    error: {
+      message: '服务器返回了非 JSON 内容（HTTP ' + res.status + '）' + hint
+        + '：' + (plain ? plain.slice(0, 300) : '（内容为空）'),
+    },
+  };
 }
 function toast(msg, isError = false) {
   if (window.OCUI && window.OCUI.toast) return window.OCUI.toast(msg, isError);

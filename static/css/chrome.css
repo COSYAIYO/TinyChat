@@ -4071,6 +4071,8 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   font-size: 13px;
   line-height: 1.65;
   word-break: break-word;
+  /* 排查步骤里带换行,保留换行让建议分行可读 */
+  white-space: pre-line;
 }
 .smtp-test-result[hidden] { display: none; }
 .smtp-test-result.is-ok {

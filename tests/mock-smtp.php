@@ -40,6 +40,12 @@ $handle = function ($conn) use ($mode) {
             return;
         } elseif (strpos($cmd, 'AUTH LOGIN') === 0) {
             if ($mode === 'authfail') { fwrite($conn, "535 Authentication failed\r\n"); return; }
+            // gbk: 复现中文邮件服务商用 GBK 回错误文本(非法 UTF-8),曾导致 json_encode 失败、后台只看到 502
+            if ($mode === 'gbk') {
+                $gbk = "\xd3\xc3\xbb\xa7\xc3\xfb\xbb\xf2\xc3\xdc\xc2\xeb\xb2\xbb\xd5\xfd\xc8\xb7"; // "用户名或密码不正确" 的 GBK 字节
+                fwrite($conn, "535 " . $gbk . "\r\n");
+                return;
+            }
             fwrite($conn, "334 VXNlcm5hbWU6\r\n");
             fgets($conn, 2048); // username
             fwrite($conn, "334 UGFzc3dvcmQ6\r\n");

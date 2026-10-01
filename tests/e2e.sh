@@ -33,11 +33,19 @@ cleanup() {
   [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null
   [ -n "${MOCK_PID:-}" ] && kill "$MOCK_PID" 2>/dev/null
   [ -n "${OAUTH_PID:-}" ] && kill "$OAUTH_PID" 2>/dev/null
+  [ -n "${SMTP_PID:-}" ] && kill "$SMTP_PID" 2>/dev/null
+  [ -n "${SMTP_GBK_PID:-}" ] && kill "$SMTP_GBK_PID" 2>/dev/null
   rm -rf "$TMP"
 }
 trap cleanup EXIT
 
 say "== 启动服务 (app :$PORT / mock :$MOCK_PORT) =="
+SMTP_PORT="${E2E_SMTP_PORT:-8105}"
+SMTP_GBK_PORT="${E2E_SMTP_GBK_PORT:-8106}"
+php tests/mock-smtp.php "$SMTP_PORT" ok >"$TMP/smtp.log" 2>&1 &
+SMTP_PID=$!
+php tests/mock-smtp.php "$SMTP_GBK_PORT" gbk >"$TMP/smtp-gbk.log" 2>&1 &
+SMTP_GBK_PID=$!
 OAUTH_PORT="${E2E_OAUTH_PORT:-8104}"
 DATA_DIR="$TMP/data" ADMIN_NAME=admin ADMIN_PASSWORD=e2e-pass \
   TC_BRAVE_SEARCH_BASE="http://127.0.0.1:$MOCK_PORT" \
@@ -575,6 +583,32 @@ if printf '%s' "$DEMOLOG" | grep -qF '"prompt":"'; then bad "演示管理员日�
 if printf '%s' "$DEMOLOG" | grep -qF '"reply":"'; then bad "演示管理员日志里仍有模型回复"; else ok "演示管理员日志不含模型回复"; fi
 if printf '%s' "$DEMOLOG" | grep -qF '"userName"'; then bad "演示管理员日志里仍有用户名"; else ok "演示管理员日志不含用户名"; fi
 assert_contains "真实管理员日志仍含 IP" "$(curl -s "$BASE/api/admin/logs?limit=1" -H "$AUTH")" '"ip":'
+
+# ---------- 邮件发送:失败原因必须可读且响应体合法 ----------
+say "== 邮件发送报错 =="
+# 正常投递(经 mock SMTP)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d "{\"smtp\":{\"host\":\"127.0.0.1\",\"port\":$SMTP_PORT,\"username\":\"ops@e2e.local\",\"password\":\"pw\",\"encryption\":\"none\",\"fromEmail\":\"ops@e2e.local\"}}" > /dev/null
+assert_contains "测试邮件发送成功" "$(curl -s -X POST "$BASE/api/admin/settings/test-email" -H "$AUTH" -H "Content-Type: application/json" -d '{"to":"t@e2e.local"}')" '"ok":true'
+# 端口不通:状态码必须是网关不会替换的 4xx,且带上目标地址与排查方向
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"smtp":{"host":"127.0.0.1","port":2599,"username":"ops@e2e.local","password":"pw","encryption":"none","fromEmail":"ops@e2e.local"}}' > /dev/null
+CONN_CODE=$(curl -s -o "$TMP/mail1.json" -w '%{http_code}' -X POST "$BASE/api/admin/settings/test-email" -H "$AUTH" -H "Content-Type: application/json" -d '{"to":"t@e2e.local"}')
+assert_eq "连接失败返回 4xx(网关不劫持)" "$CONN_CODE" "400"
+assert_has "连接失败给出目标地址与端口建议" "$(cat "$TMP/mail1.json")" 'SSL→465'
+# 关键回归:中文服务商用 GBK 回错误文本时,响应体仍必须是合法 JSON(此前会变成空体 → 前端只看到 502)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d "{\"smtp\":{\"host\":\"127.0.0.1\",\"port\":$SMTP_GBK_PORT,\"username\":\"ops@e2e.local\",\"password\":\"pw\",\"encryption\":\"none\",\"fromEmail\":\"ops@e2e.local\"}}" > /dev/null
+GBK_CODE=$(curl -s -o "$TMP/mail2.json" -w '%{http_code}' -X POST "$BASE/api/admin/settings/test-email" -H "$AUTH" -H "Content-Type: application/json" -d '{"to":"t@e2e.local"}')
+assert_eq "GBK 错误文本仍返回 4xx" "$GBK_CODE" "400"
+# 端口被防火墙/主机商静默丢包(TEST-NET 地址不会回应):必须明确指向「出站被屏蔽」并给建议,
+# 这是虚拟主机上最常见的一类失败,不能只丢一句「连接失败」
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"smtp":{"host":"192.0.2.1","port":587,"username":"ops@e2e.local","password":"pw","encryption":"tls","fromEmail":"ops@e2e.local"}}' > /dev/null
+BLOCKED_CODE=$(curl -s -o "$TMP/mail3.json" -w '%{http_code}' -X POST "$BASE/api/admin/settings/test-email" -H "$AUTH" -H "Content-Type: application/json" -d '{"to":"t@e2e.local"}')
+assert_eq "端口无响应返回 4xx" "$BLOCKED_CODE" "400"
+assert_has "端口无响应识别为出站被屏蔽" "$(cat "$TMP/mail3.json")" '主机商屏蔽了出站 SMTP'
+assert_has "端口无响应给出换端口建议" "$(cat "$TMP/mail3.json")" '换端口' 
+GBK_JSON=$(cat "$TMP/mail2.json")
+assert_has "GBK 错误文本响应体仍是合法 JSON" "$GBK_JSON" '"error"'
+assert_has "GBK 原文被转成可读中文" "$GBK_JSON" '用户名或密码不正确'
+assert_has "认证失败附带处理建议" "$GBK_JSON" '授权码' ;
 # 用户第三方绑定属账号隐私
 assert_contains "演示管理员不可查看用户第三方绑定" "$(curl -s "$BASE/api/admin/users/oauth?userId=$GID1" -H "$DAUTH")" '演示管理员不可查看用户的第三方绑定'
 # 用量导出与用户维度排行

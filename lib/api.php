@@ -982,7 +982,7 @@ function tc_api_register() {
             $db['inviteCodes'][$inviteIndex]['usedAt'] = tc_now();
         }
         tc_add_quota($db, $user, !empty($db['settings']['freeQuotaUnlimited']) ? -1 : $db['settings']['freeQuota']);
-        if (!empty($db['settings']['emailVerificationEnabled'])) { $link = tc_public_base_url() . '/login?verify=' . rawurlencode($token); [$subject,$html] = tc_render_mail_template($db['settings'], 'verify', $name, $link, '24 小时'); if (!tc_mail_send($db['settings'], $email, $subject, $html)) tc_fail(503, '验证邮件发送失败，请联系管理员'); tc_json(200, array('ok'=>true,'pendingVerification'=>true,'user'=>tc_sanitize_user($user))); }
+        if (!empty($db['settings']['emailVerificationEnabled'])) { $link = tc_public_base_url() . '/login?verify=' . rawurlencode($token); [$subject,$html] = tc_render_mail_template($db['settings'], 'verify', $name, $link, '24 小时'); if (!tc_mail_send($db['settings'], $email, $subject, $html, '', $regMailErr)) tc_fail(400, $regMailErr !== '' ? ('验证邮件发送失败：' . $regMailErr) : '验证邮件发送失败，请联系管理员'); tc_json(200, array('ok'=>true,'pendingVerification'=>true,'user'=>tc_sanitize_user($user))); }
         tc_json(200, array('token' => tc_issue_token($user, $db['settings']), 'user' => tc_sanitize_user($user)));
     });
 }
@@ -1092,7 +1092,7 @@ function tc_api_resend_verification() {
             tc_fail(429, '请求过于频繁，请稍后再试');
         }
         $b = tc_read_json_body(); $email = strtolower(trim((string) ($b['email'] ?? ''))); if (!filter_var($email, FILTER_VALIDATE_EMAIL)) tc_fail(400, '邮箱格式不正确');
-        foreach ($db['users'] as &$u) if (strtolower((string) ($u['email'] ?? '')) === $email) { if (!empty($u['emailLastSentAt']) && tc_now() - (int) $u['emailLastSentAt'] < 60000) tc_fail(429, '邮件发送过于频繁，请稍后再试'); $token = bin2hex(random_bytes(24)); $u['emailLastSentAt'] = tc_now(); $u['emailTokenHash'] = hash('sha256', $token); $u['emailTokenExpires'] = tc_now() + 86400000; $link = tc_public_base_url() . '/login?verify=' . rawurlencode($token); [$subject, $html] = tc_render_mail_template($db['settings'], 'verify', isset($u['name']) ? $u['name'] : '', $link, '24 小时'); if (!tc_mail_send($db['settings'], $email, $subject, $html)) tc_fail(503, '验证邮件发送失败'); break; }
+        foreach ($db['users'] as &$u) if (strtolower((string) ($u['email'] ?? '')) === $email) { if (!empty($u['emailLastSentAt']) && tc_now() - (int) $u['emailLastSentAt'] < 60000) tc_fail(429, '邮件发送过于频繁，请稍后再试'); $token = bin2hex(random_bytes(24)); $u['emailLastSentAt'] = tc_now(); $u['emailTokenHash'] = hash('sha256', $token); $u['emailTokenExpires'] = tc_now() + 86400000; $link = tc_public_base_url() . '/login?verify=' . rawurlencode($token); [$subject, $html] = tc_render_mail_template($db['settings'], 'verify', isset($u['name']) ? $u['name'] : '', $link, '24 小时'); if (!tc_mail_send($db['settings'], $email, $subject, $html, '', $reMailErr)) tc_fail(400, $reMailErr !== '' ? ('验证邮件发送失败：' . $reMailErr) : '验证邮件发送失败'); break; }
         unset($u); tc_json(200, array('ok' => true));
     });
 }
@@ -1109,7 +1109,7 @@ function tc_api_forgot_password() {
         // 邮箱与账号是否存在不在此处区分,统一给出同一句提示,避免被用来探测账号。
         foreach ($db['users'] as &$u) if (strtolower((string) ($u['email'] ?? '')) === $email) {
             if (!empty($u['admin'])) { unset($u); tc_fail(403, '管理员账号不支持通过邮箱重置密码，请由其他管理员在后台重置或联系站点维护者'); }
-            if (!empty($u['resetLastSentAt']) && tc_now() - (int) $u['resetLastSentAt'] < 60000) tc_fail(429, '邮件发送过于频繁，请稍后再试'); $token = bin2hex(random_bytes(24)); $u['resetLastSentAt'] = tc_now(); $u['resetTokenHash'] = hash('sha256', $token); $u['resetTokenExpires'] = tc_now() + 3600000; $link = tc_public_base_url() . '/login?reset=' . rawurlencode($token); [$subject, $html] = tc_render_mail_template($db['settings'], 'reset', isset($u['name']) ? $u['name'] : '', $link, '1 小时'); if (!tc_mail_send($db['settings'], $email, $subject, $html, '', $mailErr)) tc_fail(503, $mailErr !== '' ? ('重置邮件发送失败：' . $mailErr) : '重置邮件发送失败'); break; }
+            if (!empty($u['resetLastSentAt']) && tc_now() - (int) $u['resetLastSentAt'] < 60000) tc_fail(429, '邮件发送过于频繁，请稍后再试'); $token = bin2hex(random_bytes(24)); $u['resetLastSentAt'] = tc_now(); $u['resetTokenHash'] = hash('sha256', $token); $u['resetTokenExpires'] = tc_now() + 3600000; $link = tc_public_base_url() . '/login?reset=' . rawurlencode($token); [$subject, $html] = tc_render_mail_template($db['settings'], 'reset', isset($u['name']) ? $u['name'] : '', $link, '1 小时'); if (!tc_mail_send($db['settings'], $email, $subject, $html, '', $mailErr)) tc_fail(400, $mailErr !== '' ? ('重置邮件发送失败：' . $mailErr) : '重置邮件发送失败'); break; }
         unset($u); tc_json(200, array('ok' => true));
     });
 }
@@ -2642,7 +2642,7 @@ function tc_api_admin_update_check() {
     try {
         $result = tc_update_check(!empty($q['force']));
     } catch (Exception $e) {
-        tc_fail(502, $e->getMessage());
+        tc_fail(400, '发送测试邮件时出错：' . $e->getMessage());
     }
     tc_json(200, $result);
 }
@@ -2666,7 +2666,7 @@ function tc_api_admin_test_email() {
         [$subject, $html] = tc_render_mail_template($s, 'verify', $user['name'], $link, '30 分钟');
         $ok = tc_mail_send($s, $to, $subject, $html, '', $err);
         tc_push_log(array('kind' => 'mail', 'userName' => $user['name'], 'action' => $ok ? ('发送测试邮件到 ' . $to) : ('测试邮件发送失败: ' . $err)));
-        if (!$ok) tc_fail(502, $err !== '' ? $err : '测试邮件发送失败，请检查 SMTP 配置');
+        if (!$ok) tc_fail(400, $err !== '' ? $err : '测试邮件发送失败，请检查 SMTP 配置');
         tc_json(200, array('ok' => true, 'to' => $to));
     });
 }
