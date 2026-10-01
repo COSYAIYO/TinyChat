@@ -35,6 +35,8 @@ cleanup() {
   [ -n "${OAUTH_PID:-}" ] && kill "$OAUTH_PID" 2>/dev/null
   [ -n "${SMTP_PID:-}" ] && kill "$SMTP_PID" 2>/dev/null
   [ -n "${SMTP_GBK_PID:-}" ] && kill "$SMTP_GBK_PID" 2>/dev/null
+  [ -n "${SMTP_REQ_PID:-}" ] && kill "$SMTP_REQ_PID" 2>/dev/null
+  [ -n "${SMTP_GMAIL_PID:-}" ] && kill "$SMTP_GMAIL_PID" 2>/dev/null
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -46,6 +48,12 @@ php tests/mock-smtp.php "$SMTP_PORT" ok >"$TMP/smtp.log" 2>&1 &
 SMTP_PID=$!
 php tests/mock-smtp.php "$SMTP_GBK_PORT" gbk >"$TMP/smtp-gbk.log" 2>&1 &
 SMTP_GBK_PID=$!
+SMTP_REQ_PORT="${E2E_SMTP_REQ_PORT:-8107}"
+SMTP_GMAIL_PORT="${E2E_SMTP_GMAIL_PORT:-8108}"
+php tests/mock-smtp.php "$SMTP_REQ_PORT" requirepass >"$TMP/smtp-req.log" 2>&1 &
+SMTP_REQ_PID=$!
+php tests/mock-smtp.php "$SMTP_GMAIL_PORT" gmail535 >"$TMP/smtp-gmail.log" 2>&1 &
+SMTP_GMAIL_PID=$!
 OAUTH_PORT="${E2E_OAUTH_PORT:-8104}"
 DATA_DIR="$TMP/data" ADMIN_NAME=admin ADMIN_PASSWORD=e2e-pass \
   TC_BRAVE_SEARCH_BASE="http://127.0.0.1:$MOCK_PORT" \
@@ -604,7 +612,23 @@ curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: applicat
 BLOCKED_CODE=$(curl -s -o "$TMP/mail3.json" -w '%{http_code}' -X POST "$BASE/api/admin/settings/test-email" -H "$AUTH" -H "Content-Type: application/json" -d '{"to":"t@e2e.local"}')
 assert_eq "端口无响应返回 4xx" "$BLOCKED_CODE" "400"
 assert_has "端口无响应识别为出站被屏蔽" "$(cat "$TMP/mail3.json")" '主机商屏蔽了出站 SMTP'
-assert_has "端口无响应给出换端口建议" "$(cat "$TMP/mail3.json")" '换端口' 
+assert_has "端口无响应给出换端口建议" "$(cat "$TMP/mail3.json")" '换端口'
+# Google 应用专用密码在页面上是「abcd efgh ijkl mnop」带空格的形式:
+# 用户整段复制时,密码必须被自动去掉空格后才能通过认证
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d "{\"smtpKeyRevealable\":true,\"smtp\":{\"host\":\"127.0.0.1\",\"port\":$SMTP_REQ_PORT,\"username\":\"ops@gmail.com\",\"password\":\"abcd efgh ijkl mnop\",\"encryption\":\"none\",\"fromEmail\":\"ops@gmail.com\"}}" > /dev/null
+assert_has "带空格的应用专用密码被归一化为 16 位" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"password":"abcdefghijklmnop"'
+assert_contains "带空格的应用专用密码可正常发信" "$(curl -s -X POST "$BASE/api/admin/settings/test-email" -H "$AUTH" -H "Content-Type: application/json" -d '{"to":"t@e2e.local"}')" '"ok":true'
+# 认证被拒时给出服务商专属排查清单(含「多账号 / u/2」这类真实陷阱)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d "{\"smtp\":{\"host\":\"127.0.0.1\",\"port\":$SMTP_GMAIL_PORT,\"username\":\"ops@gmail.com\",\"password\":\"WrongPassword123\",\"encryption\":\"none\",\"fromEmail\":\"ops@gmail.com\"}}" > /dev/null
+GMAIL_MSG=$(curl -s -X POST "$BASE/api/admin/settings/test-email" -H "$AUTH" -H "Content-Type: application/json" -d '{"to":"t@e2e.local"}')
+assert_has "Gmail 认证失败给出专属核对清单" "$GMAIL_MSG" '应用专用密码'
+assert_has "Gmail 提示包含多账号陷阱" "$GMAIL_MSG" 'u/2'
+assert_has "认证失败回显本次登录账号" "$GMAIL_MSG" '本次用于登录的账号'
+# 有用户名但无密码:提前给可读原因,而不是让服务端回英文 535。
+# 注意:保存时空密码会被「保留原值」保护,所以这里直接清库里的密码来构造该场景。
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"smtp":{"host":"127.0.0.1","port":8105,"username":"ops@e2e.local","encryption":"none","fromEmail":"ops@e2e.local"}}' > /dev/null
+php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("settings")); $s=json_decode($q->fetchColumn(),true); $s["smtp"]["password"]=""; $up=$pdo->prepare("UPDATE store SET v=? WHERE k=?"); $up->execute(array(json_encode($s),"settings"));' "$TMP/data"
+assert_has "用户名有值但密码为空给出明确提示" "$(curl -s -X POST "$BASE/api/admin/settings/test-email" -H "$AUTH" -H "Content-Type: application/json" -d '{"to":"t@e2e.local"}')" '密码为空'  
 GBK_JSON=$(cat "$TMP/mail2.json")
 assert_has "GBK 错误文本响应体仍是合法 JSON" "$GBK_JSON" '"error"'
 assert_has "GBK 原文被转成可读中文" "$GBK_JSON" '用户名或密码不正确'
