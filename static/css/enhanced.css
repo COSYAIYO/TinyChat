@@ -364,8 +364,8 @@
 
 /* 引用块增强 */
 .msg.assistant blockquote {
-  background: var(--bg-hover);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: none;
+  border-radius: 0;
 }
 
 /* 任务列表 checkbox */

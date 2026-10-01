@@ -110,6 +110,17 @@
   padding: 12px 14px;
   overflow-x: auto;
 }
+/* 旧版会把 .code-block 再包进一层 <pre>。这层不再画框，避免两层矩形。 */
+.msg.assistant .md-prose > pre:has(.code-block),
+.msg.assistant .md-prose pre:has(.code-block) {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+}
 
 /* ---------- 4. 表格:编辑风网格 ---------- */
 .msg.assistant .md-prose .table-wrap {
@@ -215,12 +226,29 @@
 
 /* ---------- 5. 引用 / 分割线 / 链接 / 强调 ---------- */
 .msg.assistant .md-prose blockquote {
-  margin: 1em 0;
-  padding: 0.15em 0 0.15em 1em;
-  border-left: 3px solid color-mix(in srgb, var(--brand, var(--accent)) 42%, transparent);
-  background: transparent;
-  color: var(--text-secondary);
-  border-radius: 0;
+  position: relative;
+  margin: 0.9em 0;
+  padding: 10px 14px 10px 18px;
+  border: 0;
+  background: var(--bg-code);
+  color: var(--text);
+  border-radius: 10px;
+}
+.msg.assistant .md-prose blockquote::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, #3b82f6 46%, var(--bg-code));
+}
+[data-theme="dark"] .msg.assistant .md-prose blockquote {
+  background: var(--bg-code);
+}
+[data-theme="dark"] .msg.assistant .md-prose blockquote::before {
+  background: color-mix(in srgb, #60a5fa 42%, var(--bg-code));
 }
 .msg.assistant .md-prose blockquote > *:first-child { margin-top: 0; }
 .msg.assistant .md-prose blockquote > *:last-child { margin-bottom: 0; }
@@ -280,42 +308,87 @@
 
 /* ---------- 6.5 最终收口：轻量表格与代码 ---------- */
 .msg.assistant .md-prose .code-block {
-  margin: 0.8em 0 !important;
-  border: 1px solid var(--hairline) !important;
-  border-radius: 8px !important;
-  background: var(--bg-code) !important;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04) !important;
-  overflow: hidden !important;
-}
-.msg.assistant .md-prose .code-block .code-header {
-  min-height: 24px;
-  padding: 1px 10px !important;
-  border: 0 !important;
-  border-bottom: 0 !important;
-  border-radius: 0 !important;
-  background: inherit !important;
-}
-.msg.assistant .md-prose .code-block pre,
-.msg.assistant .md-prose .code-block pre code {
+  position: relative;
+  margin: 0.85em 0 !important;
+  padding: 0 !important;
   border: 0 !important;
   border-radius: 0 !important;
   background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+}
+.msg.assistant .md-prose .code-block .code-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  min-height: 34px;
+  padding: 5px 12px !important;
+  border: 0 !important;
+  border-bottom: 0 !important;
+  border-radius: 12px 12px 0 0 !important;
+  background: color-mix(in srgb, #000 9%, var(--bg-code)) !important;
+}
+.msg.assistant .md-prose .code-block pre code,
+.msg.assistant .md-prose .code-block .hljs {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
 }
 .msg.assistant .md-prose .code-block pre {
-  padding: 6px 10px !important;
+  margin: 0 !important;
+  padding: 42px 22px 18px !important;
+  border: 0 !important;
+  border-radius: 12px !important;
+  background: var(--bg-code) !important;
+}
+.msg.assistant .code-block {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+}
+.msg.assistant .code-block .code-header {
+  background: color-mix(in srgb, #000 9%, var(--bg-code)) !important;
+  border: 0 !important;
+}
+.msg.assistant .md-prose .code-block .code-lang {
+  color: #fff;
+  font-weight: 700;
+}
+[data-theme="dark"] .msg.assistant .md-prose .code-block .code-header,
+[data-theme="dark"] .msg.assistant .code-block .code-header {
+  background: color-mix(in srgb, #fff 14%, var(--bg-code)) !important;
+}
+[data-theme="dark"] .msg.assistant .md-prose .code-block .code-lang {
+  color: #fff;
 }
 .msg.assistant .md-prose .code-block .code-copy {
   min-width: 44px;
   min-height: 24px;
   padding: 3px 9px !important;
-  border: 1px solid color-mix(in srgb, var(--text-tertiary) 28%, transparent) !important;
+  border: 0 !important;
   border-radius: 6px !important;
-  background: color-mix(in srgb, var(--bg-surface) 72%, transparent) !important;
+  background: #5f6b7a !important;
+  color: #fff !important;
+  box-shadow: none !important;
+  font-weight: 700 !important;
   line-height: 1.2;
 }
 .msg.assistant .md-prose .code-block .code-copy:hover {
-  border-color: var(--hairline-strong) !important;
-  background: var(--bg-hover) !important;
+  border: 0 !important;
+  background: #4b5563 !important;
+  color: #fff !important;
+}
+[data-theme="dark"] .msg.assistant .md-prose .code-block .code-copy {
+  background: #6b7785 !important;
+  color: #fff !important;
+}
+[data-theme="dark"] .msg.assistant .md-prose .code-block .code-copy:hover {
+  background: #8090a0 !important;
+  color: #fff !important;
 }
 
 .msg.assistant .md-prose .table-wrap,

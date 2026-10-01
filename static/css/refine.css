@@ -278,16 +278,17 @@
 /* 跟进建议 */
 .follow-ups { margin-top: 18px; padding-left: 0; }
 
-/* 代码块:细边框 + 头部色带 */
+/* 代码块只留里面那一层,外层不再画框 */
 .code-block {
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-md);
-  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
 }
 .code-header {
-  background: var(--bg-surface-2);
-  border-bottom: 1px solid var(--hairline);
-  padding: 7px 12px;
+  background: color-mix(in srgb, #000 9%, var(--bg-code));
+  border-bottom: 0;
 }
 
 /* ---------- 5. 流式输出 ---------- */

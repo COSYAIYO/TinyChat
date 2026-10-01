@@ -149,10 +149,17 @@
             e.preventDefault(); // 防止输入框失焦导致菜单先关
             e.stopPropagation();
             closeOpenMenu();
+            row._ocSelected = true;
             if (opts.onSelect) opts.onSelect(it.value, it);
           });
+          // 触屏/部分自动化环境只派发 click 不派发 mousedown:click 兜底触发一次(防重)
           row.addEventListener('click', (e) => {
             e.stopPropagation();
+            if (row._ocSelected) return;
+            row._ocSelected = true;
+            closeOpenMenu();
+            row._ocSelected = true;
+            if (opts.onSelect) opts.onSelect(it.value, it);
           });
           list.appendChild(row);
           shown++;

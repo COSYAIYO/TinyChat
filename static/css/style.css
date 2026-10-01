@@ -505,9 +505,7 @@ body {
   flex-wrap: wrap;
   gap: 4px 14px;
   padding: 18px 0;
-  animation: msgIn 0.25s ease;
 }
-@keyframes msgIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
 .msg .msg-avatar {
   width: 30px; height: 30px;
