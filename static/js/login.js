@@ -10,6 +10,44 @@ if (window.OCUI && typeof window.OCUI.initTheme === 'function') {
 function showError(msg) {
   const el = $('auth-error');
   el.textContent = msg;
+  // 登录被「邮箱未验证」挡住时,就地给出重发验证邮件的入口
+  const stale = document.getElementById('resend-verify-row');
+  if (stale) stale.remove();
+  if (/验证邮箱/.test(String(msg))) {
+    const row = document.createElement('div');
+    row.id = 'resend-verify-row';
+    row.style.marginTop = '8px';
+    const link = document.createElement('a');
+    link.href = '#';
+    link.textContent = '重发验证邮件';
+    link.addEventListener('click', async (e) => {
+      e.preventDefault();
+      let email = ($('login-name') ? $('login-name').value : '').trim();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        const typed = (window.OCUI && OCUI.prompt)
+          ? await OCUI.prompt({ title: '重发验证邮件', message: '请输入注册时填写的邮箱地址', confirmText: '发送' })
+          : window.prompt('请输入注册时填写的邮箱地址', '');
+        if (typed === null) return;
+        email = String(typed).trim();
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showError('请先在「用户名」里输入注册邮箱，或点击链接后按提示填写'); return; }
+      link.textContent = '发送中…';
+      try {
+        const r = await fetch(apiUrl('/api/auth/resend-verification'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { showError((d.error && d.error.message) || '发送失败'); return; }
+        showError('验证邮件已重新发送，请查收后完成验证再登录');
+      } catch (err) {
+        showError('网络错误，请稍后再试');
+      }
+    });
+    row.appendChild(link);
+    el.appendChild(row);
+  }
   el.classList.remove('hidden');
   el.style.animation = 'none';
   void el.offsetWidth;
@@ -136,6 +174,8 @@ fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
     const row = $('reg-invite-row');
     if (row) row.classList.remove('hidden');
   }
+  // 第三方一键登录:后台启用的提供商渲染为图标按钮
+  renderOauthIcons(cfg && cfg.oauth);
   // 配置就绪后再兜一次(此时注册表单的协议/邀请码等已按需显示)
   showRegisterForGuest();
   if (!cfg || !cfg.needsSetup) return;
@@ -244,3 +284,124 @@ $('show-login').addEventListener('click', (e) => {
   e.preventDefault();
   switchAuthForm('login-form', 'register-form', 'login-name');
 });
+
+
+// ============ 第三方一键登录 ============
+function renderOauthIcons(oauth) {
+  const wrap = $('oauth-login');
+  const box = $('oauth-icons');
+  if (!wrap || !box) return;
+  const providers = (oauth && Array.isArray(oauth.providers)) ? oauth.providers : [];
+  if (!providers.length) { wrap.classList.add('hidden'); return; }
+  box.innerHTML = providers.map((p) =>
+    '<button type="button" class="oauth-icon" data-oauth-go="' + escLogin(p.id) + '" title="使用 ' + escLogin(p.name) + ' 登录">'
+    + '<img src="' + escLogin(p.logo) + '" alt="' + escLogin(p.name) + '" loading="lazy"></button>'
+  ).join('');
+  wrap.classList.remove('hidden');
+  box.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-oauth-go]');
+    if (!btn) return;
+    btn.disabled = true;
+    // 整页跳转到授权端点(第三方登录必须离开当前页面)
+    location.href = '/auth/' + encodeURIComponent(btn.getAttribute('data-oauth-go'));
+  });
+}
+// 回调回来时前端消费一次性票据/错误(# 片段不发给服务器,读完立刻清掉)
+(function consumeOauthFragment() {
+  const hash = String(location.hash || '');
+  if (!hash || hash.indexOf('oauth_') < 0) return;
+  const params = new URLSearchParams(hash.replace(/^#/, ''));
+  const err = params.get('oauth_error');
+  const ticket = params.get('oauth_ticket');
+  const created = params.get('oauth_created') === '1';
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* 忽略 */ }
+  if (err) { showError(err); return; }
+  if (!ticket) return;
+  setBusy($('login-btn'), true, '登录');
+  fetch(apiUrl('/api/auth/oauth/exchange'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ticket: ticket }),
+  }).then((r) => r.json().then((d) => ({ ok: r.ok, d: d }))).then((res) => {
+    if (!res.ok) throw new Error((res.d.error && res.d.error.message) || '登录失败');
+    try { localStorage.setItem(cacheKey, res.d.token); } catch (e) { /* 忽略 */ }
+    // 后台要求补全资料、且该账号还没有密码时,进入补全流程(补全后可脱离第三方登录)
+    if (res.d.needsProfile) {
+      // 新建账号时先明确告知,避免用户不知道自己已被创建
+      showError(created ? '已用第三方账号创建新账号，请继续完善用户名与密码' : '请继续完善用户名与密码');
+      showProfileGate(res.d.token, res.d.user);
+      return;
+    }
+    location.replace('/');
+  }).catch((e) => {
+    setBusy($('login-btn'), false, '登录');
+    showError(e.message || '登录失败');
+  });
+})();
+
+// —— 第三方登录后的资料补全(用户名 + 密码) ——
+function showProfileGate(token, user) {
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask';
+  mask.innerHTML = '<div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="pg-title">'
+    + '<div class="modal-header">'
+    + '<h3 id="pg-title">完善账号信息</h3>'
+    + '<button class="icon-btn" type="button" id="pg-x" aria-label="关闭">'
+    + '<svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke-linecap="round"/></svg>'
+    + '</button>'
+    + '</div>'
+    + '<div class="modal-body">'
+    + '<p class="muted small pg-tip">本站要求补全用户名与密码，之后你也可以直接用用户名密码登录。</p>'
+    + '<label class="field"><span>用户名</span><input type="text" id="pg-name" maxlength="32" value="" placeholder="2-32 位（字母/数字/中文/._@-）" autocomplete="off"></label>'
+    + '<label class="field"><span>密码（至少 4 位）</span><input type="password" id="pg-pwd" autocomplete="new-password"></label>'
+    + '<label class="field"><span>确认密码</span><input type="password" id="pg-pwd2" autocomplete="new-password"></label>'
+    + '<div class="hidden pg-err" id="pg-err" role="alert" aria-live="polite"></div>'
+    + '</div>'
+    + '<div class="modal-footer">'
+    + '<button type="button" class="btn primary" id="pg-save">保存并进入</button>'
+    + '</div>'
+    + '</div>';
+  document.body.appendChild(mask);
+  const nameInput = mask.querySelector('#pg-name');
+  if (nameInput && user && user.name) nameInput.value = user.name;
+  const errBox = mask.querySelector('#pg-err');
+  const showErr = (m) => { errBox.textContent = m; errBox.classList.remove('hidden'); };
+  // 已拿到登录态:选择暂不完善时直接进站,不要把人留在登录页
+  const xBtn = mask.querySelector('#pg-x');
+  if (xBtn) xBtn.addEventListener('click', () => location.replace('/'));
+  const btn = mask.querySelector('#pg-save');
+  if (nameInput) nameInput.focus();
+  btn.addEventListener('click', async () => {
+    const name = (nameInput.value || '').trim();
+    const pwd = (mask.querySelector('#pg-pwd').value || '');
+    const pwd2 = (mask.querySelector('#pg-pwd2').value || '');
+    if (!name) return showErr('请输入用户名');
+    if (pwd.length < 4) return showErr('密码至少 4 位');
+    if (pwd !== pwd2) return showErr('两次输入的密码不一致');
+    btn.disabled = true; btn.textContent = '保存中…';
+    try {
+      // 设密码会使旧 token 立即失效(tv 递增),后续请求必须用返回的新 token
+      let activeToken = token;
+      const call = (url, body) => fetch(apiUrl(url), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + activeToken },
+        body: JSON.stringify(body),
+      }).then((r) => r.json().then((d) => ({ ok: r.ok, d: d })));
+      // 先设密码,再改用户名(两者都返回新 token,保留最后一次)
+      const r1 = await call('/api/auth/password', { oldPassword: '', newPassword: pwd });
+      if (!r1.ok) throw new Error((r1.d.error && r1.d.error.message) || '设置密码失败');
+      let finalToken = r1.d.token || token;
+      if (r1.d.token) activeToken = r1.d.token;
+      if (user && name && name !== user.name) {
+        const r2 = await call('/api/auth/name', { name: name, password: pwd });
+        if (!r2.ok) throw new Error((r2.d.error && r2.d.error.message) || '设置用户名失败');
+        if (r2.d.token) finalToken = r2.d.token;
+      }
+      try { localStorage.setItem(cacheKey, finalToken); } catch (e) { /* 忽略 */ }
+      location.replace('/');
+    } catch (e) {
+      btn.disabled = false; btn.textContent = '保存并进入';
+      showErr(e.message || '保存失败');
+    }
+  });
+}

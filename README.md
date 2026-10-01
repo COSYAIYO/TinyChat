@@ -1,7 +1,7 @@
 # TinyChat
 
 **自托管的 AI 对话站点系统**：纯 PHP，上传虚拟主机即可运行——不需要独立的数据库服务（数据存于 PHP 自带的 SQLite）、不需要 Composer / Node / 常驻进程。ChatGPT 风格界面，支持 OpenAI、Anthropic 及各类兼容接口的多模型切换，内置文生图、用户注册、额度计费、兑换码、助手库、联网搜索、游客体验与在线更新——部署一次，即可让团队或朋友注册使用，所有数据都在你自己手里。
-
+**维护中站点：https://tinychat.us.ci/**
 开源地址：[github.com/HCARX/TinyChat](https://github.com/HCARX/TinyChat) · License: MIT
 
 ## 目录
@@ -495,6 +495,18 @@ php tests/attribution.php      # 完整性校验
 # 端到端冒烟：起真实 PHP 服务 + mock 上游，跑完整业务流
 bash tests/e2e.sh
 ```
+
+## 发版
+
+```bash
+# 改 lib/core.php 的 TC_VERSION 后跑一条命令:
+#   - 业务 JS/CSS 压缩为 .min 并统一 HTML 里的 ?v= 版本号
+#   - sw.js 缓存名联动 TC_VERSION(发版即清旧 PWA 缓存)
+#   - 重新生成 checksums.txt(在线更新的包完整性清单)
+node tools/release.mjs
+```
+
+> 内置 CJK 字体为切片分包(`static/fonts/`,由 `tools/slice_fonts.py` 生成),只有更换字体文件时才需要重跑切片脚本(需 `pip install fonttools brotli`)。
 
 E2E 覆盖登录与设置、备份与越权防护、邀请码注册、按次与按 token 计费、流式结算、敏感词审核、接口限流、API 密钥与 `/v1` 出口、获取模型列表、生图（含自动路由与两种返回形态）、生视频、无限额度、游客模式、演示管理员等。CI 会在 PHP 7.4 / 8.1 / 8.3 上分别运行。
 

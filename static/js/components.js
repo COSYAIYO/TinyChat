@@ -132,7 +132,17 @@
           if (pinBtn) pinBtn.addEventListener('mousedown', (e) => {
             e.preventDefault();
             e.stopPropagation();
+            // 置顶是开关:同一项再点一次取消,不同项则改为置顶它。
+            // 这里就地更新 opts.pinned 与按钮高亮——菜单是一次性渲染的,
+            // 之前只改了偏好、没刷新按钮,导致要点完关闭再打开才看到蓝色。
+            const nowPinned = opts.pinned === it.value ? null : String(it.value);
             if (opts.onPin) opts.onPin(it.value, it);
+            opts.pinned = nowPinned;
+            list.querySelectorAll('.oc-menu-pin').forEach((b) => {
+              const on = b.dataset.pin === nowPinned;
+              b.classList.toggle('active', on);
+              b.title = on ? '取消置顶' : '置顶，新建对话使用此模型';
+            });
           });
           row.addEventListener('mousedown', (e) => {
             if (e.target.closest('.oc-menu-pin')) return;
@@ -195,7 +205,13 @@
     const onDoc = (e) => {
       if (!menu.contains(e.target) && e.target !== trigger) closeOpenMenu();
     };
-    const onKey = (e) => { if (e.key === 'Escape') { closeOpenMenu(); } };
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      // 捕获阶段拦截:只关菜单,不让同一个 Esc 再把底层弹窗也关掉
+      e.preventDefault();
+      e.stopPropagation();
+      closeOpenMenu();
+    };
     const onScroll = (e) => {
       const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
       if (menu.contains(e.target) || path.indexOf(menu) >= 0) return;
@@ -216,15 +232,15 @@
 
     menu._cleanup = () => {
       document.removeEventListener('mousedown', onDoc);
-      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('keydown', onKey, true);
       window.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('resize', onResize);
     };
-
+    // 捕获阶段注册:保证先于 OCUI 的弹窗 Esc(document 冒泡)触发
     setTimeout(() => {
       // 冒泡阶段监听：菜单项的 mousedown/click 通过 stopPropagation 阻止关闭
       document.addEventListener('mousedown', onDoc);
-      document.addEventListener('keydown', onKey);
+      document.addEventListener('keydown', onKey, true);
       window.addEventListener('scroll', onScroll, true);
       window.addEventListener('resize', onResize);
     }, 0);
@@ -237,6 +253,10 @@
     const keyHead = opts.showKey
       ? '<th class="col-key" title="该模型用哪把 Key 请求上游；仅在供应商配置了多个 Key 时出现">密钥</th>'
       : '';
+    // showCost=false 用于用户自建供应商:自己的 Key 不扣站点次数,「单次扣减」列没有意义
+    const costHead = opts.showCost === false
+      ? ''
+      : '<th class="col-cost" title="该模型单次调用扣减的额度次数；留空则跟随供应商的「每次调用扣费次数」">单次扣减</th>';
     return '<table class="model-table">'
       + '<thead><tr>'
       + '<th class="col-check"></th>'
@@ -244,7 +264,7 @@
       + '<th class="col-name">显示名称</th>'
       + '<th class="col-mtok" title="单次回答最多生成的 token，留空则跟随全局的单次输出上限">max_tokens</th>'
       + '<th class="col-ctx" title="该模型的上下文窗口（token），留空则不做限制">最大上下文</th>'
-      + '<th class="col-cost" title="该模型单次调用扣减的额度次数；留空则跟随供应商的「每次调用扣费次数」">单次扣减</th>'
+      + costHead
       + keyHead
       + '<th class="col-img" title="标记为生图模型：调用对话接口时会自动改用 images/generations（未标记时按模型名自动判断）">生图</th>'
       + '<th class="col-img" title="标记为视频生成模型：调用对话接口时会自动改用 videos（未标记时按模型名自动判断）">视频</th>'
@@ -326,9 +346,9 @@
     opts = opts || {};
     const checked = opts.checked ? ' checked' : '';
     const attr = opts.stale ? 'data-stale' : 'data-mid';
-    const cls = 'model-row' + (opts.stale ? ' is-stale' : '');
     const numCells = MODEL_NUM_COLS.map((col) => '<td class="' + (col.cls === 'mtokens' ? 'col-mtok' : 'col-ctx') + '">'
       + modelNumCell(m, col, !opts.stale) + '</td>').join('');
+    const costCell = opts.showCost === false ? '' : '<td class="col-cost">' + modelCostCell(m, !opts.stale) + '</td>';
     // 生图标记:显式 image 字段优先;未显式设置时按模型名给出建议默认值(仅用于勾选态展示)
     const isImage = Object.prototype.hasOwnProperty.call(m, 'image') ? !!m.image : (window.OC && OC.isImageModelName ? OC.isImageModelName(m.id) : false);
     const imageCell = opts.stale
@@ -339,12 +359,14 @@
     const videoCell = opts.stale
       ? '<td class="col-img">' + (isVideo ? '<span class="img-flag video-flag">视频</span>' : '<i class="muted">—</i>') + '</td>'
       : '<td class="col-img"><input type="checkbox" class="mvideo" data-mid="' + escapeHtml(m.id) + '" title="标记为视频生成模型"' + (isVideo ? ' checked' : '') + '></td>';
+    // is-on:已勾选的行加左侧色条(样式见 chrome.css),长列表里一眼看出哪些会被保存
+    const cls = 'model-row' + (opts.stale ? ' is-stale' : '') + (checked && !opts.stale ? ' is-on' : '');
     return '<tr class="' + cls + '">'
       + '<td class="col-check"><input type="checkbox" ' + attr + '="' + escapeHtml(m.id) + '"' + checked + '></td>'
       + '<td class="col-id"><span class="mid">' + escapeHtml(m.id) + '</span></td>'
       + '<td class="col-name">' + modelNameCell(m, !opts.stale) + '</td>'
       + numCells
-      + '<td class="col-cost">' + modelCostCell(m, !opts.stale) + '</td>'
+      + costCell
       + modelKeyCell(m, opts)
       + imageCell
       + videoCell
@@ -475,8 +497,8 @@
         return;
       }
       listEl.innerHTML = modelTableHtml(vis.map((m) =>
-        modelRowHtml(m, { checked: selected.has(m.id), keys: keyOptions })
-      ).join(''), { showKey: keyOptions.length > 1 });
+        modelRowHtml(m, { checked: selected.has(m.id), keys: keyOptions, showCost: cfg.showCost })
+      ).join(''), { showKey: keyOptions.length > 1, showCost: cfg.showCost });
       updateMeta();
     }
 
@@ -691,6 +713,8 @@
    */
   function openFetchedModelsModal(models, opts) {
     opts = opts || {};
+    // showCost=false 用于用户自建供应商:自己的 Key 不扣站点次数,不展示「单次扣减」列
+    const showCost = opts.showCost !== false;
     const existingMap = new Map();
     (opts.existing || []).forEach((m) => {
       const id = String((m && m.id) || '').trim();
@@ -845,8 +869,8 @@
         listEl.innerHTML = '<div class="model-check-empty">' + (items.length ? '没有匹配的模型' : '这次上游没有返回模型') + '</div>';
       } else {
         listEl.innerHTML = modelTableHtml(vis.map((m) =>
-          modelRowHtml(m, { checked: m.enabled, keys: keyList })
-        ).join(''), { showKey: showKey });
+          modelRowHtml(m, { checked: m.enabled, keys: keyList, showCost })
+        ).join(''), { showKey: showKey, showCost });
       }
       renderStale();
       updateMsg();
@@ -862,8 +886,8 @@
         staleAllEl.indeterminate = n > 0 && n < stale.length;
       }
       staleEl.innerHTML = stale.length ? modelTableHtml(stale.map((m) =>
-        modelRowHtml(m, { checked: m.remove, stale: true, keys: keyList })
-      ).join(''), { showKey: showKey }) : '';
+        modelRowHtml(m, { checked: m.remove, stale: true, keys: keyList, showCost })
+      ).join(''), { showKey: showKey, showCost }) : '';
     }
 
     function updateMetaOnly() {
@@ -1139,6 +1163,16 @@
 
   const titleObserver = new MutationObserver((recs) => {
     recs.forEach((rec) => {
+      // 运行时改 title(如思考强度「中→高」、模型健康度)要同步到 data-tip,
+      // 否则自定义提示永远停留在初次转换时的旧文案
+      if (rec.type === 'attributes' && rec.attributeName === 'title') {
+        const el = rec.target;
+        const text = (el.getAttribute('title') || '').trim();
+        if (!text) return;
+        el.setAttribute('data-tip', text);
+        el.removeAttribute('title');
+        return;
+      }
       rec.addedNodes.forEach((n) => {
         if (n.nodeType !== 1) return;
         if (n.hasAttribute && n.hasAttribute('title')) restyleNativeTitles(n);
@@ -1146,7 +1180,7 @@
       });
     });
   });
-  titleObserver.observe(document.documentElement, { childList: true, subtree: true });
+  titleObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['title'] });
 
   // 生图模型名启发式(与后端 tc_image_model_name_hint 对应):供前后台共同复用。
   // 仅用于 UI 默认勾选/下拉建议,最终以后台显式标记(image 字段)为准。

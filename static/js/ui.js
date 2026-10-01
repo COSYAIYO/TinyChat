@@ -16,18 +16,26 @@
   UI.version = '2.0.0';
 
   const PREF_KEY = 'oc_prefs';
+  // 后台「内置字体默认不加载」开启时,默认字体用系统字体(不下载 ~19MB),
+  // 用户仍可在「外观」里自行切换为思源宋体/阿里巴巴普惠体等内置字体(切换后会按需加载)。
+  function ocNoWebfonts() { return !!(window.OC_PERF && window.OC_PERF.noWebfonts); }
+  function ocDefaultCjkFont() { return ocNoWebfonts() ? 'system' : 'source-han-serif'; }
+  function ocDefaultLatinFont() { return ocNoWebfonts() ? 'system' : 'alibaba-sans'; }
   const PREF_DEFAULTS = {
     stream: true,          // 流式输出
-    followups: false,      // AI 跟进建议(会额外扣费,默认关闭)
+    followups: true,       // AI 跟进建议(默认开启;会额外扣费,可在设置中关闭)
     followupsModel: '',    // 跟进建议所用模型:'' = 跟随当前模型;否则 "providerId\nmodelId"
-    autotitle: true,       // 自动生成会话标题
-    titleModel: '',        // 命名方式:'' = 本地截取;'current' = AI(当前模型);否则 "providerId\nmodelId"
+    autotitle: true,       // 自动生成会话标题(新建对话时)
+    titleModel: '',        // [已并入 AI 工具判定] 旧字段,仅作迁移回退
+    judgeModel: '',        // AI 工具判定所用模型:'' = 跟随当前对话模型;否则 "providerId\nmodelId"
+    aiJudge: true,         // AI 工具判定总开关:关闭后不再调用判定,出图回退粗略识别、标题回退本地截取
     imageModel: '',        // 默认生图模型:'' = 用第一个可用生图模型;否则 "providerId\nmodelId"
-    autoImage: true,       // 对话模型下说了「画一张…」等绘图/改图意图时,自动改走生图
+    autoImageMode: 'auto', // 对话中自动出图:off=关闭 | rough=粗略关键词识别 | auto=智能判定(默认)
+    autoImageModel: '',    // [已并入 AI 工具判定] 旧字段,仅作迁移回退
     elapsed: true,         // 显示生成耗时
     reasoning: true,       // 请求并展示思维链
     reasoningEffort: 'medium', // off | low | medium | high
-    contextMessages: 40,       // 每次请求带上的最近消息条数
+    contextMessages: 12,       // 每次请求带上的最近消息条数(默认 12)
     webSearchMode: 'auto',     // auto | on | off
     theme: 'system',       // system | light | dark
     fontSize: 14,          // 消息区字号(px)
@@ -40,9 +48,24 @@
     pinnedProviderId: null, // 置顶供应商：新建对话使用
     pinnedModel: null,      // 置顶模型：新建对话使用
   };
+  PREF_DEFAULTS.fontCjk = ocDefaultCjkFont();
+  PREF_DEFAULTS.fontLatin = ocDefaultLatinFont();
+  PREF_DEFAULTS.fontFamily = ocDefaultCjkFont();
 
   let prefs = null;
   const prefListeners = [];
+
+  // 默认值迁移:老浏览器里 oc_prefs 一旦被完整序列化过(改任意偏好时发生),
+  // 就会固化当时的默认值,后续改 PREF_DEFAULTS 对这些用户不再生效。
+  // 这里按版本号做一次性顺移,并用 oc_prefs_touched 记录用户显式改过的键(绝不覆盖)。
+  const PREF_SCHEMA_VERSION = 2;
+  const PREF_SCHEMA_KEY = 'oc_prefs_schema';
+  const PREF_TOUCHED_KEY = 'oc_prefs_touched';
+  const PREF_DEFAULT_MIGRATIONS = [
+    ['followups', false, true],          // AI 跟进建议:默认关闭 -> 默认开启
+    ['autoImageMode', 'rough', 'auto'],  // 自动出图:粗略识别 -> 智能判定
+    ['contextMessages', 40, 12],         // AI 上下文条数:默认 40 -> 12
+  ];
 
   // ============ 偏好 ============
   function loadPrefs() {
@@ -59,17 +82,48 @@
       if (legacyTheme) prefs.theme = legacyTheme;
       if (localStorage.getItem('oc_sidebar_collapsed') === '1') prefs.sidebarCollapsed = true;
     }
-    // 旧版本只有一组字体设置:非默认字体同时迁移到两组,默认英文字体使用 AlibabaSans。
+    // 旧版本只有一组字体设置:非默认字体同时迁移到两组,默认字体用当前后台默认(可能为系统字体)。
     if (!raw || typeof raw !== 'object' || !Object.prototype.hasOwnProperty.call(raw, 'fontCjk')) {
       const legacy = String(raw && raw.fontFamily != null ? raw.fontFamily : '').trim();
-      prefs.fontCjk = legacy && legacy !== 'source-han-serif' ? legacy : 'source-han-serif';
+      prefs.fontCjk = (legacy && legacy !== 'system' && legacy !== 'source-han-serif') ? legacy : ocDefaultCjkFont();
     }
     if (!raw || typeof raw !== 'object' || !Object.prototype.hasOwnProperty.call(raw, 'fontLatin')) {
       const legacy = String(raw && raw.fontFamily != null ? raw.fontFamily : '').trim();
-      prefs.fontLatin = legacy && legacy !== 'source-han-serif' ? legacy : 'alibaba-sans';
+      prefs.fontLatin = (legacy && legacy !== 'system' && legacy !== 'source-han-serif') ? legacy : ocDefaultLatinFont();
     } else if (raw.fontLatin === 'times-new-roman' && raw.fontFamily === 'source-han-serif') {
       // 仅迁移上一版的默认组合,不覆盖用户明确选择的其他字体。
-      prefs.fontLatin = 'alibaba-sans';
+      prefs.fontLatin = ocDefaultLatinFont();
+    }
+    // 旧版「命名方式 / 追问判定模型」并入统一的 AI 工具判定模型:
+    // 若用户曾单独指定过 (titleModel 或 autoImageModel),迁移到 judgeModel。
+    if (!raw || typeof raw !== 'object' || !Object.prototype.hasOwnProperty.call(raw, 'judgeModel')) {
+      const legacyTitle = String((raw && raw.titleModel) || '').trim();
+      const legacyAuto = String((raw && raw.autoImageModel) || '').trim();
+      if (legacyTitle && legacyTitle !== 'current') prefs.judgeModel = legacyTitle;
+      else if (legacyAuto) prefs.judgeModel = legacyAuto;
+    }
+    // 默认值一次性迁移(仅当值仍等于旧默认值时顺移;touched 里的键一律跳过)
+    let schema = 0;
+    try { schema = Number(localStorage.getItem(PREF_SCHEMA_KEY) || 0) || 0; } catch (e) { /* 存储不可用 */ }
+    if (schema < PREF_SCHEMA_VERSION) {
+      let touched = [];
+      try {
+        const t = JSON.parse(localStorage.getItem(PREF_TOUCHED_KEY) || '[]');
+        if (Array.isArray(t)) touched = t.map((x) => String(x));
+      } catch (e) { /* 忽略损坏数据 */ }
+      let changed = false;
+      PREF_DEFAULT_MIGRATIONS.forEach((m) => {
+        const key = m[0], oldVal = m[1], newVal = m[2];
+        if (touched.indexOf(key) >= 0) return; // 用户显式设置过,不覆盖
+        if (!raw || !Object.prototype.hasOwnProperty.call(raw, key)) return;
+        if (prefs[key] !== oldVal) return;
+        prefs[key] = newVal;
+        changed = true;
+      });
+      try { localStorage.setItem(PREF_SCHEMA_KEY, String(PREF_SCHEMA_VERSION)); } catch (e) { /* 存储不可用 */ }
+      if (changed) {
+        try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch (e) { /* 存储不可用 */ }
+      }
     }
     return prefs;
   }
@@ -77,6 +131,15 @@
   UI.getPref = function (key) { return loadPrefs()[key]; };
   UI.setPref = function (key, value) {
     const p = loadPrefs();
+    // 记录显式改过:默认值迁移据此跳过,避免覆盖用户自己的选择
+    try {
+      const t = JSON.parse(localStorage.getItem(PREF_TOUCHED_KEY) || '[]');
+      const arr = Array.isArray(t) ? t.map((x) => String(x)) : [];
+      if (arr.indexOf(String(key)) < 0) {
+        arr.push(String(key));
+        localStorage.setItem(PREF_TOUCHED_KEY, JSON.stringify(arr));
+      }
+    } catch (e) { /* 存储不可用 */ }
     if (p[key] === value) return value;
     p[key] = value;
     try { localStorage.setItem(PREF_KEY, JSON.stringify(p)); } catch (e) { /* 存储不可用 */ }
@@ -230,6 +293,8 @@
     requestAnimationFrame(() => el.classList.add('show'));
     if (modalStack.indexOf(el) === -1) modalStack.push(el);
     document.body.classList.add('modal-open');
+    // 记住触发元素,关闭时把焦点还给它(键盘/读屏用户不再被丢回 body)
+    el._prevFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     // 默认焦点优先落在输入框,其次是主操作按钮;绝不落在右上角关闭(X)等图标按钮上,
     // 否则弹窗一打开关闭按钮就带着焦点高亮,视觉上像是被"选中"了。
     const pick = [
@@ -240,8 +305,11 @@
       '.modal-footer .btn:not(.icon-btn):not([disabled]):not([data-no-autofocus])',
     ];
     let focusable = null;
+    const visible = (n) => !!(n.offsetWidth || n.offsetHeight || n.getClientRects().length);
     for (const sel of pick) {
-      const found = el.querySelector(sel);
+      // 只挑可见元素:隐藏面板(display:none)里的候选 focus() 会静默失败,
+      // 弹窗打开后焦点仍留在 body,键盘直接 Tab 就逃出弹窗
+      const found = Array.prototype.slice.call(el.querySelectorAll(sel)).find(visible);
       if (found) { focusable = found; break; }
     }
     if (focusable) setTimeout(() => focusable.focus(), 80);
@@ -259,9 +327,31 @@
     const i = modalStack.indexOf(el);
     if (i >= 0) modalStack.splice(i, 1);
     if (!modalStack.length) document.body.classList.remove('modal-open');
+    // 焦点归还触发元素;触发元素已从 DOM 移除时(如重渲染后的列表项)跳过
+    const prev = el._prevFocus;
+    el._prevFocus = null;
+    if (prev && prev.isConnected) {
+      setTimeout(() => { try { prev.focus({ preventScroll: true }); } catch (e) {} }, 60);
+    }
     if (typeof el._onClose === 'function') el._onClose();
   };
   UI.isModalOpen = function () { return modalStack.length > 0; };
+  // 动态创建的弹窗遮罩(用完直接 remove())纳入统一管理:
+  // 获得 Esc 关闭 / 焦点管理 / body.modal-open;返回幂等的 close 函数,
+  // 调用方把原有的 mask.remove() 逻辑作为 close 传入即可。
+  UI.adoptModal = function (mask, close) {
+    if (!mask) return close;
+    let closed = false;
+    const once = () => {
+      if (closed) return;
+      closed = true;
+      UI.closeModal(mask);
+      if (typeof close === 'function') close();
+    };
+    UI.openModal(mask);
+    mask._onClose = once; // Esc 走 closeModal → 触发 once
+    return once;
+  };
   /** 绑定：遮罩点击关闭 + Esc 关闭 + 关闭按钮 */
   UI.bindModal = function (el, opts = {}) {
     if (!el) return;
@@ -313,12 +403,57 @@
         done(act.dataset.act === 'ok');
       });
       mask.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') done(true);
+        if (e.key !== 'Enter') return;
+        // 焦点在「取消」上时按 Enter 应执行取消(交给原生 click),不能误触确认
+        const t = e.target;
+        if (t && t.closest && t.closest('[data-act="cancel"]')) return;
+        e.preventDefault();
+        done(true);
       });
       setTimeout(() => {
         const okBtn = mask.querySelector('[data-act="ok"]');
         if (okBtn) okBtn.focus();
       }, 60);
+    });
+  };
+
+  // ============ 输入弹窗（Promise，替代 window.prompt） ============
+  UI.prompt = function (opts = {}) {
+    return new Promise((resolve) => {
+      const mask = document.createElement('div');
+      mask.className = 'modal-mask oc-confirm-mask';
+      mask.innerHTML =
+        '<div class="modal modal-sm" role="dialog" aria-modal="true">'
+        + '<div class="modal-header"><h3>' + UI.escapeHtml(opts.title || '请输入') + '</h3></div>'
+        + '<div class="modal-body">'
+        + (opts.message ? '<p class="confirm-message">' + UI.escapeHtml(opts.message) + '</p>' : '')
+        + '<input type="text" class="oc-prompt-input" data-autofocus maxlength="' + (opts.maxlength || 60) + '" style="width:100%">'
+        + '</div>'
+        + '<div class="modal-footer">'
+        + '<button class="btn" data-act="cancel">' + UI.escapeHtml(opts.cancelText || '取消') + '</button>'
+        + '<button class="btn primary" data-act="ok">' + UI.escapeHtml(opts.confirmText || '确定') + '</button>'
+        + '</div></div>';
+      document.body.appendChild(mask);
+      UI.openModal(mask);
+      const input = mask.querySelector('.oc-prompt-input');
+      input.value = opts.value || '';
+      const done = (v) => {
+        UI.closeModal(mask);
+        setTimeout(() => mask.remove(), 340);
+        resolve(v);
+      };
+      mask.addEventListener('click', (e) => {
+        if (e.target === mask) return done(null);
+        const act = e.target.closest('[data-act]');
+        if (!act) return;
+        done(act.dataset.act === 'ok' ? String(input.value).trim() : null);
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.isComposing || e.keyCode === 229) return;
+        if (e.key === 'Enter') { e.preventDefault(); done(String(input.value).trim()); }
+        if (e.key === 'Escape') { e.preventDefault(); done(null); }
+      });
+      setTimeout(() => { input.focus(); input.select(); }, 60);
     });
   };
 
@@ -335,7 +470,7 @@
     document.documentElement.setAttribute('data-theme', resolved);
     localStorage.setItem('oc_theme', resolved); // 兼容旧逻辑
     const link = document.getElementById('hljs-theme');
-    if (link) link.setAttribute('href', (window.API_BASE || '') + HLJS[resolved]);
+    if (link) link.setAttribute('href', (window.API_BASE || '') + HLJS[resolved] + (window.OC_ASSET_V ? '?v=' + encodeURIComponent(window.OC_ASSET_V) : ''));
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) meta.setAttribute('content', resolved === 'dark' ? '#000000' : '#ffffff');
     if (window.OCRenderer && typeof window.OCRenderer.syncMermaidTheme === 'function') {
@@ -431,12 +566,29 @@ UI.toggleTheme = function () {
     catch (e) { return './static/' + name; }
   }
   const BUILTIN_FONT_FILES = {
-    'source-han-serif': ['SourceHanSerifCN.otf', 'opentype'],
-    'times-new-roman': ['Times New Roman.ttf', 'truetype'],
-    'alibaba-puhuiti': ['AlibabaPuHuiTi.ttf', 'truetype'],
-    helvetica: ['Helvetica.ttf', 'truetype'],
-    'alibaba-sans': ['AlibabaSans.ttf', 'truetype'],
+    // CJK 字体是切片分包(woff2 + unicode-range),由 fonts/*.css 声明;
+    // 拉丁字体为单文件 woff2。
+    'source-han-serif': { css: 'fonts/SourceHanSerifCN.css' },
+    'alibaba-puhuiti': { css: 'fonts/AlibabaPuHuiTi.css' },
+    'times-new-roman': ['fonts/TimesNewRoman.woff2', 'woff2'],
+    helvetica: ['fonts/Helvetica.woff2', 'woff2'],
+    'alibaba-sans': ['fonts/AlibabaSans.woff2', 'woff2'],
   };
+  // 切片字体 CSS 只注入一次;链接带 OC_ASSET_V(theme-boot.js 从自身 ?v= 提取)做缓存刷新
+  const FONT_CSS_LINKED = {};
+  function ensureFontCss(key) {
+    if (FONT_CSS_LINKED[key]) return;
+    const def = BUILTIN_FONT_FILES[key];
+    if (!def || !def.css) return;
+    FONT_CSS_LINKED[key] = true;
+    try {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = fontAsset(def.css) + (window.OC_ASSET_V ? '?v=' + encodeURIComponent(window.OC_ASSET_V) : '');
+      document.head.appendChild(link);
+    } catch (e) { /* 注入失败时退回系统字体 */ }
+  }
+  // 返回 @font-face 的 src 值;切片字体返回 null(改由外部 CSS 提供 unicode-range 分片)
   function fontSource(value, kind) {
     const name = String(value == null ? '' : value).trim();
     const builtin = BUILTIN_FONT_FILES[name];
@@ -444,6 +596,7 @@ UI.toggleTheme = function () {
       ? name === 'source-han-serif' || name === 'alibaba-puhuiti'
       : name === 'times-new-roman' || name === 'helvetica' || name === 'alibaba-sans';
     if (builtin && allowed) {
+      if (builtin.css) { ensureFontCss(name); return null; }
       return 'url("' + cssString(fontAsset(builtin[0])) + '") format("' + builtin[1] + '")';
     }
     if (name === 'system' || !name) {
@@ -459,12 +612,15 @@ UI.toggleTheme = function () {
       document.head.appendChild(styleEl);
     }
     const family = 'TinyChat Text';
-    styleEl.textContent = '@font-face {'
+    const face = (src, range) => '@font-face {'
       + 'font-family:"' + family + '";font-style:normal;font-weight:200 900;font-display:swap;'
-      + 'src:' + fontSource(cjkValue, 'cjk') + ';unicode-range:' + CJK_UNICODE_RANGE + ';}'
-      + '@font-face {'
-      + 'font-family:"' + family + '";font-style:normal;font-weight:200 900;font-display:swap;'
-      + 'src:' + fontSource(latinValue, 'latin') + ';unicode-range:' + LATIN_UNICODE_RANGE + ';}';
+      + 'src:' + src + ';unicode-range:' + range + ';}';
+    let css = '';
+    const cjkSrc = fontSource(cjkValue, 'cjk');
+    if (cjkSrc) css += face(cjkSrc, CJK_UNICODE_RANGE);
+    const latinSrc = fontSource(latinValue, 'latin');
+    if (latinSrc) css += face(latinSrc, LATIN_UNICODE_RANGE);
+    styleEl.textContent = css;
   }
 
   // 应用外观:字号/字体/主题色 → CSS 变量
@@ -480,11 +636,16 @@ UI.toggleTheme = function () {
     root.style.setProperty('--fs', fs + 'px');
     root.style.setProperty('--oc-ui-zoom', String(zoom));
 
-    // 2. 中文与英文/希腊字母按 unicode-range 分流,字体未就绪时由 swap 使用系统回退
-    const cjkValue = String(prefs.fontCjk == null || prefs.fontCjk === '' ? 'source-han-serif' : prefs.fontCjk).trim();
-    const latinValue = String(prefs.fontLatin == null || prefs.fontLatin === '' ? 'alibaba-sans' : prefs.fontLatin).trim();
+    // 2. 中文与英文/希腊字母按 unicode-range 分流,字体未就绪时由 swap 使用系统回退。
+    // 后台「内置字体默认不加载」开启时,默认值是「系统字体」(不下载内置字体);
+    // 但用户若在「外观」里明确选了思源宋体等内置字体,仍按选择加载,不做硬屏蔽。
+    const cjkValue = String(prefs.fontCjk == null || prefs.fontCjk === '' ? ocDefaultCjkFont() : prefs.fontCjk).trim();
+    const latinValue = String(prefs.fontLatin == null || prefs.fontLatin === '' ? ocDefaultLatinFont() : prefs.fontLatin).trim();
     applyFontRules(cjkValue, latinValue);
-    const uiStack = '"TinyChat Text", ' + FONT_SYSTEM_STACK;
+    // 仅当选择的是内置网页字体时才把 "TinyChat Text" 放进字体栈(系统字体无需该族名)
+    const usesWebfont = cjkValue === 'source-han-serif' || cjkValue === 'alibaba-puhuiti'
+      || latinValue === 'alibaba-sans' || latinValue === 'times-new-roman' || latinValue === 'helvetica';
+    const uiStack = (usesWebfont ? '"TinyChat Text", ' : '') + FONT_SYSTEM_STACK;
     root.style.setProperty('--oc-font-family', uiStack);
     root.style.setProperty('--oc-ui-font', uiStack);
     root.style.setProperty('--oc-latin-font', uiStack);

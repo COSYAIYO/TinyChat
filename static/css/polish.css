@@ -1,5 +1,5 @@
 /* ============================================================
-   Polish — 全局细节抛光层(最终加载,覆盖前面所有层)
+   Polish — 全局细节抛光层(倒数第三加载;之后还有 markdown/chrome)
    ………………………………………………………………………………………………………………………………
    目标:显示与交互「流水般顺畅」,Apple 官网式克制高级。
    原则:
@@ -25,7 +25,7 @@
 :focus-visible {
   outline: 2px solid var(--brand, var(--accent));
   outline-offset: 2px;
-  border-radius: 4px;
+  /* 不能改圆角:药丸/圆形按钮聚焦瞬间会"变方"再弹回 */
   box-shadow: none;
 }
 /* redesign 的 3px 光环规则在本层收敛为更克制的描边 */

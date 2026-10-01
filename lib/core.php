@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.42');
+define('TC_VERSION', '2.0.78');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -76,9 +76,18 @@ $TC_SETTINGS_DEFAULTS = array(
     'proxyTimeoutMs' => 120000,
     'loginMaxFails' => 5,
     'loginLockMs' => 60000,
-    'webSearchEnabled' => false,
-    'webSearchProvider' => 'tavily',
+    // 第三方一键登录:每个提供商的开关与凭据;开启且填全后前台登录页出现对应图标
+    'oauthProviders' => array(),
+    // 第三方登录时若未绑定过本站账号,是否自动建号(关闭则提示先注册并绑定)
+    'oauthAutoRegister' => true,
+    // 自动建号/首次绑定后是否强制补全用户名与密码(补全后即可脱离第三方用密码登录)
+    'oauthRequireProfile' => false,
+    // 默认开启联网搜索:默认检索源用 DuckDuckGo(免 Key、无需配置即可用)
+    'webSearchEnabled' => true,
+    'webSearchProvider' => 'ddg',
     'webSearchTavilyKey' => '',
+    'webSearchBraveKey' => '',
+    'webSearchJinaKey' => '',
     'webSearchSearxUrl' => '',
     'webSearchMaxResults' => 5,
     'webSearchAllowUser' => false,
@@ -86,8 +95,12 @@ $TC_SETTINGS_DEFAULTS = array(
     'urlReadMax' => 3,
     'mineruToken' => '',
     'mineruAllowUser' => false,
+    'paddleOcrUrl' => '',
+    'paddleOcrKey' => '',
+    'mistralOcrKey' => '',
+    'parseChannels' => array('pdf' => 'mineru', 'image' => 'mineru', 'office' => 'mineru'),
     'defaultGroupId' => '',
-    'contextMessages' => 40,
+    'contextMessages' => 12,
     'maxContextMessages' => 200,
     'maxOutputTokens' => 8192,
     // 全局采样温度: null = 不发送该参数(用模型默认);设置后 0-2
@@ -133,6 +146,23 @@ $TC_SETTINGS_DEFAULTS = array(
     'registerInviteRequired' => false,
     // 注册限流:每 IP 每小时最大注册尝试次数
     'registerLimitPerHour' => 5,
+    // 账号注销:用户可自行注销账号
+    //   off   = 不允许注销
+    //   soft  = 软注销:清空资料并改名为「原名-已注销-xxxx」「邮箱+已注销」,邮箱/用户名可被重新注册
+    //   hard  = 硬注销:直接删除账号及其对话、自建供应商等全部数据
+    'accountDeletionMode' => 'soft',
+    // 性能优化(默认关闭,开启后减少前台加载体积;改动在用户下次访问时生效)
+    // 不加载内置网页字体(思源宋体/阿里巴巴普惠体等,合计约 19MB);不加载 KaTeX 公式渲染;
+    // 不加载代码高亮 highlight.js;不加载 Mermaid 图表。
+    'perfNoWebfonts' => false,
+    'perfNoKatex' => false,
+    'perfNoHighlight' => false,
+    'perfNoMermaid' => false,
+    // 生图结果本地留存(默认开启):出图后即时把图片下载并存到本站 data/,
+    // 避免上游图床链接过期导致历史图打不开。
+    'imageArchiveEnabled' => true,
+    // 本地留存总量上限(MB),超出按最旧优先清理
+    'imageArchiveQuotaMb' => 500,
 );
 $TC_SETTINGS_DEFAULTS['mailTemplates'] = tc_mail_default_templates();
 
@@ -144,6 +174,10 @@ function tc_load_config() {
         'cors_origin' => getenv('CORS_ORIGIN') ?: '*',
         'data_dir' => getenv('DATA_DIR') ?: '',
         'site_url' => getenv('SITE_URL') ?: '',
+        // 站点是否部署在反向代理(Nginx/CDN/宝塔)之后:
+        // 只有设为 true 时才信任 X-Forwarded-For 取真实客户端 IP;
+        // 默认 false——直连部署下该头可被任意伪造,会绕过注册/游客/找回密码的按 IP 限流
+        'trust_proxy' => getenv('TRUST_PROXY') === '1' ?: false,
     );
     $file = TC_ROOT . '/config.php';
     if (is_file($file)) {
@@ -225,8 +259,41 @@ function tc_b64url_decode($str) {
     return base64_decode($b);
 }
 
+// 把可能是非法 UTF-8 的文本转成合法 UTF-8。
+// 典型来源:中文邮件服务商(QQ/163 等)用 GBK 回错误描述、部分系统的 strerror 也是本地编码。
+// 这类字节直接进 json_encode 会整体编码失败 —— 接口会返回空响应体,前端只能看到
+// 「服务器返回了非预期内容」,真实原因被彻底埋掉。
+function tc_utf8_clean($s) {
+    $s = (string) $s;
+    if ($s === '') return '';
+    if (preg_match('//u', $s)) return $s; // 已是合法 UTF-8
+    if (function_exists('mb_convert_encoding')) {
+        $try = @mb_convert_encoding($s, 'UTF-8', 'GBK');
+        if (is_string($try) && $try !== '' && preg_match('//u', $try)) return $try;
+        $try = @mb_convert_encoding($s, 'UTF-8', 'UTF-8');
+        if (is_string($try) && $try !== '' && preg_match('//u', $try)) return $try;
+    }
+    if (function_exists('iconv')) {
+        $try = @iconv('GBK', 'UTF-8//IGNORE', $s);
+        if (is_string($try) && $try !== '' && preg_match('//u', $try)) return $try;
+    }
+    // 兜底:把非法字节替换掉,宁可损失个别字符也不能让整个响应编码失败
+    $out = preg_replace('/[\x80-\xFF]/', '?', $s);
+    return is_string($out) ? $out : '';
+}
+
 function tc_json_encode($obj) {
-    return json_encode($obj, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    // JSON_INVALID_UTF8_SUBSTITUTE:个别非法字节只替换成 U+FFFD,不让整个响应变成空体。
+    // 这是全站兜底——任何来源(上游错误、系统 strerror、用户输入)的脏字节都不该让接口失联。
+    $flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
+    if (defined('JSON_INVALID_UTF8_SUBSTITUTE')) $flags |= JSON_INVALID_UTF8_SUBSTITUTE;
+    $json = json_encode($obj, $flags);
+    if ($json === false) {
+        // 极端情况(递归/资源/超深结构):退化成一条可读的错误,也不要返回空体
+        $json = json_encode(array('error' => array('message' => '响应内容无法编码', 'detail' => tc_utf8_clean(json_last_error_msg()))),
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+    return $json === false ? '{"error":{"message":"响应编码失败"}}' : $json;
 }
 
 // AI 思考策略:全局默认 + 按模型规则(自动学习/手动配置),保证各上游都能接受推理参数
@@ -346,15 +413,42 @@ function tc_normalize_settings($raw) {
         $tpl['tplVersion'] = TC_MAIL_TPL_VERSION;
     }
     $s['mailTemplates'] = array_merge($TC_SETTINGS_DEFAULTS['mailTemplates'], $tpl);
-    $s['smtp'] = array('host' => substr(trim((string) ($smtp['host'] ?? '')), 0, 180), 'port' => min(65535, max(1, (int) ($smtp['port'] ?? 587))), 'username' => substr(trim((string) ($smtp['username'] ?? '')), 0, 180), 'password' => (string) ($smtp['password'] ?? ''), 'encryption' => in_array(($smtp['encryption'] ?? 'tls'), array('none','ssl','tls'), true) ? ($smtp['encryption'] ?? 'tls') : 'tls', 'fromName' => substr(trim((string) ($smtp['fromName'] ?? 'TinyChat')), 0, 80), 'fromEmail' => substr(trim((string) ($smtp['fromEmail'] ?? '')), 0, 180));
+    $s['smtp'] = array('host' => substr(trim((string) ($smtp['host'] ?? '')), 0, 180), 'port' => min(65535, max(1, (int) ($smtp['port'] ?? 587))), 'username' => substr(trim((string) ($smtp['username'] ?? '')), 0, 180), 'password' => tc_smtp_normalize_password($smtp['password'] ?? ''), 'encryption' => in_array(($smtp['encryption'] ?? 'tls'), array('none','ssl','tls'), true) ? ($smtp['encryption'] ?? 'tls') : 'tls', 'fromName' => substr(trim((string) ($smtp['fromName'] ?? 'TinyChat')), 0, 80), 'fromEmail' => substr(trim((string) ($smtp['fromEmail'] ?? '')), 0, 180));
+    // 「SMTP 密码保存后保持显示」:勾选后可随时在后台点小眼睛取回明文(便于复制到其它系统)，
+    // 未勾选则只显示掩码且取不回明文。演示管理员无论该开关如何都不可见。
+    $s['smtpKeyRevealable'] = !empty($s['smtpKeyRevealable']);
     $timeout = isset($s['proxyTimeoutMs']) ? (int) $s['proxyTimeoutMs'] : $TC_SETTINGS_DEFAULTS['proxyTimeoutMs'];
     $s['proxyTimeoutMs'] = min(600000, max(5000, $timeout ?: $TC_SETTINGS_DEFAULTS['proxyTimeoutMs']));
     $s['loginMaxFails'] = min(50, max(0, (int) $s['loginMaxFails']));
+    // 第三方登录配置归一化:只接受注册表里的提供商与字段,凭据截断长度。
+    // 注册表在 lib/oauth.php;单独加载 core 的场景(如 CI 自检)没有它,
+    // 此时按已知字段名兜底,避免让整个数据层硬依赖可选模块。
+    $oauthIn = isset($s['oauthProviders']) && is_array($s['oauthProviders']) ? $s['oauthProviders'] : array();
+    $oauth = array();
+    $oauthRegistry = function_exists('tc_oauth_providers') ? tc_oauth_providers() : array();
+    if (!$oauthRegistry) {
+        foreach (array('wechat', 'qq', 'linuxdo', 'nodeloc') as $pid) {
+            $oauthRegistry[$pid] = array('fields' => array('appId' => 1, 'appSecret' => 1, 'appKey' => 1, 'clientId' => 1, 'clientSecret' => 1));
+        }
+    }
+    foreach ($oauthRegistry as $pid => $prov) {
+        $row = isset($oauthIn[$pid]) && is_array($oauthIn[$pid]) ? $oauthIn[$pid] : array();
+        $clean = array('enabled' => !empty($row['enabled']));
+        foreach (array_keys($prov['fields']) as $f) {
+            $clean[$f] = substr(trim((string) (isset($row[$f]) ? $row[$f] : '')), 0, 200);
+        }
+        $oauth[$pid] = $clean;
+    }
+    $s['oauthProviders'] = $oauth;
+    $s['oauthAutoRegister'] = !array_key_exists('oauthAutoRegister', $s) || !empty($s['oauthAutoRegister']);
+    $s['oauthRequireProfile'] = !empty($s['oauthRequireProfile']);
     $s['loginLockMs'] = min(3600000, max(0, (int) $s['loginLockMs']));
     $s['webSearchEnabled'] = !empty($s['webSearchEnabled']);
-    $prov = strtolower(trim((string) (isset($s['webSearchProvider']) ? $s['webSearchProvider'] : 'tavily')));
-    $s['webSearchProvider'] = ($prov === 'searxng') ? 'searxng' : 'tavily';
+    $prov = strtolower(trim((string) (isset($s['webSearchProvider']) ? $s['webSearchProvider'] : 'ddg')));
+    $s['webSearchProvider'] = in_array($prov, array('tavily', 'searxng', 'brave', 'ddg', 'jina'), true) ? $prov : 'ddg';
     $s['webSearchTavilyKey'] = substr(trim((string) (isset($s['webSearchTavilyKey']) ? $s['webSearchTavilyKey'] : '')), 0, 200);
+    $s['webSearchBraveKey'] = substr(trim((string) (isset($s['webSearchBraveKey']) ? $s['webSearchBraveKey'] : '')), 0, 200);
+    $s['webSearchJinaKey'] = substr(trim((string) (isset($s['webSearchJinaKey']) ? $s['webSearchJinaKey'] : '')), 0, 200);
     $s['webSearchSearxUrl'] = tc_searx_urls_text(isset($s['webSearchSearxUrl']) ? $s['webSearchSearxUrl'] : '');
     $max = isset($s['webSearchMaxResults']) ? (int) $s['webSearchMaxResults'] : 5;
     $s['webSearchMaxResults'] = min(8, max(1, $max ?: 5));
@@ -364,6 +458,17 @@ function tc_normalize_settings($raw) {
     $s['urlReadMax'] = min(5, max(1, (int) (isset($s['urlReadMax']) ? $s['urlReadMax'] : 3) ?: 3));
     $s['mineruToken'] = substr(trim((string) (isset($s['mineruToken']) ? $s['mineruToken'] : '')), 0, 300);
     $s['mineruAllowUser'] = !empty($s['mineruAllowUser']);
+    // 文档解析通道:PaddleOCR 服务地址/Key、Mistral OCR Key,以及按类别的路由表
+    $s['paddleOcrUrl'] = rtrim(trim((string) (isset($s['paddleOcrUrl']) ? $s['paddleOcrUrl'] : '')), '/');
+    $s['paddleOcrKey'] = substr(trim((string) (isset($s['paddleOcrKey']) ? $s['paddleOcrKey'] : '')), 0, 300);
+    $s['mistralOcrKey'] = substr(trim((string) (isset($s['mistralOcrKey']) ? $s['mistralOcrKey'] : '')), 0, 300);
+    $channelsIn = isset($s['parseChannels']) && is_array($s['parseChannels']) ? $s['parseChannels'] : array();
+    $channels = array();
+    foreach (array('pdf', 'image', 'office') as $pcat) {
+        $pval = strtolower(trim((string) (isset($channelsIn[$pcat]) ? $channelsIn[$pcat] : 'mineru')));
+        $channels[$pcat] = in_array($pval, array('mineru', 'paddle', 'mistral'), true) ? $pval : 'mineru';
+    }
+    $s['parseChannels'] = $channels;
     $s['defaultGroupId'] = substr(trim((string) (isset($s['defaultGroupId']) ? $s['defaultGroupId'] : '')), 0, 64);
     $maxCtx = isset($s['maxContextMessages']) ? (int) $s['maxContextMessages'] : $TC_SETTINGS_DEFAULTS['maxContextMessages'];
     $s['maxContextMessages'] = min(500, max(2, $maxCtx ?: $TC_SETTINGS_DEFAULTS['maxContextMessages']));
@@ -393,6 +498,14 @@ function tc_normalize_settings($raw) {
     );
     $s['agreementEnabled'] = !empty($s['agreementEnabled']);
     $s['agreementHtml'] = substr((string) (isset($s['agreementHtml']) ? $s['agreementHtml'] : ''), 0, 200000);
+    // 性能优化开关(默认关闭)
+    $s['perfNoWebfonts'] = !empty($s['perfNoWebfonts']);
+    $s['perfNoKatex'] = !empty($s['perfNoKatex']);
+    $s['perfNoHighlight'] = !empty($s['perfNoHighlight']);
+    $s['perfNoMermaid'] = !empty($s['perfNoMermaid']);
+    // 生图本地留存:默认开启;总量上限限制在 50MB~10GB
+    $s['imageArchiveEnabled'] = !array_key_exists('imageArchiveEnabled', $s) || !empty($s['imageArchiveEnabled']);
+    $s['imageArchiveQuotaMb'] = min(10240, max(50, (int) (isset($s['imageArchiveQuotaMb']) ? $s['imageArchiveQuotaMb'] : 500) ?: 500));
     $s['persistChats'] = !array_key_exists('persistChats', $s) || !empty($s['persistChats']);
     $ann = isset($s['announcement']) && is_array($s['announcement']) ? $s['announcement'] : array();
     $annText = trim((string) (isset($ann['text']) ? $ann['text'] : ''));
@@ -424,6 +537,9 @@ function tc_normalize_settings($raw) {
     $s['guestRounds'] = min(1000, max(1, (int) (isset($s['guestRounds']) ? $s['guestRounds'] : 3) ?: 3));
     $s['registerInviteRequired'] = !empty($s['registerInviteRequired']);
     $s['registerLimitPerHour'] = min(1000, max(1, (int) (isset($s['registerLimitPerHour']) ? $s['registerLimitPerHour'] : 5) ?: 5));
+    // 注销模式:仅接受 off/soft/hard,其余一律回落软注销(默认值)
+    $adMode = isset($s['accountDeletionMode']) ? (string) $s['accountDeletionMode'] : 'soft';
+    $s['accountDeletionMode'] = in_array($adMode, array('off', 'soft', 'hard'), true) ? $adMode : 'soft';
     return $s;
 }
 
@@ -450,8 +566,15 @@ function tc_searx_url_list($raw) {
 
 function tc_web_search_ready($s) {
     if (empty($s['webSearchEnabled'])) return false;
-    if (isset($s['webSearchProvider']) && $s['webSearchProvider'] === 'searxng') {
+    $prov = isset($s['webSearchProvider']) ? (string) $s['webSearchProvider'] : 'ddg';
+    if ($prov === 'searxng') {
         return tc_searx_url_list(isset($s['webSearchSearxUrl']) ? $s['webSearchSearxUrl'] : '') !== array();
+    }
+    if ($prov === 'brave') {
+        return trim((string) (isset($s['webSearchBraveKey']) ? $s['webSearchBraveKey'] : '')) !== '';
+    }
+    if ($prov === 'ddg' || $prov === 'jina') {
+        return true; // 免 Key;Jina 填 Key 仅为提升配额
     }
     return trim((string) (isset($s['webSearchTavilyKey']) ? $s['webSearchTavilyKey'] : '')) !== '';
 }
@@ -464,17 +587,29 @@ function tc_user_tools($u) {
     $raw = (isset($u['tools']) && is_array($u['tools'])) ? $u['tools'] : array();
     $src = isset($raw['webSearchSource']) ? (string) $raw['webSearchSource'] : 'platform';
     $parse = isset($raw['parseSource']) ? (string) $raw['parseSource'] : 'platform';
-    $provider = isset($raw['webSearchProvider']) && $raw['webSearchProvider'] === 'searxng' ? 'searxng' : 'tavily';
+    $provider = strtolower(trim((string) (isset($raw['webSearchProvider']) ? $raw['webSearchProvider'] : 'ddg')));
+    $provider = in_array($provider, array('tavily', 'searxng', 'brave', 'ddg', 'jina'), true) ? $provider : 'ddg';
     $max = isset($raw['webSearchMaxResults']) ? (int) $raw['webSearchMaxResults'] : 5;
     return array(
         'webSearchSource' => $src === 'own' ? 'own' : 'platform',
         'webSearchProvider' => $provider,
         'webSearchTavilyKey' => substr(trim((string) (isset($raw['webSearchTavilyKey']) ? $raw['webSearchTavilyKey'] : '')), 0, 200),
+        'webSearchBraveKey' => substr(trim((string) (isset($raw['webSearchBraveKey']) ? $raw['webSearchBraveKey'] : '')), 0, 200),
+        'webSearchJinaKey' => substr(trim((string) (isset($raw['webSearchJinaKey']) ? $raw['webSearchJinaKey'] : '')), 0, 200),
         'webSearchSearxUrl' => tc_searx_urls_text(isset($raw['webSearchSearxUrl']) ? $raw['webSearchSearxUrl'] : ''),
         'webSearchMaxResults' => min(8, max(1, $max ?: 5)),
         'parseSource' => $parse === 'own' ? 'own' : 'platform',
         'mineruToken' => substr(trim((string) (isset($raw['mineruToken']) ? $raw['mineruToken'] : '')), 0, 300),
     );
+}
+
+// 各检索源「用户自备配置是否已填完整」:ddg/jina 免 Key,恒可用
+function tc_user_search_own_ready($tools) {
+    $prov = isset($tools['webSearchProvider']) ? (string) $tools['webSearchProvider'] : 'ddg';
+    if ($prov === 'searxng') return $tools['webSearchSearxUrl'] !== '';
+    if ($prov === 'brave') return $tools['webSearchBraveKey'] !== '';
+    if ($prov === 'ddg' || $prov === 'jina') return true;
+    return $tools['webSearchTavilyKey'] !== '';
 }
 
 function tc_user_search_settings($user, $site) {
@@ -484,6 +619,8 @@ function tc_user_search_settings($user, $site) {
             'webSearchEnabled' => true,
             'webSearchProvider' => $tools['webSearchProvider'],
             'webSearchTavilyKey' => $tools['webSearchTavilyKey'],
+            'webSearchBraveKey' => $tools['webSearchBraveKey'],
+            'webSearchJinaKey' => $tools['webSearchJinaKey'],
             'webSearchSearxUrl' => $tools['webSearchSearxUrl'],
             'webSearchMaxResults' => $tools['webSearchMaxResults'],
         );
@@ -499,9 +636,7 @@ function tc_user_mineru_token($user, $site) {
 
 function tc_user_tools_public($user, $site) {
     $tools = tc_user_tools($user);
-    $ownSearch = $tools['webSearchProvider'] === 'searxng'
-        ? ($tools['webSearchSearxUrl'] !== '')
-        : ($tools['webSearchTavilyKey'] !== '');
+    $ownReady = tc_user_search_own_ready($tools);
     return array(
         'webSearch' => array(
             'allowOwn' => !empty($site['webSearchAllowUser']),
@@ -510,9 +645,11 @@ function tc_user_tools_public($user, $site) {
             'provider' => $tools['webSearchProvider'],
             'hasKey' => $tools['webSearchTavilyKey'] !== '',
             'keyMask' => $tools['webSearchTavilyKey'] !== '' ? tc_mask_key($tools['webSearchTavilyKey']) : '',
+            'braveKeyMask' => $tools['webSearchBraveKey'] !== '' ? tc_mask_key($tools['webSearchBraveKey']) : '',
+            'jinaKeyMask' => $tools['webSearchJinaKey'] !== '' ? tc_mask_key($tools['webSearchJinaKey']) : '',
             'searxUrl' => $tools['webSearchSearxUrl'],
             'maxResults' => $tools['webSearchMaxResults'],
-            'ownReady' => $ownSearch,
+            'ownReady' => $ownReady,
         ),
         'parse' => array(
             'allowOwn' => !empty($site['mineruAllowUser']),
@@ -525,26 +662,66 @@ function tc_user_tools_public($user, $site) {
 }
 
 function tc_mineru_public($s) {
+    $channels = isset($s['parseChannels']) && is_array($s['parseChannels']) ? $s['parseChannels'] : array();
     return array(
         'enabled' => true,
         'mode' => tc_mineru_token($s) !== '' ? 'precise' : 'lite',
         'allowOwn' => !empty($s['mineruAllowUser']),
+        'routes' => array(
+            'pdf' => isset($channels['pdf']) ? $channels['pdf'] : 'mineru',
+            'image' => isset($channels['image']) ? $channels['image'] : 'mineru',
+            'office' => isset($channels['office']) ? $channels['office'] : 'mineru',
+        ),
     );
 }
 
 function tc_web_search_public($s) {
+    $prov = isset($s['webSearchProvider']) ? (string) $s['webSearchProvider'] : 'ddg';
     return array(
         'enabled' => tc_web_search_ready($s),
-        'provider' => (isset($s['webSearchProvider']) && $s['webSearchProvider'] === 'searxng') ? 'searxng' : 'tavily',
+        'provider' => in_array($prov, array('tavily', 'searxng', 'brave', 'ddg', 'jina'), true) ? $prov : 'ddg',
         'allowOwn' => !empty($s['webSearchAllowUser']),
     );
 }
 
-function tc_admin_settings_public($s) {
+// 后台设置对外下发前的脱敏。$forDemo=true 时按演示管理员的可见边界处理:
+// 除常规掩码外,SMTP 密码/发件人账号这类「可用于冒用站点发信」的凭据一律不下发
+// (连掩码都不给——掩码本身会泄露首尾字符,可被用于缩小猜测范围)。
+function tc_admin_settings_public($s, $forDemo = false) {
     $out = is_array($s) ? $s : array();
     if (!empty($out['webSearchTavilyKey'])) $out['webSearchTavilyKey'] = tc_mask_key($out['webSearchTavilyKey']);
+    if (!empty($out['paddleOcrKey'])) $out['paddleOcrKey'] = tc_mask_key($out['paddleOcrKey']);
+    if (!empty($out['mistralOcrKey'])) $out['mistralOcrKey'] = tc_mask_key($out['mistralOcrKey']);
+    if (!empty($out['webSearchBraveKey'])) $out['webSearchBraveKey'] = tc_mask_key($out['webSearchBraveKey']);
+    if (!empty($out['webSearchJinaKey'])) $out['webSearchJinaKey'] = tc_mask_key($out['webSearchJinaKey']);
     if (!empty($out['mineruToken'])) $out['mineruToken'] = tc_mask_key($out['mineruToken']);
-    if (!empty($out['smtp']['password'])) $out['smtp']['password'] = tc_mask_key($out['smtp']['password']);
+    // 第三方登录密钥掩码(前端回显用;保存时按 •• 跳过,不回写)
+    if (!empty($out['oauthProviders']) && is_array($out['oauthProviders'])) {
+        foreach ($out['oauthProviders'] as $pid => $row) {
+            if (!is_array($row)) continue;
+            foreach (array('appSecret', 'appKey', 'clientSecret') as $sk) {
+                if (!empty($row[$sk])) $out['oauthProviders'][$pid][$sk] = tc_mask_key($row[$sk]);
+            }
+        }
+    }
+    if (!empty($out['smtp']) && is_array($out['smtp'])) {
+        if ($forDemo) {
+            // 演示管理员:整段 SMTP 凭据不可见(前端据此把该区域置为只读)
+            $out['smtp']['password'] = '';
+            $out['smtp']['username'] = '';
+            $out['smtp']['host'] = '';
+            $out['smtp']['fromEmail'] = '';
+            $out['smtpRestricted'] = true;
+            $out['smtpKeyRevealable'] = false;
+        } elseif (!empty($out['smtp']['password'])) {
+            // 勾选「保持显示」时下发真实明文(前端直接可读可复制);
+            // 未勾选则只给掩码,取回明文要走 smtp-reveal 且会被拒绝。
+            if (empty($out['smtpKeyRevealable'])) $out['smtp']['password'] = tc_mask_key($out['smtp']['password']);
+        }
+    } elseif ($forDemo) {
+        $out['smtp'] = array('host' => '', 'port' => 587, 'username' => '', 'password' => '', 'encryption' => 'tls', 'fromName' => '', 'fromEmail' => '');
+        $out['smtpRestricted'] = true;
+    }
     $out['webSearchAllowUser'] = !empty($out['webSearchAllowUser']);
     $out['mineruAllowUser'] = !empty($out['mineruAllowUser']);
     return $out;
@@ -570,6 +747,8 @@ function tc_empty_db() {
         'inviteCodes' => array(),
         // 演示模式快照:演示管理员改动前的站点状态,到期后由 tc_demo_revert 还原
         'demoSnapshot' => null,
+        // 演示还原标记:{userId: 时间戳},客户端据此整体采纳云端(见 tc_demo_revert)
+        'demoReverted' => new stdClass(),
     );
 }
 
@@ -584,15 +763,39 @@ function tc_demo_snapshot_fields() {
 
 // 拍一张演示快照(改动前的状态),并按设置的有效期计时。
 // 已有生效中的快照时不覆盖——必须保留最早那份作为还原基准。
+// 但「生效中」的快照会随演示活动的继续而**顺延到期时间**(滑动窗口):
+// 否则演示者正在进行的对话会被中途抹掉(表现为"刷新就没了")。
 // $force=true 用于「把某个用户转为演示管理员」:以转为演示的那一刻作为还原原点,
 // 强制重拍快照并重新计时,而不是沿用上一轮还没到期的旧基准。
 function tc_demo_arm(&$db, $user, $force = false) {
     if (!tc_is_demo_user($user)) return false;
     $snap = isset($db['demoSnapshot']) ? $db['demoSnapshot'] : null;
-    if (!$force && is_array($snap) && !empty($snap['expireAt']) && tc_now() < (int) $snap['expireAt']) return false;
     $minutes = (int) (isset($db['settings']['demoExpireMinutes']) ? $db['settings']['demoExpireMinutes'] : 10);
     $minutes = min(1440, max(1, $minutes ?: 10));
     $uid = isset($user['id']) ? (string) $user['id'] : '';
+    $active = is_array($snap) && !empty($snap['expireAt']) && tc_now() < (int) $snap['expireAt'];
+    if (!$force && $active) {
+        // 属主发起的活动:把到期时间顺延到「现在 + 有效期」。
+        // 别家演示账号占着生效快照时不顺延(同一时刻只维护一份快照)。
+        if (isset($snap['userId']) && (string) $snap['userId'] === $uid) {
+            $next = tc_now() + $minutes * 60000;
+            if ($next > (int) $snap['expireAt']) {
+                $db['demoSnapshot']['expireAt'] = $next;
+                $db['demoSnapshot']['minutes'] = $minutes;
+                return true;
+            }
+        }
+        return false;
+    }
+    // 上一轮还原后遗留的基准:重建快照时必须沿用「最初的干净状态」,而不是把演示期间的
+    // 改动当成新基准 —— 否则那些改动会被永久固化,再也清不掉。
+    $prevBase = null;
+    if (is_array($snap) && !empty($snap['userId']) && (string) $snap['userId'] === $uid) {
+        $prevBase = $snap;
+    } elseif (isset($db['demoBaseline']) && is_array($db['demoBaseline'])
+        && !empty($db['demoBaseline']['userId']) && (string) $db['demoBaseline']['userId'] === $uid) {
+        $prevBase = $db['demoBaseline'];
+    }
     $snapshot = array(
         'expireAt' => tc_now() + $minutes * 60000,
         'userId' => $uid,
@@ -603,11 +806,17 @@ function tc_demo_arm(&$db, $user, $force = false) {
     }
     // 演示管理员的「个人数据」同样在转换那一刻定格:自己的对话与额度,到期后一并恢复。
     $chatsMap = tc_assoc(isset($db['userChats']) ? $db['userChats'] : array());
-    $snapshot['demoChats'] = ($uid !== '' && isset($chatsMap[$uid]) && is_array($chatsMap[$uid])) ? $chatsMap[$uid] : array();
+    if ($prevBase !== null && array_key_exists('demoChats', $prevBase)) {
+        $snapshot['demoChats'] = $prevBase['demoChats'];              // 沿用最初基准
+        $snapshot['demoQuota'] = isset($prevBase['demoQuota']) ? $prevBase['demoQuota'] : 0;
+        $snapshot['demoQuotaGrants'] = isset($prevBase['demoQuotaGrants']) ? $prevBase['demoQuotaGrants'] : array();
+    } else {
+        $snapshot['demoChats'] = ($uid !== '' && isset($chatsMap[$uid]) && is_array($chatsMap[$uid])) ? $chatsMap[$uid] : array();
+        $snapshot['demoQuota'] = isset($user['quota']) ? $user['quota'] : 0;
+        $snapshot['demoQuotaGrants'] = isset($user['quotaGrants']) && is_array($user['quotaGrants']) ? $user['quotaGrants'] : array();
+    }
     $revMap = tc_assoc(isset($db['userChatRevisions']) ? $db['userChatRevisions'] : array());
     $snapshot['demoChatRevision'] = isset($revMap[$uid]) ? (int) $revMap[$uid] : 0;
-    $snapshot['demoQuota'] = isset($user['quota']) ? $user['quota'] : 0;
-    $snapshot['demoQuotaGrants'] = isset($user['quotaGrants']) && is_array($user['quotaGrants']) ? $user['quotaGrants'] : array();
     $db['demoSnapshot'] = $snapshot;
     $db['settings']['demoMode'] = true;
     return true;
@@ -652,6 +861,22 @@ function tc_demo_revert(&$db) {
             }
             unset($u);
         }
+    }
+    // 快照已消费:但把「最初的干净基准」留在 demoBaseline 里。
+    // 演示管理员通常还会继续演示(继续聊天/改设置),下一轮 tc_demo_arm 必须沿用这份原始基准,
+    // 否则会把演示期间的改动当成新基准固化下来,那些内容就永远清不掉了。
+    $db['demoBaseline'] = array(
+        'userId' => isset($snap['userId']) ? (string) $snap['userId'] : '',
+        'demoChats' => array_key_exists('demoChats', $snap) ? $snap['demoChats'] : array(),
+        'demoQuota' => array_key_exists('demoQuota', $snap) ? $snap['demoQuota'] : 0,
+        'demoQuotaGrants' => array_key_exists('demoQuotaGrants', $snap) ? $snap['demoQuotaGrants'] : array(),
+    );
+    // 还原标记:客户端凭它识别「这是一次整体还原」,从而丢弃本地旧副本整体采纳云端。
+    // 没有这个标记,浏览器里残留的旧对话会在下一次合并时把已还原的内容"复活"回服务端。
+    if (isset($snap['userId']) && (string) $snap['userId'] !== '') {
+        $map = tc_assoc(isset($db['demoReverted']) ? $db['demoReverted'] : array());
+        $map[(string) $snap['userId']] = tc_now();
+        $db['demoReverted'] = tc_object_map($map);
     }
     $db['demoSnapshot'] = null;
     return true;
@@ -864,6 +1089,15 @@ function tc_default_register_group($db) {
 function tc_migrate_db($raw) {
     $base = tc_empty_db();
     $db = array_merge($base, is_array($raw) ? $raw : array());
+    // 默认值一次性迁移(v2.0.52):把「仍等于旧默认值」的存量设置顺移到新默认值。
+    // 仅当字段确实存在且等于旧默认值时才改——管理员自定义过的值一律不动。
+    // 用独立标记键避免重复执行(该键会由逐键比对机制自动落库)。
+    if (empty($db['settingsMigrated52']) && isset($db['settings']) && is_array($db['settings'])) {
+        if (array_key_exists('contextMessages', $db['settings']) && (int) $db['settings']['contextMessages'] === 40) {
+            $db['settings']['contextMessages'] = 12;
+        }
+    }
+    $db['settingsMigrated52'] = true;
     $db['version'] = TC_DB_VERSION;
     foreach (array('users', 'providers', 'userGroups', 'accessRules', 'assistantCategories', 'assistants', 'packages', 'redemptionCodes', 'quotaLedger', 'inviteCodes') as $k) {
         $db[$k] = isset($db[$k]) && is_array($db[$k]) ? array_values($db[$k]) : array();
@@ -1005,9 +1239,27 @@ function tc_rate_limit_file($key) {
     return $dir . '/' . hash('sha256', (string) $key) . '.json';
 }
 
+// 限流计数文件按 IP/用户分片,公网部署下来源会持续增加;惰性清理:
+// 以五十分之一的概率触发,删掉 1 小时没再写过的分片(限流窗口最长 1 分钟,远超即失效)
+function tc_rate_limit_gc() {
+    static $ran = false;
+    if ($ran) return;
+    $ran = true;
+    if (random_int(1, 50) !== 1) return;
+    $dir = tc_data_dir() . '/ratelimit';
+    if (!is_dir($dir)) return;
+    $cut = time() - 3600;
+    foreach ((array) @scandir($dir) as $f) {
+        if (substr((string) $f, -5) !== '.json') continue;
+        $full = $dir . '/' . $f;
+        if (@filemtime($full) < $cut) @unlink($full);
+    }
+}
+
 function tc_rate_limit_check($key, $limitPerMin, $windowMs = 60000) {
     $limit = (int) $limitPerMin;
     if ($limit <= 0 || $key === '') return true;
+    tc_rate_limit_gc();
     $window = max(1000, (int) $windowMs);
     $fp = @fopen(tc_rate_limit_file($key), 'c+');
     if (!$fp) return true; // 计数存储不可用时不拦截主流程
@@ -1131,39 +1383,38 @@ function tc_db_import_legacy($pdo) {
 
 // 从 store 表装配出业务数组(含迁移与默认值),userChats 保持 stdClass 形状
 function tc_db_load_all($pdo) {
+    list($db) = tc_db_load_with_baseline($pdo);
+    return $db;
+}
+
+// 单遍装配:一次 SELECT 同时产出业务数组与逐行原始 JSON 基线。
+// 此前装配与快照各做一次全表扫描,每个 tc_with_db 要读两遍库;合并后减半。
+// 变更检测基线取自"迁移前"的原始存储;若取自迁移后,迁移过程新建的
+// userGroups / defaultGroupId 会被视为"未变化"而永不落库,导致每次请求都生成
+// 新的用户组 ID,授权规则随之全部失效。
+function tc_db_load_with_baseline($pdo) {
     $db = tc_empty_db();
     $db['userChats'] = new stdClass();
+    $orig = array();
+    $origChats = array();
     $rows = $pdo->query('SELECT k, v FROM store')->fetchAll();
     foreach ($rows as $row) {
         $k = (string) $row['k'];
+        $raw = (string) $row['v'];
         if (strncmp($k, 'chat:', 5) === 0) {
-            $val = json_decode($row['v'], true);
+            $origChats[substr($k, 5)] = $raw;
+            $val = json_decode($raw, true);
             if (is_array($val)) {
-                $uid = substr($k, 5);
-                $db['userChats']->$uid = $val;
+                $db['userChats']->{substr($k, 5)} = $val;
             }
             continue;
         }
-        $val = json_decode($row['v'], true);
-        if ($val === null && $row['v'] !== 'null') continue;
+        $orig[$k] = $raw;
+        $val = json_decode($raw, true);
+        if ($val === null && $raw !== 'null') continue;
         $db[$k] = $val;
     }
-    return tc_migrate_db($db);
-}
-
-// 存储层原始快照:顶层键与 chat: 行分别给出 JSON 文本,用于提交时的逐键变更检测
-function tc_db_raw_snapshot($pdo) {
-    $orig = array();
-    $origChats = array();
-    foreach ($pdo->query('SELECT k, v FROM store') as $row) {
-        $k = (string) $row['k'];
-        if (strncmp($k, 'chat:', 5) === 0) {
-            $origChats[substr($k, 5)] = (string) $row['v'];
-        } else {
-            $orig[$k] = (string) $row['v'];
-        }
-    }
-    return array($orig, $origChats);
+    return array(tc_migrate_db($db), $orig, $origChats);
 }
 
 // 整库快照写入(迁移导入 / 恢复备份用):清空后按顶层键落行
@@ -1186,11 +1437,7 @@ function tc_with_db($write, $fn) {
     // 结果按请求缓存,不产生额外文件读取开销。
     tc_integrity_guard();
     $pdo = tc_db();
-    // 变更检测基线取自"迁移前"的原始存储;若取自迁移后,迁移过程新建的
-    // userGroups / defaultGroupId 会被视为"未变化"而永不落库,导致每次请求都生成
-    // 新的用户组 ID,授权规则随之全部失效。
-    list($orig, $origChats) = tc_db_raw_snapshot($pdo);
-    $db = tc_db_load_all($pdo);
+    list($db, $orig, $origChats) = tc_db_load_with_baseline($pdo);
     $GLOBALS['_tc_db'] = &$db;
     $GLOBALS['_tc_demo_before'] = null;
     $GLOBALS['_tc_db_ctx'] = array(
@@ -1269,6 +1516,38 @@ function tc_db_release() {
     unset($GLOBALS['_tc_db'], $GLOBALS['_tc_db_ctx']);
 }
 
+// 入口引导(建管理员/内置助手/演示还原)低频触发。
+// 这些种子逻辑是幂等的,但每个请求都为此全量装配一次数据库代价太高;
+// 满足任一条件才真正执行:从未跑过、版本变更(在线更新/恢复备份后)、距上次超过 5 分钟、
+// 或演示快照已到期(还原是时间敏感的,不能等 5 分钟窗口)。
+// 到期检测用单行主键查询(微秒级),不装配全库;直接改库/恢复备份的场景也能感知。
+// 标记存 data/.bootstrap(不经数据库);种子未跑的窗口内极端情况最多延迟 5 分钟补上。
+function tc_bootstrap_maybe($fn) {
+    $file = tc_data_dir() . '/.bootstrap';
+    $j = json_decode((string) @file_get_contents($file), true);
+    if (is_array($j)) {
+        $fresh = (tc_now() - (isset($j['t']) ? (int) $j['t'] : 0)) < 5 * 60 * 1000;
+        $sameVer = (string) (isset($j['v']) ? $j['v'] : '') === TC_VERSION;
+        if ($fresh && $sameVer && !tc_demo_revert_due()) return;
+    }
+    $fn();
+    @file_put_contents($file, tc_json_encode(array('v' => TC_VERSION, 't' => tc_now())), LOCK_EX);
+}
+
+// 演示快照是否已到期待还原(单行查询;任何异常按「未到期」处理,不阻塞引导)
+function tc_demo_revert_due() {
+    try {
+        $st = tc_db()->prepare('SELECT v FROM store WHERE k = ?');
+        $st->execute(array('demoSnapshot'));
+        $row = $st->fetchColumn();
+        if ($row === false || $row === null) return false;
+        $snap = json_decode((string) $row, true);
+        return is_array($snap) && !empty($snap['expireAt']) && tc_now() >= (int) $snap['expireAt'];
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
 function tc_secret() {
     static $secret = null;
     if ($secret !== null) return $secret;
@@ -1284,6 +1563,7 @@ function tc_secret() {
     }
     $secret = tc_uid(32);
     @file_put_contents($file, $secret, LOCK_EX);
+    @chmod($file, 0600); // JWT 签名密钥,仅限 PHP 进程可读
     return $secret;
 }
 
@@ -1323,33 +1603,141 @@ function tc_set_password(&$user, $password) {
     $user['tv'] = (isset($user['tv']) ? (int) $user['tv'] : 0) + 1;
 }
 
+// SMTP 密码归一化。
+// 两个真实的坑:① 粘贴时容易带上首尾空白(从网页复制的验证码/密码常带空格或换行);
+// ② Google 的应用专用密码在页面上是「abcd efgh ijkl mnop」四组带空格的形式,
+//    用户整段复制就会把空格一起存进去 —— 部分服务端会因此拒绝认证(535)。
+// 对「去掉空白后恰好是 16 位小写字母」的值自动去掉内部空格(这正是 Google 应用专用密码的形态)。
+function tc_smtp_normalize_password($pw) {
+    $pw = trim((string) $pw);
+    if ($pw === '') return '';
+    $stripped = preg_replace('/\s+/', '', $pw);
+    if (is_string($stripped) && $stripped !== $pw && preg_match('/^[a-z]{16}$/', $stripped)) {
+        return $stripped;
+    }
+    return $pw;
+}
+
+// 已知邮箱服务商的专属排查提示(认证被拒时给出,直接可执行)
+function tc_smtp_provider_hint($host, $authUser = '') {
+    // 服务商判定优先看用户名域名(用户填的 smtp 主机可能是别名或自建域名)
+    $u = strtolower((string) $authUser);
+    $hint = strpos($u, '@') !== false ? substr($u, strpos($u, '@') + 1) : '';
+    $h = $hint !== '' ? $hint : strtolower((string) $host);
+    if (strpos($h, 'gmail') !== false || strpos($h, 'googlemail') !== false) {
+        return "\nGmail 请依次核对：\n"
+            . "① 「用户名」必须是完整 Gmail 地址，且与创建应用专用密码的那个账号一致——若你在 Google 账号页顶部切换过账号（网址带 /u/2 这类后缀），很容易把 A 账号的密码配到 B 账号上；\n"
+            . "② 「密码」必须是 16 位应用专用密码（形如 abcd efgh ijkl mnop），不是 Google 账号登录密码；\n"
+            . "③ 该账号必须已开启两步验证——关闭后应用专用密码会立即失效；\n"
+            . "④ 若之后改过 Google 账号密码，所有应用专用密码会被吊销，需要重新生成；\n"
+            . "⑤ 端口建议：SSL 用 465、STARTTLS 用 587。";
+    }
+    if (strpos($h, 'qq.com') !== false || strpos($h, 'exmail') !== false) {
+        return "\nQQ 邮箱请核对：「密码」必须是在「设置 → 账户 → POP3/IMAP/SMTP 服务」里生成的 16 位授权码（不是 QQ 登录密码），并确认已开启 SMTP 服务。端口建议：SSL 465 或 STARTTLS 587。";
+    }
+    if (strpos($h, '163.com') !== false || strpos($h, '126.com') !== false || strpos($h, 'yeah.net') !== false) {
+        return "\n网易邮箱请核对：「密码」必须是客户端授权码（在「设置 → POP3/SMTP/IMAP」中开启服务并生成），不是登录密码；「用户名」需为完整邮箱地址。端口建议：SSL 465 或 STARTTLS 994/587。";
+    }
+    if (strpos($h, 'outlook') !== false || strpos($h, 'office365') !== false || strpos($h, 'hotmail') !== false) {
+        return "\nOutlook / Microsoft 365 请核对：账号需已开启两步验证，并使用「应用密码」；若组织启用了安全默认值，SMTP AUTH 默认被禁用，需要管理员在后台为该邮箱启用 SMTP AUTH。端口：STARTTLS 587。";
+    }
+    return '';
+}
+
 function tc_mail_send($settings, $to, $subject, $html, $text = '', &$err = null) {
     $err = '';
     $smtp = isset($settings['smtp']) && is_array($settings['smtp']) ? $settings['smtp'] : array();
-    if (empty($smtp['host'])) { $err = '未配置 SMTP 服务器'; return false; }
+    if (empty($smtp['host'])) { $err = '未配置 SMTP 服务器：请先在「用户验证」页填写并保存 SMTP 配置'; return false; }
     if (!filter_var($to, FILTER_VALIDATE_EMAIL)) { $err = '收件邮箱无效'; return false; }
     $from = str_replace(array("\r", "\n"), '', $smtp['fromEmail'] ?: $smtp['username']);
     $fromName = str_replace(array("\r", "\n"), '', $smtp['fromName'] ?: 'TinyChat');
     $subject = str_replace(array("\r", "\n"), '', $subject);
-    if (!filter_var($from, FILTER_VALIDATE_EMAIL)) { $err = '发件人邮箱无效: ' . $from; return false; }
+    if (!filter_var($from, FILTER_VALIDATE_EMAIL)) { $err = '发件人邮箱无效（' . ($from === '' ? '未填写' : $from) . '）：请填写有效的发件人地址，或先填写 SMTP 用户名作为回退'; return false; }
+    // 归一化密码(去首尾空白;Google 应用专用密码去掉内部空格),避免把复制的空格一起拿去认证
+    $authUser = trim((string) (isset($smtp['username']) ? $smtp['username'] : ''));
+    $authPass = tc_smtp_normalize_password(isset($smtp['password']) ? $smtp['password'] : '');
+    // 填了用户名却没密码 = 必然 535,提前给出可读原因,而不是让服务端回一句看不懂的英文
+    if ($authUser !== '' && $authPass === '') {
+        $err = '已填写 SMTP 用户名但密码为空：请把邮箱服务商提供的「授权码 / 应用专用密码」填入密码框后重新保存';
+        return false;
+    }
     $body = "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\nFrom: " . $fromName . " <" . $from . ">\r\nTo: " . $to . "\r\nSubject: =?UTF-8?B?" . base64_encode($subject) . "?=\r\n\r\n" . $html . "\r\n.";
     $transport = $smtp['encryption'] === 'ssl' ? 'ssl://' : '';
-    $fp = @stream_socket_client($transport . $smtp['host'] . ':' . (int) $smtp['port'], $errno, $errstr, 8);
+    $deadline = microtime(true) + 20; // 整体预算:超过就主动放弃并报错,避免被网关超时截断成 502 HTML 页
+    $connectAt = microtime(true);
+    $fp = @stream_socket_client($transport . $smtp['host'] . ':' . (int) $smtp['port'], $errno, $errstr, 6);
+    $connectMs = (int) round((microtime(true) - $connectAt) * 1000);
     if (!$fp) {
-        $err = '连接 SMTP 服务器失败: ' . ($errstr !== '' ? $errstr : '超时') . ' (' . $smtp['host'] . ':' . (int) $smtp['port'] . ')';
-        return function_exists('mail') ? @mail($to, '=?UTF-8?B?' . base64_encode($subject) . '?=', $html, 'MIME-Version: 1.0\r\nContent-type: text/html; charset=UTF-8\r\nFrom: ' . $fromName . ' <' . $from . '>\r\n') : false;
+        // 连接失败即失败:不要回退到 mail()。PHP 的 mail() 在多数环境下返回 true
+        // 却把邮件丢给不存在的本地 MTA,会让接口报「发送成功」而用户永远收不到,
+        // 同时把这里的真实原因(端口不通/域名解析失败)吞掉,导致完全无法排查。
+        // $errstr 可能带本地编码(中文系统),统一清洗成合法 UTF-8 再拼进消息。
+        $raw = tc_utf8_clean($errstr !== '' ? $errstr : '连接超时');
+        $target = $smtp['host'] . ':' . (int) $smtp['port'];
+        $isResolver = (bool) preg_match('/getaddrinfo|php_network_getaddresses|Name or service not known|no such host|不知道这样的主机/i', $raw);
+        // 超时(耗满 8 秒)= 防火墙/主机商静默丢包,这是「端口被屏蔽」最典型的特征;
+        // 立即被拒 = 目标端口上没有服务在听。两者给不同的处置建议。
+        $isTimeout = ($connectMs >= 5000) || (bool) preg_match('/timed?\s*out|超时/i', $raw);
+        if ($isResolver) {
+            $err = '无法解析 SMTP 服务器域名「' . $smtp['host'] . '」：' . $raw
+                . '。请检查域名拼写；若站点所在主机无法解析外网域名，请改用该邮箱服务商提供的 IP 地址。';
+        } elseif ($isTimeout) {
+            $err = '连接 SMTP 服务器超时（' . $target . '，等待 ' . round($connectMs / 1000, 1) . ' 秒无响应）。'
+                . '目标端口没有回应，通常是被防火墙或主机商屏蔽了出站 SMTP 连接（很多虚拟主机默认封禁 25 / 465 / 587），'
+                . '也可能是地址或端口填错。'
+                . '建议依次尝试：① 换端口（SSL 常用 465、STARTTLS 常用 587、明文常用 25）；'
+                . '② 向主机商确认是否允许对外发信，必要时申请放行或改用其提供的发信服务；'
+                . '③ 换用其它邮箱服务商的 SMTP。';
+        } else {
+            $err = '连接 SMTP 服务器失败（' . $target . '，' . $raw . '）。'
+                . '该端口上可能没有服务在监听，或被对方防火墙拒绝。'
+                . '请核对地址与端口，并按加密方式选择对应端口：SSL→465、STARTTLS→587、无加密→25。';
+        }
+        return false;
     }
     stream_set_timeout($fp, 8);
     $lastLine = '';
-    $read = function () use ($fp, &$lastLine) { $out=''; while (($line=fgets($fp, 512)) !== false) { $out.=$line; if (isset($line[3]) && $line[3] === ' ') break; } $lastLine = trim($out); return $out; };
-    $ok = function ($response, $codes) use (&$err, &$lastLine) { $code = (int) substr(trim((string) $response), 0, 3); if (!in_array((int) $code, array_map('intval', $codes), true)) { $err = 'SMTP 响应异常 (' . $code . '): ' . $lastLine; return false; } return true; };
-    $write = function ($cmd, $codes) use ($fp, $read, $ok) { if (fwrite($fp, $cmd . "\r\n") === false) { $err = 'SMTP 连接中断'; return false; } return $ok($read(), $codes); };
+    // SMTP 服务器原文同样要清洗:中文服务商常用 GBK 回错误描述
+    $read = function () use ($fp, &$lastLine) {
+        $out = '';
+        while (($line = fgets($fp, 512)) !== false) { $out .= $line; if (isset($line[3]) && $line[3] === ' ') break; }
+        $lastLine = tc_utf8_clean(trim($out));
+        return $out;
+    };
+    // SMTP 响应码 → 人话 + 排查方向(直接透传到后台,便于自查)
+    $explain = function ($code, $line) use ($smtp, $authUser) {
+        $hint = '';
+        if ($code === 535 || $code === 534 || $code === 530) {
+            $hint = '：用户名或密码不正确，或该账号要求使用「授权码」而非登录密码';
+            $hint .= tc_smtp_provider_hint(isset($smtp['host']) ? $smtp['host'] : '', $authUser);
+            // 明确回显本次用于登录的账号,方便核对「应用密码是不是这个账号的」
+            $hint .= "
+本次用于登录的账号：" . ($authUser !== '' ? $authUser : '（未填写用户名）');
+        } elseif ($code === 550 || $code === 553 || $code === 501) {
+            $hint = '：发件人地址被服务器拒绝，通常要求发件人邮箱与 SMTP 账号一致。本次发件人：' . (isset($smtp['fromEmail']) && $smtp['fromEmail'] !== '' ? $smtp['fromEmail'] : '(回退为用户名)');
+        } elseif ($code === 554) $hint = '：邮件被判定为垃圾邮件或被策略拒绝，请检查发件人与内容';
+        elseif ($code === 421 || $code === 450 || $code === 451 || $code === 452) $hint = '：服务器暂时不可用或触发限流，请稍后重试';
+        elseif ($code === 500 || $code === 502 || $code === 504) $hint = '：服务器不支持该指令，请尝试切换加密方式（TLS / SSL / 无）';
+        return 'SMTP 服务器拒绝了请求 (' . $code . ')' . $hint . '（服务器原文：' . $line . '）';
+    };
+    $ok = function ($response, $codes) use (&$err, &$lastLine, $explain) {
+        if (trim((string) $response) === '') { $err = 'SMTP 服务器没有响应（连接被中断或超时）'; return false; }
+        $code = (int) substr(trim((string) $response), 0, 3);
+        if (!in_array((int) $code, array_map('intval', $codes), true)) { $err = $explain($code, $lastLine); return false; }
+        return true;
+    };
+    $write = function ($cmd, $codes) use ($fp, $read, $ok, $deadline) {
+        if (microtime(true) > $deadline) { $err = '发送超时（累计超过 20 秒）：服务器响应过慢，请检查网络、SMTP 地址与端口是否正确'; return false; }
+        if (fwrite($fp, $cmd . "\r\n") === false) { $err = 'SMTP 连接中断'; return false; }
+        return $ok($read(), $codes);
+    };
     if (!$ok($read(), array(220))) { fclose($fp); return false; }
     if (!$write('EHLO localhost', array(250))) { fclose($fp); return false; }
-    if ($smtp['encryption'] === 'tls') { if (!$write('STARTTLS', array(220)) || @stream_socket_enable_crypto($fp, true, STREAM_CRYPTO_METHOD_TLS_CLIENT) !== true || !$write('EHLO localhost', array(250))) { if ($err === '') $err = 'STARTTLS 加密失败'; fclose($fp); return false; } }
-    if ($smtp['username'] !== '') { if (!$write('AUTH LOGIN', array(334)) || !$write(base64_encode($smtp['username']), array(334)) || !$write(base64_encode($smtp['password']), array(235))) { if ($err === '') $err = 'SMTP 认证失败，请检查用户名和密码'; fclose($fp); return false; } }
-    if (!$write('MAIL FROM:<' . $from . '>', array(250)) || !$write('RCPT TO:<' . $to . '>', array(250,251)) || !$write('DATA', array(354))) { fclose($fp); return false; }
-    if (fwrite($fp, $body . "\r\n") === false || !$ok($read(), array(250))) { if ($err === '') $err = '邮件内容未被服务器接受'; fclose($fp); return false; }
+    if ($smtp['encryption'] === 'tls') { if (!$write('STARTTLS', array(220)) || @stream_socket_enable_crypto($fp, true, STREAM_CRYPTO_METHOD_TLS_CLIENT) !== true || !$write('EHLO localhost', array(250))) { if ($err === '') $err = 'STARTTLS 加密握手失败：服务器可能不支持 STARTTLS，请把加密方式改为 SSL（端口通常 465）或「无」（端口通常 25）后重试'; fclose($fp); return false; } }
+    if ($authUser !== '') { if (!$write('AUTH LOGIN', array(334)) || !$write(base64_encode($authUser), array(334)) || !$write(base64_encode($authPass), array(235))) { if ($err === '') { $err = 'SMTP 认证失败：请确认「用户名」填的是完整邮箱，且「密码」用的是该邮箱的 SMTP 授权码（多数邮箱不支持用登录密码直接发信）' . tc_smtp_provider_hint(isset($smtp['host']) ? $smtp['host'] : '', $authUser) . "
+本次用于登录的账号：" . $authUser; } fclose($fp); return false; } }
+    if (!$write('MAIL FROM:<' . $from . '>', array(250)) || !$write('RCPT TO:<' . $to . '>', array(250,251)) || !$write('DATA', array(354))) { if ($err === '') $err = 'SMTP 会话在传输阶段被中断（发件人或收件人未被服务器接受）'; fclose($fp); return false; }
+    if (fwrite($fp, $body . "\r\n") === false || !$ok($read(), array(250))) { if ($err === '') $err = '邮件内容未被服务器接受：可能被判为垃圾邮件，请检查发件人域名与是否配置了 SPF/DKIM'; fclose($fp); return false; }
     $write('QUIT', array(221,250)); fclose($fp); return true;
 }
 
@@ -1385,7 +1773,20 @@ function tc_sanitize_user($u) {
         'guest' => !empty($u['guest']),
         'lastIp' => isset($u['lastIp']) ? (string) $u['lastIp'] : '',
         'groupId' => isset($u['groupId']) ? $u['groupId'] : null,
+        // 是否已设密码:第三方登录建号的用户为 false,前端据此隐藏「当前密码」并允许直接设置
+        'hasPassword' => isset($u['passwordHash']) && (string) $u['passwordHash'] !== '',
     );
+}
+
+// 演示管理员看到的用户资料:登录 IP 与邮箱属用户隐私,演示场景一律不展示。
+// 注意不要改动上面的 tc_sanitize_user 默认行为(真实管理员与用户本人仍需要这些字段)。
+function tc_sanitize_user_for($viewer, $u) {
+    $pub = tc_sanitize_user($u);
+    if (is_array($viewer) && !empty($viewer['demo'])) {
+        $pub['lastIp'] = '';
+        $pub['email'] = '';
+    }
+    return $pub;
 }
 
 // 演示管理员敏感操作守卫:账号管理、查看对话、公告等一律拒绝,并给出统一提示。
@@ -1530,13 +1931,21 @@ function tc_model_key_ids($p, $modelId) {
 }
 
 // 按模型解析出「按优先级排列的明文密钥链」:依次尝试,前一把失败自动换下一把。
-// 未绑定任何密钥时返回供应商的默认(第一把)密钥,链长为 1。
+// 链的组成:模型显式绑定的密钥(按顺序)在前;其后把该供应商「其余尚未入选的密钥」按供应商
+// 顺序追加为备用。这样「配了多把 Key」就能天然获得多重保障——即使模型只绑了一把(或没绑),
+// 第一把认证失败/连不上时也会自动尝试供应商下的其它 Key,无需逐个模型手动配链。
 function tc_provider_key_chain($p, $modelId) {
-    $ids = tc_model_key_ids($p, $modelId);
     $out = array();
-    foreach ($ids as $kid) {
-        $plain = tc_provider_key_by_id($p, $kid);
+    $add = function ($plain) use (&$out) {
+        $plain = (string) $plain;
         if ($plain !== '' && !in_array($plain, $out, true)) $out[] = $plain;
+    };
+    foreach (tc_model_key_ids($p, $modelId) as $kid) {
+        $add(tc_provider_key_by_id($p, $kid));
+    }
+    // 追加供应商下其余密钥作备用(显式绑定的排在最前,保持用户设定的优先级)
+    foreach (tc_provider_keys($p) as $k) {
+        $add(tc_provider_key_by_id($p, (string) $k['id']));
     }
     if ($out) return $out;
     $def = tc_provider_key($p);
@@ -1583,7 +1992,9 @@ function tc_migrate_provider_keys(&$db) {
 }
 
 function tc_client_ip() {
-    if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+    // 仅在 config.php 显式声明 trust_proxy => true(部署在可信反代后)时才采信
+    // X-Forwarded-For;直连部署下盲信该头等于允许任何人伪造 IP 绕过按 IP 限流
+    if (tc_cfg('trust_proxy') && !empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
         $parts = explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']);
         return trim($parts[0]);
     }
@@ -1642,6 +2053,12 @@ function tc_fail($code, $msg) {
 function tc_require_auth($db) {
     $user = tc_auth_user($db);
     if (!$user) tc_fail(401, '未登录或登录已过期');
+    // 演示管理员:只要在「写」请求里活动(含前台发消息、保存对话),就确保有一张生效中的还原快照。
+    // 关键:快照此前只在 tc_require_admin(后台操作)里拍摄,演示管理员纯聊天时不经过那里,
+    // 于是第一次到期还原后快照被消费、再也不会重建 —— 他之后产生的对话就永久留存、不再自动清除。
+    if (!empty($user['demo']) && !empty($GLOBALS['_tc_db_ctx']['write']) && isset($GLOBALS['_tc_db'])) {
+        tc_demo_arm($GLOBALS['_tc_db'], $user);
+    }
     return $user;
 }
 
@@ -1751,11 +2168,15 @@ function tc_clear_login_fail($name) {
     tc_save_login_state($state);
 }
 
-function tc_logs_file() { return tc_data_dir() . '/logs.json'; }
+// 日志存储:每行一条 JSON(NDJSON,追加写)。
+// 旧实现是单 JSON 对象,每条日志都整文件读出再整体重写,多用户并发时锁竞争明显;
+// 追加式把常规写入降为 O(1),仅在超过体积上限压缩时才整文件重写一次。
+function tc_logs_file() { return tc_data_dir() . '/logs.ndjson'; }
 
-// 日志内容上限:提示词/回复按字符截断,避免 logs.json 过度膨胀
-// (日志文件每次写入都整体重写,内容上限直接决定单次 I/O 大小)
+// 日志内容上限:提示词/回复按字符截断,避免日志过度膨胀
 if (!defined('TC_LOG_TEXT_LIMIT')) define('TC_LOG_TEXT_LIMIT', 10000);
+// 文件超过该体积时压缩到最近 TC_LOG_LIMIT 条(常规增量追加不受影响)
+if (!defined('TC_LOG_FILE_MAX_BYTES')) define('TC_LOG_FILE_MAX_BYTES', 8 * 1024 * 1024);
 
 function tc_log_clip($s, $n) {
     $s = (string) $s;
@@ -1765,25 +2186,83 @@ function tc_log_clip($s, $n) {
     return $cut . "\n…（已截断，共 " . mb_strlen($s, 'UTF-8') . ' 字）';
 }
 
+// 旧版 logs.json(单 JSON 对象)一次性迁移为 NDJSON;成功后原文件改名留档
+function tc_logs_migrate_legacy() {
+    $file = tc_logs_file();
+    if (is_file($file)) return;
+    $legacy = tc_data_dir() . '/logs.json';
+    if (!is_file($legacy)) return;
+    $data = json_decode((string) @file_get_contents($legacy), true);
+    $items = (is_array($data) && isset($data['items']) && is_array($data['items'])) ? $data['items'] : array();
+    $lines = '';
+    foreach ($items as $it) {
+        if (!is_array($it)) continue;
+        $lines .= tc_json_encode($it) . "\n";
+    }
+    if ($lines !== '') @file_put_contents($file, $lines, LOCK_EX);
+    @rename($legacy, $legacy . '.migrated');
+}
+
+// 取文件末尾最后一条日志(用 fseek 只读尾部,不整文件加载)
+function tc_log_last_item($fp, $size) {
+    $tail = min($size, 65536);
+    fseek($fp, max(0, $size - $tail));
+    $raw = (string) stream_get_contents($fp);
+    $lines = explode("\n", $raw);
+    for ($i = count($lines) - 1; $i >= 0; $i--) {
+        $line = trim($lines[$i]);
+        if ($line === '') continue;
+        $j = json_decode($line, true);
+        if (is_array($j)) return $j;
+    }
+    return null;
+}
+
+// 读出全部日志条目(旧→新顺序);返回 [items, lastId]
+function tc_log_read_all($fp) {
+    $items = array();
+    $lastId = 0;
+    fseek($fp, 0);
+    while (($line = fgets($fp)) !== false) {
+        $line = trim($line);
+        if ($line === '') continue;
+        $j = json_decode($line, true);
+        if (!is_array($j)) continue;
+        $items[] = $j;
+        $lastId = max($lastId, (int) (isset($j['id']) ? $j['id'] : 0));
+    }
+    return array($items, $lastId);
+}
+
 function tc_push_log($entry) {
+    tc_logs_migrate_legacy();
     $file = tc_logs_file();
     $fp = fopen($file, 'c+');
     if (!$fp) return 0;
     flock($fp, LOCK_EX);
-    $raw = stream_get_contents($fp);
-    $data = json_decode($raw, true);
-    if (!is_array($data)) $data = array('seq' => 0, 'items' => array());
-    $data['seq'] = (isset($data['seq']) ? (int) $data['seq'] : 0) + 1;
+    $size = (int) fstat($fp)['size'];
+    $last = tc_log_last_item($fp, $size);
     $item = $entry;
-    $item['id'] = $data['seq'];
+    $item['id'] = ($last && isset($last['id'])) ? ((int) $last['id'] + 1) : 1;
     $item['t'] = tc_now();
-    $data['items'][] = $item;
-    if (count($data['items']) > TC_LOG_LIMIT) {
-        $data['items'] = array_slice($data['items'], -TC_LOG_LIMIT);
+    $line = tc_json_encode($item) . "\n";
+    // 体积超限时顺手压缩到最近 TC_LOG_LIMIT 条(复用同一把锁,避免与追加竞争)
+    if ($size + strlen($line) > TC_LOG_FILE_MAX_BYTES) {
+        list($items, $lastId) = tc_log_read_all($fp);
+        $items = array_slice($items, -TC_LOG_LIMIT);
+        $items[] = $item;
+        $buf = '';
+        foreach ($items as $it) $buf .= tc_json_encode($it) . "\n";
+        ftruncate($fp, 0);
+        fseek($fp, 0);
+        fwrite($fp, $buf);
+        fflush($fp);
+        flock($fp, LOCK_UN);
+        fclose($fp);
+        return isset($items[count($items) - 1]['id']) ? $items[count($items) - 1]['id'] : $lastId + 1;
     }
-    ftruncate($fp, 0);
-    rewind($fp);
-    fwrite($fp, tc_json_encode($data));
+    fseek($fp, 0, SEEK_END);
+    fwrite($fp, $line);
     fflush($fp);
     flock($fp, LOCK_UN);
     fclose($fp);
@@ -1794,15 +2273,15 @@ function tc_push_log($entry) {
 function tc_update_log($id, $patch) {
     $id = (int) $id;
     if ($id <= 0 || !is_array($patch) || !$patch) return false;
+    tc_logs_migrate_legacy();
     $file = tc_logs_file();
     if (!is_file($file)) return false;
     $fp = fopen($file, 'c+');
     if (!$fp) return false;
     flock($fp, LOCK_EX);
-    $data = json_decode((string) stream_get_contents($fp), true);
-    if (!is_array($data) || empty($data['items'])) { flock($fp, LOCK_UN); fclose($fp); return false; }
+    list($items, ) = tc_log_read_all($fp);
     $hit = false;
-    foreach ($data['items'] as &$it) {
+    foreach ($items as &$it) {
         if (isset($it['id']) && (int) $it['id'] === $id) {
             foreach ($patch as $k => $v) $it[$k] = $v;
             $hit = true;
@@ -1811,9 +2290,11 @@ function tc_update_log($id, $patch) {
     }
     unset($it);
     if ($hit) {
+        $buf = '';
+        foreach ($items as $it) $buf .= tc_json_encode($it) . "\n";
         ftruncate($fp, 0);
-        rewind($fp);
-        fwrite($fp, tc_json_encode($data));
+        fseek($fp, 0);
+        fwrite($fp, $buf);
         fflush($fp);
     }
     flock($fp, LOCK_UN);
@@ -1833,16 +2314,19 @@ function tc_log_chat_meta($body, $format) {
 
 function tc_list_logs($limit) {
     $n = min(TC_LOG_LIMIT, max(1, (int) $limit ?: 100));
+    tc_logs_migrate_legacy();
     $file = tc_logs_file();
     if (!is_file($file)) return array();
-    $data = json_decode((string) file_get_contents($file), true);
-    $items = (isset($data['items']) && is_array($data['items'])) ? $data['items'] : array();
-    $slice = array_slice($items, -$n);
-    return array_reverse($slice);
+    $fp = @fopen($file, 'r');
+    if (!$fp) return array();
+    list($items, ) = tc_log_read_all($fp);
+    fclose($fp);
+    return array_reverse(array_slice($items, -$n));
 }
 
 function tc_clear_logs() {
-    file_put_contents(tc_logs_file(), tc_json_encode(array('seq' => 0, 'items' => array())), LOCK_EX);
+    tc_logs_migrate_legacy();
+    @file_put_contents(tc_logs_file(), '', LOCK_EX);
 }
 
 function tc_provider_cost($provider) {
@@ -1921,6 +2405,58 @@ function tc_model_is_image($provider, $modelId) {
 
 function tc_is_unlimited_quota($user) {
     return isset($user['quota']) && (string) $user['quota'] === '-1';
+}
+
+// —— 余量明细(用户可追溯每次增减) ——
+// 写入 quotaLedger:与充值/兑换码共用一张表,用 source 区分:
+//   usage=消耗 | package_redeem/package_claim/fixed_code=获得 | admin=管理员调整
+// 明细只保留最近 N 条(按用户分片),避免库无限增长。
+define('TC_QUOTA_LEDGER_PER_USER', 200);
+
+function tc_quota_note(&$db, $userId, $entry) {
+    $userId = (string) $userId;
+    if ($userId === '') return;
+    if (!isset($db['quotaLedger']) || !is_array($db['quotaLedger'])) $db['quotaLedger'] = array();
+    $row = array_merge(array('id' => tc_uid(8), 'userId' => $userId, 'createdAt' => tc_now()), $entry);
+    $db['quotaLedger'][] = $row;
+    // 超过上限时,只裁该用户最旧的记录(其他人的不动)
+    $mine = 0;
+    foreach ($db['quotaLedger'] as $e) {
+        if (isset($e['userId']) && (string) $e['userId'] === $userId) $mine++;
+    }
+    if ($mine > TC_QUOTA_LEDGER_PER_USER) {
+        $drop = $mine - TC_QUOTA_LEDGER_PER_USER;
+        $kept = array();
+        foreach ($db['quotaLedger'] as $e) {
+            if ($drop > 0 && isset($e['userId']) && (string) $e['userId'] === $userId) { $drop--; continue; }
+            $kept[] = $e;
+        }
+        $db['quotaLedger'] = $kept;
+    }
+}
+
+// 用途标签:让用户看懂「这笔扣费是因为什么」
+function tc_quota_purpose_label($purpose, $model = '') {
+    $p = strtolower(trim((string) $purpose));
+    $map = array(
+        'chat' => '对话',
+        'image' => '生图',
+        'video' => '生视频',
+        'title' => '生成标题',
+        'followup' => '生成跟进建议',
+        'judge' => 'AI 工具判定',
+        'search' => '联网检索',
+        'parse' => '文档解析',
+        'compare' => '多模型对比',
+        'assistant' => '助手对话',
+        'api' => 'API 调用',
+    );
+    if (isset($map[$p])) return $map[$p];
+    // 未标注用途时按模型名兜底推断
+    $m = strtolower((string) $model);
+    if (strpos($m, '(图像)') !== false) return '生图';
+    if (strpos($m, '(视频)') !== false) return '生视频';
+    return $p !== '' ? $p : '对话';
 }
 
 function tc_add_quota(&$db, &$user, $amount, $expiresAt = 0) {
@@ -2011,15 +2547,25 @@ function tc_replace_user(&$db, $user) {
     }
 }
 
-function tc_charge_user(&$db, &$user, $cost, $model = '') {
+function tc_charge_user(&$db, &$user, $cost, $model = '', $purpose = '') {
     $n = max(0, (float) $cost);
     $unlimited = tc_is_unlimited_quota($user);
     if (!$unlimited) tc_enforce_quota_expiry($db, $user);
+    $before = isset($user['quota']) ? (float) $user['quota'] : 0;
     // 0 成本(自有 Key)与无限额度的调用不扣额度,但同样计入调用次数
     if ($n > 0 && !$unlimited) {
         // 按 token 计费会出现小数额度,4 位舍入避免浮点尘埃累积
-        $user['quota'] = max(0, round((isset($user['quota']) ? (float) $user['quota'] : 0) - $n, 4));
+        $user['quota'] = max(0, round($before - $n, 4));
         tc_consume_quota_grants($user, $n);
+        // 余量明细:记录每次实际扣减(含用途与前后余量),供用户追溯
+        tc_quota_note($db, (string) $user['id'], array(
+            'amount' => -$n,
+            'source' => 'usage',
+            'purpose' => tc_quota_purpose_label($purpose, $model),
+            'model' => (string) $model,
+            'before' => round($before, 4),
+            'after' => round((float) $user['quota'], 4),
+        ));
     }
     // 生命周期调用计数:存用户记录上,清空对话也不丢失
     if (!isset($user['totalCalls'])) {
@@ -2041,6 +2587,11 @@ function tc_charge_user(&$db, &$user, $cost, $model = '') {
     $k = tc_today_key();
     $by = tc_assoc($db['stats']['callsByDay']);
     $by[$k] = (isset($by[$k]) ? (int) $by[$k] : 0) + 1;
+    // 与用量台账同样只保留最近 45 天,避免逐日累加、逐年膨胀
+    if (count($by) > 45) {
+        ksort($by);
+        $by = array_slice($by, -45, null, true);
+    }
     $db['stats']['callsByDay'] = tc_object_map($by);
     tc_replace_user($db, $user);
     return $unlimited ? 0 : $n;

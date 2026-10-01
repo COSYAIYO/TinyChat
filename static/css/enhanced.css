@@ -846,7 +846,9 @@
 }
 .artifact-btn:hover { background: var(--bg-active); color: var(--text); }
 .artifact-body { flex: 1; overflow: auto; position: relative; }
+/* 深色主题下 iframe 底色跟随主题表面色,避免整块白闪 */
 .artifact-frame { width: 100%; height: 100%; border: none; background: #fff; }
+[data-theme="dark"] .artifact-frame { background: var(--bg); }
 .artifact-code {
   margin: 0;
   padding: 16px;
@@ -1096,6 +1098,24 @@
   cursor: pointer;
 }
 .pref-row:last-of-type { border-bottom: none; }
+/* 子项:缩进 + 左侧细线,与它所属的总开关形成层级(此前子项与主项视觉完全一样) */
+.pref-sub-row {
+  padding-left: 16px;
+  position: relative;
+}
+.pref-sub-row::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 12px;
+  bottom: 12px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--hairline-strong, var(--hairline));
+}
+.pref-sub-row .pref-name { font-size: 13.5px; font-weight: 500; }
+/* 总开关关闭时:被停用的子项置灰且不可交互 */
+.pref-row.is-disabled { opacity: 0.45; pointer-events: none; }
 .pref-info { min-width: 0; }
 .pref-name { font-size: 14.5px; font-weight: 550; }
 .pref-desc { font-size: 12.5px; color: var(--text-tertiary); margin-top: 3px; }

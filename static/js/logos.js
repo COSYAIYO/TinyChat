@@ -39,6 +39,8 @@
     'stability-color.svg': 1, 'suno.svg': 1, 'tavily-color.svg': 1, 'tiangong-color.svg': 1,
     'together-color.svg': 1, 'vertexai-color.svg': 1, 'wenxin-color.svg': 1, 'xiaomimimo.svg': 1,
     'yi-color.svg': 1, 'yuanbao-color.svg': 1, 'zai.svg': 1, 'zhipu-color.svg': 1,
+    // 功能图标与登录方式图标:虽不参与关键词匹配,但需登记,否则会被当成缺失文件
+    'video-camera.svg': 1, 'qq.svg': 1, 'weixin.svg': 1,
   };
 
   // [关键词, 图标文件, 优先级?];优先级默认 0,数值大者优先。
@@ -186,6 +188,8 @@
   const SITE_LOGO = ':site:';
   // 生图模型统一使用 picture.svg 作为头像/图标
   const IMAGE_LOGO = url('picture.svg');
+  // 生视频模型统一使用 video-camera.svg 作为头像/图标
+  const VIDEO_LOGO = url('video-camera.svg');
 
   function modelLogo(text) {
     const key = String(text || '').toLowerCase();
@@ -239,24 +243,32 @@
     return SITE_LOGO;
   }
 
-  // 会话图标:取最后一条带模型信息的消息;没有模型信息或未命中时用站点 logo
+  // 会话图标:取最后一条带模型信息的消息;生图/生视频会话分别用 picture.svg / video-camera.svg,
+  // 其余按模型名匹配品牌图标;没有模型信息或未命中时用站点 logo
   function chatLogo(chat) {
     const msgs = (chat && Array.isArray(chat.messages)) ? chat.messages : [];
     for (let i = msgs.length - 1; i >= 0; i--) {
       const m = msgs[i];
       const model = m && typeof m === 'object' ? String(m.model || '') : '';
-      if (model) return modelLogo(model);
+      if (!model) continue;
+      if (/\(视频\)\s*$/.test(model)) return VIDEO_LOGO;
+      if (/\(图像\)\s*$/.test(model)) return IMAGE_LOGO;
+      return modelLogo(model);
     }
     return SITE_LOGO;
   }
 
-  // 图标选择:生图模型统一用 picture.svg;否则按模型名匹配品牌图标。
-  // isImage 未显式传入时,回退到 OC.isImageModelName(由 components.js 提供)按名称判断。
-  function modelIcon(text, providerName, isImage) {
-    const flag = isImage !== undefined
+  // 图标选择:生图模型统一用 picture.svg,生视频统一用 video-camera.svg;否则按模型名匹配品牌图标。
+  // isImage / isVideo 未显式传入时,回退到 OC.isImageModelName / OC.isVideoModelName(由 components.js 提供)按名称判断。
+  function modelIcon(text, providerName, isImage, isVideo) {
+    const imgFlag = isImage !== undefined
       ? !!isImage
       : !!(window.OC && window.OC.isImageModelName && window.OC.isImageModelName(text));
-    if (flag) return IMAGE_LOGO;
+    if (imgFlag) return IMAGE_LOGO;
+    const vidFlag = isVideo !== undefined
+      ? !!isVideo
+      : !!(window.OC && window.OC.isVideoModelName && window.OC.isVideoModelName(text));
+    if (vidFlag) return VIDEO_LOGO;
     return modelLogoWithFallback(text, providerName);
   }
 
@@ -265,6 +277,7 @@
   window.OC.modelLogoWithFallback = modelLogoWithFallback;
   window.OC.modelIcon = modelIcon;
   window.OC.imageLogo = () => IMAGE_LOGO;
+  window.OC.videoLogo = () => VIDEO_LOGO;
   window.OC.providerLogo = providerLogo;
   window.OC.chatLogo = chatLogo;
   window.OC.logoImg = logoImg;

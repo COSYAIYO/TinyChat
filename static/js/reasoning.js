@@ -114,8 +114,8 @@
   }
 
   // ============ 多阶段思考状态（流式期间） ============
-  // 阶段循环：Searching → Analyzing → Synthesizing
-  const PHASES = ['Searching', 'Analyzing', 'Synthesizing'];
+  // 阶段循环：检索中 → 分析中 → 整理中(中文界面,占位文案不再用英文)
+  const PHASES = ['思考中', '分析中', '整理中'];
 
   function createPhaseIndicator() {
     const el = document.createElement('div');

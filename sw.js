@@ -1,8 +1,12 @@
 /* TinyChat Service Worker
- * 策略:同源 GET 静态资源 stale-while-revalidate;
+ * 策略:同源 GET 静态资源按类型区分——
+ *   脚本/样式(js/css)走 network-first:发版后即使浏览器缓存了旧副本也能立刻拿到新代码。
+ *   早期版本对全部静态资源都用 stale-while-revalidate,导致「刷新一次仍是旧 JS、修复要刷两次」
+ *   (第三方登录票据消费这类启动期逻辑尤其受影响)。
+ *   其余资源(图片/字体/图标)仍用 stale-while-revalidate,省流量、加载快。
  * HTML 页面 / API / SSE 流式 / /v1 出口一律直连,绝不缓存(登录态与流式响应不可缓存)。
  */
-const CACHE = 'tinychat-static-v1';
+const CACHE = 'tinychat-static-2.0.78';
 
 self.addEventListener('install', () => self.skipWaiting());
 
@@ -14,16 +18,38 @@ self.addEventListener('activate', (e) => {
   );
 });
 
+// 部署前缀:SW 可能注册在子目录(/subdir/),路径判断前先剥掉前缀,
+// 否则子目录部署时 /subdir/api/... 会被误判为静态资源而缓存(旧版 bug)。
+const BASE = new URL(self.registration.scope).pathname.replace(/\/$/, '');
+
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== location.origin) return;
-  const p = url.pathname;
+  let p = url.pathname;
+  if (BASE && p.indexOf(BASE) === 0) p = p.slice(BASE.length) || '/';
   // 接口与流式响应永不缓存
   if (p.indexOf('/api/') === 0 || p.indexOf('/v1/') === 0 || p.slice(-4) === '.php') return;
   // HTML 页面不缓存(登录态、版本更新需要即时生效)
   if (p === '/' || p.slice(-5) === '.html' || p === '/chat' || p === '/admin' || p === '/login' || p.indexOf('/s/') === 0 || p === '/agreement') return;
+  // 脚本与样式:network-first(拿不到网络才回退缓存),保证发版即刻生效
+  if (p.indexOf('/static/js/') === 0 || p.indexOf('/static/css/') === 0) {
+    e.respondWith(
+      fetch(req)
+        .then((res) => {
+          if (res && res.ok) {
+            const copy = res.clone();
+            caches.open(CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
+          }
+          return res;
+        })
+        .catch(() => caches.open(CACHE)
+          .then((cache) => cache.match(req))
+          .then((hit) => hit || Response.error()))
+    );
+    return;
+  }
   e.respondWith(
     caches.open(CACHE).then(async (cache) => {
       const hit = await cache.match(req);

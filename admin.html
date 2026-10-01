@@ -8,50 +8,17 @@
 <title>管理后台 · TinyChat</title>
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
-<link rel="apple-touch-icon" href="./logo-icon.svg">
-<link rel="stylesheet" href="./static/css/style.css?v=20261005.8">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261005.8">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261005.8">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261005.8">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261005.8">
-<link rel="stylesheet" href="./static/css/markdown.css?v=20261005.8">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261005.8">
-<script>
-(function () {
-  try {
-    var p = JSON.parse(localStorage.getItem('oc_prefs') || '{}');
-    var hex = String(p.accent || '').trim();
-    var m = hex.match(/^#([0-9a-fA-F]{3,8})$/);
-    if (!m) return;
-    var h = m[1];
-    if (h.length === 3 || h.length === 4) h = h.split('').map(function (c) { return c + c; }).join('');
-    if (h.length !== 6 && h.length !== 8) return;
-    var r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
-    var dark = (p.theme === 'dark') || (p.theme !== 'light' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
-    var t = dark ? 0.28 : 0.18;
-    var mix = function (c, d) { return Math.max(0, Math.min(255, Math.round(c + (d - c) * t))); };
-    var pad = function (n) { return n.toString(16).padStart(2, '0'); };
-    var acc = '#' + pad(r) + pad(g) + pad(b);
-    var hover = '#' + pad(mix(r, dark ? 255 : 0)) + pad(mix(g, dark ? 255 : 0)) + pad(mix(b, dark ? 255 : 0));
-    var rgba = function (a) { return 'rgba(' + r + ', ' + g + ', ' + b + ', ' + a + ')'; };
-    var root = document.documentElement;
-    root.style.setProperty('--accent', acc);
-    root.style.setProperty('--accent-hover', hover);
-    root.style.setProperty('--brand', acc);
-    root.style.setProperty('--brand-hover', hover);
-    root.style.setProperty('--brand-soft', rgba(dark ? 0.12 : 0.08));
-    root.style.setProperty('--brand-soft-strong', rgba(dark ? 0.2 : 0.14));
-    root.style.setProperty('--ring-brand', rgba(dark ? 0.3 : 0.2));
-    root.style.setProperty('--primary', acc);
-    root.style.setProperty('--primary-hover', hover);
-    root.style.setProperty('--active-text', dark ? hover : acc);
-    root.style.setProperty('--active-bar', acc);
-    root.style.setProperty('--bg-selected', rgba(dark ? 0.14 : 0.07));
-  } catch (e) {}
-})();
-</script>
+<link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.78">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.78" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.78">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.78">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.78">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.78">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.78">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.78">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.78">
+<script src="./static/js/theme-boot.min.js?v=2.0.78"></script>
 </head>
 <body class="admin-body">
 <form id="admin-fields" autocomplete="off" style="display:contents">
@@ -64,7 +31,7 @@
     </div>
   </div>
   <div class="admin-demo-banner hidden" id="admin-demo-banner" role="status">
-    <b>本站为 demo 演示站。</b>您的修改会在 <span id="admin-demo-minutes">10</span> 分钟内自动失效，请尽快体验；演示账号不可修改密码、不可删除用户或强制全站下线。
+    <b>本站为 demo 演示站。</b>您的修改会在停止操作 <span id="admin-demo-minutes">10</span> 分钟后自动还原（继续操作会顺延，不会打断演示）；演示账号不可修改密码、不可删除用户或强制全站下线。
   </div>
 
 <!-- 页签导航 -->
@@ -81,17 +48,38 @@
 
   <!-- 概览 -->
   <div class="admin-panel active" id="panel-overview">
+    <!-- 服务器状态看板:数据来自 /api/admin/system;取不到的指标自动隐藏(不显示误导性的 0) -->
+    <div class="sys-board" id="sys-board">
+      <div class="sys-board-head">
+        <div class="sys-board-title">
+          <span class="sys-pulse" aria-hidden="true"></span>
+          <b>服务器状态</b>
+          <span class="muted small" id="sys-updated"></span>
+        </div>
+        <div class="sys-board-actions">
+          <span class="muted small" id="sys-host"></span>
+          <button class="btn small" id="sys-refresh" type="button">刷新</button>
+        </div>
+      </div>
+      <div class="sys-meters" id="sys-meters"></div>
+      <div class="sys-facts" id="sys-facts"></div>
+    </div>
+
     <div class="admin-card">
       <h2>概览</h2>
       <div class="admin-grid" id="stats-grid"></div>
 
       <div class="overview-note muted small">核心状态概览。详细趋势、用量和排行请进入“用量分析”。</div>
     </div>
-    <div class="admin-card" style="margin-top:16px">
+  </div>
+
+  <!-- 全站公告(独立页签:原先挤在概览里) -->
+  <div class="admin-panel" id="panel-announce">
+    <div class="admin-card">
       <h2>全站公告</h2>
       <p class="muted small">启用后登录用户会看到<b>居中弹窗</b>；关闭后内容更新（重新保存）才会再次自动弹出。用户可随时从右上角用户菜单的「公告」再次查看。纯文本，最多 2000 字。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="announce-enabled"><span class="slider"></span></span><span>启用公告</span></label>
-      <label class="field"><span>公告内容</span><textarea id="announce-text" rows="3" maxlength="2000" placeholder="例如：系统将于周日晚 22:00–24:00 升级维护" style="resize:vertical"></textarea></label>
+      <label class="field"><span>公告内容</span><textarea id="announce-text" rows="6" maxlength="2000" placeholder="例如：系统将于周日晚 22:00–24:00 升级维护" style="resize:vertical"></textarea></label>
       <button class="btn primary" id="announce-save" type="button">保存公告</button>
       <span class="muted small" id="announce-status" role="status" aria-live="polite" style="margin-left:8px"></span>
     </div>
@@ -116,7 +104,7 @@
       <label class="field"><span>默认上下文条数</span>
         <div class="stepper stepper-field">
           <button type="button" class="seg-btn" data-step="-1" data-target="chat-context" aria-label="减少默认上下文条数">−</button>
-          <input type="text" inputmode="numeric" id="chat-context" value="40" aria-label="默认上下文条数" autocomplete="off">
+          <input type="text" inputmode="numeric" id="chat-context" value="12" aria-label="默认上下文条数" autocomplete="off">
           <button type="button" class="seg-btn" data-step="1" data-target="chat-context" aria-label="增加默认上下文条数">+</button>
         </div>
       </label>
@@ -143,6 +131,12 @@
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-context-learn" checked><span class="slider"></span></span><span>自动学习上下文窗口（从上游 context length 报错回填模型的最大上下文，不覆盖手动设置）</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-persist-chats" checked><span class="slider"></span></span><span>服务器保存对话记录（关闭后对话仅存用户浏览器本地，服务器不留存）</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-save-api" checked><span class="slider"></span></span><span>开放 API 对话记入用户对话列表（用户在「设置 → 数据」可选择是否显示到首页；需开启上一项「服务器保存对话记录」）</span></label>
+      <h3>生图结果本地留存</h3>
+      <p class="muted small" style="margin:0 0 8px">开启后，出图时后端会即时把图片下载并保存到本站 <code>data/imgstore/</code>，历史对话里的图片改用站内地址长期可访问，避免上游图床链接过期导致图片打不开。默认开启。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-img-archive" checked><span class="slider"></span></span><span>出图后保存到本地服务器（防止生图链接过期）</span></label>
+      <label class="field" style="margin-bottom:10px"><span>本地留存总量上限（MB，超出按最旧优先清理）</span>
+        <input id="chat-img-archive-quota" type="number" min="50" max="10240" step="50" value="500">
+      </label>
       <h3>模型可用性显示</h3>
       <p class="muted small" style="margin:0 0 8px">按最近 4 小时的成功率给模型标注可用性，鼠标悬停（移动端点按）模型选择器里的状态图标即可看到，同时显示该模型单次扣减次数。默认：≥ 75% 显示「可用」、≥ 40% 显示「不稳定」、低于 40% 显示「较差」；无调用记录显示「暂无数据」。</p>
       <div class="pkg-form-grid">
@@ -150,6 +144,24 @@
         <label class="field"><span>「不稳定」阈值（成功率 ≥ %）</span><input id="chat-health-warn" type="number" min="0" max="99" step="1" value="40"></label>
       </div>
       <button class="btn primary" id="chat-limits-save" type="button">保存对话设置</button>
+    </div>
+  </div>
+
+  <!-- 性能优化 -->
+  <div class="admin-panel" id="panel-perf">
+    <div class="admin-card">
+      <h2>性能优化</h2>
+      <p class="muted small">用于降低前台首屏加载体积，适合带宽受限、访客网络较慢或主要用纯文本对话的场景。<b>默认全部关闭</b>。开启后，相关资源在前台不再加载，对应能力会退化为纯文本显示（数学公式、图表、代码高亮会以源码形式呈现）。改动在用户下次访问时生效。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="perf-no-webfonts"><span class="slider"></span></span>
+        <span>内置网页字体默认不加载——字体已切片为 woff2 按需下载（单次访问通常仅数百 KB），开启后访客完全用系统字体、零字体流量</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="perf-no-katex"><span class="slider"></span></span>
+        <span>不加载 KaTeX（数学公式）——公式将以源码形式显示</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="perf-no-highlight"><span class="slider"></span></span>
+        <span>不加载代码高亮 highlight.js——代码块以纯文本显示，保留「复制」按钮</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="perf-no-mermaid"><span class="slider"></span></span>
+        <span>不加载 Mermaid 图表——流程图/时序图等以源码形式显示（Mermaid 本就在出现图表时才加载）</span></label>
+      <p class="muted small" style="margin-top:12px">说明：开启「内置字体默认不加载」后，前台默认使用系统字体（Apple/微软雅黑/PingFang 等），加载更快；用户仍可在「设置 → 外观」里自行切换为思源宋体等内置字体（切换后会按需加载该字体）。关闭该选项则恢复默认使用内置字体。</p>
+      <button class="btn primary" id="perf-save" type="button">保存性能设置</button>
     </div>
   </div>
 
@@ -206,7 +218,10 @@
           <h2>用户</h2>
           <p class="users-count" id="users-count">—</p>
         </div>
-        <button class="btn primary" id="user-create-btn" type="button">创建用户</button>
+        <div class="users-head-actions">
+          <button class="btn small" id="users-refresh" type="button" title="重新拉取用户列表">刷新</button>
+          <button class="btn primary" id="user-create-btn" type="button">创建用户</button>
+        </div>
       </div>
       <div class="admin-toolbar users-toolbar">
         <label class="users-search">
@@ -240,6 +255,11 @@
           </thead>
           <tbody id="users-tbody"></tbody>
         </table>
+      </div>
+      <div class="users-pager" id="users-pager" hidden>
+        <button class="btn small" id="users-page-prev" type="button">上一页</button>
+        <span class="muted small" id="users-page-info"></span>
+        <button class="btn small" id="users-page-next" type="button">下一页</button>
       </div>
     </div>
   </div>
@@ -337,6 +357,9 @@
             <label class="field"><span>测试问题</span>
               <input id="ap-test-prompt" placeholder="回复一个字：好" autocomplete="off" spellcheck="false">
             </label>
+            <label class="field"><span>单次超时（秒）</span>
+              <input id="ap-test-timeout" type="number" min="3" max="120" step="1" value="25" title="超过该时间仍未响应即判定失败，并自动继续测试下一个模型">
+            </label>
             <label class="field"><span>批量间隔（秒）</span>
               <input id="ap-test-gap" type="number" min="0" max="60" step="0.5" value="1">
             </label>
@@ -347,9 +370,23 @@
               <button class="btn hidden" id="ap-test-stop" type="button">停止</button>
               <span class="muted small" id="ap-test-status"></span>
             </div>
-            <div class="probe-result hidden" id="ap-test-result"></div>
+            <!-- 测试结果默认折叠:带汇总与「有效 / 无效」切换,默认只看有效模型 -->
+            <details class="probe-panel hidden" id="ap-test-panel">
+              <summary>
+                <span class="probe-summary-text" id="ap-test-summary">测试结果</span>
+                <span class="probe-tabs" id="ap-test-tabs">
+                  <button class="probe-tab active" type="button" data-probe-tab="ok">有效 <em id="ap-test-ok-count">0</em></button>
+                  <button class="probe-tab" type="button" data-probe-tab="bad">无效 <em id="ap-test-bad-count">0</em></button>
+                </span>
+              </summary>
+              <div class="probe-result" id="ap-test-result"></div>
+            </details>
           </div>
-          <button class="btn primary" id="ap-save" type="button">保存供应商</button>
+          <div class="form-actions">
+            <button class="btn primary" id="ap-save" type="button">保存供应商</button>
+            <button class="btn hidden" id="ap-cancel-edit" type="button">取消编辑</button>
+            <span class="muted small" id="ap-editing-note" hidden>正在编辑已有供应商，保存会覆盖其配置</span>
+          </div>
         </div>
       </details>
     </div>
@@ -371,6 +408,15 @@
         <label class="field"><span>登录锁定时长（秒）</span><input id="login-lock-sec" type="number" min="0" max="3600" value="60"></label>
       </div>
       <label class="user-form-admin" style="margin-top:8px"><span class="switch"><input type="checkbox" id="user-providers-allowed"><span class="slider"></span></span><span>允许用户添加自己的供应商（自带 Key，不计站点次数）</span></label>
+      <h3>账号注销</h3>
+      <p class="muted small" style="margin:0 0 8px">用户在「设置 → 账户」可自助注销。<b>软注销</b>会清除其资料、对话与自建供应商，并把用户名改为「原名-已注销-随机码」、邮箱加 <code>deleted+</code> 前缀 —— 因此原用户名与原邮箱都可被重新注册；账号记录保留，便于后台追溯。<b>硬注销</b>则直接删除账号及其全部数据，不可恢复。</p>
+      <label class="field"><span>注销方式</span>
+        <select id="account-deletion-mode">
+          <option value="off">不允许注销</option>
+          <option value="soft">软注销（保留记录，原用户名/邮箱可重新注册）</option>
+          <option value="hard">硬注销（删除全部数据，不可恢复）</option>
+        </select>
+      </label>
       <h3>游客体验</h3>
       <p class="muted small" style="margin:0 0 8px">开启后，未登录访客访问首页即可直接对话。每位访客会自动创建一个独立游客账号（命名如「游客A1B2C」并归入「游客」用户组），便于在「用户」列表里单独管理与清理。游客额度在「模型授权」中按游客组控制，轮数在下方设置。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="guest-enabled"><span class="slider"></span></span><span>允许游客免登录体验对话</span></label>
@@ -381,10 +427,17 @@
       </div>
       <p class="muted small" style="margin:6px 0 0">会话有效期修改后对新登录生效；「强制全站下线」会使所有人的现有登录态立即失效（包括你自己），需要重新登录。</p>
       <h3>SMTP</h3>
+      <p class="muted small hidden" id="smtp-demo-note" style="color:#b45309">演示管理员不可查看或修改 SMTP 邮件配置（防止冒用本站域名发信）。</p>
       <label class="field"><span>服务器</span><input id="smtp-host" placeholder="smtp.example.com"></label>
       <label class="field"><span>端口</span><input id="smtp-port" type="number" value="587"></label>
       <label class="field"><span>用户名</span><input id="smtp-user"></label>
-      <label class="field"><span>密码</span><input id="smtp-pass" type="password"></label>
+      <label class="field"><span>密码</span>
+        <div class="pw-wrap">
+          <input id="smtp-pass" type="password" autocomplete="off">
+          <button class="pw-toggle smtp-pass-eye" id="smtp-pass-toggle" type="button" title="显示密码" aria-label="显示密码"></button>
+        </div>
+        <label class="key-keep-option" title="勾选后密码以明文保存在服务器，可随时点小眼睛查看与复制；不勾选则保存后只显示掩码"><input id="smtp-pass-keep" type="checkbox"> 保存后保持显示（便于复制到其它系统）</label>
+      </label>
       <label class="field"><span>加密</span><select id="smtp-encryption"><option value="tls">TLS</option><option value="ssl">SSL</option><option value="none">无</option></select></label>
       <label class="field"><span>发件人名称</span><input id="smtp-from-name" value="TinyChat"></label>
       <label class="field"><span>发件人地址</span><input id="smtp-from-email"></label>
@@ -396,6 +449,7 @@
         </span>
       </div>
       <p class="muted small" style="margin-top:6px">发送测试会使用当前保存的 SMTP 配置与「注册验证邮件」模板真实投递一封样例邮件，便于确认效果。</p>
+      <div class="smtp-test-result hidden" id="smtp-test-result" role="status" aria-live="polite"></div>
       <h3>邮件模板</h3>
       <div class="seg-group" id="mtpl-tabs" style="margin:0 0 12px">
         <button class="seg-btn active" data-mtpl="verify" type="button">注册验证邮件</button>
@@ -556,13 +610,19 @@
         <input id="ws-url-read-max" type="number" min="1" max="5" value="3">
       </label>
       <label class="field"><span>检索后端</span>
-        <div class="select-box" id="ws-provider" data-value="tavily" role="button" tabindex="0">
+        <div class="select-box" id="ws-provider" data-value="ddg" role="button" tabindex="0">
           <span class="sb-label">Tavily</span>
           <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
         </div>
       </label>
       <label class="field" id="ws-tavily-row"><span>Tavily API Key</span>
         <input id="ws-tavily-key" type="password" placeholder="tvly-..." autocomplete="off">
+      </label>
+      <label class="field hidden" id="ws-brave-row"><span>Brave Search API Key</span>
+        <input id="ws-brave-key" type="password" placeholder="BSA..." autocomplete="off">
+      </label>
+      <label class="field hidden" id="ws-jina-row"><span>Jina API Key（可选）</span>
+        <input id="ws-jina-key" type="password" placeholder="留空用免登录额度，填 Key 提升配额" autocomplete="off">
       </label>
       <label class="field hidden" id="ws-searx-row"><span>SearXNG 地址</span>
         <textarea id="ws-searx-url" rows="4" placeholder="每行一个，例如&#10;https://sx.xo.st&#10;https://search.example.com" autocomplete="off" spellcheck="false"></textarea>
@@ -579,7 +639,7 @@
         <span class="muted small" id="ws-test-status"></span>
       </div>
       <div class="probe-result hidden" id="ws-test-result"></div>
-      <p class="muted small" id="ws-hint">Tavily 需在 tavily.com 申请 Key。SearXNG 每行一个实例根地址，需开启 JSON 格式（format=json）；对话检索按顺序尝试，当前实例失败或没有结果时自动换下一个。探测会拉取 searx.space 使用的官方公共目录（约 80 个 HTTPS 实例）并分批测试，可用的排在前面，点「填入」会追加到列表。</p>
+      <p class="muted small" id="ws-hint">Tavily 需在 tavily.com 申请 Key（免费 1000 次/月）。Brave 在 brave.com/search/api 申请（免费 2000 次/月）。DuckDuckGo 与 Jina 免 Key（DuckDuckGo 抓结果页，有速率限制；Jina 免登录额度有限，填 Key 更稳）。SearXNG 每行一个实例根地址，需开启 JSON 格式（format=json）；对话检索按顺序尝试，当前实例失败或没有结果时自动换下一个。探测会拉取 searx.space 使用的官方公共目录（约 80 个 HTTPS 实例）并分批测试，可用的排在前面，点「填入」会追加到列表。</p>
       <button class="btn primary" id="ws-save" type="button">保存联网设置</button>
     </div>
   </div>
@@ -589,16 +649,76 @@
   <div class="admin-panel" id="panel-docs">
     <div class="admin-card">
       <h2>文档解析</h2>
-      <p class="muted small">支持 PDF、图片、Word、PPT、Excel、HTML。Token 留空走 MinerU 轻量解析；填入后改用精准解析。解析不扣对话次数。</p>
+      <p class="muted small">支持 PDF、图片、Word、PPT、Excel、HTML。可按文件类型分别指定解析通道；解析不扣对话次数。</p>
+      <div class="field" style="margin:0 0 6px"><span>PDF 文件解析通道</span>
+        <div class="select-box" id="parse-route-pdf" data-value="mineru" role="button" tabindex="0"><span class="sb-label">MinerU</span></div>
+      </div>
+      <div class="field" style="margin:0 0 6px"><span>图片解析通道</span>
+        <div class="select-box" id="parse-route-image" data-value="mineru" role="button" tabindex="0"><span class="sb-label">MinerU</span></div>
+      </div>
+      <div class="field" style="margin:0 0 14px"><span>Office 文档解析通道</span>
+        <div class="select-box" id="parse-route-office" data-value="mineru" role="button" tabindex="0"><span class="sb-label">MinerU</span></div>
+      </div>
+      <p class="muted small" style="margin:0 0 14px" id="parse-route-hint">通道说明：MinerU 全格式（PDF/图片/Office/HTML）；PaddleOCR 仅 PDF 与图片（自建 PaddleX serving 或 AI Studio API）；Mistral OCR 支持 PDF/图片/DOCX/PPTX。路由到某通道但未配置时，该类文件解析会报错提示。</p>
+      <label class="field"><span>PaddleOCR 服务地址（完整端点）</span>
+        <input id="paddle-url" type="text" placeholder="例如 http://127.0.0.1:8080/ocr 或 AI Studio 托管 API 地址" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="field"><span>PaddleOCR Token（可选）</span>
+        <input id="paddle-key" type="password" placeholder="自建 serving 通常留空；托管 API 填 token" autocomplete="off">
+      </label>
+      <label class="field"><span>Mistral OCR API Key</span>
+        <input id="mistral-key" type="password" placeholder="在 console.mistral.ai 申请" autocomplete="off">
+      </label>
       <label class="user-form-admin" style="margin:14px 0 18px">
         <span class="switch"><input type="checkbox" id="mineru-allow-user"><span class="slider"></span></span>
-        <span>允许用户改用自己的 MinerU Token</span>
+        <span>允许用户改用自己的 MinerU Token（仅对 MinerU 通道生效）</span>
       </label>
       <label class="field"><span>MinerU Token（可选）</span>
         <input id="mineru-token" type="password" placeholder="留空则使用免登录轻量解析" autocomplete="off">
       </label>
       <p class="muted small" id="mineru-mode">当前：轻量解析。单文件不超过 10MB、20 页，同一 IP 每分钟有次数限制。用户上传后直接解析，只有超限或失败时才会看到限制。</p>
       <button class="btn primary" id="mineru-save" type="button">保存解析设置</button>
+    </div>
+  </div>
+
+  <!-- 第三方登录 -->
+  <div class="admin-panel" id="panel-oauth">
+    <div class="admin-card">
+      <h2>第三方一键登录</h2>
+      <p class="muted small">开启并填全凭据后，对应小图标会出现在登录页底部，用户可直接用第三方账号登录。首次登录若未绑定过本站账号，按下方开关自动建号。</p>
+      <label class="user-form-admin" style="margin:14px 0 10px">
+        <span class="switch"><input type="checkbox" id="oauth-auto-register"><span class="slider"></span></span>
+        <span>未绑定过本站账号时自动注册（关闭后需先登录本站账号并绑定）</span>
+      </label>
+      <label class="user-form-admin" style="margin:0 0 18px">
+        <span class="switch"><input type="checkbox" id="oauth-require-profile"><span class="slider"></span></span>
+        <span>要求补全用户名与密码（第三方登录后强制填写，之后可脱离第三方用密码登录）</span>
+      </label>
+      <div id="oauth-providers"></div>
+      <div class="section-title" style="margin:18px 0 6px">回调地址（在各平台申请应用时填写）</div>
+      <p class="muted small" style="margin:0 0 8px">每个平台填**各自对应的那条**，不要互相混用；地址由当前访问域名推导，请用最终对外域名打开本页后再复制。</p>
+      <div id="oauth-callback-list"></div>
+      <button class="btn primary" id="oauth-save" type="button" style="margin-top:14px">保存第三方登录设置</button>
+    </div>
+  </div>
+
+  <!-- 存储管理 -->
+  <div class="admin-panel" id="panel-storage">
+    <div class="admin-card">
+      <h2>存储管理</h2>
+      <p class="muted small">数据目录与磁盘占用一览。清理操作不可撤销，请确认后再执行；数据库与站点配置不会被清理。</p>
+      <div class="sys-meters" id="st-meters"></div>
+      <div class="section-title">分类占用</div>
+      <div id="st-categories" class="admin-long-list"></div>
+      <div class="section-title">可清理项</div>
+      <div id="st-clean" class="admin-long-list"></div>
+      <div class="section-title">生图留存文件</div>
+      <div id="st-images" class="admin-long-list"></div>
+      <div class="section-title">数据备份</div>
+      <div id="st-backups" class="admin-long-list"></div>
+      <div class="form-actions" style="margin-top:12px">
+        <button class="btn" id="st-refresh" type="button">刷新</button>
+      </div>
     </div>
   </div>
 
@@ -736,6 +856,12 @@
         </label>
         <p class="muted small" id="uf-demo-hint">演示管理员可修改站点设置、模型授权等大部分内容，<b>但不可修改公告、账号与密码，也不能查看用户对话</b>。<b>勾选并保存的这一刻即为计时起点</b>：此后演示管理员改动的设置，以及他名下的对话与额度，都会在到点时恢复为这一刻的状态。真实管理员的改动即时生效，并会成为新的恢复基准，不会被演示还原冲掉。额度可在创建时自定义（留空则给一个很大的演示值）。</p>
       </div>
+      <!-- 第三方绑定管理:编辑已有用户时可用 -->
+      <div id="uf-oauth-wrap" hidden>
+        <div class="section-title" style="margin-top:14px">第三方账号绑定</div>
+        <p class="muted small" style="margin:0 0 6px">可代用户解除绑定，或复制绑定链接发给用户（由用户本人完成授权，管理员不接触其第三方凭据）。</p>
+        <div id="uf-oauth-list"></div>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn" id="user-form-cancel" type="button">取消</button>
@@ -802,7 +928,7 @@
     <div class="modal-body">
       <div class="admin-toolbar" style="margin-bottom:12px">
         <select id="user-chats-select" class="search-input" style="flex:1;min-width:140px;cursor:pointer">
-          <option value="">选择用户(可输入筛选)</option>
+          <option value="">选择用户</option>
         </select>
         <button class="btn small" id="user-chats-reload" type="button">↻ 加载</button>
       </div>
@@ -811,16 +937,16 @@
   </div>
 </div>
 </form>
-<script src="./static/js/config.js?v=20261005.8"></script>
-<script src="./static/js/icons.js?v=20261005.8"></script>
-<script defer src="./vendor/markdown-it/markdown-it.min.js"></script>
-<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js"></script>
-<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js"></script>
-<script defer src="./vendor/katex/katex.min.js"></script>
-<script defer src="./vendor/highlight/highlight.min.js"></script>
-<script src="./static/js/ui.js?v=20261005.8"></script>
-<script src="./static/js/components.js?v=20261005.8"></script>
-<script src="./static/js/renderer.js?v=20261005.8"></script>
-<script src="./static/js/admin.js?v=20261005.8"></script>
+<script defer src="./static/js/config.min.js?v=2.0.78"></script>
+<script defer src="./static/js/icons.min.js?v=2.0.78"></script>
+<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.78"></script>
+<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.78"></script>
+<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.78"></script>
+<script defer src="./vendor/katex/katex.min.js?v=2.0.78"></script>
+<script defer src="./vendor/highlight/highlight.min.js?v=2.0.78"></script>
+<script defer src="./static/js/ui.min.js?v=2.0.78"></script>
+<script defer src="./static/js/components.min.js?v=2.0.78"></script>
+<script defer src="./static/js/renderer.min.js?v=2.0.78"></script>
+<script defer src="./static/js/admin.min.js?v=2.0.78"></script>
 </body>
 </html>

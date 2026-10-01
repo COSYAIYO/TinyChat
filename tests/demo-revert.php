@@ -34,26 +34,35 @@ $eq('快照记录了基准 siteName', $db['demoSnapshot']['settings']['siteName'
 $eq('快照记录了 accessRules', count($db['demoSnapshot']['accessRules']), 1);
 $eq('快照记录了 providers', count($db['demoSnapshot']['providers']), 1);
 
-// 2) 已有生效快照时再次拍摄不应覆盖
-$expire1 = (int) $db['demoSnapshot']['expireAt'];
+// 2) 生效中的快照:属主继续活动应「顺延到期」(滑动窗口),但基准不得被改写
+//    —— 不打断正在进行的演示;他人活动不得顺延不属于他的快照
 $db['settings']['siteName'] = 'CHANGED-1';
 $db['providers'][0]['costPerCall'] = 99;
+// 把到期时间收紧到 1 秒后:活动应把它重新推回「现在 + 有效期」
+$db['demoSnapshot']['expireAt'] = tc_now() + 1000;
+$expire1 = (int) $db['demoSnapshot']['expireAt'];
 $again = tc_demo_arm($db, $demo);
-$eq('生效中不重复拍摄', $again, false);
-$eq('生效中快照到期时间不变', (int) $db['demoSnapshot']['expireAt'], $expire1);
+$eq('生效中继续活动:顺延到期(滑动窗口)', $again, true);
+$eq('顺延后到期时间不早于原值', (int) $db['demoSnapshot']['expireAt'] >= $expire1, true);
+$eq('顺延到完整的有效窗口', (int) $db['demoSnapshot']['expireAt'] > tc_now() + 30000, true);
 $eq('生效中基准仍是原值', $db['demoSnapshot']['settings']['siteName'], 'ORIGINAL');
+$other = tc_demo_arm($db, array('id' => 'demo2', 'admin' => true, 'demo' => true));
+$eq('他人活动不顺延别人的快照', $other, false);
+$eq('他人活动后快照仍归原属主', $db['demoSnapshot']['userId'], 'demo1');
 
 // 3) 未到期不还原
 $eq('未到期不还原', tc_demo_revert($db), false);
 $eq('未到期保持改动', $db['settings']['siteName'], 'CHANGED-1');
 
-// 4) 到期还原
+// 4) 到期还原(并把「已还原」标记写给客户端,用于整体采纳云端)
 $db['demoSnapshot']['expireAt'] = 1; // 强制过期
 $eq('到期触发还原', tc_demo_revert($db), true);
 $eq('还原 siteName', $db['settings']['siteName'], 'ORIGINAL');
 $eq('还原 demoMode', !empty($db['settings']['demoMode']), false);
 $eq('还原 providers.costPerCall', $db['providers'][0]['costPerCall'], 1);
 $eq('清空快照', $db['demoSnapshot'], null);
+$reverted = tc_assoc($db['demoReverted']);
+$eq('还原后写入客户端还原标记', isset($reverted['demo1']) && (int) $reverted['demo1'] > 0, true);
 
 // 5) 关键回归:还原后再次改动应能重新拍摄并再次还原(旧实现只保护第一轮)。
 //    真实顺序是「先拍摄(改动前) → 再应用改动」,这里按同样顺序模拟。
@@ -146,6 +155,34 @@ $db2 = tc_empty_db();
 $db2['settings'] = tc_normalize_settings(array('siteName' => 'X'));
 $eq('普通管理员不拍摄', tc_demo_arm($db2, array('id' => 'u', 'admin' => true)), false);
 $eq('无快照时还原为 no-op', tc_demo_revert($db2), false);
+
+// 7) 回归:快照被消费后,演示管理员只要继续活动(如在前台聊天)就要重新拍摄。
+// 缺陷背景:快照原先只在 tc_require_admin(后台操作)里拍摄,演示管理员纯聊天时不经过那里,
+// 第一次到期还原后快照被消费、永久不再重建 —— 他之后产生的对话就再也不会被自动清除。
+$db4 = tc_empty_db();
+$db4['settings'] = tc_normalize_settings(array('siteName' => 'S', 'demoExpireMinutes' => 10));
+$demo4 = array('id' => 'du4', 'name' => 'chatdemo', 'admin' => true, 'demo' => true, 'quota' => 5);
+$db4['users'] = array($demo4);
+$db4['userChats'] = tc_object_map(array('du4' => array()));
+tc_demo_arm($db4, $demo4);
+$eq('首轮快照已建立', is_array($db4['demoSnapshot']), true);
+// 首轮到期:还原并消费快照
+$db4['demoSnapshot']['expireAt'] = 1;
+tc_demo_revert($db4);
+$eq('首轮还原后快照被消费', $db4['demoSnapshot'], null);
+// 演示期间又聊了一轮(模拟前台保存对话触发的写入)
+$map4 = tc_assoc($db4['userChats']);
+$map4['du4'][] = array('id' => 'r2', 'title' => '第二轮对话', 'messages' => array());
+$db4['userChats'] = tc_object_map($map4);
+// 写入路径下必须自动重建快照(修复点)
+$rearm = tc_demo_arm($db4, $demo4);
+$eq('继续活动后快照自动重建', $rearm, true);
+$eq('重建的快照仍是原始基准', count($db4['demoSnapshot']['demoChats']), 0);
+// 第二轮到期:新产生的对话同样被回收
+$db4['demoSnapshot']['expireAt'] = 1;
+tc_demo_revert($db4);
+$after4 = tc_assoc($db4['userChats']);
+$eq('第二轮新对话也被清除', count($after4['du4']), 0);
 
 // 清理
 foreach (glob($dataDir . '/*') as $f) @unlink($f);

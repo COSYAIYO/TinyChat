@@ -19,15 +19,53 @@
   Header always set X-Content-Type-Options "nosniff"
 </IfModule>
 
+# 安全响应头:静态命中(.html 直达等)绕过了 PHP(index.php 里 tc_send_cors 只覆盖路由请求),
+# 这里补齐与 PHP 侧一致的 CSP / X-Frame-Options / Referrer-Policy / Permissions-Policy。
+<IfModule mod_headers.c>
+  <FilesMatch "\.(html|htm|js|css|svg|png|jpe?g|gif|ico|woff2?|ttf|otf|txt|json|xml|webmanifest|md)$">
+    Header always set X-Frame-Options "DENY"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+  </FilesMatch>
+</IfModule>
+
+# HTTP 缓存:版本号资源(?v=)可放心长缓存;sw.js 与页面清单必须即时更新
+<IfModule mod_headers.c>
+  <FilesMatch "\.(js|css|svg|png|jpe?g|gif|ico|woff2?|ttf|otf|webp)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+  <Files "sw.js">
+    Header set Cache-Control "no-cache"
+  </Files>
+  <FilesMatch "\.(html|htm|json|xml|txt|webmanifest|md)$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+</IfModule>
+
+# 文本资源压缩(woff2 等已压缩格式自动排除;流式对话在下方单独关 gzip)
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/plain text/css text/javascript application/javascript application/x-javascript application/json image/svg+xml application/xml
+</IfModule>
+
+# 部分主机 php.ini 开着 display_errors:core.php 加载前的报错会暴露绝对路径,这里兜底。
+# 仅 mod_php 生效(CGI/FastCGI 下该指令被忽略,不报错)。
+<IfModule mod_php7.c>
+  php_flag display_errors off
+</IfModule>
+<IfModule mod_php.c>
+  php_flag display_errors off
+</IfModule>
+
 # 禁止直接下载数据与配置
 <IfModule mod_authz_core.c>
-  <FilesMatch "^(config\.php|db\.json|db\.lock|secret|login-fails\.json|logs\.json)$">
+  <FilesMatch "^(config\.php|db\.json|db\.lock|secret|login-fails\.json|logs\.json|logs\.ndjson)$">
     Require all denied
   </FilesMatch>
 </IfModule>
 
 <IfModule !mod_authz_core.c>
-  <FilesMatch "^(config\.php|db\.json|db\.lock|secret|login-fails\.json|logs\.json)$">
+  <FilesMatch "^(config\.php|db\.json|db\.lock|secret|login-fails\.json|logs\.json|logs\.ndjson)$">
     Order allow,deny
     Deny from all
   </FilesMatch>

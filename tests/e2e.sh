@@ -29,18 +29,62 @@ jget() { # 从 stdin JSON 提取 "key":"value" 或 "key":value 的值
   sed -n "s/.*\"$1\":\"\{0,1\}\([^,\"}]*\)\"\{0,1\}.*/\1/p" | head -1
 }
 
+# Windows(Git Bash)下 bash 的 kill 杀不死原生 php.exe,残留的监听进程会让
+# 下一次 e2e 连上「数据目录已被删」的僵尸服务器,出现成片的 401/空响应假失败。
+# 因此 kill 之后再按 WINPID 用 taskkill 按进程树补刀(Linux 下无 taskkill 自动跳过)。
+kill_tree() {
+  [ -n "${1:-}" ] || return 0
+  kill "$1" 2>/dev/null
+  if command -v taskkill > /dev/null 2>&1 && command -v ps > /dev/null 2>&1; then
+    wpid=$(ps -W 2>/dev/null | awk -v p="$1" '$1==p && $4+0>0 {print $4; exit}')
+    [ -n "$wpid" ] && taskkill //F //T //PID "$wpid" > /dev/null 2>&1
+  fi
+}
+
 cleanup() {
-  [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null
-  [ -n "${MOCK_PID:-}" ] && kill "$MOCK_PID" 2>/dev/null
-  rm -rf "$TMP"
+  kill_tree "$APP_PID"
+  kill_tree "$MOCK_PID"
+  kill_tree "$OAUTH_PID"
+  kill_tree "$SMTP_PID"
+  kill_tree "$SMTP_GBK_PID"
+  kill_tree "$SMTP_REQ_PID"
+  kill_tree "$SMTP_GMAIL_PID"
+  # Windows 上被占用的文件删不掉:先补刀再清目录,仍删不掉(极端情况)只提示不报错
+  rm -rf "$TMP" 2>/dev/null || true
 }
 trap cleanup EXIT
 
 say "== 启动服务 (app :$PORT / mock :$MOCK_PORT) =="
-DATA_DIR="$TMP/data" ADMIN_NAME=admin ADMIN_PASSWORD=e2e-pass php -S "127.0.0.1:$PORT" router.php >"$TMP/app.log" 2>&1 &
+SMTP_PORT="${E2E_SMTP_PORT:-8105}"
+SMTP_GBK_PORT="${E2E_SMTP_GBK_PORT:-8106}"
+php tests/mock-smtp.php "$SMTP_PORT" ok >"$TMP/smtp.log" 2>&1 &
+SMTP_PID=$!
+php tests/mock-smtp.php "$SMTP_GBK_PORT" gbk >"$TMP/smtp-gbk.log" 2>&1 &
+SMTP_GBK_PID=$!
+SMTP_REQ_PORT="${E2E_SMTP_REQ_PORT:-8107}"
+SMTP_GMAIL_PORT="${E2E_SMTP_GMAIL_PORT:-8108}"
+php tests/mock-smtp.php "$SMTP_REQ_PORT" requirepass >"$TMP/smtp-req.log" 2>&1 &
+SMTP_REQ_PID=$!
+php tests/mock-smtp.php "$SMTP_GMAIL_PORT" gmail535 >"$TMP/smtp-gmail.log" 2>&1 &
+SMTP_GMAIL_PID=$!
+OAUTH_PORT="${E2E_OAUTH_PORT:-8104}"
+DATA_DIR="$TMP/data" ADMIN_NAME=admin ADMIN_PASSWORD=e2e-pass \
+  TC_BRAVE_SEARCH_BASE="http://127.0.0.1:$MOCK_PORT" \
+  TC_DDG_HTML_BASE="http://127.0.0.1:$MOCK_PORT" \
+  TC_JINA_SEARCH_BASE="http://127.0.0.1:$MOCK_PORT" \
+  TC_MISTRAL_OCR_BASE="http://127.0.0.1:$MOCK_PORT" \
+  TC_PAGE_FETCH_BASE="http://127.0.0.1:$MOCK_PORT" \
+  TC_WECHAT_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" TC_WECHAT_API_BASE="http://127.0.0.1:$OAUTH_PORT" \
+  TC_QQ_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
+  TC_LINUXDO_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
+  TC_NODELOC_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
+  php -S "127.0.0.1:$PORT" router.php >"$TMP/app.log" 2>&1 &
 APP_PID=$!
-php -S "127.0.0.1:$MOCK_PORT" tests/mock-upstream.php >"$TMP/mock.log" 2>&1 &
+TC_MOCK_ECHO_FILE="$TMP/pf_echo_out.txt" php -S "127.0.0.1:$MOCK_PORT" tests/mock-upstream.php >"$TMP/mock.log" 2>&1 &
 MOCK_PID=$!
+OAUTH_PORT="${E2E_OAUTH_PORT:-8104}"
+php -S "127.0.0.1:$OAUTH_PORT" tests/mock-oauth.php >"$TMP/mock-oauth.log" 2>&1 &
+OAUTH_PID=$!
 
 wait_for() {
   local i code
@@ -59,7 +103,8 @@ code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/")
 assert_eq "首页 200" "$code" "200"
 cfg=$(curl -s "$BASE/api/config")
 assert_contains "config 返回版本" "$cfg" '"version":"2.'
-assert_contains "环境自检通过" "$(curl -s "$BASE/api/env-check")" '"allOk":true'
+ecode=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/env-check")
+assert_eq "已安装时环境自检接口关闭(403)" "$ecode" "403"
 assert_contains "config 返回公告字段" "$cfg" '"announcement"'
 hdr=$(curl -s -D - -o /dev/null "$BASE/api/config")
 assert_contains "CSP 头" "$hdr" "Content-Security-Policy:"
@@ -148,6 +193,16 @@ PROV=$(curl -s "$BASE/api/providers" -H "$AUTH" | grep -o '"id":"[a-f0-9]*","nam
 GID1=$(curl -s "$BASE/api/admin/groups" -H "$AUTH" | grep -o '"groups":\[{"id":"[a-f0-9]*"' | head -1 | cut -d'"' -f6)
 GID2=$(curl -s "$BASE/api/admin/groups" -H "$AUTH" | grep -o '"groups":\[{"id":"[a-f0-9]*"' | head -1 | cut -d'"' -f6)
 assert_eq "用户组 ID 跨请求稳定" "$GID1" "$GID2"
+# 用户组必须下发 role(前端据此判断「管理员组」;缺失会导致改成演示管理员时误报「用户组更新失败」)
+assert_has "用户组下发 admin role" "$(curl -s "$BASE/api/admin/groups" -H "$AUTH")" '"role":"admin"'
+assert_has "用户组下发 user role" "$(curl -s "$BASE/api/admin/groups" -H "$AUTH")" '"role":"user"'
+ADMINGID=$(curl -s "$BASE/api/admin/groups" -H "$AUTH" | python -c "import sys,json;d=json.load(sys.stdin);print([g['id'] for g in d['groups'] if g.get('role')=='admin'][0])")
+# 普通用户设为演示管理员:后端应自动归入管理员组(前端因此无需再多调一次组接口)
+DEMOU=$(curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"todemo","password":"pass1234"}')
+TU=$(printf '%s' "$DEMOU" | python -c "import sys,json;print(json.load(sys.stdin)['user']['id'])")
+convert=$(curl -s -X POST "$BASE/api/admin/users/update" -H "$AUTH" -H "Content-Type: application/json" -d '{"userId":"'"$TU"'","name":"todemo","admin":true,"demo":true,"demoMinutes":10}')
+assert_contains "普通用户转演示管理员成功" "$convert" '"demo":true'
+assert_has "转演示后自动归入管理员组" "$convert" "\"groupId\":\"$ADMINGID\""
 # 新建全局供应商应默认授权给各用户组(规则里出现该供应商且为通配)
 assert_has "新供应商默认对所有分组开放" "$(curl -s "$BASE/api/admin/access" -H "$AUTH")" "\"providerId\":\"$PROV\",\"modelIds\":[\"*\"]"
 # 收窄授权后再次读取必须仍然生效
@@ -226,6 +281,15 @@ assert_contains "图片规格:4K 档位可用" "$(curl -s -X POST "$BASE/api/pro
 assert_contains "图片规格:竖版精确像素可用" "$(curl -s -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$PROV"'","model":"mock-image","prompt":"x","size":"1024x1792"}')" 'example.com/mock.png'
 # 生图模型标记持久化(供应商保存 image:true 后能读回)
 assert_has "供应商模型生图标记可保存" "$(curl -s "$BASE/api/providers" -H "$AUTH")" '"id":"mock-image","name":"Mock Image","image":true'
+# 生图多密钥回退:第一把坏 Key(401)→ 应自动换第二把好 Key 出图成功
+cat > "$TMP/imgkey.json" <<EOF
+{"name":"ImgKeyProv","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiFormat":"chat","scope":"global","costPerCall":1,
+ "keys":[{"id":"k1","name":"坏","apiKey":"sk-fail"},{"id":"k2","name":"好","apiKey":"sk-good"}],
+ "models":[{"id":"mock-image","name":"Img","image":true,"keyIds":["k1"]}]}
+EOF
+imgkey=$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/imgkey.json")
+IMGKEYPROV=$(printf '%s' "$imgkey" | python -c "import sys,json;print(json.load(sys.stdin)['provider']['id'])")
+assert_contains "生图多密钥: 第一把失败自动回退第二把" "$(curl -s -X POST "$BASE/api/proxy/images" -H "$UAUTH" -H "Content-Type: application/json" -d '{"providerId":"'"$IMGKEYPROV"'","model":"mock-image","prompt":"x"}')" 'example.com/mock.png'
 # 模型级单价:保存后能读回,并在 /api/proxy/models 的 costs 映射中体现
 cat > "$TMP/prov-cost.json" <<EOF
 {"name":"CostProv","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiKey":"sk-cost","apiFormat":"chat","models":[{"id":"mock-model","name":"Mock","cost":3},{"id":"mock-cheap","name":"Cheap"}],"costPerCall":1,"scope":"global"}
@@ -343,6 +407,31 @@ cat > "$TMP/chain-chat.json" <<EOF
 EOF
 assert_contains "密钥链认证失败自动回退下一把" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/chain-chat.json")" 'MOCK-REPLY'
 
+# 关键场景:供应商配了两把 Key,但模型只绑了第一把(坏号)→ 也应自动回退到供应商的另一把好号
+cat > "$TMP/mkone.json" <<EOF
+{"name":"OneBindProv","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiFormat":"chat","scope":"global","costPerCall":1,
+ "keys":[{"id":"k1","name":"坏号","apiKey":"sk-fail"},{"id":"k2","name":"好号","apiKey":"sk-good"}],
+ "models":[{"id":"mock-model","name":"OneBound","keyIds":["k1"]}]}
+EOF
+onebind=$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/mkone.json")
+ONEBINDPROV=$(printf '%s' "$onebind" | python -c "import sys,json;print(json.load(sys.stdin)['provider']['id'])")
+cat > "$TMP/onebind-chat.json" <<EOF
+{"model":"mock-model","providerId":"$ONEBINDPROV","stream":false,"messages":[{"role":"user","content":"hi"}]}
+EOF
+assert_contains "模型只绑一把时也回退到供应商其余 Key" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/onebind-chat.json")" 'MOCK-REPLY'
+# 模型完全未绑定 Key(仅有供应商多把)时,同样应有回退保障
+cat > "$TMP/mknone.json" <<EOF
+{"name":"NoBindProv","baseUrl":"http://127.0.0.1:$MOCK_PORT/v1","apiFormat":"chat","scope":"global","costPerCall":1,
+ "keys":[{"id":"k1","name":"坏号","apiKey":"sk-fail"},{"id":"k2","name":"好号","apiKey":"sk-good"}],
+ "models":[{"id":"mock-model","name":"NoBound"}]}
+EOF
+nobind=$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d @"$TMP/mknone.json")
+NOBINDPROV=$(printf '%s' "$nobind" | python -c "import sys,json;print(json.load(sys.stdin)['provider']['id'])")
+cat > "$TMP/nobind-chat.json" <<EOF
+{"model":"mock-model","providerId":"$NOBINDPROV","stream":false,"messages":[{"role":"user","content":"hi"}]}
+EOF
+assert_contains "模型未绑定时也回退到供应商其余 Key" "$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d @"$TMP/nobind-chat.json")" 'MOCK-REPLY'
+
 # ---------- 供应商排序 ----------
 say "== 供应商排序 =="
 # 建两个供应商,把后建的排到前面,验证列表顺序随 order 变化
@@ -432,6 +521,16 @@ assert_contains "白名单内模型可见" "$(curl -s "$BASE/v1/models" -H "Auth
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d "{\"apiExposedModels\":[\"$PROV|not-exist\"]}" > /dev/null
 assert_has "白名单外模型不可见" "$(curl -s "$BASE/v1/models" -H "Authorization: Bearer $KEY2")" '"data":[]'
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"apiExposedModels":[]}' > /dev/null
+# 白名单归一化:裸模型 id 唯一命中时自动转成「供应商ID|模型ID」;
+# 同名歧义或不存在的模型必须明确报 400,不能静默丢弃(否则白名单悄悄失效)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"apiExposedModels":["mock-cheap"]}' > /dev/null
+assert_has "裸模型 id 自动解析为供应商规则" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" "\"$COSTPROV|mock-cheap\""
+assert_contains "解析后的白名单对 /v1 生效" "$(curl -s "$BASE/v1/models" -H "Authorization: Bearer $KEY2")" 'mock-cheap'
+assert_contains "同名模型裸 id 明确报错" "$(curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"apiExposedModels":["mock-model"]}')" '无法唯一匹配'
+assert_contains "不存在的模型也明确报错" "$(curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"apiExposedModels":["no-such-model"]}')" '无法唯一匹配'
+# 报错时原白名单不被破坏
+assert_has "报错后白名单保持原值" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" "\"$COSTPROV|mock-cheap\""
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"apiExposedModels":[]}' > /dev/null
 
 # ---------- 演示管理员 ----------
 say "== 演示管理员 =="
@@ -459,6 +558,105 @@ assert_eq "真实管理员改动写入演示基准" "$(snap_site "$TMP/data")" "
 curl -s -X POST "$BASE/api/admin/settings" -H "$DAUTH" -H "Content-Type: application/json" -d '{"siteName":"DEMOTMP"}' > /dev/null
 assert_eq "演示管理员改动不污染基准" "$(snap_site "$TMP/data")" "REALBASE"
 assert_contains "config 暴露 demoMode" "$(curl -s "$BASE/api/config")" '"demoMode":true'
+# 演示管理员的隐私边界:登录 IP / 邮箱 / 密钥 / 备份 / 日志内容 / 第三方绑定 一律不可见
+DEMOUSERS=$(curl -s "$BASE/api/admin/users" -H "$DAUTH")
+assert_contains "演示管理员看不到用户登录 IP" "$DEMOUSERS" '"lastIp":""'
+assert_contains "演示管理员看不到用户邮箱" "$DEMOUSERS" '"email":""'
+# 真实管理员仍应看到 IP(否则这次修复就过头了)
+assert_contains "真实管理员仍可见用户 IP" "$(curl -s "$BASE/api/admin/users" -H "$AUTH")" '"lastIp":"127.0.0.1"'
+# 供应商密钥:演示管理员连掩码都不下发
+DEMOPROV=$(curl -s "$BASE/api/providers" -H "$DAUTH")
+assert_contains "演示管理员看不到供应商密钥掩码" "$DEMOPROV" '"apiKey":""'
+assert_has "演示管理员看不到多密钥列表" "$DEMOPROV" '"keys":[]'
+assert_contains "演示管理员不可查看明文密钥" "$(curl -s -X POST "$BASE/api/providers/$PROV/key" -H "$DAUTH")" '演示管理员不可查看供应商密钥'
+assert_contains "演示管理员不可删除供应商" "$(curl -s -X DELETE "$BASE/api/admin/providers/$PROV" -H "$DAUTH")" '演示管理员不能删除供应商'
+# SMTP 凭据:演示管理员整段不可见(SMTP 密码可用于冒用站点域名发信),也不可写入或取回明文
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"smtpKeyRevealable":true,"smtp":{"host":"smtp.e2e.local","port":465,"username":"ops@e2e.local","password":"E2eSmtpSecret","encryption":"ssl","fromEmail":"ops@e2e.local"}}' > /dev/null
+DEMOSET=$(curl -s "$BASE/api/admin/settings" -H "$DAUTH")
+assert_has "演示管理员看不到 SMTP 主机" "$DEMOSET" '"host":""'
+assert_has "演示管理员看不到 SMTP 密码" "$DEMOSET" '"password":""'
+assert_has "演示管理员看不到 SMTP 用户名" "$DEMOSET" '"username":""'
+assert_has "演示管理员收到 SMTP 受限标记" "$DEMOSET" '"smtpRestricted":true'
+assert_contains "演示管理员不可写入 SMTP 配置" "$(curl -s -X POST "$BASE/api/admin/settings" -H "$DAUTH" -H "Content-Type: application/json" -d '{"smtp":{"host":"evil.local","port":25,"username":"x","password":"pwn","encryption":"none","fromEmail":"x@evil.local"}}')" '演示管理员不能修改邮件(SMTP)配置'
+assert_contains "演示管理员不可取回 SMTP 明文密码" "$(curl -s -X POST "$BASE/api/admin/settings/smtp-reveal" -H "$DAUTH")" '演示管理员不可查看邮件(SMTP)密码'
+# 真实管理员:勾选「保持显示」后自己可读可复制,取消勾选则只给掩码且拒绝取回
+assert_has "勾选保持显示后下发 SMTP 明文" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"password":"E2eSmtpSecret"'
+assert_has "真实管理员可取回 SMTP 明文" "$(curl -s -X POST "$BASE/api/admin/settings/smtp-reveal" -H "$AUTH")" '"password":"E2eSmtpSecret"'
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"smtpKeyRevealable":false,"smtp":{"host":"smtp.e2e.local","port":465,"username":"ops@e2e.local","encryption":"ssl","fromEmail":"ops@e2e.local"}}' > /dev/null
+# 掩码含多字节字符(••),用「含掩码且不含明文」判定,避开 grep 的 locale 差异
+MASKED=$(curl -s "$BASE/api/admin/settings" -H "$AUTH")
+if printf '%s' "$MASKED" | grep -qF '"password":"E2eS' && ! printf '%s' "$MASKED" | grep -qF 'E2eSmtpSecret'; then ok "未勾选时仅下发掩码(不含明文)"; else bad "未勾选时仍可能下发明文: $(printf '%s' "$MASKED" | head -c 120)"; fi
+assert_contains "未勾选时拒绝取回明文" "$(curl -s -X POST "$BASE/api/admin/settings/smtp-reveal" -H "$AUTH")" '保存时未勾选'
+# 管理员账号不可走邮箱自助改密(邮箱被接管等于交出后台)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"passwordResetEnabled":true}' > /dev/null
+php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("users")); $us=json_decode($q->fetchColumn(),true); foreach($us as &$u) if(($u["name"]??"")==="admin") $u["email"]="admin@e2e.local"; unset($u); $up=$pdo->prepare("UPDATE store SET v=? WHERE k=?"); $up->execute(array(json_encode($us),"users"));' "$TMP/data"
+assert_contains "管理员账号拒绝邮箱重置" "$(curl -s -X POST "$BASE/api/auth/forgot-password" -H "Content-Type: application/json" -d '{"email":"admin@e2e.local"}')" '管理员账号不支持通过邮箱重置密码'
+# 普通用户仍可走该流程(否则就是拦过头了)
+php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("users")); $us=json_decode($q->fetchColumn(),true); $first=""; foreach($us as &$u) if(empty($u["admin"]) && empty($u["guest"]) && ($u["email"]??"")===""){ $u["email"]="member@e2e.local"; $first=$u["name"]; break; } unset($u); $up=$pdo->prepare("UPDATE store SET v=? WHERE k=?"); $up->execute(array(json_encode($us),"users")); echo $first;' "$TMP/data" > /dev/null
+if printf '%s' "$(curl -s -X POST "$BASE/api/auth/forgot-password" -H "Content-Type: application/json" -d '{"email":"member@e2e.local"}')" | grep -q '管理员账号'; then bad "普通用户被误判为管理员"; else ok "普通用户仍可走邮箱重置"; fi
+# 备份是整库快照(含密码哈希/对话/密钥),演示管理员完全不可接触
+assert_contains "演示管理员不可列出备份" "$(curl -s "$BASE/api/admin/backup" -H "$DAUTH")" '演示管理员不可下载或管理数据备份'
+assert_contains "演示管理员不可下载备份" "$(curl -s "$BASE/api/admin/backup/download?id=x" -H "$DAUTH")" '演示管理员不可下载或管理数据备份'
+assert_contains "演示管理员不可恢复备份" "$(curl -s -X POST "$BASE/api/admin/backup/restore" -H "$DAUTH" -H "Content-Type: application/json" -d '{"id":"x"}')" '演示管理员不可下载或管理数据备份'
+# 日志:IP/用户名/对话正文都要剔除(日志里能读到提示词=绕过「不可查看用户对话」)
+DEMOLOG=$(curl -s "$BASE/api/admin/logs?limit=20" -H "$DAUTH")
+if printf '%s' "$DEMOLOG" | grep -qF '"ip"'; then bad "演示管理员日志里仍有 IP"; else ok "演示管理员日志不含 IP"; fi
+if printf '%s' "$DEMOLOG" | grep -qF '"prompt":"'; then bad "演示管理员日志里仍有对话正文"; else ok "演示管理员日志不含对话正文"; fi
+if printf '%s' "$DEMOLOG" | grep -qF '"reply":"'; then bad "演示管理员日志里仍有模型回复"; else ok "演示管理员日志不含模型回复"; fi
+if printf '%s' "$DEMOLOG" | grep -qF '"userName"'; then bad "演示管理员日志里仍有用户名"; else ok "演示管理员日志不含用户名"; fi
+assert_contains "真实管理员日志仍含 IP" "$(curl -s "$BASE/api/admin/logs?limit=1" -H "$AUTH")" '"ip":'
+
+# ---------- 邮件发送:失败原因必须可读且响应体合法 ----------
+say "== 邮件发送报错 =="
+# 正常投递(经 mock SMTP)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d "{\"smtp\":{\"host\":\"127.0.0.1\",\"port\":$SMTP_PORT,\"username\":\"ops@e2e.local\",\"password\":\"pw\",\"encryption\":\"none\",\"fromEmail\":\"ops@e2e.local\"}}" > /dev/null
+assert_contains "测试邮件发送成功" "$(curl -s -X POST "$BASE/api/admin/settings/test-email" -H "$AUTH" -H "Content-Type: application/json" -d '{"to":"t@e2e.local"}')" '"ok":true'
+# 端口不通:状态码必须是网关不会替换的 4xx,且带上目标地址与排查方向
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"smtp":{"host":"127.0.0.1","port":2599,"username":"ops@e2e.local","password":"pw","encryption":"none","fromEmail":"ops@e2e.local"}}' > /dev/null
+CONN_CODE=$(curl -s -o "$TMP/mail1.json" -w '%{http_code}' -X POST "$BASE/api/admin/settings/test-email" -H "$AUTH" -H "Content-Type: application/json" -d '{"to":"t@e2e.local"}')
+assert_eq "连接失败返回 4xx(网关不劫持)" "$CONN_CODE" "400"
+assert_has "连接失败给出目标地址与端口建议" "$(cat "$TMP/mail1.json")" 'SSL→465'
+# 关键回归:中文服务商用 GBK 回错误文本时,响应体仍必须是合法 JSON(此前会变成空体 → 前端只看到 502)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d "{\"smtp\":{\"host\":\"127.0.0.1\",\"port\":$SMTP_GBK_PORT,\"username\":\"ops@e2e.local\",\"password\":\"pw\",\"encryption\":\"none\",\"fromEmail\":\"ops@e2e.local\"}}" > /dev/null
+GBK_CODE=$(curl -s -o "$TMP/mail2.json" -w '%{http_code}' -X POST "$BASE/api/admin/settings/test-email" -H "$AUTH" -H "Content-Type: application/json" -d '{"to":"t@e2e.local"}')
+assert_eq "GBK 错误文本仍返回 4xx" "$GBK_CODE" "400"
+# 端口被防火墙/主机商静默丢包(TEST-NET 地址不会回应):必须明确指向「出站被屏蔽」并给建议,
+# 这是虚拟主机上最常见的一类失败,不能只丢一句「连接失败」
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"smtp":{"host":"192.0.2.1","port":587,"username":"ops@e2e.local","password":"pw","encryption":"tls","fromEmail":"ops@e2e.local"}}' > /dev/null
+BLOCKED_CODE=$(curl -s -o "$TMP/mail3.json" -w '%{http_code}' -X POST "$BASE/api/admin/settings/test-email" -H "$AUTH" -H "Content-Type: application/json" -d '{"to":"t@e2e.local"}')
+assert_eq "端口无响应返回 4xx" "$BLOCKED_CODE" "400"
+assert_has "端口无响应识别为出站被屏蔽" "$(cat "$TMP/mail3.json")" '主机商屏蔽了出站 SMTP'
+assert_has "端口无响应给出换端口建议" "$(cat "$TMP/mail3.json")" '换端口'
+# Google 应用专用密码在页面上是「abcd efgh ijkl mnop」带空格的形式:
+# 用户整段复制时,密码必须被自动去掉空格后才能通过认证
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d "{\"smtpKeyRevealable\":true,\"smtp\":{\"host\":\"127.0.0.1\",\"port\":$SMTP_REQ_PORT,\"username\":\"ops@gmail.com\",\"password\":\"abcd efgh ijkl mnop\",\"encryption\":\"none\",\"fromEmail\":\"ops@gmail.com\"}}" > /dev/null
+assert_has "带空格的应用专用密码被归一化为 16 位" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"password":"abcdefghijklmnop"'
+assert_contains "带空格的应用专用密码可正常发信" "$(curl -s -X POST "$BASE/api/admin/settings/test-email" -H "$AUTH" -H "Content-Type: application/json" -d '{"to":"t@e2e.local"}')" '"ok":true'
+# 认证被拒时给出服务商专属排查清单(含「多账号 / u/2」这类真实陷阱)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d "{\"smtp\":{\"host\":\"127.0.0.1\",\"port\":$SMTP_GMAIL_PORT,\"username\":\"ops@gmail.com\",\"password\":\"WrongPassword123\",\"encryption\":\"none\",\"fromEmail\":\"ops@gmail.com\"}}" > /dev/null
+GMAIL_MSG=$(curl -s -X POST "$BASE/api/admin/settings/test-email" -H "$AUTH" -H "Content-Type: application/json" -d '{"to":"t@e2e.local"}')
+assert_has "Gmail 认证失败给出专属核对清单" "$GMAIL_MSG" '应用专用密码'
+assert_has "Gmail 提示包含多账号陷阱" "$GMAIL_MSG" 'u/2'
+assert_has "认证失败回显本次登录账号" "$GMAIL_MSG" '本次用于登录的账号'
+# 有用户名但无密码:提前给可读原因,而不是让服务端回英文 535。
+# 注意:保存时空密码会被「保留原值」保护,所以这里直接清库里的密码来构造该场景。
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"smtp":{"host":"127.0.0.1","port":8105,"username":"ops@e2e.local","encryption":"none","fromEmail":"ops@e2e.local"}}' > /dev/null
+php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("settings")); $s=json_decode($q->fetchColumn(),true); $s["smtp"]["password"]=""; $up=$pdo->prepare("UPDATE store SET v=? WHERE k=?"); $up->execute(array(json_encode($s),"settings"));' "$TMP/data"
+assert_has "用户名有值但密码为空给出明确提示" "$(curl -s -X POST "$BASE/api/admin/settings/test-email" -H "$AUTH" -H "Content-Type: application/json" -d '{"to":"t@e2e.local"}')" '密码为空'  
+GBK_JSON=$(cat "$TMP/mail2.json")
+assert_has "GBK 错误文本响应体仍是合法 JSON" "$GBK_JSON" '"error"'
+assert_has "GBK 原文被转成可读中文" "$GBK_JSON" '用户名或密码不正确'
+assert_has "认证失败附带处理建议" "$GBK_JSON" '授权码' ;
+# 用户第三方绑定属账号隐私
+assert_contains "演示管理员不可查看用户第三方绑定" "$(curl -s "$BASE/api/admin/users/oauth?userId=$GID1" -H "$DAUTH")" '演示管理员不可查看用户的第三方绑定'
+# 用量导出与用户维度排行
+assert_contains "演示管理员不可导出用户用量" "$(curl -s "$BASE/api/admin/usage/export" -H "$DAUTH")" '演示管理员不可导出用户用量明细'
+assert_has "演示管理员看到的额度排行已匿名" "$(curl -s "$BASE/api/admin/stats" -H "$DAUTH")" '"name":"用户 '
+# 演示管理员保存供应商时必须保留既有密钥(接口不下发密钥,提交里 keys 为空也不能清空)
+curl -s -X POST "$BASE/api/admin/providers/$PROV" -H "$DAUTH" -H "Content-Type: application/json" -d '{"name":"Demo Renamed","apiKey":"","keys":[]}' > /dev/null
+assert_contains "演示改供应商后密钥仍在" "$(curl -s "$BASE/api/providers" -H "$AUTH")" '"hasKey":true'
+curl -s -X POST "$BASE/api/admin/providers/$PROV" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"MockAI"}' > /dev/null
+
 # 已有用户可随时转为/取消演示管理员(不限于创建时)
 plain=$(curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"plainadmin","password":"pass1234","admin":true}')
 PLAINID=$(printf '%s' "$plain" | jget id)
@@ -530,6 +728,43 @@ assert_contains "清除后有移除计数" "$purge" '"removed":'
 LEFT=$(curl -s "$BASE/api/admin/users" -H "$AUTH" | grep -o '"guest":true' | wc -l | tr -d ' ')
 assert_eq "清除后无游客" "$LEFT" "0"
 
+# ---------- 性能优化开关 ----------
+say "== 性能优化开关 =="
+# 默认全关
+perfcfg=$(curl -s "$BASE/api/config")
+assert_contains "config 下发 perf 开关" "$perfcfg" '"perf"'
+assert_contains "性能开关默认不加载字体为 false" "$perfcfg" '"noWebfonts":false'
+# 开启「内置字体默认不加载」后,前台配置应据此把默认字体切到系统字体(用户仍可自选)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"perfNoWebfonts":true}' > /dev/null
+assert_contains "内置字体默认不加载可开启" "$(curl -s "$BASE/api/config")" '"noWebfonts":true'
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"perfNoWebfonts":false}' > /dev/null
+# 打开若干开关后应下发 true,并能读回
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"perfNoWebfonts":true,"perfNoKatex":true,"perfNoHighlight":true,"perfNoMermaid":true}' > /dev/null
+perfcfg2=$(curl -s "$BASE/api/config")
+assert_contains "不加载字体生效" "$perfcfg2" '"noWebfonts":true'
+assert_contains "不加载 KaTeX 生效" "$perfcfg2" '"noKatex":true'
+assert_contains "不加载高亮生效" "$perfcfg2" '"noHighlight":true'
+assert_contains "不加载 Mermaid 生效" "$perfcfg2" '"noMermaid":true'
+assert_contains "后台设置可读回 perf" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"perfNoKatex":true'
+# 关回去(不影响后续用例)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"perfNoWebfonts":false,"perfNoKatex":false,"perfNoHighlight":false,"perfNoMermaid":false}' > /dev/null
+assert_contains "性能开关可关闭" "$(curl -s "$BASE/api/config")" '"noKatex":false'
+
+# ---------- 生图结果本地留存 ----------
+say "== 生图本地留存 =="
+# 默认开启
+assert_contains "生图本地留存默认开启" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"imageArchiveEnabled":true'
+assert_contains "留存配额默认 500MB" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"imageArchiveQuotaMb":500'
+# 可关闭并读回
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"imageArchiveEnabled":false,"imageArchiveQuotaMb":800}' > /dev/null
+assert_contains "留存可关闭" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"imageArchiveEnabled":false'
+assert_contains "留存配额可改" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"imageArchiveQuotaMb":800'
+# 配额越界被夹紧
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"imageArchiveQuotaMb":1}' > /dev/null
+assert_contains "留存配额下界夹紧到 50" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"imageArchiveQuotaMb":50'
+# 关回去(默认开启;网络不可达时自动回退为按需代理,不影响出图)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"imageArchiveEnabled":true,"imageArchiveQuotaMb":500}' > /dev/null
+
 # ---------- 开放 API 对话落库 ----------
 say "== 开放 API 对话落库 =="
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"apiSaveChats":true,"persistChats":true}' > /dev/null
@@ -574,6 +809,698 @@ BADPROV=$(curl -s "$BASE/api/providers" -H "$AUTH" | grep -o '"id":"[a-f0-9]*","
 badmsg=$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" -d "{\"providerId\":\"$BADPROV\",\"model\":\"bad-model\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
 assert_contains "连接失败给出可定位提示" "$badmsg" '无法解析上游域名'
 
+# ---------- 授权规则 API 语义:单组更新 vs 全量替换 ----------
+say "== 授权规则语义 =="
+# 基准快照。注意:内置管理员组会在每次写库时自动补齐全部供应商授权(管理员永远全量可用),
+# 因此断言只针对「非管理员组」的规则增删,不能假设全量替换后总条数为 1。
+baseline=$(curl -s "$BASE/api/admin/access" -H "$AUTH")
+basecount=$(printf '%s' "$baseline" | grep -o '"groupId"' | wc -l | tr -d ' ')
+NG=$(curl -s -X POST "$BASE/api/admin/groups" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"access-sem-group"}' | jget id)
+[ -n "$NG" ] && ok "创建语义测试组" || bad "创建语义测试组"
+curl -s -X POST "$BASE/api/admin/access" -H "$AUTH" -H "Content-Type: application/json" -d "{\"groupId\":\"$NG\",\"providerId\":\"$PROV\",\"modelIds\":[\"mock-model\"]}" > /dev/null
+assert_has "单组更新写入新规则" "$(curl -s "$BASE/api/admin/access" -H "$AUTH")" "\"groupId\":\"$NG\",\"providerId\":\"$PROV\",\"modelIds\":[\"mock-model\"]"
+newcount=$(curl -s "$BASE/api/admin/access" -H "$AUTH" | grep -o '"groupId"' | wc -l | tr -d ' ')
+assert_eq "单组更新不影响其他组(规则数+1)" "$newcount" "$((basecount + 1))"
+# rules 数组 = 全量替换:替换后只剩 NG 一条 + 管理员组自愈规则;其他组(如默认组)的规则必须消失
+curl -s -X POST "$BASE/api/admin/access" -H "$AUTH" -H "Content-Type: application/json" -d "{\"rules\":[{\"groupId\":\"$NG\",\"providerId\":\"$PROV\",\"modelIds\":[\"*\"]}]}" > /dev/null
+acc_after=$(curl -s "$BASE/api/admin/access" -H "$AUTH")
+assert_has "替换后 NG 规则可回读" "$acc_after" "\"groupId\":\"$NG\""
+if printf '%s' "$acc_after" | grep -q "\"groupId\":\"$GID1\""; then bad "全量替换应移除未包含组(默认组)的规则"; else ok "全量替换移除了未包含组的规则"; fi
+# 用基准快照整体回滚,验证全量替换可用于安全的批量导入
+curl -s -X POST "$BASE/api/admin/access" -H "$AUTH" -H "Content-Type: application/json" -d "{\"rules\":$(printf '%s' "$baseline" | sed 's/^{"rules"://; s/}$//')}" > /dev/null
+assert_eq "基准快照可整体回滚" "$(curl -s "$BASE/api/admin/access" -H "$AUTH" | grep -o '"groupId"' | wc -l | tr -d ' ')" "$basecount"
+
+# ---------- 多源联网搜索(brave / ddg / jina,走 mock) ----------
+say "== 多源联网搜索 =="
+# 注意:请求体含中文,一律走文件(--data-binary),避免 Windows 终端把内联中文转成错误编码
+cat > "$TMP/ws_q.json" <<'EOF'
+{"query":"上海天气","max":3}
+EOF
+cat > "$TMP/ws_chat.json" <<EOF
+{"providerId":"$PROV","model":"mock-model","webSearch":"1","messages":[{"role":"user","content":"上海天气"}]}
+EOF
+# brave:key 保存后掩码回显,config 暴露 provider,测试端点命中 mock
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchEnabled":true,"webSearchProvider":"brave","webSearchBraveKey":"BSA-e2e-key-12345","webSearchMaxResults":3}' > /dev/null
+assert_contains "brave 供应商可保存" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"webSearchProvider":"brave"'
+assert_has "brave key 掩码回显" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"webSearchBraveKey":"BSA'
+assert_contains "config 暴露 brave" "$(curl -s "$BASE/api/config")" '"provider":"brave"'
+cat > "$TMP/ws_brave.json" <<'EOF'
+{"provider":"brave","query":"上海天气","max":3}
+EOF
+BRAVE=$(curl -s -X POST "$BASE/api/admin/search/test" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ws_brave.json")
+assert_contains "brave 测试命中 mock" "$BRAVE" '"ok":true'
+assert_contains "brave 结果带查询词" "$BRAVE" 'Brave:上海天气'
+# ddg:免 key;广告被过滤、uddg 跳转解包
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchProvider":"ddg"}' > /dev/null
+cat > "$TMP/ws_ddg.json" <<'EOF'
+{"provider":"ddg","query":"上海天气","max":3}
+EOF
+DDG=$(curl -s -X POST "$BASE/api/admin/search/test" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ws_ddg.json")
+assert_contains "ddg 测试命中 mock" "$DDG" '"ok":true'
+assert_contains "ddg 广告被过滤(只剩 2 条)" "$DDG" '"count":2'
+assert_contains "ddg uddg 解包" "$DDG" 'example.com/ddg1'
+# jina:免 key 也可测,JSON 解析
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchProvider":"jina","webSearchJinaKey":""}' > /dev/null
+cat > "$TMP/ws_jina.json" <<'EOF'
+{"provider":"jina","query":"上海天气","max":3}
+EOF
+JINA=$(curl -s -X POST "$BASE/api/admin/search/test" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ws_jina.json")
+assert_contains "jina 免 key 可用" "$JINA" '"ok":true'
+assert_contains "jina JSON 解析" "$JINA" 'Jina:上海天气'
+# 对话链路:brave 无 key → ready=false,搜索请求 502 且可定位;ddg → 搜索走通,回复正常
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchProvider":"brave","webSearchBraveKey":""}' > /dev/null
+CHATNS=$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ws_chat.json")
+assert_contains "brave 无 key 时搜索失败可定位" "$CHATNS" '联网搜索失败'
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchProvider":"ddg"}' > /dev/null
+CHATDS=$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ws_chat.json")
+assert_contains "ddg 搜索走通对话正常" "$CHATDS" 'MOCK-REPLY'
+# 用户自备源:ddg 免 key 即 ready
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchAllowUser":true}' > /dev/null
+TOOLS=$(curl -s -X POST "$BASE/api/me/tools" -H "$UAUTH" -H "Content-Type: application/json" -d '{"webSearchSource":"own","webSearchProvider":"ddg"}')
+assert_contains "用户自备 ddg 即 ready" "$TOOLS" '"ownReady":true'
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchAllowUser":false}' > /dev/null
+
+# ---------- 文档解析通道(PaddleOCR / Mistral OCR,按类别路由,走 mock) ----------
+say "== 联网搜索默认值 =="
+# 新站点默认:联网开启 + 默认用免 Key 的 DuckDuckGo(开箱即可用)
+SETTINGS_WS=$(curl -s "$BASE/api/admin/settings" -H "$AUTH")
+assert_has "联网搜索默认开启" "$SETTINGS_WS" '"webSearchEnabled":true'
+assert_has "默认检索源是 DuckDuckGo" "$SETTINGS_WS" '"webSearchProvider":"ddg"'
+assert_has "config 下发默认检索源" "$(curl -s "$BASE/api/config")" '"provider":"ddg"'
+# 非法检索源回退到默认值 ddg,而不是 tavily
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchProvider":"nonsense"}' > /dev/null
+assert_has "非法检索源回退到 ddg" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"webSearchProvider":"ddg"'
+# 管理员显式改回 tavily 时必须被尊重(默认值不能覆盖存量配置)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchEnabled":false,"webSearchProvider":"tavily"}' > /dev/null
+SETTINGS_WS2=$(curl -s "$BASE/api/admin/settings" -H "$AUTH")
+assert_has "显式选择 tavily 被保留" "$SETTINGS_WS2" '"webSearchProvider":"tavily"'
+assert_has "显式关闭联网被保留" "$SETTINGS_WS2" '"webSearchEnabled":false'
+# 恢复默认,避免影响后续用例
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchEnabled":true,"webSearchProvider":"ddg"}' > /dev/null
+say "== 搜索结果正文抓取 =="
+# 用 mock 页面验证整条链路:搜索结果 -> 抓正文 -> 注入模型上下文。
+# mock 页面刻意把导航放前面、正文里带裸 "<"(曾让 strip_tags 吞掉整段正文)。
+cat > "$TMP/pf_echo.json" <<EOF
+{"providerId":"$PROV","model":"mock-echo-system","webSearch":"1","messages":[{"role":"user","content":"上海天气"}]}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchEnabled":true,"webSearchProvider":"ddg","webSearchMaxResults":3}' > /dev/null
+PFRES=$(curl -s -X POST "$BASE/api/proxy/chat" -H "$UAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/pf_echo.json")
+assert_contains "联网搜索开启后请求走通" "$PFRES" 'MOCK-ECHO-OK'
+assert_contains "搜索结果正文已注入上下文" "$(cat "$TMP/pf_echo_out.txt" 2>/dev/null)" 'MOCK-PAGE-BODY-OK'
+assert_contains "正文里的温度数据被保留" "$(cat "$TMP/pf_echo_out.txt" 2>/dev/null)" '21℃'
+# 裸 <(风力「<3级」)之后的正文不能被 strip_tags 吞掉 —— 本次修复的核心回归
+assert_contains "正文裸 < 不再吞掉后续内容" "$(cat "$TMP/pf_echo_out.txt" 2>/dev/null)" '明天阴'
+assert_contains "风力数据随裸 < 一起保留" "$(cat "$TMP/pf_echo_out.txt" 2>/dev/null)" '3级'
+if grep -qF 'MOCK-SCRIPT-SHOULD-NOT-APPEAR' "$TMP/pf_echo_out.txt" 2>/dev/null; then bad "脚本内容进了上下文"; else ok "脚本内容不进上下文"; fi
+if grep -qF 'MOCK-COMMENT-SHOULD-NOT-APPEAR' "$TMP/pf_echo_out.txt" 2>/dev/null; then bad "注释内容进了上下文"; else ok "注释内容不进上下文"; fi
+if grep -qF '天气地图' "$TMP/pf_echo_out.txt" 2>/dev/null; then bad "导航菜单未被瘦身"; else ok "导航菜单被瘦身"; fi
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webSearchEnabled":false}' > /dev/null
+
+say "== 文档解析通道路由 =="
+# 路由与凭据保存:pdf->mistral, image->paddle, office->mineru;key 掩码回显
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"parseChannels":{"pdf":"mistral","image":"paddle","office":"mineru"},"mistralOcrKey":"sk-mistral-e2e","paddleOcrUrl":"http://127.0.0.1:'"$MOCK_PORT"'/ocr","paddleOcrKey":""}' > /dev/null
+SR=$(curl -s "$BASE/api/admin/settings" -H "$AUTH")
+assert_contains "路由表保存" "$SR" '"parseChannels":{"pdf":"mistral","image":"paddle","office":"mineru"}'
+assert_has "mistral key 掩码回显" "$SR" '"mistralOcrKey":"sk-m'
+assert_contains "config 暴露路由" "$(curl -s "$BASE/api/config")" '"routes":{"pdf":"mistral","image":"paddle","office":"mineru"}'
+# 造测试文件(内容不校验,mock 只看路由与请求形状)
+printf '%%PDF-1.4 mock pdf bytes' > "$TMP/doc.pdf"
+printf 'PNG-mock-image-bytes' > "$TMP/img.png"
+printf 'DOCX-mock-bytes' > "$TMP/notes.docx"
+# 上传解析:原生 curl 读不了 -F 里 MSYS 风格的 /tmp 路径,统一在 $TMP 下用相对路径发起
+parse_upload() { # $1=文件名(位于 $TMP) $2=token
+  ( cd "$TMP" && curl -s -X POST "$BASE/api/documents/parse" -H "Authorization: Bearer $2" -F "file=@$1;filename=$1" )
+}
+# 图片走 paddle:两页 rec_texts 拼接
+PADDLE=$(parse_upload img.png "$TOKEN")
+assert_contains "图片走 PaddleOCR 通道" "$PADDLE" '"channel":"paddle"'
+assert_contains "paddle rec_texts 拼接成 markdown" "$PADDLE" 'PaddleOCR 识别 第一行'
+assert_contains "paddle 多页合并" "$PADDLE" '第二页识别'
+# pdf 走 mistral:分页 markdown 拼接
+MIST=$(parse_upload doc.pdf "$TOKEN")
+assert_contains "pdf 走 Mistral 通道" "$MIST" '"channel":"mistral"'
+assert_contains "mistral 分页 markdown" "$MIST" 'Mistral 第一页'
+assert_contains "mistral 第二页合并" "$MIST" '第二页内容'
+# 错误路由:office 指到 paddle → 明确报格式不支持
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"parseChannels":{"office":"paddle"}}' > /dev/null
+MISR=$(parse_upload notes.docx "$TOKEN")
+assert_contains "office 误路由 paddle 报格式不支持" "$MISR" 'PaddleOCR 仅支持 PDF 与图片'
+# 通道未配置:清空 paddle 地址后图片解析报可定位错误
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"paddleOcrUrl":""}' > /dev/null
+NOP=$(parse_upload img.png "$TOKEN")
+assert_contains "paddle 未配置报可定位错误" "$NOP" '还没有填写服务地址'
+# mistral 坏 key:上游 401 透传
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"mistralOcrKey":"sk-bad-mistral"}' > /dev/null
+BADK=$(parse_upload doc.pdf "$TOKEN")
+assert_contains "mistral 坏 key 错误透传" "$BADK" 'invalid mistral key'
+# 恢复默认路由
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"parseChannels":{"pdf":"mineru","image":"mineru","office":"mineru"},"mistralOcrKey":"","paddleOcrUrl":"http://127.0.0.1:'"$MOCK_PORT"'/ocr"}' > /dev/null
+
+# ---------- 第三方一键登录(微信 / QQ / LinuxDO / NodeLoc,走 mock 提供商) ----------
+say "== 第三方一键登录 =="
+OAUTHBASE="http://127.0.0.1:$OAUTH_PORT"
+# 保存四家配置(含掩码回显与未配置时的行为)
+cat > "$TMP/oauth_cfg.json" <<'EOF'
+{"oauthProviders":{"wechat":{"enabled":true,"appId":"wx-e2e-app","appSecret":"wx-e2e-secret"},"qq":{"enabled":true,"appId":"123456","appKey":"qq-e2e-key"},"linuxdo":{"enabled":true,"clientId":"ldo-e2e-id","clientSecret":"ldo-e2e-secret"},"nodeloc":{"enabled":true,"clientId":"ndl-e2e-id","clientSecret":"ndl-e2e-secret"}},"oauthAutoRegister":true}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/oauth_cfg.json" > /dev/null
+OS=$(curl -s "$BASE/api/admin/settings" -H "$AUTH")
+assert_contains "第三方登录:微信可保存" "$OS" '"appId":"wx-e2e-app"'
+assert_has "第三方登录:密钥掩码回显" "$OS" '"appSecret":"wx-e'
+assert_contains "第三方登录:自动注册开关可保存" "$OS" '"oauthAutoRegister":true'
+# config 下发已启用的提供商(登录页据此渲染图标)
+OCFG=$(curl -s "$BASE/api/config")
+for pid in wechat qq linuxdo nodeloc; do
+  assert_contains "config 下发 $pid 图标" "$OCFG" "\"id\":\"$pid\""
+done
+assert_contains "config 带图标路径" "$OCFG" 'static/logo/weixin.svg'
+# 掩码保存不覆盖真实密钥(只传掩码)
+cat > "$TMP/oauth_mask.json" <<'EOF'
+{"oauthProviders":{"wechat":{"enabled":true,"appSecret":"wx-••••cret"}}}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/oauth_mask.json" > /dev/null
+cat > "$TMP/getsecret.php" <<'PHPEOF'
+<?php
+$pdo = new PDO("sqlite:" . $argv[1] . "/tinychat.sqlite");
+$s = json_decode($pdo->query('SELECT v FROM store WHERE k = "settings"')->fetchColumn(), true);
+echo isset($s["oauthProviders"]["wechat"]["appSecret"]) ? $s["oauthProviders"]["wechat"]["appSecret"] : "";
+PHPEOF
+php_out=$(php "$TMP/getsecret.php" "$TMP/data")
+assert_eq "掩码保存保留原密钥" "$php_out" "wx-e2e-secret"
+
+# 未配置的提供商:发起授权应提示未启用
+curl -s -o /dev/null -D "$TMP/h.disabled" "$BASE/auth/wechat?x=1" 2>/dev/null
+# (先记下启用状态,再临时关掉微信验证提示)
+cat > "$TMP/off.json" <<'EOF'
+{"oauthProviders":{"wechat":{"enabled":false}}}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/off.json" > /dev/null
+DIS=$(curl -s -D - -o /dev/null "$BASE/auth/wechat" | grep -i '^location:' | head -1)
+assert_has "未启用时提示未配置" "$DIS" 'oauth_error='
+cat > "$TMP/on.json" <<'EOF'
+{"oauthProviders":{"wechat":{"enabled":true}}}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/on.json" > /dev/null
+
+# 全链路(Nodeloc):发起 -> 授权 -> 回调 -> 票据 -> 换登录态
+oauth_flow() { # $1=provider, 输出最终 location
+  local pid="$1"
+  local auth=$(curl -s -D - -o /dev/null "$BASE/auth/$pid" | grep -i '^location:' | sed 's/^[Ll]ocation: //' | tr -d '\r')
+  local cb=$(curl -s -D - -o /dev/null "$auth" | grep -i '^location:' | sed 's/^[Ll]ocation: //' | tr -d '\r')
+  curl -s -D - -o /dev/null "$cb" | grep -i '^location:' | sed 's/^[Ll]ocation: //' | tr -d '\r'
+}
+NODEID=""
+for pid in nodeloc linuxdo; do
+  LAND=$(oauth_flow "$pid")
+  assert_contains "$pid 登录链路到达前台票据" "$LAND" 'oauth_ticket='
+  TK=$(printf '%s' "$LAND" | sed 's/.*oauth_ticket=//' | sed 's/&.*//')
+  cat > "$TMP/tk.json" <<EOF2
+{"ticket":"$TK"}
+EOF2
+  EX=$(curl -s -X POST "$BASE/api/auth/oauth/exchange" -H "Content-Type: application/json" --data-binary @"$TMP/tk.json")
+  assert_contains "$pid 票据可换登录态" "$EX" '"token":"'
+  UNAME=$(printf '%s' "$EX" | python -c "import sys,json;print(json.load(sys.stdin)['user']['name'])" 2>/dev/null)
+  # 昵称重名时自动加数字后缀去重,因此只断言前缀
+  case "$UNAME" in
+    E2E测试用户*) ok "$pid 自动建号用户名($UNAME)" ;;
+    *) bad "$pid 自动建号用户名(得到 $UNAME)" ;;
+  esac
+  if [ "$pid" = "nodeloc" ]; then
+    NODEID=$(printf '%s' "$EX" | python -c "import sys,json;print(json.load(sys.stdin)['user']['id'])" 2>/dev/null)
+  fi
+  # 同一票据只能换一次
+  EX2=$(curl -s -X POST "$BASE/api/auth/oauth/exchange" -H "Content-Type: application/json" --data-binary @"$TMP/tk.json")
+  assert_contains "$pid 票据不可重放" "$EX2" '已使用'
+done
+# 同一第三方账号二次登录(仍是 nodeloc):不再建号,直接复用原账号
+LAND2=$(oauth_flow nodeloc)
+TK2=$(printf '%s' "$LAND2" | sed 's/.*oauth_ticket=//' | sed 's/&.*//')
+cat > "$TMP/tk2.json" <<EOF3
+{"ticket":"$TK2"}
+EOF3
+EX3=$(curl -s -X POST "$BASE/api/auth/oauth/exchange" -H "Content-Type: application/json" --data-binary @"$TMP/tk2.json")
+ID3=$(printf '%s' "$EX3" | python -c "import sys,json;print(json.load(sys.stdin)['user']['id'])" 2>/dev/null)
+assert_eq "同一第三方账号再次登录复用原账号" "$ID3" "$NODEID"
+
+# 关闭自动注册:未绑定的第三方账号应被拒(先解绑 wechat,再关闭自动注册)
+BTOKEN_TMP=$(printf '%s' "$EX3" | python -c "import sys,json;print(json.load(sys.stdin)['token'])" 2>/dev/null)
+curl -s -X DELETE "$BASE/api/me/oauth/wechat" -H "Authorization: Bearer $BTOKEN_TMP" > /dev/null
+cat > "$TMP/off2.json" <<'EOF'
+{"oauthAutoRegister":false}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/off2.json" > /dev/null
+LANDNR=$(oauth_flow wechat)
+assert_has "关闭自动注册后未绑定账号被拒" "$LANDNR" 'oauth_error='
+cat > "$TMP/on2.json" <<'EOF'
+{"oauthAutoRegister":true}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/on2.json" > /dev/null
+
+# 微信链路(独立端点形状:GET 换 token + openid 随 token 返回)
+LANDW=$(oauth_flow wechat)
+assert_contains "微信登录链路到达前台票据" "$LANDW" 'oauth_ticket='
+# QQ 链路(需二次请求取 OpenID)
+LANDQ=$(oauth_flow qq)
+assert_contains "QQ 登录链路到达前台票据" "$LANDQ" 'oauth_ticket='
+
+# 已登录用户:绑定 / 解绑 / 已绑定列表
+# 注意:解绑唯一绑定需要账号已设置密码(防呆保护),这里先设密码再继续
+BINDUSER=$(printf '%s' "$EX" | python -c "import sys,json;print(json.load(sys.stdin)['user']['id'])" 2>/dev/null)
+BTOKEN=$(printf '%s' "$EX" | python -c "import sys,json;print(json.load(sys.stdin)['token'])" 2>/dev/null)
+cat > "$TMP/bpwd.json" <<'EOF'
+{"oldPassword":"","newPassword":"bindsetup1"}
+EOF
+curl -s -X POST "$BASE/api/auth/password" -H "Authorization: Bearer $BTOKEN" -H "Content-Type: application/json" --data-binary @"$TMP/bpwd.json" > /dev/null
+BUNAME=$(printf '%s' "$EX" | python -c "import sys,json;print(json.load(sys.stdin)['user']['name'])" 2>/dev/null)
+cat > "$TMP/blogin.json" <<EOF9
+{"name":"$BUNAME","password":"bindsetup1"}
+EOF9
+BTOKEN=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" --data-binary @"$TMP/blogin.json" | jget token)
+BIND=$(curl -s "$BASE/api/me/oauth" -H "Authorization: Bearer $BTOKEN")
+assert_contains "绑定列表含 wechat" "$BIND" '"id":"wechat"'
+assert_contains "绑定列表标记已绑定" "$BIND" '"bound":true'
+UNB=$(curl -s -X DELETE "$BASE/api/me/oauth/linuxdo" -H "Authorization: Bearer $BTOKEN")
+assert_contains "解绑成功" "$UNB" '"ok":true'
+BIND2=$(curl -s "$BASE/api/me/oauth" -H "Authorization: Bearer $BTOKEN")
+if printf '%s' "$BIND2" | grep -q '"id":"linuxdo","name":"LINUX DO","logo":"[^"]*","enabled":true,"bound":true'; then
+  bad "解绑后 linuxdo 仍显示已绑定"
+else
+  ok "解绑后状态刷新"
+fi
+UNB2=$(curl -s -X DELETE "$BASE/api/me/oauth/linuxdo" -H "Authorization: Bearer $BTOKEN")
+assert_contains "重复解绑被拒" "$UNB2" '未绑定'
+
+# ---------- 余量明细与第三方账号资料补全 ----------
+say "== 余量明细 / 资料补全 =="
+# 造一个有明确额度的用户,验证每笔扣减都带用途与前后余额
+cat > "$TMP/qu.json" <<'EOF'
+{"name":"ledgeruser","password":"test1234","quota":20}
+EOF
+curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/qu.json" > /dev/null
+LT=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"ledgeruser","password":"test1234"}' | jget token)
+[ -n "$LT" ] && ok "余量明细测试用户登录" || bad "余量明细测试用户登录"
+LAUTH="Authorization: Bearer $LT"
+# 普通对话
+cat > "$TMP/lc1.json" <<'EOF'
+{"providerId":"x","model":"mock-model","stream":false,"messages":[{"role":"user","content":"hi"}]}
+EOF
+cat > "$TMP/lc1.json" <<EOF2
+{"providerId":"$PROV","model":"mock-model","stream":false,"messages":[{"role":"user","content":"hi"}]}
+EOF2
+curl -s -X POST "$BASE/api/proxy/chat" -H "$LAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/lc1.json" > /dev/null
+# 带用途:生成标题 / 生成跟进建议
+cat > "$TMP/lc2.json" <<EOF3
+{"providerId":"$PROV","model":"mock-model","stream":false,"_purpose":"title","messages":[{"role":"user","content":"t"}]}
+EOF3
+curl -s -X POST "$BASE/api/proxy/chat" -H "$LAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/lc2.json" > /dev/null
+cat > "$TMP/lc3.json" <<EOF4
+{"providerId":"$PROV","model":"mock-model","stream":false,"_purpose":"followup","messages":[{"role":"user","content":"f"}]}
+EOF4
+curl -s -X POST "$BASE/api/proxy/chat" -H "$LAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/lc3.json" > /dev/null
+LEDGER=$(curl -s "$BASE/api/me/quota/ledger" -H "$LAUTH")
+assert_contains "明细记录普通对话" "$LEDGER" '对话'
+assert_contains "明细记录生成标题" "$LEDGER" '生成标题'
+assert_contains "明细记录生成跟进建议" "$LEDGER" '生成跟进建议'
+assert_contains "明细带余额变化" "$LEDGER" '"before":'
+LED_SPENT=$(printf '%s' "$LEDGER" | python -c "import sys,json;print(json.load(sys.stdin)['spent'])" 2>/dev/null)
+if [ -n "$LED_SPENT" ] && [ "$LED_SPENT" != "0" ] && [ "$LED_SPENT" != "0.0" ]; then ok "明细汇总消耗为 $LED_SPENT"; else bad "明细汇总消耗为空($LED_SPENT)"; fi
+# 分页参数
+assert_contains "明细支持 limit" "$(curl -s "$BASE/api/me/quota/ledger?limit=1" -H "$LAUTH")" '"total":3'
+# 充值/兑换码也进同一明细
+cat > "$TMP/lpkg.json" <<'EOF'
+{"name":"明细测试套餐","quota":10,"enabled":true}
+EOF
+LPKG=$(curl -s -X POST "$BASE/api/admin/packages" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/lpkg.json" | jget id)
+LCODE=$(curl -s -X POST "$BASE/api/admin/packages/$LPKG/codes" -H "$AUTH" -H "Content-Type: application/json" -d '{"count":1}' | python -c "import sys,json;print(json.load(sys.stdin)['codes'][0])" 2>/dev/null)
+cat > "$TMP/lrd.json" <<EOF5
+{"code":"$LCODE"}
+EOF5
+curl -s -X POST "$BASE/api/packages/redeem" -H "$LAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/lrd.json" > /dev/null
+assert_contains "明细记录兑换码获得" "$(curl -s "$BASE/api/me/quota/ledger" -H "$LAUTH")" '兑换码'
+
+# 第三方账号:改用户名 / 设密码(无密码用户不要求旧密码)
+cat > "$TMP/ou_cfg.json" <<'EOF'
+{"oauthProviders":{"nodeloc":{"enabled":true}},"oauthAutoRegister":true,"oauthRequireProfile":false}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ou_cfg.json" > /dev/null
+OLAND=$(oauth_flow nodeloc)
+OTK=$(printf '%s' "$OLAND" | sed 's/.*oauth_ticket=//' | sed 's/&.*//')
+cat > "$TMP/otk.json" <<EOF6
+{"ticket":"$OTK"}
+EOF6
+OEX=$(curl -s -X POST "$BASE/api/auth/oauth/exchange" -H "Content-Type: application/json" --data-binary @"$TMP/otk.json")
+OT=$(printf '%s' "$OEX" | jget token)
+OAUTH="Authorization: Bearer $OT"
+assert_contains "第三方用户登录后无密码标记" "$(curl -s "$BASE/api/auth/me" -H "$OAUTH")" '"hasPassword":false'
+# 无密码用户:直接设密码(不带 oldPassword)
+cat > "$TMP/opw.json" <<'EOF'
+{"oldPassword":"","newPassword":"oauthpass1"}
+EOF
+assert_contains "无密码用户可直接设密码" "$(curl -s -X POST "$BASE/api/auth/password" -H "$OAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/opw.json")" '"ok":true'
+# 设密码后 tv 递增,用「自动建号时的实际用户名 + 刚设的密码」重新登录
+OUNAME=$(printf '%s' "$OEX" | python -c "import sys,json;print(json.load(sys.stdin)['user']['name'])" 2>/dev/null)
+cat > "$TMP/ologin.json" <<EOF9
+{"name":"$OUNAME","password":"oauthpass1"}
+EOF9
+OT2=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" --data-binary @"$TMP/ologin.json" | jget token)
+if [ -n "$OT2" ]; then ok "设密码后可用密码登录($OUNAME)"; else bad "设密码后无法用密码登录($OUNAME)"; fi
+OAUTH2="Authorization: Bearer $OT2"
+cat > "$TMP/oname.json" <<'EOF'
+{"name":"oauthrenamed","password":"oauthpass1"}
+EOF
+RNAME=$(curl -s -X POST "$BASE/api/auth/name" -H "$OAUTH2" -H "Content-Type: application/json" --data-binary @"$TMP/oname.json")
+assert_contains "第三方用户可改用户名" "$RNAME" '"name":"oauthrenamed"'
+# 改名会让旧会话失效(tv 递增),用返回的新 token 继续做校验用例
+AT3=$(printf '%s' "$RNAME" | jget token)
+OAUTH2="Authorization: Bearer $AT3"
+# 校验:密码错误 / 重名 / 非法名
+cat > "$TMP/oname_bad.json" <<'EOF'
+{"name":"anothername","password":"wrong"}
+EOF
+assert_contains "改名校验:密码错误被拒" "$(curl -s -X POST "$BASE/api/auth/name" -H "$OAUTH2" -H "Content-Type: application/json" --data-binary @"$TMP/oname_bad.json")" '请输入当前密码'
+cat > "$TMP/oname_dup.json" <<'EOF'
+{"name":"admin","password":"oauthpass1"}
+EOF
+assert_contains "改名校验:重名被拒" "$(curl -s -X POST "$BASE/api/auth/name" -H "$OAUTH2" -H "Content-Type: application/json" --data-binary @"$TMP/oname_dup.json")" '用户名已存在'
+# 开启「强制补全」:exchange 返回 needsProfile,且已有密码的用户不再要求
+cat > "$TMP/reqp.json" <<'EOF'
+{"oauthRequireProfile":true}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/reqp.json" > /dev/null
+assert_contains "config 下发补全开关" "$(curl -s "$BASE/api/config")" '"requireProfile":true'
+OLAND2=$(oauth_flow wechat)
+OTK2=$(printf '%s' "$OLAND2" | sed 's/.*oauth_ticket=//' | sed 's/&.*//')
+cat > "$TMP/otk2.json" <<EOF7
+{"ticket":"$OTK2"}
+EOF7
+assert_contains "无密码新用户 exchange 要求补全" "$(curl -s -X POST "$BASE/api/auth/oauth/exchange" -H "Content-Type: application/json" --data-binary @"$TMP/otk2.json")" '"needsProfile":true'
+OLAND3=$(oauth_flow nodeloc)
+OTK3=$(printf '%s' "$OLAND3" | sed 's/.*oauth_ticket=//' | sed 's/&.*//')
+cat > "$TMP/otk3.json" <<EOF8
+{"ticket":"$OTK3"}
+EOF8
+assert_contains "已设密码用户不再要求补全" "$(curl -s -X POST "$BASE/api/auth/oauth/exchange" -H "Content-Type: application/json" --data-binary @"$TMP/otk3.json")" '"needsProfile":false'
+cat > "$TMP/reqp2.json" <<'EOF'
+{"oauthRequireProfile":false}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/reqp2.json" > /dev/null
+
+# ---------- 第三方登录回跳与提示标记 ----------
+say "== 第三方登录回跳标记 =="
+cat > "$TMP/rc.json" <<'EOF'
+{"oauthProviders":{"nodeloc":{"enabled":true}},"oauthAutoRegister":true,"oauthRequireProfile":true}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/rc.json" > /dev/null
+# 未绑定新账号:落地地址应带 oauth_created=1(前端据此提示"已创建新账号")。
+# 先清空该第三方 uid 的既有绑定,确保本次是"首次建号"。
+cat > "$TMP/rcqq.json" <<'EOF'
+{"oauthProviders":{"qq":{"enabled":true}}}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/rcqq.json" > /dev/null
+cat > "$TMP/unbind_all.php" <<'PHPEOF'
+<?php
+// 清掉所有用户的 oauth 绑定,让后续第三方登录都走"首次建号"分支
+$pdo = new PDO("sqlite:" . $argv[1] . "/tinychat.sqlite");
+$u = json_decode($pdo->query('SELECT v FROM store WHERE k = "users"')->fetchColumn(), true);
+foreach ($u as $i => $x) { $u[$i]["oauth"] = array(); }
+$pdo->prepare('UPDATE store SET v = ? WHERE k = "users"')->execute(array(json_encode($u, JSON_UNESCAPED_UNICODE)));
+PHPEOF
+php "$TMP/unbind_all.php" "$TMP/data"
+NEWLAND=$(oauth_flow qq)
+assert_contains "新账号落地带 created 标记" "$NEWLAND" 'oauth_created=1'
+assert_contains "新账号落地带票据" "$NEWLAND" 'oauth_ticket='
+# 已绑定账号:落地不带 created 标记
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"oauthRequireProfile":false}' > /dev/null
+# 同一第三方账号第二次登录:已绑定,落地不应再带 created 标记
+BOUNDLAND=$(oauth_flow qq)
+assert_contains "已绑定账号落地带票据" "$BOUNDLAND" 'oauth_ticket='
+if printf '%s' "$BOUNDLAND" | grep -q 'oauth_created=1'; then bad "已绑定账号不应带 created 标记"; else ok "已绑定账号不带 created 标记"; fi
+cat > "$TMP/oc_off.json" <<'EOF'
+{"oauthProviders":{"wechat":{"enabled":false},"linuxdo":{"enabled":false},"qq":{"enabled":false},"nodeloc":{"enabled":false}}}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/oc_off.json" > /dev/null
+
+# ---------- 第三方绑定的列表/防呆/后台管理 ----------
+say "== 第三方绑定管理 =="
+cat > "$TMP/ob_cfg.json" <<'EOF'
+{"oauthProviders":{"linuxdo":{"enabled":true}},"oauthAutoRegister":true,"oauthRequireProfile":false}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ob_cfg.json" > /dev/null
+# 全新第三方账号:设密码前「解绑唯一绑定」应被拒(否则账号无法登录)
+OLANDB=$(oauth_flow linuxdo)
+OTKB=$(printf '%s' "$OLANDB" | sed 's/.*oauth_ticket=//' | sed 's/&.*//')
+cat > "$TMP/otkb.json" <<EOF2
+{"ticket":"$OTKB"}
+EOF2
+OEXB=$(curl -s -X POST "$BASE/api/auth/oauth/exchange" -H "Content-Type: application/json" --data-binary @"$TMP/otkb.json")
+OTB=$(printf '%s' "$OEXB" | jget token)
+OUID=$(printf '%s' "$OEXB" | python -c "import sys,json;print(json.load(sys.stdin)['user']['id'])" 2>/dev/null)
+OB="Authorization: Bearer $OTB"
+UNAME_B=$(printf '%s' "$OEXB" | python -c "import sys,json;print(json.load(sys.stdin)['user']['name'])" 2>/dev/null)
+assert_contains "绑定列表返回全部平台" "$(curl -s "$BASE/api/me/oauth" -H "$OB")" '"id":"wechat"'
+# 接口返回 enabled 标记(前端据此过滤:未启用的平台对用户不可见,已绑定的除外)
+assert_contains "绑定接口带 enabled 标记供前端过滤" "$(curl -s "$BASE/api/me/oauth" -H "$OB")" '"enabled":false'
+assert_contains "无密码时解绑唯一绑定被拒" "$(curl -s -X DELETE "$BASE/api/me/oauth/linuxdo" -H "$OB")" '还没有设置密码'
+# 管理端:查看该用户绑定(含 bindUrl)
+AUSER=$(curl -s "$BASE/api/admin/users/oauth?userId=$OUID" -H "$AUTH")
+assert_contains "管理端可见用户绑定" "$AUSER" '"bound":true'
+assert_contains "管理端给出绑定链接" "$AUSER" '/auth/linuxdo?bind='
+# 管理端解绑同样受防呆保护
+assert_contains "管理端解绑也受防呆保护" "$(curl -s -X DELETE "$BASE/api/admin/users/$OUID/oauth/linuxdo" -H "$AUTH")" '还没有设置密码'
+# 用户设密码后可解绑
+cat > "$TMP/obpw.json" <<'EOF'
+{"oldPassword":"","newPassword":"bindpass123"}
+EOF
+curl -s -X POST "$BASE/api/auth/password" -H "$OB" -H "Content-Type: application/json" --data-binary @"$TMP/obpw.json" > /dev/null
+cat > "$TMP/oblogin.json" <<EOF10
+{"name":"$UNAME_B","password":"bindpass123"}
+EOF10
+OTB2=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" --data-binary @"$TMP/oblogin.json" | jget token)
+ob='Authorization: Bearer '"$OTB2"
+assert_contains "设密码后可解绑" "$(curl -s -X DELETE "$BASE/api/me/oauth/linuxdo" -H "$ob")" '"ok":true'
+cat > "$TMP/ob_off.json" <<'EOF'
+{"oauthProviders":{"linuxdo":{"enabled":false}}}
+EOF
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/ob_off.json" > /dev/null
+
+say "== 演示管理员对话自动清除 =="
+# 回归:演示管理员只在前台聊天(不碰后台)时,快照也必须建立并在到期后清除其新对话。
+# 缺陷背景:快照原先只在 tc_require_admin(后台操作)里拍摄,演示管理员纯聊天时不经过那里,
+# 第一次到期还原后快照被消费、永久不再重建 —— 之后产生的对话就再也不会被自动清除。
+# 先清掉早前演示用例遗留的活跃快照:演示快照是「全站单例」,若已有生效中的快照,
+# 新建演示账号时不会重新拍摄,本段就测不到目标账号。这里显式重置,保证用例自洽。
+php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite");
+  $st=$pdo->prepare("DELETE FROM store WHERE k=? OR k=?");
+  $st->execute(array("demoSnapshot","demoBaseline"));
+  $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("users"));
+  $us=json_decode($q->fetchColumn(),true);
+  foreach($us as &$u) if(!empty($u["demo"]) && ($u["name"] ?? "") !== "chatdemo") $u["demo"]=false;
+  unset($u);
+  $up=$pdo->prepare("UPDATE store SET v=? WHERE k=?"); $up->execute(array(json_encode($us),"users"));
+  $up2=$pdo->prepare("UPDATE store SET v=? WHERE k=?"); $up2->execute(array("null","demoSnapshot"));' "$TMP/data"
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"demoExpireMinutes":10}' > /dev/null
+curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"chatdemo","password":"demo1234","demo":true}' > /dev/null
+CDT=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"chatdemo","password":"demo1234"}' | jget token)
+CDA="Authorization: Bearer $CDT"
+demo_chats() { # 读取该演示账号当前的对话条数(对话按 chat:<uid> 行存储)
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("users")); $us=json_decode($q->fetchColumn(),true); $id=""; foreach((array)$us as $u) if(($u["name"]??"")==="chatdemo") $id=$u["id"]; if($id===""){ echo 0; exit; } $q2=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q2->execute(array("chat:".$id)); $ch=json_decode($q2->fetchColumn(),true); echo count(is_array($ch)?$ch:array());' "$1"
+}
+demo_has_snapshot() { # 快照是否存在(直读库,避免走管理接口触发 rebaseline 重拍)
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("demoSnapshot")); $v=$q->fetchColumn(); $j=json_decode($v,true); echo (is_array($j) && !empty($j["expireAt"])) ? "yes" : "no";' "$1"
+}
+demo_expire_now() { # 把演示快照的到期时间拨到过去,模拟「10 分钟已到」
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("demoSnapshot")); $j=json_decode($q->fetchColumn(),true); if(!is_array($j)) exit(1); $j["expireAt"]=1; $st=$pdo->prepare("UPDATE store SET v=? WHERE k=?"); $st->execute(array(json_encode($j),"demoSnapshot"));' "$1"
+}
+demo_del() { # 删除测试用的演示账号
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("users")); foreach((array)json_decode($q->fetchColumn(),true) as $u) if(($u["name"]??"")==="chatdemo"){ echo $u["id"]; break; }' "$1"
+}
+demo_expire_in() { # 把到期时间设为「距现在 N 毫秒」,用于验证活动顺延
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("demoSnapshot")); $j=json_decode($q->fetchColumn(),true); if(!is_array($j)) exit(1); $j["expireAt"]=(int)round(microtime(true)*1000)+(int)$argv[2]; $st=$pdo->prepare("UPDATE store SET v=? WHERE k=?"); $st->execute(array(json_encode($j),"demoSnapshot"));' "$1" "$2"
+}
+demo_expire_at() { # 读当前到期时间
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("demoSnapshot")); $j=json_decode($q->fetchColumn(),true); echo (is_array($j) && !empty($j["expireAt"])) ? (int)$j["expireAt"] : 0;' "$1"
+}
+demo_reverted_at() { # 读还原标记(客户端据此整体采纳云端)
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("demoReverted")); $j=json_decode($q->fetchColumn(),true); $out=0; foreach((array)$j as $t) $out=(int)$t; echo $out;' "$1"
+}
+
+# 第一轮:只在前台聊天,完全不碰后台
+cat > "$TMP/cd1.json" <<'EOF'
+{"chats":[{"id":"cd1","title":"演示第一轮","messages":[{"role":"user","content":"你好"}],"createdAt":1790789000000,"updatedAt":1790789000000}]}
+EOF
+curl -s -X POST "$BASE/api/sync/chats" -H "$CDA" -H "Content-Type: application/json" --data-binary @"$TMP/cd1.json" > /dev/null
+assert_eq "演示账号聊天已保存" "$(demo_chats "$TMP/data")" "1"
+assert_eq "聊天即建立还原快照(无需后台操作)" "$(demo_has_snapshot "$TMP/data")" "yes"
+# 关键:演示中继续活动应把到期时间顺延(滑动窗口),不打断正在进行的对话
+demo_expire_in "$TMP/data" 3000
+EXPIRE_BEFORE=$(demo_expire_at "$TMP/data")
+curl -s -X POST "$BASE/api/sync/chats" -H "$CDA" -H "Content-Type: application/json" --data-binary @"$TMP/cd1.json" > /dev/null
+EXPIRE_AFTER=$(demo_expire_at "$TMP/data")
+if [ "$EXPIRE_AFTER" -gt "$EXPIRE_BEFORE" ]; then ok "演示中继续活动:到期时间被顺延(不打断演示)"; else bad "演示中继续活动后到期时间未顺延 ($EXPIRE_BEFORE -> $EXPIRE_AFTER)"; fi
+assert_eq "顺延后对话仍在(未被中途抹除)" "$(demo_chats "$TMP/data")" "1"
+demo_expire_now "$TMP/data"
+curl -s -o /dev/null "$BASE/"
+assert_eq "第一轮到期后对话被清除" "$(demo_chats "$TMP/data")" "0"
+# 客户端凭还原标记整体采纳云端(否则本地旧副本会把已还原内容推回来)
+if [ "$(demo_reverted_at "$TMP/data")" -gt 0 ]; then ok "到期还原写入客户端还原标记"; else bad "到期还原未写入客户端还原标记"; fi
+assert_contains "同步接口下发还原标记" "$(curl -s "$BASE/api/sync/chats" -H "$CDA")" '"demoRevertedAt":'
+# 第二轮:还原后继续聊天 —— 快照必须自动重建,新对话同样要被清除(核心回归)
+cat > "$TMP/cd2.json" <<'EOF'
+{"chats":[{"id":"cd2","title":"演示第二轮","messages":[{"role":"user","content":"第二轮"}],"createdAt":1790789000000,"updatedAt":1790789000000}]}
+EOF
+curl -s -X POST "$BASE/api/sync/chats" -H "$CDA" -H "Content-Type: application/json" --data-binary @"$TMP/cd2.json" > /dev/null
+assert_eq "第二轮聊天已保存" "$(demo_chats "$TMP/data")" "1"
+assert_eq "快照在消费后自动重建" "$(demo_has_snapshot "$TMP/data")" "yes"
+demo_expire_now "$TMP/data"
+curl -s -o /dev/null "$BASE/"
+assert_eq "第二轮到期后新对话也被清除" "$(demo_chats "$TMP/data")" "0"
+CDID=$(demo_del "$TMP/data")
+[ -n "$CDID" ] && curl -s -X DELETE "$BASE/api/admin/users/$CDID" -H "$AUTH" > /dev/null
+say "== 账号注销 =="
+# 后台三种模式 + 用户自助注销。软注销后原用户名/邮箱必须能被重新注册(核心诉求)。
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"accountDeletionMode":"off"}' > /dev/null
+assert_has "config 下发注销模式" "$(curl -s "$BASE/api/config")" '"accountDeletionMode":"off"'
+# 建一个独占账号用于注销测试
+curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"delme1","password":"del12345","quota":30}' > /dev/null
+D1T=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"delme1","password":"del12345"}' | jget token)
+D1A="Authorization: Bearer $D1T"
+assert_contains "关闭注销时接口拒绝" "$(curl -s -X POST "$BASE/api/auth/delete" -H "$D1A" -H "Content-Type: application/json" -d '{"password":"del12345"}')" '未开放账号注销'
+# 软注销
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"accountDeletionMode":"soft"}' > /dev/null
+assert_contains "错误密码被拒" "$(curl -s -X POST "$BASE/api/auth/delete" -H "$D1A" -H "Content-Type: application/json" -d '{"password":"wrongpass"}')" '密码不正确'
+DELRES=$(curl -s -X POST "$BASE/api/auth/delete" -H "$D1A" -H "Content-Type: application/json" -d '{"password":"del12345"}')
+assert_contains "软注销成功" "$DELRES" '"mode":"soft"'
+assert_contains "软注销后用户名带已注销标记" "$DELRES" 'delme1-已注销-'
+# 旧 token 失效
+assert_contains "注销后旧令牌失效" "$(curl -s "$BASE/api/auth/me" -H "$D1A")" '未登录'
+# 核心:原用户名可重新注册(本栈开启邀请码,故带上邀请码走真实注册路径)
+curl -s -X POST "$BASE/api/admin/invites" -H "$AUTH" -H "Content-Type: application/json" -d '{"count":1}' > /dev/null
+INVD=$(curl -s "$BASE/api/admin/invites" -H "$AUTH" | python -c "
+import sys,json
+d=json.load(sys.stdin)
+# 取一张「仍可用」的邀请码(列表里有已用尽的,不能盲取第一条)
+for c in d.get('codes',[]):
+    if c.get('usable'): print(c.get('code','')); break
+")
+cat > "$TMP/redel.json" <<EOF
+{"name":"delme1","password":"brandnew1","invite":"$INVD","agreementAccepted":true}
+EOF
+RE1=$(curl -s -X POST "$BASE/api/auth/register" -H "Content-Type: application/json" --data-binary @"$TMP/redel.json")
+assert_contains "原用户名可重新注册" "$RE1" '"token":'
+assert_contains "新账号已成功登录态" "$(curl -s "$BASE/api/auth/me" -H "Authorization: Bearer $(printf '%s' "$RE1" | jget token)")" '"name":"delme1"'
+# 被注销账号仍在(软注销语义),但已改名且不可登录
+assert_contains "软注销账号保留在用户列表" "$(curl -s "$BASE/api/admin/users" -H "$AUTH")" 'delme1-已注销-'
+# 硬注销:账号彻底消失
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"accountDeletionMode":"hard"}' > /dev/null
+curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"delme2","password":"del23456","quota":30}' > /dev/null
+D2T=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"delme2","password":"del23456"}' | jget token)
+assert_contains "硬注销成功" "$(curl -s -X POST "$BASE/api/auth/delete" -H "Authorization: Bearer $D2T" -H "Content-Type: application/json" -d '{"password":"del23456"}')" '"mode":"hard"'
+if curl -s "$BASE/api/admin/users" -H "$AUTH" | grep -qF '"delme2"'; then bad "硬注销后账号仍存在"; else ok "硬注销后账号彻底消失"; fi
+# 真实管理员仍可正常注销(管理员保护只在「唯一管理员」时生效,此处站内有多个管理员)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"accountDeletionMode":"soft"}' > /dev/null
+
+say "== 余量明细分页 =="
+LED1=$(curl -s "$BASE/api/me/quota/ledger?limit=5&offset=0" -H "$UAUTH")
+LED2=$(curl -s "$BASE/api/me/quota/ledger?limit=5&offset=5" -H "$UAUTH")
+assert_contains "余量明细返回总数" "$LED1" '"total":'
+assert_contains "余量明细返回分页条目" "$LED1" '"entries":'
+assert_contains "第二页可独立请求" "$LED2" '"entries":'
+
+say "== 服务器状态看板 =="
+SYS=$(curl -s "$BASE/api/admin/system" -H "$AUTH")
+assert_contains "系统接口返回服务器信息" "$SYS" '"phpVersion"'
+assert_contains "系统接口返回磁盘信息" "$SYS" '"freeBytes"'
+assert_contains "系统接口返回存储分类" "$SYS" '"storage"'
+assert_contains "统计在线用户" "$SYS" '"online"'
+assert_contains "统计总用户" "$SYS" '"total":'
+assert_contains "统计今日调用" "$SYS" '"today"'
+assert_contains "统计对话总数" "$SYS" '"chats"'
+assert_contains "返回版本号" "$SYS" '"version"'
+# 非管理员不可访问
+assert_contains "非管理员访问系统接口被拒" "$(curl -s "$BASE/api/admin/system" -H "$UAUTH")" '需要管理员权限'
+assert_contains "非管理员访问存储接口被拒" "$(curl -s "$BASE/api/admin/storage" -H "$UAUTH")" '需要管理员权限'
+
+say "== 模型连通性测试(超时与自动跳过) =="
+# 正常模型:mock 上游据模型名返回内容
+assert_contains "模型测试通过" "$(curl -s -X POST "$BASE/api/admin/providers/test" -H "$AUTH" -H "Content-Type: application/json" -d "{\"baseUrl\":\"http://127.0.0.1:$MOCK_PORT/v1\",\"apiKey\":\"sk-e2e\",\"apiFormat\":\"chat\",\"model\":\"mock-model\",\"prompt\":\"hi\",\"timeoutSec\":10}")" '"ok":true'
+# 自定义超时:连一个不会响应的地址(TEST-NET),必须在超时后返回 timeout 标记
+T0=$(date +%s)
+TIMEOUT_RES=$(curl -s -X POST "$BASE/api/admin/providers/test" -H "$AUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://192.0.2.1/v1","apiKey":"sk-e2e","apiFormat":"chat","model":"slow-model","prompt":"hi","timeoutSec":3}')
+T1=$(date +%s)
+assert_has "超时结果带 timeout 标记" "$TIMEOUT_RES" '"timeout":true'
+assert_has "超时说明包含设定的秒数" "$TIMEOUT_RES" '超过 3 秒仍未响应'
+ELAPSED=$((T1 - T0))
+if [ "$ELAPSED" -le 15 ]; then ok "超时按设定时长结束(耗时 ${ELAPSED}s)"; else bad "超时未生效,耗时 ${ELAPSED}s"; fi
+# 超出范围的超时值被收敛到合法区间(不会因为传 0 或超大值卡住)
+assert_has "超时下限被夹紧到 3 秒" "$(curl -s -X POST "$BASE/api/admin/providers/test" -H "$AUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://192.0.2.1/v1","apiKey":"sk-e2e","apiFormat":"chat","model":"m","prompt":"hi","timeoutSec":0}')" '超过 3 秒仍未响应'
+say "== 存储管理 =="
+ST=$(curl -s "$BASE/api/admin/storage" -H "$AUTH")
+assert_contains "存储接口返回分类占用" "$ST" '"categories"'
+assert_contains "存储接口返回数据目录" "$ST" '"dataDir"'
+assert_contains "存储接口返回备份清单" "$ST" '"backups"'
+assert_contains "存储接口返回生图留存清单" "$ST" '"images"'
+assert_contains "存储接口返回日志统计" "$ST" '"logs"'
+assert_contains "分类含数据库" "$ST" '"key":"database"'
+assert_contains "分类含生图留存" "$ST" '"key":"imgstore"'
+assert_contains "分类含运行日志" "$ST" '"key":"logs"'
+# 时间戳是毫秒(前端直接 new Date 即可,避免 1970 显示)
+assert_contains "文件时间戳为毫秒" "$(printf '%s' "$ST" | grep -o '"mtime":[0-9]\{13\}' | head -1)" '"mtime":'
+# 未知清理目标应报错
+cat > "$TMP/st_bad.json" <<'EOF'
+{"target":"nope"}
+EOF
+assert_contains "未知清理目标被拒" "$(curl -s -X POST "$BASE/api/admin/storage/clean" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/st_bad.json")" '未知的清理目标'
+# 写入图片缓存与生图留存文件,验证清理真实生效
+mkdir -p "$TMP/data/imgcache" "$TMP/data/imgstore"
+php -r '$d=$argv[1];file_put_contents($d."/imgcache/e2e-cache.bin",str_repeat("x",2048));file_put_contents($d."/imgstore/e2e-img.bin",str_repeat("y",4096));' "$TMP/data"
+ST2=$(curl -s "$BASE/api/admin/storage" -H "$AUTH")
+assert_contains "生图留存清单可读" "$ST2" '"images":{"items":'
+assert_contains "写入的生图留存文件出现在清单" "$ST2" 'e2e-img.bin'
+cat > "$TMP/st_imgcache.json" <<'EOF'
+{"target":"imagecache"}
+EOF
+CL1=$(curl -s -X POST "$BASE/api/admin/storage/clean" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/st_imgcache.json")
+assert_contains "清理图片缓存成功" "$CL1" '"ok":true'
+assert_contains "清理图片缓存统计到 1 个文件" "$CL1" '"removed":1'
+assert_contains "清理后缓存占用归零" "$(curl -s "$BASE/api/admin/storage" -H "$AUTH")" '"key":"imgcache"'
+cat > "$TMP/st_images.json" <<'EOF'
+{"target":"images"}
+EOF
+CL2=$(curl -s -X POST "$BASE/api/admin/storage/clean" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/st_images.json")
+assert_contains "清理生图留存成功" "$CL2" '"ok":true'
+assert_contains "生图留存清理标签正确" "$CL2" '"label":"生图留存"'
+cat > "$TMP/st_logs.json" <<'EOF'
+{"target":"logs"}
+EOF
+assert_contains "清理运行日志成功" "$(curl -s -X POST "$BASE/api/admin/storage/clean" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/st_logs.json")" '"ok":true'
+# 更新残留:目录里含子目录(真实结构是 update/backup/lib/... + update/package/...)。
+# 递归删除曾因闭包未 use 自身而致命失败(「更新残留清理不了」),这里专门覆盖多级嵌套。
+mkdir -p "$TMP/data/update/backup/lib" "$TMP/data/update/package/src" "$TMP/data/imgcache/nested/deep"
+php -r '$d=$argv[1];
+file_put_contents($d."/update/update-check.json","root");
+file_put_contents($d."/update/backup/lib/core.php","backup-a");
+file_put_contents($d."/update/backup/CHANGELOG.md","backup-b");
+file_put_contents($d."/update/package/src/index.php","pkg");
+file_put_contents($d."/imgcache/nested/deep/cache.bin","cache");' "$TMP/data"
+ST3=$(curl -s "$BASE/api/admin/storage" -H "$AUTH")
+assert_contains "多级子目录文件被计入占用" "$ST3" '"key":"update"'
+cat > "$TMP/st_updates.json" <<'EOF'
+{"target":"updates"}
+EOF
+CL3=$(curl -s -X POST "$BASE/api/admin/storage/clean" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/st_updates.json")
+assert_contains "更新残留(含子目录)清理成功" "$CL3" '"ok":true'
+assert_contains "更新残留递归删到 4 个文件(含两级子目录)" "$CL3" '"removed":4'
+assert_contains "更新残留标签正确" "$CL3" '"label":"更新残留"'
+assert_contains "更新残留清理后归零" "$(curl -s "$BASE/api/admin/storage" -H "$AUTH")" '"key":"update"'
+# 图片代理缓存的子目录同样要能清掉
+cat > "$TMP/st_ic2.json" <<'EOF'
+{"target":"imagecache"}
+EOF
+CL4=$(curl -s -X POST "$BASE/api/admin/storage/clean" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/st_ic2.json")
+assert_contains "图片缓存(含子目录)清理成功" "$CL4" '"ok":true'
+assert_contains "图片缓存递归删到 1 个文件" "$CL4" '"removed":1'
+# 系统接口在清理后依然可用(不因日志/缓存被清而 500)
+assert_contains "清理后系统接口仍正常" "$(curl -s "$BASE/api/admin/system" -H "$AUTH")" '"server"'
 say ""
 say "结果: $PASS 通过, $FAIL 失败"
 [ "$FAIL" -eq 0 ]

@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -17,6 +18,16 @@ jobs:
         with:
           php-version: '8.3'
           coverage: none
+      - name: 脚本换行符自检(tests/*.sh 不得含裸 CR)
+        # 裸 CR 会在 Linux 上破坏脚本(曾导致 tr 剥离回车失效,批量 OAuth 用例失败);
+        # 需要剔除 CR 时请写 tr -d '\r' 的转义形式,不要嵌真的控制字符。
+        run: |
+          fail=0
+          for f in $(git ls-files 'tests/*.sh'); do
+            n=$(tr -cd '\r' < "$f" | wc -c)
+            if [ "$n" -gt 0 ]; then echo "$f 含 $n 处裸 CR"; fail=1; fi
+          done
+          exit $fail
       - name: PHP lint(全部 PHP 文件)
         run: |
           fail=0
@@ -32,12 +43,18 @@ jobs:
             node --check "$f" || fail=1
           done < <(git ls-files '*.js')
           exit $fail
+      - name: 发版产物新鲜度(min/版本号/checksums 与源码一致)
+        # release.mjs 幂等:重跑后无 diff 说明 .min 与源码同步、HTML ?v= 与 TC_VERSION
+        # 一致、sw 缓存名已联动、checksums.txt 是最新。有 diff = 忘跑发版工具。
+        run: node tools/release.mjs && git diff --exit-code
       - name: 图标匹配自检(规则目标文件必须存在 + 关键模型命中)
         run: node tests/logos-check.js
       - name: 演示管理员还原自检(拍摄/到期还原/反复还原)
         run: php tests/demo-revert.php
       - name: 生图响应解析自检(各平台返回形态)
         run: php tests/image-parse.php
+      - name: 网页正文提取自检(裸 < 不吞正文 / 导航瘦身 / 注释清理)
+        run: php tests/html-text.php
       - name: 上游地址拼接自检(补 /v1 / 不重复)
         run: php tests/upstream-url.php
       - name: 署名完整性守卫自检(篡改拦截 / 合法放行)
