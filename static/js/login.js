@@ -178,6 +178,10 @@ fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
   renderOauthIcons(cfg && cfg.oauth);
   // 配置就绪后再兜一次(此时注册表单的协议/邀请码等已按需显示)
   showRegisterForGuest();
+  // 主站登录弹窗的「立即注册」带 ?register=1 进来,直接展开注册表单
+  if (cfg && cfg.allowRegister !== false && new URLSearchParams(location.search).get('register') === '1') {
+    switchAuthForm('register-form', 'login-form', 'reg-name');
+  }
   if (!cfg || !cfg.needsSetup) return;
   showEnvGate();
 }).catch(() => {

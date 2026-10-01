@@ -575,10 +575,27 @@ textarea:focus-visible {
 .msg .msg-content { font-size: 15px; line-height: 1.7; }
 
 /* 回复富文本 */
-.msg.assistant pre,
-.code-block { border: 1px solid var(--hairline); border-radius: 12px; background: var(--bg-code); }
-.code-header { background: var(--bg-surface-2); border-bottom: 1px solid var(--hairline); }
-.msg.assistant blockquote { border-left-color: var(--hairline-strong); background: transparent; }
+.msg.assistant pre { border: 0; border-radius: 12px; background: var(--bg-code); }
+.msg.assistant pre:has(.code-block) {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.code-block { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.code-header {
+  background: color-mix(in srgb, #000 9%, var(--bg-code));
+  border-bottom: 0;
+}
+[data-theme="dark"] .code-header {
+  background: color-mix(in srgb, #fff 14%, var(--bg-code));
+}
+.msg.assistant blockquote {
+  border: 0;
+  background: var(--bg-code);
+}
 .msg.assistant a { color: var(--brand); }
 .reasoning-wrap, .tool-call { border: 1px solid var(--hairline); border-radius: 12px; background: var(--bg-surface-2); }
 
@@ -892,12 +909,8 @@ button:focus-visible, .chat-item:focus-visible, .msg-action:focus-visible,
 /* 占位符:更轻 */
 ::placeholder { color: var(--text-tertiary); opacity: 0.75; }
 
-/* 消息进场:更柔和的流水感(位移收敛) */
-@keyframes msgIn {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: none; }
-}
-.msg { animation: msgIn 260ms var(--ease-out); }
+/* 消息不做入场动画:整页重绘时每条从透明淡入,就是对话区时不时闪一下 */
+.msg { animation: none; }
 
 /* 弹窗/浮层进场:Apple 式 scale+fade(会话项的「更多」按钮由 polish.css 接管,不参与进场动画) */
 .modal, .user-menu, .oc-menu, .dropdown-menu {

@@ -2917,6 +2917,20 @@ select,
 .auth-switch { margin-top: 16px; }
 .auth-switch a { color: var(--brand); }
 
+/* 主站登录弹窗:与登录页同一套字标,关闭钮浮在右上角 */
+.auth-modal {
+  position: relative;
+  width: min(380px, 92vw);
+}
+.auth-modal .auth-modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 1;
+}
+.auth-modal .modal-body { padding-top: 28px; }
+.auth-modal .auth-logo { margin-bottom: 18px; }
+
 /* ---------- 23. 追问:去掉虚线顶栏和位移 ---------- */
 .follow-ups {
   margin-top: 10px;
