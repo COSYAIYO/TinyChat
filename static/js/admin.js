@@ -2178,9 +2178,17 @@ function refreshModelTestSelect(prefer) {
 }
 function modelProbeRow(model, row) {
   const ok = !!(row && row.ok);
-  return '<div class="probe-row ' + (ok ? 'ok' : 'bad') + '" data-model="' + escapeHtml(model) + '">'
-    + '<div class="probe-main"><div class="probe-title">' + escapeHtml(ok ? '可用' : '失败') + ' · ' + escapeHtml((row && row.model) || model) + '</div>'
-    + '<div class="probe-sub">' + escapeHtml(ok ? ((row && row.reply) || '已响应') : ((row && row.error) || '无回复')) + '</div></div>'
+  const timeout = !!(row && row.timeout);
+  const tag = ok ? '可用' : (timeout ? '超时' : '失败');
+  const detail = ok
+    ? ((row && row.reply) || '已响应')
+    : ((row && row.error) || '无回复');
+  return '<div class="probe-row ' + (ok ? 'ok' : 'bad') + (timeout ? ' timeout' : '') + '" data-model="' + escapeHtml(model) + '">'
+    + '<div class="probe-main"><div class="probe-title">'
+    + '<span class="probe-badge">' + tag + '</span>'
+    + '<span class="probe-model">' + escapeHtml((row && row.model) || model) + '</span>'
+    + '</div>'
+    + '<div class="probe-sub">' + escapeHtml(detail) + '</div></div>'
     + '<div class="probe-side"><span class="probe-ms">' + ((row && row.ms) || 0) + ' ms</span></div></div>';
 }
 function modelTestGapMs() {
@@ -2188,9 +2196,18 @@ function modelTestGapMs() {
   const sec = Number.isFinite(raw) ? Math.min(60, Math.max(0, raw)) : 1;
   return Math.round(sec * 1000);
 }
+// 单次测试超时(秒):超时即判定该模型不可用,批量测试会自动继续下一个
+function modelTestTimeoutMs() {
+  const raw = parseInt($('ap-test-timeout') && $('ap-test-timeout').value, 10);
+  const sec = Number.isFinite(raw) ? Math.min(120, Math.max(3, raw)) : 25;
+  return sec * 1000;
+}
 let modelTestAbort = false;
 let modelTestBusy = false;
 let modelTestPassed = new Set();
+// 测试结果全量留存(按模型),用于「有效 / 无效」切换时即时重渲染,不必重跑测试
+const MODEL_TEST_ROWS = new Map();
+let modelTestTab = 'ok';
 
 function updateKeepPassedAction() {
   const btn = $('ap-keep-passed');
@@ -2200,15 +2217,44 @@ function updateKeepPassedAction() {
   btn.disabled = !available;
 }
 
+// 按当前分页(有效/无效)重绘结果列表,并刷新计数与汇总文案
+function renderModelTestRows() {
+  const out = $('ap-test-result');
+  const panel = $('ap-test-panel');
+  if (!out || !panel) return;
+  const all = Array.from(MODEL_TEST_ROWS.entries());
+  const okRows = all.filter(([, r]) => r && r.ok);
+  const badRows = all.filter(([, r]) => !(r && r.ok));
+  const okCountEl = $('ap-test-ok-count');
+  const badCountEl = $('ap-test-bad-count');
+  if (okCountEl) okCountEl.textContent = String(okRows.length);
+  if (badCountEl) badCountEl.textContent = String(badRows.length);
+  panel.classList.toggle('hidden', all.length === 0);
+  const shown = modelTestTab === 'ok' ? okRows : badRows;
+  out.innerHTML = shown.length
+    ? shown.map(([model, row]) => modelProbeRow(model, row)).join('')
+    : '<p class="probe-empty">' + (all.length
+        ? (modelTestTab === 'ok' ? '没有可用的模型。切到「无效」查看失败原因。' : '全部模型都可用 🎉')
+        : '') + '</p>';
+  document.querySelectorAll('#ap-test-tabs .probe-tab').forEach((b) => {
+    b.classList.toggle('active', b.dataset.probeTab === modelTestTab);
+  });
+  const summary = $('ap-test-summary');
+  if (summary) summary.textContent = '测试结果 · 可用 ' + okRows.length + ' / ' + all.length;
+}
+
 function resetModelTestResults(clearOutput = true) {
   modelTestPassed.clear();
+  MODEL_TEST_ROWS.clear();
   updateKeepPassedAction();
   if (clearOutput) {
-    const out = $('ap-test-result');
-    if (out) {
-      out.classList.add('hidden');
-      out.innerHTML = '';
+    const panel = $('ap-test-panel');
+    if (panel) {
+      panel.classList.add('hidden');
+      panel.open = false;   // 默认折叠:下一轮测试重新展开
     }
+    const out = $('ap-test-result');
+    if (out) out.innerHTML = '';
   }
 }
 
@@ -2231,6 +2277,7 @@ async function requestModelTest(model) {
     apiFormat: ($('ap-format') && $('ap-format').getAttribute('data-value')) || 'chat',
     model: model,
     prompt: ($('ap-test-prompt') && $('ap-test-prompt').value.trim()) || '回复一个字：好',
+    timeoutSec: Math.round(modelTestTimeoutMs() / 1000),
     providerId: $('ap-save').dataset.editId || undefined,
   };
   const r = await api('/api/admin/providers/test', {
@@ -2275,23 +2322,34 @@ function setModelTestBusy(on) {
     refreshModelTestSelect();
   });
   if (stopBtn) stopBtn.addEventListener('click', () => { modelTestAbort = true; stopBtn.disabled = true; });
+  // 有效 / 无效 切换:只重渲染,不重跑测试
+  const tabs = $('ap-test-tabs');
+  if (tabs) tabs.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-probe-tab]');
+    if (!btn) return;
+    e.preventDefault();          // 阻止点到 <summary> 触发折叠
+    modelTestTab = btn.dataset.probeTab || 'ok';
+    renderModelTestRows();
+  });
   if (btn) btn.addEventListener('click', async () => {
     resetModelTestResults();
     const choices = modelTestChoices();
     const model = ($('ap-test-model') && $('ap-test-model').getAttribute('data-value')) || (choices[0] && choices[0].value) || '';
     if (!model) return toast('请先选择要测试的模型', true);
     const status = $('ap-test-status');
-    const out = $('ap-test-result');
+    const panel = $('ap-test-panel');
     modelTestAbort = false;
     setModelTestBusy(true);
     if (status) status.textContent = '正在询问 ' + model + '…';
     try {
       const row = await requestModelTest(model);
-      if (out) {
-        out.classList.remove('hidden');
-        out.innerHTML = modelProbeRow(model, row);
-      }
-      if (status) status.textContent = row.ok ? '模型可用' : '模型不可用';
+      MODEL_TEST_ROWS.set(model, row);
+      if (row.ok) { modelTestPassed.add(model); updateKeepPassedAction(); }
+      // 单个模型测试:结果自然落在对应的分组里,并展开面板让用户看到
+      modelTestTab = row.ok ? 'ok' : 'bad';
+      if (panel) panel.open = true;
+      renderModelTestRows();
+      if (status) status.textContent = row.ok ? '模型可用' : (row.timeout ? '超时（已判定不可用）' : '模型不可用');
     } catch (e) {
       if (status) status.textContent = '';
       toast('测试失败: ' + e.message, true);
@@ -2305,14 +2363,15 @@ function setModelTestBusy(on) {
     const choices = modelTestChoices();
     if (!choices.length) return toast('请先勾选要测试的模型', true);
     const status = $('ap-test-status');
-    const out = $('ap-test-result');
+    const panel = $('ap-test-panel');
     const gap = modelTestGapMs();
+    const timeoutMs = modelTestTimeoutMs();
     modelTestAbort = false;
     setModelTestBusy(true);
-    if (out) {
-      out.classList.remove('hidden');
-      out.innerHTML = '';
-    }
+    // 批量测试默认展开结果面板,并在开始时先切到「有效」
+    modelTestTab = 'ok';
+    if (panel) panel.open = true;
+    renderModelTestRows();
     let ok = 0;
     let tested = 0;
     try {
@@ -2327,12 +2386,12 @@ function setModelTestBusy(on) {
           row = { ok: false, model: model, error: e.message, ms: 0 };
         }
         tested++;
-        if (row.ok) {
-          ok++;
-          modelTestPassed.add(model);
-          updateKeepPassedAction();
-        }
-        if (out) out.insertAdjacentHTML('beforeend', modelProbeRow(model, row));
+        if (row.ok) ok++;
+        // 超时/失败都不中断整批:记录后自动继续下一个模型
+        MODEL_TEST_ROWS.set(model, row);
+        if (row.ok) modelTestPassed.add(model);
+        updateKeepPassedAction();
+        renderModelTestRows();
         if (i < choices.length - 1 && gap && !modelTestAbort) {
           if (status) status.textContent = '等待 ' + (gap / 1000) + ' 秒后继续 · ' + (i + 1) + ' / ' + choices.length;
           await new Promise((resolve) => setTimeout(resolve, gap));
@@ -2340,7 +2399,11 @@ function setModelTestBusy(on) {
       }
       const done = modelTestAbort ? '已停止' : '完成';
       updateKeepPassedAction();
-      if (status) status.textContent = done + ' · 可用 ' + ok + ' / ' + tested;
+      if (status) {
+        const bad = tested - ok;
+        status.textContent = done + ' · 可用 ' + ok + ' / ' + tested + (bad ? ('（' + bad + ' 个不可用，可切到「无效」查看原因）') : '')
+          + ' · 单次超时 ' + Math.round(timeoutMs / 1000) + ' 秒';
+      }
     } finally {
       if (stopBtn) stopBtn.disabled = false;
       setModelTestBusy(false);

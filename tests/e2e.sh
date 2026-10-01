@@ -1390,6 +1390,19 @@ assert_contains "返回版本号" "$SYS" '"version"'
 assert_contains "非管理员访问系统接口被拒" "$(curl -s "$BASE/api/admin/system" -H "$UAUTH")" '需要管理员权限'
 assert_contains "非管理员访问存储接口被拒" "$(curl -s "$BASE/api/admin/storage" -H "$UAUTH")" '需要管理员权限'
 
+say "== 模型连通性测试(超时与自动跳过) =="
+# 正常模型:mock 上游据模型名返回内容
+assert_contains "模型测试通过" "$(curl -s -X POST "$BASE/api/admin/providers/test" -H "$AUTH" -H "Content-Type: application/json" -d "{\"baseUrl\":\"http://127.0.0.1:$MOCK_PORT/v1\",\"apiKey\":\"sk-e2e\",\"apiFormat\":\"chat\",\"model\":\"mock-model\",\"prompt\":\"hi\",\"timeoutSec\":10}")" '"ok":true'
+# 自定义超时:连一个不会响应的地址(TEST-NET),必须在超时后返回 timeout 标记
+T0=$(date +%s)
+TIMEOUT_RES=$(curl -s -X POST "$BASE/api/admin/providers/test" -H "$AUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://192.0.2.1/v1","apiKey":"sk-e2e","apiFormat":"chat","model":"slow-model","prompt":"hi","timeoutSec":3}')
+T1=$(date +%s)
+assert_has "超时结果带 timeout 标记" "$TIMEOUT_RES" '"timeout":true'
+assert_has "超时说明包含设定的秒数" "$TIMEOUT_RES" '超过 3 秒仍未响应'
+ELAPSED=$((T1 - T0))
+if [ "$ELAPSED" -le 15 ]; then ok "超时按设定时长结束(耗时 ${ELAPSED}s)"; else bad "超时未生效,耗时 ${ELAPSED}s"; fi
+# 超出范围的超时值被收敛到合法区间(不会因为传 0 或超大值卡住)
+assert_has "超时下限被夹紧到 3 秒" "$(curl -s -X POST "$BASE/api/admin/providers/test" -H "$AUTH" -H "Content-Type: application/json" -d '{"baseUrl":"http://192.0.2.1/v1","apiKey":"sk-e2e","apiFormat":"chat","model":"m","prompt":"hi","timeoutSec":0}')" '超过 3 秒仍未响应'
 say "== 存储管理 =="
 ST=$(curl -s "$BASE/api/admin/storage" -H "$AUTH")
 assert_contains "存储接口返回分类占用" "$ST" '"categories"'

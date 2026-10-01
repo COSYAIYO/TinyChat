@@ -1488,6 +1488,77 @@ body.chat-resizing * { cursor: col-resize !important; }
   flex-direction: column;
   gap: 6px;
 }
+/* 结果面板:默认折叠,标题栏里带「有效 / 无效」切换与计数 */
+.probe-panel {
+  margin-top: 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+.probe-panel[hidden] { display: none; }
+.probe-panel > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 9px 12px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text);
+  background: var(--bg-hover);
+}
+.probe-panel > summary::-webkit-details-marker { display: none; }
+.probe-panel > summary::after {
+  content: '';
+  width: 6px; height: 6px;
+  border-right: 1.6px solid var(--text-tertiary);
+  border-bottom: 1.6px solid var(--text-tertiary);
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+  margin-left: 2px;
+}
+.probe-panel[open] > summary::after { transform: rotate(-135deg); }
+.probe-panel > summary:hover { background: var(--bg-active); }
+.probe-summary-text { flex: 1 1 auto; min-width: 0; }
+.probe-tabs { display: inline-flex; align-items: center; gap: 4px; }
+.probe-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.probe-tab em {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
+.probe-tab:hover { background: var(--bg-active); color: var(--text); }
+.probe-tab.active {
+  background: color-mix(in srgb, var(--brand, var(--accent)) 12%, transparent);
+  border-color: color-mix(in srgb, var(--brand, var(--accent)) 30%, transparent);
+  color: var(--brand, var(--accent));
+}
+.probe-tab.active em { color: inherit; }
+.probe-panel .probe-result { padding: 10px 12px 12px; margin-top: 0; }
+/* 空态:该分组没有条目时给出下一步指引,而不是一片空白 */
+.probe-empty {
+  margin: 0;
+  padding: 14px 0;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 12.5px;
+}
 .probe-row {
   display: flex;
   align-items: flex-start;
@@ -1500,12 +1571,33 @@ body.chat-resizing * { cursor: col-resize !important; }
 }
 .probe-row.ok { border-color: color-mix(in srgb, var(--brand, #16a34a) 35%, var(--hairline)); }
 .probe-row.bad { border-color: color-mix(in srgb, #dc2626 30%, var(--hairline)); }
+.probe-row.timeout { border-color: color-mix(in srgb, #d97706 32%, var(--hairline)); }
 .probe-main { min-width: 0; }
 .probe-title {
   font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+/* 状态徽标:一眼区分可用/失败/超时 */
+.probe-badge {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+.probe-row.ok .probe-badge { background: color-mix(in srgb, #16a34a 15%, transparent); color: #16a34a; }
+.probe-row.bad .probe-badge { background: color-mix(in srgb, #dc2626 13%, transparent); color: #dc2626; }
+.probe-row.timeout .probe-badge { background: color-mix(in srgb, #d97706 16%, transparent); color: #b45309; }
+.probe-model {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 500;
 }
 .probe-sub {
   margin-top: 2px;
@@ -4106,3 +4198,65 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   letter-spacing: 0.02em;
   pointer-events: none;
 }
+
+/* ============ 模型列表与「获取模型」弹窗:排版美化 ============ */
+/* 共同目标:表头更清晰、行更好扫读、选中行有明确反馈、窄屏不挤成一团 */
+.model-table {
+  border-spacing: 0;
+}
+.model-table thead th {
+  background: color-mix(in srgb, var(--bg-hover) 92%, var(--bg-surface));
+  border-bottom: 1px solid var(--hairline-strong, var(--hairline));
+  font-weight: 650;
+}
+/* 斑马纹:长列表更容易横向对齐阅读 */
+.model-table tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--bg-hover) 55%, transparent);
+}
+.model-table tbody tr:hover td {
+  background: color-mix(in srgb, var(--brand, var(--accent)) 6%, transparent);
+}
+/* 已启用的行:左侧色条 + 轻微底色,一眼看出哪些会被保存 */
+.model-table tbody tr.is-on td:first-child { box-shadow: inset 3px 0 0 var(--brand, var(--accent)); }
+.model-table tbody tr.is-on .mid,
+.model-table tbody tr.is-on .mname { font-weight: 600; }
+/* 模型 ID 用等宽字体,便于比对;过长省略 */
+.model-table .mid {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  display: inline-block;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+/* 数字列右对齐,方便竖向比较数值 */
+.model-table .col-mtok, .model-table .col-ctx, .model-table .col-cost { text-align: right; }
+.model-table .col-mtok input, .model-table .col-ctx input, .model-table .col-cost input { text-align: right; }
+/* 操作列头(勾选/生图/视频)居中 */
+.model-table .col-check, .model-table .col-img { text-align: center; }
+.model-table tbody td .mcost, .model-table tbody td .mtokens, .model-table tbody td .mctx { width: 100%; }
+/* 勾选框做大一点,减少误点 */
+.model-table input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+
+/* 列表容器:顶部工具条与底部分页区的分隔更清楚 */
+.model-check-toolbar { padding-bottom: 2px; }
+.model-check-meta {
+  padding: 6px 2px;
+  border-top: 1px dashed color-mix(in srgb, var(--hairline) 85%, transparent);
+}
+.model-check-list { background: var(--bg-surface); }
+
+/* 「获取模型」弹窗:列表区更高、分组标题更醒目 */
+.model-fetch-list { max-height: min(52vh, 460px); }
+.model-fetch-list .model-table { background: var(--bg-surface); }
+.model-stale-block {
+  border: 1px solid color-mix(in srgb, #d97706 26%, var(--hairline));
+  background: color-mix(in srgb, #d97706 5%, transparent);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.model-stale-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.model-stale-title { font-weight: 600; font-size: 13px; color: #b45309; }
+.model-stale-hint { margin: 6px 0 8px; font-size: 12.5px; color: var(--text-secondary); line-height: 1.5; }
