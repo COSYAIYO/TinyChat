@@ -10,6 +10,8 @@
  *   php tools/make-checksums.php
  *
  * CI 会在 push 时校验清单是否最新(见 .github/workflows/ci.yml)。
+ * 只收录 git 跟踪的文件。工作区里的日志、计划草稿、误生成的空文件
+ * 不会进发布包,写进清单后会让干净检出上的重跑和已提交清单对不上。
  */
 
 // 不纳入清单的内容:用户数据/本地配置/开发产物/清单自身
@@ -18,16 +20,22 @@ $EXCLUDE_FILES = array('checksums.txt');
 
 chdir(dirname(__DIR__));
 
+$proc = proc_open('git ls-files -z', array(1 => array('pipe', 'w'), 2 => array('pipe', 'w')), $pipes);
+if (!is_resource($proc)) { fwrite(STDERR, "无法执行 git ls-files\n"); exit(1); }
+$raw = stream_get_contents($pipes[1]);
+$err = stream_get_contents($pipes[2]);
+fclose($pipes[1]);
+fclose($pipes[2]);
+if (proc_close($proc) !== 0) { fwrite(STDERR, "git ls-files 失败: {$err}\n"); exit(1); }
+
 $entries = array();
-$it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator('.', FilesystemIterator::SKIP_DOTS));
-foreach ($it as $f) {
-    /** @var SplFileInfo $f */
-    $rel = str_replace('\\', '/', substr($f->getPathname(), 2)); // 去掉开头的 ./
+foreach (explode("\0", $raw) as $rel) {
+    if ($rel === '') continue;
+    $rel = str_replace('\\', '/', $rel);
     $top = strtok($rel, '/');
     if (in_array($top, $EXCLUDE_TOP, true)) continue;
     if (in_array($rel, $EXCLUDE_FILES, true)) continue;
-    if (!$f->isFile()) continue;
-    if (substr($rel, -9) === '.DS_Store') continue;
+    if (!is_file($rel)) { fwrite(STDERR, "清单文件缺失: {$rel}\n"); exit(1); }
     $hash = hash_file('sha256', $rel);
     if ($hash === false) { fwrite(STDERR, "无法读取: {$rel}\n"); exit(1); }
     $entries[] = $hash . '  ' . $rel;
