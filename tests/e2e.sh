@@ -540,6 +540,30 @@ assert_contains "演示管理员看不到供应商密钥掩码" "$DEMOPROV" '"ap
 assert_has "演示管理员看不到多密钥列表" "$DEMOPROV" '"keys":[]'
 assert_contains "演示管理员不可查看明文密钥" "$(curl -s -X POST "$BASE/api/providers/$PROV/key" -H "$DAUTH")" '演示管理员不可查看供应商密钥'
 assert_contains "演示管理员不可删除供应商" "$(curl -s -X DELETE "$BASE/api/admin/providers/$PROV" -H "$DAUTH")" '演示管理员不能删除供应商'
+# SMTP 凭据:演示管理员整段不可见(SMTP 密码可用于冒用站点域名发信),也不可写入或取回明文
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"smtpKeyRevealable":true,"smtp":{"host":"smtp.e2e.local","port":465,"username":"ops@e2e.local","password":"E2eSmtpSecret","encryption":"ssl","fromEmail":"ops@e2e.local"}}' > /dev/null
+DEMOSET=$(curl -s "$BASE/api/admin/settings" -H "$DAUTH")
+assert_has "演示管理员看不到 SMTP 主机" "$DEMOSET" '"host":""'
+assert_has "演示管理员看不到 SMTP 密码" "$DEMOSET" '"password":""'
+assert_has "演示管理员看不到 SMTP 用户名" "$DEMOSET" '"username":""'
+assert_has "演示管理员收到 SMTP 受限标记" "$DEMOSET" '"smtpRestricted":true'
+assert_contains "演示管理员不可写入 SMTP 配置" "$(curl -s -X POST "$BASE/api/admin/settings" -H "$DAUTH" -H "Content-Type: application/json" -d '{"smtp":{"host":"evil.local","port":25,"username":"x","password":"pwn","encryption":"none","fromEmail":"x@evil.local"}}')" '演示管理员不能修改邮件(SMTP)配置'
+assert_contains "演示管理员不可取回 SMTP 明文密码" "$(curl -s -X POST "$BASE/api/admin/settings/smtp-reveal" -H "$DAUTH")" '演示管理员不可查看邮件(SMTP)密码'
+# 真实管理员:勾选「保持显示」后自己可读可复制,取消勾选则只给掩码且拒绝取回
+assert_has "勾选保持显示后下发 SMTP 明文" "$(curl -s "$BASE/api/admin/settings" -H "$AUTH")" '"password":"E2eSmtpSecret"'
+assert_has "真实管理员可取回 SMTP 明文" "$(curl -s -X POST "$BASE/api/admin/settings/smtp-reveal" -H "$AUTH")" '"password":"E2eSmtpSecret"'
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"smtpKeyRevealable":false,"smtp":{"host":"smtp.e2e.local","port":465,"username":"ops@e2e.local","encryption":"ssl","fromEmail":"ops@e2e.local"}}' > /dev/null
+# 掩码含多字节字符(••),用「含掩码且不含明文」判定,避开 grep 的 locale 差异
+MASKED=$(curl -s "$BASE/api/admin/settings" -H "$AUTH")
+if printf '%s' "$MASKED" | grep -qF '"password":"E2eS' && ! printf '%s' "$MASKED" | grep -qF 'E2eSmtpSecret'; then ok "未勾选时仅下发掩码(不含明文)"; else bad "未勾选时仍可能下发明文: $(printf '%s' "$MASKED" | head -c 120)"; fi
+assert_contains "未勾选时拒绝取回明文" "$(curl -s -X POST "$BASE/api/admin/settings/smtp-reveal" -H "$AUTH")" '保存时未勾选'
+# 管理员账号不可走邮箱自助改密(邮箱被接管等于交出后台)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"passwordResetEnabled":true}' > /dev/null
+php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("users")); $us=json_decode($q->fetchColumn(),true); foreach($us as &$u) if(($u["name"]??"")==="admin") $u["email"]="admin@e2e.local"; unset($u); $up=$pdo->prepare("UPDATE store SET v=? WHERE k=?"); $up->execute(array(json_encode($us),"users"));' "$TMP/data"
+assert_contains "管理员账号拒绝邮箱重置" "$(curl -s -X POST "$BASE/api/auth/forgot-password" -H "Content-Type: application/json" -d '{"email":"admin@e2e.local"}')" '管理员账号不支持通过邮箱重置密码'
+# 普通用户仍可走该流程(否则就是拦过头了)
+php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("users")); $us=json_decode($q->fetchColumn(),true); $first=""; foreach($us as &$u) if(empty($u["admin"]) && empty($u["guest"]) && ($u["email"]??"")===""){ $u["email"]="member@e2e.local"; $first=$u["name"]; break; } unset($u); $up=$pdo->prepare("UPDATE store SET v=? WHERE k=?"); $up->execute(array(json_encode($us),"users")); echo $first;' "$TMP/data" > /dev/null
+if printf '%s' "$(curl -s -X POST "$BASE/api/auth/forgot-password" -H "Content-Type: application/json" -d '{"email":"member@e2e.local"}')" | grep -q '管理员账号'; then bad "普通用户被误判为管理员"; else ok "普通用户仍可走邮箱重置"; fi
 # 备份是整库快照(含密码哈希/对话/密钥),演示管理员完全不可接触
 assert_contains "演示管理员不可列出备份" "$(curl -s "$BASE/api/admin/backup" -H "$DAUTH")" '演示管理员不可下载或管理数据备份'
 assert_contains "演示管理员不可下载备份" "$(curl -s "$BASE/api/admin/backup/download?id=x" -H "$DAUTH")" '演示管理员不可下载或管理数据备份'

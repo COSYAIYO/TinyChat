@@ -2989,15 +2989,64 @@ function mailTplBind() {
   });
   const testBtn = $('smtp-test-btn');
   if (testBtn) testBtn.addEventListener('click', async () => {
+    const box = $('smtp-test-result');
+    const showResult = (html, isErr) => {
+      if (!box) return;
+      box.className = 'smtp-test-result' + (isErr ? ' is-err' : ' is-ok');
+      box.innerHTML = html;
+    };
     testBtn.disabled = true; const old = testBtn.textContent; testBtn.textContent = '发送中…';
+    if (box) box.className = 'smtp-test-result hidden';
     try {
       const r = await api('/api/admin/settings/test-email', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: ($('smtp-test-to') || {}).value || '' }) });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) toast((d.error && d.error.message) || '发送失败', true);
-      else toast('测试邮件已发送到 ' + (d.to || '你的邮箱') + '，请查收');
-    } catch (e) { toast('发送失败，请检查网络', true); }
+      // 容错解析:服务端 500 时可能返回 HTML 错误页,直接 r.json() 会退化成笼统的「发送失败」
+      const d = await readJsonSafe(r);
+      const detail = (d.error && d.error.message) || '';
+      if (!r.ok) {
+        toast('测试邮件发送失败', true);
+        showResult('<b>发送失败</b><br>' + escapeHtml(detail || ('服务器返回 HTTP ' + r.status + '，未提供更多信息')), true);
+      } else {
+        toast('测试邮件已发送到 ' + (d.to || '你的邮箱') + '，请查收');
+        showResult('<b>发送成功</b><br>已投递到 ' + escapeHtml(d.to || '你的邮箱') + '。若未收到，请检查收件箱的垃圾邮件/广告邮件分类，并确认收件服务器没有延迟。', false);
+      }
+    } catch (e) {
+      toast('发送失败，请检查网络', true);
+      showResult('<b>发送失败</b><br>' + escapeHtml((e && e.message) || '网络错误，请求未能送达服务器'), true);
+    }
     finally { testBtn.disabled = false; testBtn.textContent = old; }
   });
+
+  // SMTP 密码:小眼睛切换明文/掩码。未勾选「保存后保持显示」时只显示掩码,点击取回明文会被拒绝
+  const passToggle = $('smtp-pass-toggle');
+  const passInput = $('smtp-pass');
+  if (passToggle && passInput) {
+    if (window.OC && window.OC.icon) passToggle.innerHTML = OC.icon('eye', 14);
+    const syncEye = () => { passToggle.title = passInput.type === 'text' ? '隐藏密码' : '显示密码'; };
+    syncEye();
+    passToggle.addEventListener('click', async () => {
+      if (passInput.type === 'text') { passInput.type = 'password'; syncEye(); return; }
+      // 输入框里已是服务端下发的明文(勾选了保持显示)时直接切类型即可
+      const val = passInput.value || '';
+      if (val && val.indexOf('••') < 0) { passInput.type = 'text'; syncEye(); return; }
+      passToggle.disabled = true;
+      try {
+        const r = await api('/api/admin/settings/smtp-reveal', { method: 'POST' });
+        const d = await readJsonSafe(r);
+        if (!r.ok) {
+          toast((d.error && d.error.message) || '无法查看密码', true);
+          return;
+        }
+        passInput.value = d.password || '';
+        passInput.type = 'text';
+        syncEye();
+        toast('已显示密码，可复制');
+      } catch (e) {
+        toast('无法查看密码：' + ((e && e.message) || '网络错误'), true);
+      } finally {
+        passToggle.disabled = false;
+      }
+    });
+  }
 }
 
 let VERIFY_LOADED = false; // 「验证设置」表单是否已从服务端加载成功;未加载时禁止保存,防止把 HTML 默认值写回
@@ -3016,6 +3065,10 @@ async function loadVerifySettings() {
   const s = d.settings || {}; const set = (id, v) => { const e = $(id); if (e) e.value = v == null ? '' : v; };
   ['verify-email-enabled','verify-reset-enabled','verify-quota-unlimited'].forEach((id, i) => { const e=$(id); if(e) e.checked=!![s.emailVerificationEnabled,s.passwordResetEnabled,s.freeQuotaUnlimited][i]; });
   set('verify-free-quota', s.freeQuota); const smtp=s.smtp||{}; set('smtp-host',smtp.host); set('smtp-port',smtp.port||587); set('smtp-user',smtp.username); set('smtp-pass',smtp.password); set('smtp-encryption',smtp.encryption||'tls'); set('smtp-from-name',smtp.fromName||'TinyChat'); set('smtp-from-email',smtp.fromEmail);
+  // 「SMTP 密码保存后保持显示」:勾选后服务端直接下发明文,取消勾选则只给掩码
+  if ($('smtp-pass-keep')) $('smtp-pass-keep').checked = !!s.smtpKeyRevealable;
+  if ($('smtp-pass')) $('smtp-pass').type = 'password';
+  if ($('smtp-pass-toggle')) $('smtp-pass-toggle').disabled = false;
   set('session-days', s.sessionDays || 7);
   if ($('apikeys-enabled')) $('apikeys-enabled').checked = s.apiKeysEnabled !== false;
   if ($('invite-required')) $('invite-required').checked = !!s.registerInviteRequired;
@@ -3435,7 +3488,7 @@ async function loadPackages() {
     if (!VERIFY_LOADED) { toast('验证设置尚未加载完成，已取消保存', true); return; }
     const old=save.textContent; save.disabled=true; save.textContent='保存中…';
     try {
-    const tplPayload=MAIL_TPL.loaded?{mailTemplates:{tplVersion:2,verifySubject:MAIL_TPL.tpl.verify.subject,verifyHtml:MAIL_TPL.tpl.verify.html,resetSubject:MAIL_TPL.tpl.reset.subject,resetHtml:MAIL_TPL.tpl.reset.html}}:{}; const payload=Object.assign({emailVerificationEnabled:!!$('verify-email-enabled').checked,passwordResetEnabled:!!$('verify-reset-enabled').checked,freeQuotaUnlimited:!!$('verify-quota-unlimited').checked,freeQuota:parseInt($('verify-free-quota').value,10)||0,sessionDays:Math.min(30,Math.max(1,parseInt($('session-days')&&$('session-days').value,10)||7)),apiKeysEnabled:!!($('apikeys-enabled')&&$('apikeys-enabled').checked),registerInviteRequired:!!($('invite-required')&&$('invite-required').checked),guestEnabled:!!($('guest-enabled')&&$('guest-enabled').checked),guestRounds:Math.min(1000,Math.max(1,parseInt($('guest-rounds')&&$('guest-rounds').value,10)||3)),allowRegister:!!($('register-open')&&$('register-open').checked),registerLimitPerHour:Math.min(1000,Math.max(1,parseInt($('register-limit')&&$('register-limit').value,10)||5)),allowUserProviders:!!($('user-providers-allowed')&&$('user-providers-allowed').checked),accountDeletionMode:($('account-deletion-mode')&&$('account-deletion-mode').value)||'soft',loginMaxFails:Math.min(50,Math.max(0,parseInt($('login-max-fails')&&$('login-max-fails').value,10)||0)),loginLockMs:Math.min(3600000,Math.max(0,parseInt($('login-lock-sec')&&$('login-lock-sec').value,10)||0))*1000,smtp:{host:$('smtp-host').value.trim(),port:parseInt($('smtp-port').value,10)||587,username:$('smtp-user').value.trim(),password:$('smtp-pass').value,encryption:$('smtp-encryption').value,fromName:$('smtp-from-name').value.trim(),fromEmail:$('smtp-from-email').value.trim()}},tplPayload); const r=await api('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'保存失败',true); toast('验证设置已保存'); } catch(e) { toast('保存失败：' + ((e && e.message) || '网络错误'), true); } finally { save.disabled=false; save.textContent=old; } });
+    const tplPayload=MAIL_TPL.loaded?{mailTemplates:{tplVersion:2,verifySubject:MAIL_TPL.tpl.verify.subject,verifyHtml:MAIL_TPL.tpl.verify.html,resetSubject:MAIL_TPL.tpl.reset.subject,resetHtml:MAIL_TPL.tpl.reset.html}}:{}; const payload=Object.assign({emailVerificationEnabled:!!$('verify-email-enabled').checked,passwordResetEnabled:!!$('verify-reset-enabled').checked,freeQuotaUnlimited:!!$('verify-quota-unlimited').checked,freeQuota:parseInt($('verify-free-quota').value,10)||0,sessionDays:Math.min(30,Math.max(1,parseInt($('session-days')&&$('session-days').value,10)||7)),apiKeysEnabled:!!($('apikeys-enabled')&&$('apikeys-enabled').checked),registerInviteRequired:!!($('invite-required')&&$('invite-required').checked),guestEnabled:!!($('guest-enabled')&&$('guest-enabled').checked),guestRounds:Math.min(1000,Math.max(1,parseInt($('guest-rounds')&&$('guest-rounds').value,10)||3)),allowRegister:!!($('register-open')&&$('register-open').checked),registerLimitPerHour:Math.min(1000,Math.max(1,parseInt($('register-limit')&&$('register-limit').value,10)||5)),allowUserProviders:!!($('user-providers-allowed')&&$('user-providers-allowed').checked),accountDeletionMode:($('account-deletion-mode')&&$('account-deletion-mode').value)||'soft',loginMaxFails:Math.min(50,Math.max(0,parseInt($('login-max-fails')&&$('login-max-fails').value,10)||0)),loginLockMs:Math.min(3600000,Math.max(0,parseInt($('login-lock-sec')&&$('login-lock-sec').value,10)||0))*1000,smtpKeyRevealable:!!($('smtp-pass-keep')&&$('smtp-pass-keep').checked),smtp:{host:$('smtp-host').value.trim(),port:parseInt($('smtp-port').value,10)||587,username:$('smtp-user').value.trim(),password:$('smtp-pass').value,encryption:$('smtp-encryption').value,fromName:$('smtp-from-name').value.trim(),fromEmail:$('smtp-from-email').value.trim()}},tplPayload); const r=await api('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'保存失败',true); toast('验证设置已保存'); } catch(e) { toast('保存失败：' + ((e && e.message) || '网络错误'), true); } finally { save.disabled=false; save.textContent=old; } });
   const invalidate=$('session-invalidate'); if(invalidate) invalidate.addEventListener('click',async()=>{
     const ok=window.OCUI&&OCUI.confirm?await OCUI.confirm({title:'强制全站下线',message:'所有人的现有登录态会立即失效（包括你自己），需要重新登录。确认执行？',danger:true,confirmText:'执行'}):confirm('所有人的现有登录态会立即失效（包括你自己），确认执行？');
     if(!ok) return;
@@ -3990,6 +4043,12 @@ window.addEventListener('hashchange', () => {
       ['announce-save'].forEach((id) => { const el = $(id); if (el) el.disabled = true; });
       const announceBox = $('announce-enabled'); if (announceBox) announceBox.disabled = true;
       const announceText = $('announce-text'); if (announceText) announceText.disabled = true;
+      // SMTP 凭据可用于冒用站点域名发信:整段置为只读(服务端同样拒绝写入)
+      ['smtp-host', 'smtp-port', 'smtp-user', 'smtp-pass', 'smtp-encryption', 'smtp-from-name', 'smtp-from-email', 'smtp-test-btn', 'smtp-test-to', 'verify-save'].forEach((id) => {
+        const el = $(id); if (el) el.disabled = true;
+      });
+      const smtpNote = document.getElementById('smtp-demo-note');
+      if (smtpNote) smtpNote.hidden = false;
     }
     // 全局演示还原窗口:用户表单回填用(所有管理员都拉一次,避免编辑表单写死 10)
     try {

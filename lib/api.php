@@ -1105,7 +1105,11 @@ function tc_api_forgot_password() {
             tc_fail(429, '请求过于频繁，请稍后再试');
         }
         $b = tc_read_json_body(); $email = strtolower(trim((string) ($b['email'] ?? ''))); if (!filter_var($email, FILTER_VALIDATE_EMAIL)) tc_fail(400, '邮箱格式不正确');
-        foreach ($db['users'] as &$u) if (strtolower((string) ($u['email'] ?? '')) === $email) { if (!empty($u['resetLastSentAt']) && tc_now() - (int) $u['resetLastSentAt'] < 60000) tc_fail(429, '邮件发送过于频繁，请稍后再试'); $token = bin2hex(random_bytes(24)); $u['resetLastSentAt'] = tc_now(); $u['resetTokenHash'] = hash('sha256', $token); $u['resetTokenExpires'] = tc_now() + 3600000; $link = tc_public_base_url() . '/login?reset=' . rawurlencode($token); [$subject, $html] = tc_render_mail_template($db['settings'], 'reset', isset($u['name']) ? $u['name'] : '', $link, '1 小时'); if (!tc_mail_send($db['settings'], $email, $subject, $html)) tc_fail(503, '重置邮件发送失败'); break; }
+        // 管理员账号不走邮箱自助改密:邮箱一旦被接管(或本就是他人代管),等于把后台交出去。
+        // 邮箱与账号是否存在不在此处区分,统一给出同一句提示,避免被用来探测账号。
+        foreach ($db['users'] as &$u) if (strtolower((string) ($u['email'] ?? '')) === $email) {
+            if (!empty($u['admin'])) { unset($u); tc_fail(403, '管理员账号不支持通过邮箱重置密码，请由其他管理员在后台重置或联系站点维护者'); }
+            if (!empty($u['resetLastSentAt']) && tc_now() - (int) $u['resetLastSentAt'] < 60000) tc_fail(429, '邮件发送过于频繁，请稍后再试'); $token = bin2hex(random_bytes(24)); $u['resetLastSentAt'] = tc_now(); $u['resetTokenHash'] = hash('sha256', $token); $u['resetTokenExpires'] = tc_now() + 3600000; $link = tc_public_base_url() . '/login?reset=' . rawurlencode($token); [$subject, $html] = tc_render_mail_template($db['settings'], 'reset', isset($u['name']) ? $u['name'] : '', $link, '1 小时'); if (!tc_mail_send($db['settings'], $email, $subject, $html, '', $mailErr)) tc_fail(503, $mailErr !== '' ? ('重置邮件发送失败：' . $mailErr) : '重置邮件发送失败'); break; }
         unset($u); tc_json(200, array('ok' => true));
     });
 }
@@ -1114,7 +1118,12 @@ function tc_api_reset_password() {
     tc_with_db(true, function (&$db) {
         if (empty($db['settings']['passwordResetEnabled'])) tc_fail(403, '找回密码功能未开启');
         $b = tc_read_json_body(); $token = (string) ($b['token'] ?? ''); $pwd = (string) ($b['password'] ?? ''); if (strlen($pwd) < 4 || strlen($pwd) > 128) tc_fail(400, '密码长度需为 4-128 个字符'); $hash = hash('sha256', $token); $now = tc_now();
-        foreach ($db['users'] as &$u) if (!empty($u['resetTokenHash']) && hash_equals($u['resetTokenHash'], $hash) && (int) ($u['resetTokenExpires'] ?? 0) > $now) { tc_set_password($u, $pwd); $u['resetTokenHash'] = ''; $u['resetTokenExpires'] = 0; tc_json(200, array('ok' => true)); }
+        foreach ($db['users'] as &$u) if (!empty($u['resetTokenHash']) && hash_equals($u['resetTokenHash'], $hash) && (int) ($u['resetTokenExpires'] ?? 0) > $now) {
+            // 管理员账号不发重置邮件(见 tc_api_forgot_password),这里再兜一层:
+            // 历史遗留的重置 token 也不允许用来改管理员密码
+            if (!empty($u['admin'])) { unset($u); tc_fail(403, '管理员账号不支持通过邮箱重置密码，请由其他管理员在后台重置'); }
+            tc_set_password($u, $pwd); $u['resetTokenHash'] = ''; $u['resetTokenExpires'] = 0; tc_json(200, array('ok' => true));
+        }
         unset($u); tc_fail(400, '重置链接无效或已过期');
     });
 }
@@ -1921,7 +1930,7 @@ function tc_api_admin_stats() {
             ),
             'freeQuota' => $db['settings']['freeQuota'],
             'freeQuotaUnlimited' => !empty($db['settings']['freeQuotaUnlimited']),
-            'settings' => tc_admin_settings_public($db['settings']),
+            'settings' => tc_admin_settings_public($db['settings'], $isDemo),
         ));
     });
 }
@@ -2225,9 +2234,9 @@ function tc_api_redeem_package() {
 
 function tc_api_admin_get_settings() {
     tc_with_db(false, function ($db) {
-        tc_require_admin($db);
+        $admin = tc_require_admin($db);
         tc_backup_maybe($db);
-        tc_json(200, array('settings' => tc_admin_settings_public($db['settings'])));
+        tc_json(200, array('settings' => tc_admin_settings_public($db['settings'], tc_is_demo_user($admin))));
     });
 }
 
@@ -2535,6 +2544,11 @@ function tc_api_admin_save_settings() {
         if (tc_is_demo_user($admin) && array_key_exists('announcement', $src)) {
             tc_fail(403, '演示管理员不能修改公告');
         }
+        // SMTP 凭据可用于冒用站点域名发信(钓鱼/垃圾邮件),演示管理员一律不可写入;
+        // 即使提交里带的是掩码或空值也要拦,避免「顺带清空既有配置」
+        if (tc_is_demo_user($admin) && array_key_exists('smtp', $src)) {
+            tc_fail(403, '演示管理员不能修改邮件(SMTP)配置');
+        }
         if (array_key_exists('announcement', $src)) {
             if (!is_array($src['announcement'])) tc_fail(400, '公告设置格式不正确');
             $announcementText = trim((string) (isset($src['announcement']['text']) ? $src['announcement']['text'] : ''));
@@ -2574,8 +2588,19 @@ function tc_api_admin_save_settings() {
         if (isset($src['mineruToken']) && strpos((string) $src['mineruToken'], '••') !== false) {
             unset($src['mineruToken']);
         }
-        if (isset($src['smtp']) && is_array($src['smtp']) && isset($src['smtp']['password']) && strpos((string) $src['smtp']['password'], '••') !== false) {
-            $src['smtp']['password'] = $db['settings']['smtp']['password'] ?? '';
+        // SMTP 整段按字段合并:提交里没带的键沿用已存值。
+        // 必须显式合并——后面的 array_merge 是浅合并,$src['smtp'] 会整体替换旧数组,
+        // 于是「只改端口」这类保存会把密码/用户名等未提交的字段一并抹掉。
+        if (isset($src['smtp']) && is_array($src['smtp'])) {
+            $prevSmtp = (isset($db['settings']['smtp']) && is_array($db['settings']['smtp'])) ? $db['settings']['smtp'] : array();
+            $mergedSmtp = array_merge($prevSmtp, $src['smtp']);
+            // 密码为掩码(••)或空串时保留原值:取消勾选「保存后保持显示」只是不再显示明文,
+            // 并不代表要删除密码(真要清空可同时清空用户名,无用户名时不发 AUTH)。
+            $pw = isset($mergedSmtp['password']) ? (string) $mergedSmtp['password'] : '';
+            if ($pw === '' || strpos($pw, '••') !== false) {
+                $mergedSmtp['password'] = isset($prevSmtp['password']) ? (string) $prevSmtp['password'] : '';
+            }
+            $src['smtp'] = $mergedSmtp;
         }
         unset($src['defaultGroupId']);
         // 演示开关由"创建演示管理员"驱动,不允许通过普通设置保存直接改写
@@ -2606,7 +2631,7 @@ function tc_api_admin_save_settings() {
             $src['oauthProviders'] = $merged;
         }
         $db['settings'] = tc_normalize_settings(array_merge($db['settings'], $src));
-        tc_json(200, array('settings' => tc_admin_settings_public($db['settings'])));
+        tc_json(200, array('settings' => tc_admin_settings_public($db['settings'], tc_is_demo_user($admin))));
     });
 }
 
@@ -2647,6 +2672,20 @@ function tc_api_admin_test_email() {
 }
 
 // 下发内置默认邮件模板,供后台"恢复默认模板"使用
+// 取回 SMTP 密码明文(仅当保存时勾选了「保存后保持显示」)。
+// 管理员凭据属运营方信息,演示管理员一律不可见(与供应商密钥同一策略)。
+function tc_api_admin_smtp_reveal() {
+    tc_with_db(false, function ($db) {
+        $admin = tc_require_admin($db);
+        if (tc_is_demo_user($admin)) tc_fail(403, '演示管理员不可查看邮件(SMTP)密码');
+        if (empty($db['settings']['smtpKeyRevealable'])) tc_fail(403, '保存时未勾选「保存后保持显示」，密码不可查看');
+        $pw = (string) (isset($db['settings']['smtp']['password']) ? $db['settings']['smtp']['password'] : '');
+        if ($pw === '') tc_fail(404, '尚未保存 SMTP 密码');
+        tc_log_auth_event('admin', isset($admin['name']) ? $admin['name'] : '', '查看 SMTP 密码', isset($admin['id']) ? $admin['id'] : '');
+        tc_json(200, array('password' => $pw));
+    });
+}
+
 function tc_api_admin_mail_template_defaults() {
     tc_with_db(false, function ($db) {
         tc_require_admin($db);

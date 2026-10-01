@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.70');
+define('TC_VERSION', '2.0.71');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -380,6 +380,9 @@ function tc_normalize_settings($raw) {
     }
     $s['mailTemplates'] = array_merge($TC_SETTINGS_DEFAULTS['mailTemplates'], $tpl);
     $s['smtp'] = array('host' => substr(trim((string) ($smtp['host'] ?? '')), 0, 180), 'port' => min(65535, max(1, (int) ($smtp['port'] ?? 587))), 'username' => substr(trim((string) ($smtp['username'] ?? '')), 0, 180), 'password' => (string) ($smtp['password'] ?? ''), 'encryption' => in_array(($smtp['encryption'] ?? 'tls'), array('none','ssl','tls'), true) ? ($smtp['encryption'] ?? 'tls') : 'tls', 'fromName' => substr(trim((string) ($smtp['fromName'] ?? 'TinyChat')), 0, 80), 'fromEmail' => substr(trim((string) ($smtp['fromEmail'] ?? '')), 0, 180));
+    // 「SMTP 密码保存后保持显示」:勾选后可随时在后台点小眼睛取回明文(便于复制到其它系统)，
+    // 未勾选则只显示掩码且取不回明文。演示管理员无论该开关如何都不可见。
+    $s['smtpKeyRevealable'] = !empty($s['smtpKeyRevealable']);
     $timeout = isset($s['proxyTimeoutMs']) ? (int) $s['proxyTimeoutMs'] : $TC_SETTINGS_DEFAULTS['proxyTimeoutMs'];
     $s['proxyTimeoutMs'] = min(600000, max(5000, $timeout ?: $TC_SETTINGS_DEFAULTS['proxyTimeoutMs']));
     $s['loginMaxFails'] = min(50, max(0, (int) $s['loginMaxFails']));
@@ -647,7 +650,10 @@ function tc_web_search_public($s) {
     );
 }
 
-function tc_admin_settings_public($s) {
+// 后台设置对外下发前的脱敏。$forDemo=true 时按演示管理员的可见边界处理:
+// 除常规掩码外,SMTP 密码/发件人账号这类「可用于冒用站点发信」的凭据一律不下发
+// (连掩码都不给——掩码本身会泄露首尾字符,可被用于缩小猜测范围)。
+function tc_admin_settings_public($s, $forDemo = false) {
     $out = is_array($s) ? $s : array();
     if (!empty($out['webSearchTavilyKey'])) $out['webSearchTavilyKey'] = tc_mask_key($out['webSearchTavilyKey']);
     if (!empty($out['paddleOcrKey'])) $out['paddleOcrKey'] = tc_mask_key($out['paddleOcrKey']);
@@ -664,7 +670,24 @@ function tc_admin_settings_public($s) {
             }
         }
     }
-    if (!empty($out['smtp']['password'])) $out['smtp']['password'] = tc_mask_key($out['smtp']['password']);
+    if (!empty($out['smtp']) && is_array($out['smtp'])) {
+        if ($forDemo) {
+            // 演示管理员:整段 SMTP 凭据不可见(前端据此把该区域置为只读)
+            $out['smtp']['password'] = '';
+            $out['smtp']['username'] = '';
+            $out['smtp']['host'] = '';
+            $out['smtp']['fromEmail'] = '';
+            $out['smtpRestricted'] = true;
+            $out['smtpKeyRevealable'] = false;
+        } elseif (!empty($out['smtp']['password'])) {
+            // 勾选「保持显示」时下发真实明文(前端直接可读可复制);
+            // 未勾选则只给掩码,取回明文要走 smtp-reveal 且会被拒绝。
+            if (empty($out['smtpKeyRevealable'])) $out['smtp']['password'] = tc_mask_key($out['smtp']['password']);
+        }
+    } elseif ($forDemo) {
+        $out['smtp'] = array('host' => '', 'port' => 587, 'username' => '', 'password' => '', 'encryption' => 'tls', 'fromName' => '', 'fromEmail' => '');
+        $out['smtpRestricted'] = true;
+    }
     $out['webSearchAllowUser'] = !empty($out['webSearchAllowUser']);
     $out['mineruAllowUser'] = !empty($out['mineruAllowUser']);
     return $out;
@@ -1503,30 +1526,45 @@ function tc_set_password(&$user, $password) {
 function tc_mail_send($settings, $to, $subject, $html, $text = '', &$err = null) {
     $err = '';
     $smtp = isset($settings['smtp']) && is_array($settings['smtp']) ? $settings['smtp'] : array();
-    if (empty($smtp['host'])) { $err = '未配置 SMTP 服务器'; return false; }
+    if (empty($smtp['host'])) { $err = '未配置 SMTP 服务器：请先在「用户验证」页填写并保存 SMTP 配置'; return false; }
     if (!filter_var($to, FILTER_VALIDATE_EMAIL)) { $err = '收件邮箱无效'; return false; }
     $from = str_replace(array("\r", "\n"), '', $smtp['fromEmail'] ?: $smtp['username']);
     $fromName = str_replace(array("\r", "\n"), '', $smtp['fromName'] ?: 'TinyChat');
     $subject = str_replace(array("\r", "\n"), '', $subject);
-    if (!filter_var($from, FILTER_VALIDATE_EMAIL)) { $err = '发件人邮箱无效: ' . $from; return false; }
+    if (!filter_var($from, FILTER_VALIDATE_EMAIL)) { $err = '发件人邮箱无效（' . ($from === '' ? '未填写' : $from) . '）：请填写有效的发件人地址，或先填写 SMTP 用户名作为回退'; return false; }
     $body = "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\nFrom: " . $fromName . " <" . $from . ">\r\nTo: " . $to . "\r\nSubject: =?UTF-8?B?" . base64_encode($subject) . "?=\r\n\r\n" . $html . "\r\n.";
     $transport = $smtp['encryption'] === 'ssl' ? 'ssl://' : '';
     $fp = @stream_socket_client($transport . $smtp['host'] . ':' . (int) $smtp['port'], $errno, $errstr, 8);
     if (!$fp) {
-        $err = '连接 SMTP 服务器失败: ' . ($errstr !== '' ? $errstr : '超时') . ' (' . $smtp['host'] . ':' . (int) $smtp['port'] . ')';
-        return function_exists('mail') ? @mail($to, '=?UTF-8?B?' . base64_encode($subject) . '?=', $html, 'MIME-Version: 1.0\r\nContent-type: text/html; charset=UTF-8\r\nFrom: ' . $fromName . ' <' . $from . '>\r\n') : false;
+        // 连接失败即失败:不要回退到 mail()。PHP 的 mail() 在多数环境下返回 true
+        // 却把邮件丢给不存在的本地 MTA,会让接口报「发送成功」而用户永远收不到,
+        // 同时把这里的真实原因(端口不通/域名解析失败)吞掉,导致完全无法排查。
+        $err = '连接 SMTP 服务器失败：' . ($errstr !== '' ? $errstr : '连接超时')
+            . '（' . $smtp['host'] . ':' . (int) $smtp['port'] . '，加密方式 ' . $smtp['encryption'] . '）'
+            . '。请检查服务器地址、端口、加密方式，以及主机是否允许对外发起连接。';
+        return false;
     }
     stream_set_timeout($fp, 8);
     $lastLine = '';
     $read = function () use ($fp, &$lastLine) { $out=''; while (($line=fgets($fp, 512)) !== false) { $out.=$line; if (isset($line[3]) && $line[3] === ' ') break; } $lastLine = trim($out); return $out; };
-    $ok = function ($response, $codes) use (&$err, &$lastLine) { $code = (int) substr(trim((string) $response), 0, 3); if (!in_array((int) $code, array_map('intval', $codes), true)) { $err = 'SMTP 响应异常 (' . $code . '): ' . $lastLine; return false; } return true; };
+    // SMTP 响应码 → 人话 + 排查方向(直接透传到后台,便于自查)
+    $explain = function ($code, $line) {
+        $hint = '';
+        if ($code === 535 || $code === 534 || $code === 530) $hint = '：用户名或密码不正确，或该账号要求使用「授权码」而非登录密码';
+        elseif ($code === 550 || $code === 553 || $code === 501) $hint = '：发件人地址被服务器拒绝，通常要求发件人邮箱与 SMTP 账号一致';
+        elseif ($code === 554) $hint = '：邮件被判定为垃圾邮件或被策略拒绝，请检查发件人与内容';
+        elseif ($code === 421 || $code === 450 || $code === 451 || $code === 452) $hint = '：服务器暂时不可用或触发限流，请稍后重试';
+        elseif ($code === 500 || $code === 502 || $code === 504) $hint = '：服务器不支持该指令，请尝试切换加密方式（TLS / SSL / 无）';
+        return 'SMTP 服务器拒绝了请求 (' . $code . ')' . $hint . '（服务器原文：' . $line . '）';
+    };
+    $ok = function ($response, $codes) use (&$err, &$lastLine, $explain) { $code = (int) substr(trim((string) $response), 0, 3); if (!in_array((int) $code, array_map('intval', $codes), true)) { $err = $explain($code, $lastLine); return false; } return true; };
     $write = function ($cmd, $codes) use ($fp, $read, $ok) { if (fwrite($fp, $cmd . "\r\n") === false) { $err = 'SMTP 连接中断'; return false; } return $ok($read(), $codes); };
     if (!$ok($read(), array(220))) { fclose($fp); return false; }
     if (!$write('EHLO localhost', array(250))) { fclose($fp); return false; }
-    if ($smtp['encryption'] === 'tls') { if (!$write('STARTTLS', array(220)) || @stream_socket_enable_crypto($fp, true, STREAM_CRYPTO_METHOD_TLS_CLIENT) !== true || !$write('EHLO localhost', array(250))) { if ($err === '') $err = 'STARTTLS 加密失败'; fclose($fp); return false; } }
-    if ($smtp['username'] !== '') { if (!$write('AUTH LOGIN', array(334)) || !$write(base64_encode($smtp['username']), array(334)) || !$write(base64_encode($smtp['password']), array(235))) { if ($err === '') $err = 'SMTP 认证失败，请检查用户名和密码'; fclose($fp); return false; } }
-    if (!$write('MAIL FROM:<' . $from . '>', array(250)) || !$write('RCPT TO:<' . $to . '>', array(250,251)) || !$write('DATA', array(354))) { fclose($fp); return false; }
-    if (fwrite($fp, $body . "\r\n") === false || !$ok($read(), array(250))) { if ($err === '') $err = '邮件内容未被服务器接受'; fclose($fp); return false; }
+    if ($smtp['encryption'] === 'tls') { if (!$write('STARTTLS', array(220)) || @stream_socket_enable_crypto($fp, true, STREAM_CRYPTO_METHOD_TLS_CLIENT) !== true || !$write('EHLO localhost', array(250))) { if ($err === '') $err = 'STARTTLS 加密握手失败：服务器可能不支持 STARTTLS，请把加密方式改为 SSL（端口通常 465）或「无」（端口通常 25）后重试'; fclose($fp); return false; } }
+    if ($smtp['username'] !== '') { if (!$write('AUTH LOGIN', array(334)) || !$write(base64_encode($smtp['username']), array(334)) || !$write(base64_encode($smtp['password']), array(235))) { if ($err === '') $err = 'SMTP 认证失败：请确认「用户名」填的是完整邮箱，且「密码」用的是该邮箱的 SMTP 授权码（多数邮箱不支持用登录密码直接发信）'; fclose($fp); return false; } }
+    if (!$write('MAIL FROM:<' . $from . '>', array(250)) || !$write('RCPT TO:<' . $to . '>', array(250,251)) || !$write('DATA', array(354))) { if ($err === '') $err = 'SMTP 会话在传输阶段被中断（发件人或收件人未被服务器接受）'; fclose($fp); return false; }
+    if (fwrite($fp, $body . "\r\n") === false || !$ok($read(), array(250))) { if ($err === '') $err = '邮件内容未被服务器接受：可能被判为垃圾邮件，请检查发件人域名与是否配置了 SPF/DKIM'; fclose($fp); return false; }
     $write('QUIT', array(221,250)); fclose($fp); return true;
 }
 

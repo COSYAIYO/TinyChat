@@ -9,15 +9,15 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./logo-icon.svg">
-<link rel="stylesheet" href="./static/css/style.css?v=20261007.29">
+<link rel="stylesheet" href="./static/css/style.css?v=20261007.30">
 <link rel="stylesheet" href="./vendor/highlight/github.min.css" id="hljs-theme">
 <link rel="stylesheet" href="./vendor/katex/katex.min.css">
-<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.29">
-<link rel="stylesheet" href="./static/css/refine.css?v=20261007.29">
-<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.29">
-<link rel="stylesheet" href="./static/css/polish.css?v=20261007.29">
-<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.29">
-<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.29">
+<link rel="stylesheet" href="./static/css/enhanced.css?v=20261007.30">
+<link rel="stylesheet" href="./static/css/refine.css?v=20261007.30">
+<link rel="stylesheet" href="./static/css/redesign.css?v=20261007.30">
+<link rel="stylesheet" href="./static/css/polish.css?v=20261007.30">
+<link rel="stylesheet" href="./static/css/markdown.css?v=20261007.30">
+<link rel="stylesheet" href="./static/css/chrome.css?v=20261007.30">
 <script>
 (function () {
   try {
@@ -447,10 +447,17 @@
       </div>
       <p class="muted small" style="margin:6px 0 0">会话有效期修改后对新登录生效；「强制全站下线」会使所有人的现有登录态立即失效（包括你自己），需要重新登录。</p>
       <h3>SMTP</h3>
+      <p class="muted small hidden" id="smtp-demo-note" style="color:#b45309">演示管理员不可查看或修改 SMTP 邮件配置（防止冒用本站域名发信）。</p>
       <label class="field"><span>服务器</span><input id="smtp-host" placeholder="smtp.example.com"></label>
       <label class="field"><span>端口</span><input id="smtp-port" type="number" value="587"></label>
       <label class="field"><span>用户名</span><input id="smtp-user"></label>
-      <label class="field"><span>密码</span><input id="smtp-pass" type="password"></label>
+      <label class="field"><span>密码</span>
+        <div class="pw-wrap">
+          <input id="smtp-pass" type="password" autocomplete="off">
+          <button class="pw-toggle smtp-pass-eye" id="smtp-pass-toggle" type="button" title="显示密码" aria-label="显示密码"></button>
+        </div>
+        <label class="key-keep-option" title="勾选后密码以明文保存在服务器，可随时点小眼睛查看与复制；不勾选则保存后只显示掩码"><input id="smtp-pass-keep" type="checkbox"> 保存后保持显示（便于复制到其它系统）</label>
+      </label>
       <label class="field"><span>加密</span><select id="smtp-encryption"><option value="tls">TLS</option><option value="ssl">SSL</option><option value="none">无</option></select></label>
       <label class="field"><span>发件人名称</span><input id="smtp-from-name" value="TinyChat"></label>
       <label class="field"><span>发件人地址</span><input id="smtp-from-email"></label>
@@ -462,6 +469,7 @@
         </span>
       </div>
       <p class="muted small" style="margin-top:6px">发送测试会使用当前保存的 SMTP 配置与「注册验证邮件」模板真实投递一封样例邮件，便于确认效果。</p>
+      <div class="smtp-test-result hidden" id="smtp-test-result" role="status" aria-live="polite"></div>
       <h3>邮件模板</h3>
       <div class="seg-group" id="mtpl-tabs" style="margin:0 0 12px">
         <button class="seg-btn active" data-mtpl="verify" type="button">注册验证邮件</button>
@@ -949,16 +957,16 @@
   </div>
 </div>
 </form>
-<script src="./static/js/config.js?v=20261007.29"></script>
-<script src="./static/js/icons.js?v=20261007.29"></script>
+<script src="./static/js/config.js?v=20261007.30"></script>
+<script src="./static/js/icons.js?v=20261007.30"></script>
 <script defer src="./vendor/markdown-it/markdown-it.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-footnote.min.js"></script>
 <script defer src="./vendor/markdown-it/markdown-it-emoji.min.js"></script>
 <script defer src="./vendor/katex/katex.min.js"></script>
 <script defer src="./vendor/highlight/highlight.min.js"></script>
-<script src="./static/js/ui.js?v=20261007.29"></script>
-<script src="./static/js/components.js?v=20261007.29"></script>
-<script src="./static/js/renderer.js?v=20261007.29"></script>
-<script src="./static/js/admin.js?v=20261007.29"></script>
+<script src="./static/js/ui.js?v=20261007.30"></script>
+<script src="./static/js/components.js?v=20261007.30"></script>
+<script src="./static/js/renderer.js?v=20261007.30"></script>
+<script src="./static/js/admin.js?v=20261007.30"></script>
 </body>
 </html>

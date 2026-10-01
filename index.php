@@ -196,6 +196,7 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/admin/codes/prune$#', 'tc_api_admin_prune_codes'),
         array('POST', '#^/api/admin/codes/fixed$#', 'tc_api_admin_create_fixed_code'),
         array('POST', '#^/api/admin/settings/test-email$#', 'tc_api_admin_test_email'),
+        array('POST', '#^/api/admin/settings/smtp-reveal$#', 'tc_api_admin_smtp_reveal'),
         array('GET', '#^/api/admin/settings/mail-template-defaults$#', 'tc_api_admin_mail_template_defaults'),
         array('GET', '#^/api/admin/update/check$#', 'tc_api_admin_update_check'),
         array('POST', '#^/api/admin/update/perform$#', 'tc_api_admin_update_perform'),
