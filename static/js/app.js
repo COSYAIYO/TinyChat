@@ -1016,6 +1016,13 @@ function scrollToBottom() {
   setTimeout(move, 120);
 }
 
+// 用户主动发送时调用:无条件恢复吸底并滚到底部。
+// 发送是明确的「我要看新内容」意图,不应被此前「上翻查看历史」的状态拦住。
+function jumpToLatestOnSend() {
+  state._followStream = true;
+  scrollToBottom();
+}
+
 function tocPreview(text, limit) {
   const s = String(text || '').replace(/\s+/g, ' ').trim();
   if (!s) return '（空）';
@@ -2456,6 +2463,7 @@ async function sendMessage() {
 
   const userMsg = { role: 'user', content, text, attachments, createdAt: Date.now() };
   chat.messages.push(userMsg);
+  jumpToLatestOnSend();
   chat.updatedAt = Date.now();
   saveChats(); renderMessages();
 
@@ -6328,6 +6336,7 @@ function insertVideoResult(model, prompt, videos, mode) {
   if (chat.assistantId) enforceImageModelAssistant({ silent: true });
   const userMsg = { role: 'user', content: prompt || '（视频）', text: prompt, attachments: [], createdAt: Date.now() };
   chat.messages.push(userMsg);
+  jumpToLatestOnSend();
   if (chat.messages.filter((m) => m.role === 'user').length === 1) {
     chat.title = '视频 · ' + String(prompt || '生成视频').slice(0, 18);
     renderChatList();
@@ -6363,6 +6372,7 @@ function insertImageResult(model, prompt, images, kindLabel, refUrls) {
     createdAt: Date.now(),
   };
   chat.messages.push(userMsg);
+  jumpToLatestOnSend();
   if (chat.messages.filter((m) => m.role === 'user').length === 1) {
     chat.title = (kindLabel || '绘画') + ' · ' + String(prompt || '参考图').slice(0, 18);
     renderChatList();
@@ -6420,6 +6430,7 @@ async function sendImageTurn(prompt, imageAtts, opts) {
   if (refAtts.length && window.OCMultimodal) refAtts.forEach((a) => parts.push(window.OCMultimodal.toMarkdown(a)));
   const userMsg = { role: 'user', content: parts.join('\n\n') || '（参考图）', text, attachments: refAtts, createdAt: Date.now() };
   chat.messages.push(userMsg);
+  jumpToLatestOnSend();
   const placeholder = { role: 'assistant', content: '', imagePending: true, model, providerId, createdAt: Date.now() };
   chat.messages.push(placeholder);
   if (chat.messages.filter((m) => m.role === 'user').length === 1) {
@@ -6524,6 +6535,7 @@ async function sendVideoTurn(prompt, imageAtts) {
   if (refAtts.length && window.OCMultimodal) refAtts.forEach((a) => parts.push(window.OCMultimodal.toMarkdown(a)));
   const userMsg = { role: 'user', content: parts.join('\n\n') || '（参考图）', text, attachments: refAtts, createdAt: Date.now() };
   chat.messages.push(userMsg);
+  jumpToLatestOnSend();
   const placeholder = { role: 'assistant', content: '', imagePending: true, pendingKind: 'video', model, providerId, createdAt: Date.now() };
   chat.messages.push(placeholder);
   if (chat.messages.filter((m) => m.role === 'user').length === 1) {
@@ -6810,10 +6822,18 @@ function toggleSidebar() {
     });
   }
   if (area) {
+    // 吸底跟随:只在「用户真的往上滚」时暂停,避免把「内容变高」误判成上翻。
+    // 之前只看「离底部多远」判断:新消息/新内容追加时 scrollHeight 变大而 scrollTop 不变,
+    // 距离自然拉开,于是被当成用户在翻阅 —— 结果发新问题时不再自动跳到最底下。
+    // 现在改为按 scrollTop 的移动方向判断:内容增高不改变 scrollTop,不会触发暂停。
+    let lastTop = area.scrollTop;
     area.addEventListener('scroll', () => {
-      // 流式吸底跟随:离开底部 80px 以上视为用户在翻阅,暂停自动滚动
-      const gap = area.scrollHeight - area.scrollTop - area.clientHeight;
-      state._followStream = gap < 80;
+      const top = area.scrollTop;
+      const delta = top - lastTop;
+      lastTop = top;
+      const gap = area.scrollHeight - top - area.clientHeight;
+      if (gap < 80) state._followStream = true;          // 回到(或接近)底部 → 恢复跟随
+      else if (delta < -4) state._followStream = false;  // 用户向上滚动 → 暂停跟随
       if (syncTocTimer) cancelAnimationFrame(syncTocTimer);
       syncTocTimer = requestAnimationFrame(syncTocActive);
     }, { passive: true });
