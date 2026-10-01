@@ -1,3 +1,31 @@
+/* ============================================================
+   Chrome — 终局覆盖层(全站最后加载,这里的规则是最终赢家)
+   …………………………………………………………………………………………………………
+   【加载顺序】
+   style.css(基础 token+骨架)
+     → highlight 主题 → katex
+     → enhanced.css(组件追加) → refine.css(阴影/托盘/微交互)
+     → redesign.css(token 重写:--brand/--primary 蓝、--danger、圆角)
+     → polish.css(动效编排、focus 策略)
+     → markdown.css(正文排版)
+     → chrome.css(本文件:字号收口、后台全套、散点补丁)
+   修改前先确认目标规则没有被本文件后段再次覆盖;新规则尽量追加到
+   对应分节,并注明用途,避免无头注释的纯堆积。
+
+   【z-index 阶梯】(新浮层请挂到对应档位,不要另起炉灶)
+      40-60    输入区弹出层:effort-pop 60 / composer-tools 55 / mention-pop 40
+     45/46     用户菜单 / effort-pop(移动端)
+      300      guest-bar(游客条)
+       500     移动端抽屉 sidebar / 遮罩
+      1000     .modal-mask 基准(本文件尾部统一抬到 1600)
+      1500     .artifact-panel
+      1600     .modal-mask(收口:必须盖过 artifact,见文件尾说明)
+      9998     图片 lightbox
+      9999     .oc-menu 自定义下拉
+      3000     .toast-host(压过普通弹窗)
+      3100     .oc-confirm-mask(压过 toast)
+     10050     .oc-tip(跟随光标的提示,永远最顶)
+   ============================================================ */
 .usage-ledger { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .usage-row { display: grid; grid-template-columns: minmax(72px, 120px) minmax(96px, 160px) 1fr; gap: 8px 12px; align-items: baseline; font-size: 13px; }
 .usage-name { font-weight: 600; }
@@ -172,8 +200,12 @@
   color: var(--text-tertiary);
 }
 .model-health.ok { color: #16a34a; }
-.model-health.bad { color: #f0a8a8; }
-.model-health.idle { color: #a3aab6; }
+.model-health.bad { color: #dc2626; }
+.model-health.idle { color: #6b7280; }
+/* 深色主题下用亮一档的健康色,保证可读性(浅色版在白底上过浅) */
+[data-theme="dark"] .model-health.ok { color: #4ade80; }
+[data-theme="dark"] .model-health.bad { color: #f87171; }
+[data-theme="dark"] .model-health.idle { color: #9ca3af; }
 .model-health .oc-icon {
   width: 14px;
   height: 14px;
@@ -225,8 +257,11 @@
 }
 .oc-menu-health.ok { color: #16a34a; }
 .oc-menu-health.warn { color: #d97706; }
-.oc-menu-health.bad { color: #f0a8a8; }
-.oc-menu-health.idle { color: #a3aab6; }
+.oc-menu-health.bad { color: #dc2626; }
+.oc-menu-health.idle { color: #6b7280; }
+[data-theme="dark"] .oc-menu-health.ok { color: #4ade80; }
+[data-theme="dark"] .oc-menu-health.bad { color: #f87171; }
+[data-theme="dark"] .oc-menu-health.idle { color: #9ca3af; }
 .oc-menu-health .oc-icon {
   width: 14px;
   height: 14px;
@@ -2726,19 +2761,27 @@ select,
 .acc-name {
   font-size: var(--fs-display) !important;
 }
+/* AI 回复内的标题层级不能被收口抹平:按正文字号的比例恢复 h1-h6 阶梯,
+   否则回复里所有标题都一样大,长回答的结构感尽失 */
 .msg.assistant h1,
+.msg.assistant .md-prose h1 {
+  font-size: calc(var(--fs) * 1.32) !important;
+}
 .msg.assistant h2,
+.msg.assistant .md-prose h2 {
+  font-size: calc(var(--fs) * 1.18) !important;
+}
 .msg.assistant h3,
+.msg.assistant .md-prose h3 {
+  font-size: calc(var(--fs) * 1.07) !important;
+}
 .msg.assistant h4,
 .msg.assistant h5,
 .msg.assistant h6,
-.msg.assistant .md-prose h1,
-.msg.assistant .md-prose h2,
-.msg.assistant .md-prose h3,
 .msg.assistant .md-prose h4,
 .msg.assistant .md-prose h5,
 .msg.assistant .md-prose h6 {
-  font-size: var(--fs-title) !important;
+  font-size: var(--fs) !important;
 }
 .mention-ico {
   font-size: var(--fs) !important;
@@ -3667,9 +3710,12 @@ body.is-demo-admin .admin-card [id$="-add"],
 body.is-demo-admin #g-add,
 body.is-demo-admin #invite-generate,
 body.is-demo-admin #session-invalidate { display: none !important; }
-body.is-demo-admin [data-edituser],
-body.is-demo-admin [data-deluser],
-body.is-demo-admin [data-chats] { display: none !important; }
+/* 用户表行的「编辑/删除/对话」:裸 [data-edit] 会误伤供应商编辑(演示管理员可用),限定在用户表内 */
+body.is-demo-admin #users-tbody [data-edit],
+body.is-demo-admin #users-tbody [data-deluser],
+body.is-demo-admin #users-tbody [data-chats],
+body.is-demo-admin #users-bulk-delete,
+body.is-demo-admin #users-purge-guests { display: none !important; }
 
 /* 模型清单:生图标记列 */
 .model-table .col-img { width: 56px; text-align: center; }
@@ -3867,10 +3913,10 @@ body.is-demo-admin [data-chats] { display: none !important; }
 
 /* 第三方一键登录:登录/注册表单下方的分隔线与图标按钮 */
 .oauth-login { margin: 14px 0 2px; }
-.oauth-sep { display: flex; align-items: center; gap: 10px; color: var(--muted, #94a3b8); font-size: 12px; margin: 6px 0 12px; }
+.oauth-sep { display: flex; align-items: center; gap: 10px; color: var(--text-tertiary,#94a3b8); font-size: 12px; margin: 6px 0 12px; }
 .oauth-sep::before, .oauth-sep::after { content: ''; flex: 1; height: 1px; background: var(--line, #e5e7eb); }
 .oauth-icons { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
-.oauth-icon { width: 42px; height: 42px; border-radius: 11px; border: 1px solid var(--line, #e5e7eb); background: var(--surface, #fff); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; transition: transform .12s ease, border-color .12s ease, box-shadow .12s ease; }
+.oauth-icon { width: 42px; height: 42px; border-radius: 11px; border: 1px solid var(--line, #e5e7eb); background: var(--bg-surface,#fff); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; transition: transform .12s ease, border-color .12s ease, box-shadow .12s ease; }
 .oauth-icon:hover { transform: translateY(-1px); border-color: var(--primary, #3b82f6); box-shadow: 0 2px 8px rgba(0,0,0,.06); }
 .oauth-icon:disabled { opacity: .5; cursor: default; transform: none; }
 .oauth-icon img { width: 22px; height: 22px; object-fit: contain; border-radius: 4px; }
@@ -3885,7 +3931,7 @@ body.is-demo-admin [data-chats] { display: none !important; }
 
 /* ============ 后台:服务器状态看板 ============ */
 .sys-board {
-  background: linear-gradient(135deg, color-mix(in srgb, var(--brand) 10%, var(--surface,#fff)), var(--surface,#fff) 55%);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--brand) 10%, var(--bg-surface,#fff)), var(--bg-surface,#fff) 55%);
   border: 1px solid var(--hairline, #e5e7eb); border-radius: 16px; padding: 16px 18px; margin-bottom: 16px;
   box-shadow: 0 1px 3px rgba(15,23,42,.05);
 }
@@ -3901,27 +3947,27 @@ body.is-demo-admin [data-chats] { display: none !important; }
 }
 /* 环形指标:用 conic-gradient 画进度环 */
 .sys-meters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
-.sys-meter { display: flex; align-items: center; gap: 12px; background: var(--surface,#fff); border: 1px solid var(--hairline,#eef2f7);
+.sys-meter { display: flex; align-items: center; gap: 12px; background: var(--bg-surface,#fff); border: 1px solid var(--hairline,#eef2f7);
   border-radius: 12px; padding: 12px 14px; min-width: 0; }
 .sys-ring { position: relative; width: 54px; height: 54px; border-radius: 50%; flex: 0 0 auto;
-  background: conic-gradient(var(--ring-color, var(--brand,#3b82f6)) calc(var(--pct,0) * 1%), var(--ring-track, #eef2f7) 0);
+  background: conic-gradient(var(--ring-color, var(--brand,#3b82f6)) calc(var(--pct,0) * 1%), var(--ring-track, var(--hairline,#eef2f7)) 0);
   display: grid; place-items: center; }
-.sys-ring::after { content: ''; position: absolute; inset: 6px; border-radius: 50%; background: var(--surface,#fff); }
+.sys-ring::after { content: ''; position: absolute; inset: 6px; border-radius: 50%; background: var(--bg-surface,#fff); }
 .sys-ring span { position: relative; z-index: 1; font-size: 13px; font-weight: 650; letter-spacing: -0.02em; }
 .sys-meter-meta { min-width: 0; }
-.sys-meter-meta .k { font-size: 12.5px; color: var(--muted,#6b7280); }
+.sys-meter-meta .k { font-size: 12.5px; color: var(--text-tertiary,#6b7280); }
 .sys-meter-meta .v { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
 .sys-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 12px; }
-.sys-fact { background: var(--surface,#fff); border: 1px solid var(--hairline,#eef2f7); border-radius: 10px; padding: 9px 12px; }
-.sys-fact .k { font-size: 12px; color: var(--muted,#6b7280); display: flex; align-items: center; gap: 4px; }
+.sys-fact { background: var(--bg-surface,#fff); border: 1px solid var(--hairline,#eef2f7); border-radius: 10px; padding: 9px 12px; }
+.sys-fact .k { font-size: 12px; color: var(--text-tertiary,#6b7280); display: flex; align-items: center; gap: 4px; }
 .sys-fact .v { font-size: 16px; font-weight: 650; letter-spacing: -0.01em; margin-top: 2px; }
-.sys-fact .sub { font-size: 11.5px; color: var(--muted,#9ca3af); }
+.sys-fact .sub { font-size: 11.5px; color: var(--text-tertiary,#9ca3af); }
 /* 存储管理:条形占用 */
 .st-row { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--hairline,#eef2f7); }
 .st-row:last-child { border-bottom: 0; }
 .st-row-main { flex: 1 1 auto; min-width: 0; }
 .st-row-name { display: flex; align-items: center; gap: 6px; font-size: 13.5px; }
-.st-row-desc { font-size: 11.5px; color: var(--muted,#9ca3af); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-row-desc { font-size: 11.5px; color: var(--text-tertiary,#9ca3af); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .st-bar { height: 5px; border-radius: 3px; background: var(--hairline,#eef2f7); margin-top: 5px; overflow: hidden; }
 .st-bar i { display: block; height: 100%; border-radius: 3px; background: var(--brand,#3b82f6); }
 .st-row-val { flex: 0 0 auto; text-align: right; font-size: 13px; font-weight: 600; white-space: nowrap; }
@@ -3941,3 +3987,14 @@ body.is-demo-admin [data-chats] { display: none !important; }
 
 /* 余量明细:滚动加载哨兵(不可见,仅用于触发自动加载) */
 .usage2-sentinel { height: 1px; }
+
+/* ============ 层级收口:普通弹窗必须盖过 artifact 侧板(1500) ============ */
+/* artifact 面板是后加的浮层,普通 modal-mask 还停留在 1000:
+   面板展开时再打开任何弹窗都会滑到面板下面。统一抬到 1600,
+   仍低于 toast(3000) 与确认框(3100)。 */
+.modal-mask { z-index: 1600; }
+
+/* ============ 用户表分页 ============ */
+.users-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.users-pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 10px 2px 0; }
+.users-pager[hidden] { display: none; }

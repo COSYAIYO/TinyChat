@@ -17,6 +17,11 @@ return array(
     // 留空 = 站点根目录下的 data/
     'data_dir' => '',
 
+    // 站点是否部署在反向代理(Nginx/CDN/宝塔)之后。
+    // 设为 true 才会信任 X-Forwarded-For 记录真实客户端 IP(限流、后台 lastIp 依赖它);
+    // 直连部署务必保持 false——该头可被伪造,信任它会绕过按 IP 限流。
+    'trust_proxy' => false,
+
     // 在线更新（后台「平台配置 → 版本更新」）。Release tag 建议用 vX.Y.Z 形式
     'github_repo' => 'HCARX/TinyChat',
     // 私有仓库必填；公开仓库留空即可（留空时检查走免 API 方式，不受匿名限流）

@@ -306,6 +306,8 @@ let USER_FILTER = 'all';
 let USER_LIST = [];
 let USER_SELECTED = new Set();
 let USER_FORM_ID = null;
+let USER_FORM_WAS_DEMO = false; // 编辑对象原本是否为演示管理员(决定保存时要不要提交 demoMinutes)
+let DEMO_MINUTES_CFG = 10;      // 站点当前的全局演示还原窗口(/api/config),编辑表单据此回填
 let ME_ID = (JSON.parse(localStorage.getItem('oc_user') || '{}').id || '');
 
 function currentUserKw() {
@@ -347,8 +349,13 @@ async function ensureGroups() {
   if (GROUPS.length) return;
   try {
     const gr = await api('/api/admin/groups');
-    GROUPS = (await gr.json()).groups || [];
-  } catch (e) { /* 打开表单时再试 */ }
+    const gd = await readJsonSafe(gr);
+    if (!gr.ok) throw new Error((gd.error && gd.error.message) || ('HTTP ' + gr.status));
+    GROUPS = gd.groups || [];
+  } catch (e) {
+    // 下拉会退化为无分组可选,必须让管理员知道原因
+    toast('用户组加载失败：' + (e.message || '网络错误'), true);
+  }
 }
 
 // ============ 后台:用户第三方绑定管理 ============
@@ -438,6 +445,7 @@ async function openUserForm(user) {
   if (!modal) return;
   await ensureGroups();
   USER_FORM_ID = user ? user.id : null;
+  USER_FORM_WAS_DEMO = !!(user && user.demo);
   $('user-form-title').textContent = user ? '编辑用户' : '创建用户';
   $('user-form-save').textContent = user ? '保存' : '创建';
   $('uf-name').value = user ? user.name : '';
@@ -449,7 +457,8 @@ async function openUserForm(user) {
   // 演示身份不限于创建时:编辑已有用户也能设置/取消
   if ($('uf-demo-row')) $('uf-demo-row').style.display = '';
   if ($('uf-demo-options')) $('uf-demo-options').hidden = !($('uf-demo') && $('uf-demo').checked);
-  if ($('uf-demo-minutes')) $('uf-demo-minutes').value = 10;
+  // 回填站点当前的全局演示窗口,而不是写死 10:否则编辑保存会把全局窗口悄悄改回 10
+  if ($('uf-demo-minutes')) $('uf-demo-minutes').value = DEMO_MINUTES_CFG;
   const adminGroup = (GROUPS.find((g) => g.role === 'admin') || {}).id || '';
   const preferred = $('uf-admin').checked
     ? adminGroup
@@ -506,13 +515,16 @@ async function openUserForm(user) {
   }
   // 打开表单时按现有状态同步一次(编辑已有演示管理员时应已锁定「设为管理员」)
   syncDemoPair();
-  modal.classList.remove('hidden');
+  if (window.OCUI) window.OCUI.openModal(modal);
+  else modal.classList.remove('hidden');
   setTimeout(() => $('uf-name').focus(), 30);
 }
 
 function closeUserForm() {
   const modal = $('user-form-modal');
-  if (modal) modal.classList.add('hidden');
+  if (!modal) return;
+  if (window.OCUI) window.OCUI.closeModal(modal);
+  else modal.classList.add('hidden');
   USER_FORM_ID = null;
 }
 
@@ -556,8 +568,11 @@ async function saveUserForm() {
       }
       toast('用户已创建');
     } else {
-      const body = { userId: USER_FORM_ID, name, admin, demo, demoMinutes };
+      const body = { userId: USER_FORM_ID, name, admin, demo };
       if (password) body.password = password;
+      // demoMinutes 是全局「演示还原窗口」:仅在新建演示身份或明确改动窗口值时提交,
+      // 避免每次编辑演示用户都把全局窗口静默重置
+      if (demo && (!USER_FORM_WAS_DEMO || demoMinutes !== DEMO_MINUTES_CFG)) body.demoMinutes = demoMinutes;
       const r = await api('/api/admin/users/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -635,7 +650,9 @@ async function openGroupRename(g) {
     toast('系统用户组名称固定（按角色识别），可直接在「模型授权」中调整其可用模型', true);
     return;
   }
-  const next = window.prompt('修改用户组名称', g.name);
+  const next = (window.OCUI && OCUI.prompt)
+    ? await OCUI.prompt({ title: '修改用户组名称', value: g.name, confirmText: '保存' })
+    : window.prompt('修改用户组名称', g.name);
   if (next == null) return;
   const name = String(next).trim();
   if (!name) return toast('组名不能为空', true);
@@ -738,6 +755,29 @@ function visibleUsers() {
   return USER_LIST.slice();
 }
 
+// ============ 用户表分页(客户端) ============
+let USER_PAGE = 1;
+const USER_PAGE_SIZE = 50;
+function usersPageOf(list) {
+  const pages = Math.max(1, Math.ceil(list.length / USER_PAGE_SIZE));
+  if (USER_PAGE > pages) USER_PAGE = pages;
+  if (USER_PAGE < 1) USER_PAGE = 1;
+  return { slice: list.slice((USER_PAGE - 1) * USER_PAGE_SIZE, USER_PAGE * USER_PAGE_SIZE), pages };
+}
+function renderUsersPager(pages, total) {
+  const box = $('users-pager');
+  if (!box) return;
+  const multi = pages > 1;
+  box.hidden = !multi;
+  if (!multi) return;
+  const info = $('users-page-info');
+  if (info) info.textContent = '第 ' + USER_PAGE + ' / ' + pages + ' 页 · 共 ' + total + ' 人';
+  const prev = $('users-page-prev');
+  const next = $('users-page-next');
+  if (prev) prev.disabled = USER_PAGE <= 1;
+  if (next) next.disabled = USER_PAGE >= pages;
+}
+
 function renderUsers() {
   const tbody = $('users-tbody');
   if (!tbody) return;
@@ -754,9 +794,12 @@ function renderUsers() {
   Array.from(USER_SELECTED).forEach((id) => { if (!aliveIds.has(id)) USER_SELECTED.delete(id); });
   if (!list.length) {
     tbody.innerHTML = '<tr class="users-empty-row"><td colspan="9">' + (USER_LIST.length ? '没有匹配的用户' : '还没有用户，点右上角创建') + '</td></tr>';
+    renderUsersPager(1, 0);
     return;
   }
-  list.forEach((u) => {
+  const { slice, pages } = usersPageOf(list);
+  renderUsersPager(pages, list.length);
+  slice.forEach((u) => {
     const tr = document.createElement('tr');
     const initial = String(u.name || '?').trim().charAt(0).toUpperCase();
     const gName = groupLabel(u.groupId);
@@ -798,13 +841,20 @@ function renderUsers() {
       if (!ok) return;
       const rr = await api('/api/admin/users/' + u.id, { method: 'DELETE' });
       if (rr.ok) { toast('已删除'); loadUsers(currentUserKw()); loadStats(); }
-      else toast('删除失败', true);
+      else {
+        const d = await rr.json().catch(() => ({}));
+        toast('删除失败' + (d.error && d.error.message ? '：' + d.error.message : ''), true);
+      }
     });
     tbody.appendChild(tr);
   });
   syncUserSelection();
 }
-// 同步「删除所选」按钮与全选框状态
+// 同步「删除所选」按钮与全选框状态(全选只覆盖当前页,避免跨页误删看不见的用户)
+function usersCurrentPageList() {
+  const list = visibleUsers();
+  return list.slice((USER_PAGE - 1) * USER_PAGE_SIZE, USER_PAGE * USER_PAGE_SIZE);
+}
 function syncUserSelection() {
   const btn = $('users-bulk-delete');
   if (btn) {
@@ -813,7 +863,7 @@ function syncUserSelection() {
   }
   const all = $('users-check-all');
   if (all) {
-    const pickable = visibleUsers().filter((u) => u.id !== ME_ID);
+    const pickable = usersCurrentPageList().filter((u) => u.id !== ME_ID);
     const picked = pickable.filter((u) => USER_SELECTED.has(u.id)).length;
     all.checked = pickable.length > 0 && picked === pickable.length;
     all.indeterminate = picked > 0 && picked < pickable.length;
@@ -824,7 +874,7 @@ function syncUserSelection() {
 (function initUserBulk() {
   const all = $('users-check-all');
   if (all) all.addEventListener('change', () => {
-    const pickable = visibleUsers().filter((u) => u.id !== ME_ID);
+    const pickable = usersCurrentPageList().filter((u) => u.id !== ME_ID);
     if (all.checked) pickable.forEach((u) => USER_SELECTED.add(u.id));
     else pickable.forEach((u) => USER_SELECTED.delete(u.id));
     renderUsers();
@@ -871,14 +921,22 @@ function syncUserSelection() {
 })();
 
 async function loadUsers(searchKw) {
-  const r = await api('/api/admin/users' + (searchKw ? '?q=' + encodeURIComponent(searchKw) : ''));
-  const data = await r.json();
-  if (!GROUPS.length) {
-    const gr = await api('/api/admin/groups');
-    GROUPS = (await gr.json()).groups || [];
+  try {
+    const r = await api('/api/admin/users' + (searchKw ? '?q=' + encodeURIComponent(searchKw) : ''));
+    const data = await readJsonSafe(r);
+    if (!r.ok) throw new Error((data.error && data.error.message) || ('HTTP ' + r.status));
+    if (!GROUPS.length) {
+      const gr = await api('/api/admin/groups');
+      const gd = await readJsonSafe(gr);
+      if (!gr.ok) throw new Error((gd.error && gd.error.message) || '用户组加载失败');
+      GROUPS = gd.groups || [];
+    }
+    USER_LIST = data.users || [];
+    USER_PAGE = 1;
+    renderUsers();
+  } catch (e) {
+    toast('用户列表加载失败：' + (e.message || '网络错误'), true);
   }
-  USER_LIST = data.users || [];
-  renderUsers();
 }
 
 // ============ 模型授权 ============
@@ -1344,7 +1402,36 @@ async function loadProviders() {
       if ($('ap-price')) $('ap-price').value = target.pricePer1k != null ? target.pricePer1k : 0;
       $('ap-save').dataset.editId = target.id;
       $('ap-save').textContent = '保存修改';
+      // 编辑态标识 + 取消入口:避免「以为在新增,实际在覆盖」
+      const cancelBtn = $('ap-cancel-edit');
+      if (cancelBtn) cancelBtn.classList.remove('hidden');
+      const note = $('ap-editing-note');
+      if (note) { note.hidden = false; note.textContent = '正在编辑「' + (target.name || target.id) + '」，保存会覆盖其配置'; }
     };
+    // 退出编辑态:恢复「新增供应商」默认表单
+    const resetProviderForm = () => {
+      delete $('ap-save').dataset.editId;
+      window.apEditingRevealable = false;
+      $('ap-save').textContent = '保存供应商';
+      $('ap-name').value = ''; $('ap-baseurl').value = '';
+      apKeysFromProvider(null);
+      resetModelTestResults();
+      if (apModelList) { apModelList.setKeys([]); apModelList.reset(); }
+      if (window.__setApBilling) window.__setApBilling('call');
+      if ($('ap-price')) $('ap-price').value = 0;
+      if ($('ap-key-keep')) $('ap-key-keep').checked = true;
+      const cancelBtn = $('ap-cancel-edit');
+      if (cancelBtn) cancelBtn.classList.add('hidden');
+      const note = $('ap-editing-note');
+      if (note) note.hidden = true;
+    };
+    const cancelBtn0 = $('ap-cancel-edit');
+    if (cancelBtn0) cancelBtn0.addEventListener('click', () => {
+      resetProviderForm();
+      const details = document.querySelector('.add-provider');
+      if (details) details.open = false;
+      toast('已退出编辑');
+    });
 card.querySelector('[data-edit]')?.addEventListener('click', () => {
       fillEditForm(p);
       resetModelTestResults();
@@ -2268,17 +2355,33 @@ $('ap-save').addEventListener('click', async () => {
   const firstPlain = keys.find((k) => k.apiKey && k.apiKey.indexOf('••') < 0);
   if (firstPlain) payload.apiKey = firstPlain.apiKey;
   else if (!editId) payload.apiKey = (keys[0] && keys[0].apiKey) || '';
-  const r = await api(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const data = await r.json();
-  if (!r.ok) return toast((data.error && data.error.message) || '保存失败', true);
+  const saveBtn = $('ap-save');
+  saveBtn.disabled = true;
+  let okSave = false;
+  try {
+    const r = await api(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) { toast((data.error && data.error.message) || '保存失败', true); return; }
+    okSave = true;
+  } catch (e) {
+    toast('保存失败：' + ((e && e.message) || '网络错误'), true);
+    return;
+  } finally {
+    saveBtn.disabled = false;
+  }
+  if (!okSave) return;
   toast(editId ? '已保存修改' : '全局供应商已添加');
   delete $('ap-save').dataset.editId;
   window.apEditingRevealable = false;
   $('ap-save').textContent = '保存供应商';
+  const cancelBtnSave = $('ap-cancel-edit');
+  if (cancelBtnSave) cancelBtnSave.classList.add('hidden');
+  const noteSave = $('ap-editing-note');
+  if (noteSave) noteSave.hidden = true;
   // 恢复表单到「新增」默认态；「保存后保持显示」默认勾选
   $('ap-name').value = ''; $('ap-baseurl').value = '';
   apKeysFromProvider(null);
@@ -2294,9 +2397,18 @@ $('ap-save').addEventListener('click', async () => {
 // ============ 事件 & 启动 ============
 $('back-chat').addEventListener('click', () => location.href = apiUrl('/'));
 $('logout-btn').addEventListener('click', () => {
-  localStorage.removeItem('oc_token');
-  localStorage.removeItem('oc_user');
-  location.href = apiUrl('/login');
+  // 先让服务端吊销会话(审计留痕、token 立即失效),再清本地跳转
+  const done = () => {
+    localStorage.removeItem('oc_token');
+    localStorage.removeItem('oc_user');
+    location.href = apiUrl('/login');
+  };
+  try {
+    fetch(apiUrl('/api/auth/logout'), { method: 'POST', headers: { 'Authorization': 'Bearer ' + (localStorage.getItem('oc_token') || '') } })
+      .catch(() => {})
+      .finally(done);
+    setTimeout(done, 2000);
+  } catch (e) { done(); }
 });
 
 // ============ 运行日志 ============
@@ -2418,7 +2530,8 @@ async function loadUserOptions() {
 async function openUserChats(user) {
   const modal = $('user-chats-modal');
   if (!modal) return;
-  modal.classList.remove('hidden');
+  if (window.OCUI) window.OCUI.openModal(modal);
+  else modal.classList.remove('hidden');
   $('user-chats-title').textContent = '对话历史 · ' + (user ? user.name : '全部用户');
   $('user-chats-content').innerHTML = '<p class="muted small" style="text-align:center;padding:30px 0">加载中...</p>';
   await loadUserOptions();
@@ -2494,11 +2607,13 @@ async function loadUserChats(userId) {
 (function bindUserChatsModal() {
   const modal = $('user-chats-modal');
   if (!modal) return;
+  const hide = () => {
+    if (window.OCUI) window.OCUI.closeModal(modal);
+    else modal.classList.add('hidden');
+  };
   const close = $('user-chats-close');
-  if (close) close.addEventListener('click', () => modal.classList.add('hidden'));
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) modal.classList.add('hidden');
-  });
+  if (close) close.addEventListener('click', hide);
+  modal.addEventListener('click', (e) => { if (e.target === modal) hide(); });
   const select = $('user-chats-select');
   if (select) select.addEventListener('change', () => {
     const v = select.value;
@@ -2535,10 +2650,21 @@ async function loadUserChats(userId) {
       const btn = e.target.closest('[data-filter]');
       if (!btn) return;
       USER_FILTER = btn.dataset.filter || 'all';
+      USER_PAGE = 1; // 切换筛选回到第一页
       filters.querySelectorAll('[data-filter]').forEach((b) => b.classList.toggle('active', b === btn));
       renderUsers();
     });
   }
+  // 用户表分页
+  const prevBtn = $('users-page-prev');
+  const nextBtn = $('users-page-next');
+  if (prevBtn) prevBtn.addEventListener('click', () => { USER_PAGE -= 1; renderUsers(); });
+  if (nextBtn) nextBtn.addEventListener('click', () => { USER_PAGE += 1; renderUsers(); });
+  const refreshBtn = $('users-refresh');
+  if (refreshBtn) refreshBtn.addEventListener('click', async () => {
+    refreshBtn.disabled = true;
+    try { await loadUsers(currentUserKw()); } finally { refreshBtn.disabled = false; }
+  });
   const createBtn = $('user-create-btn');
   if (createBtn) createBtn.addEventListener('click', () => openUserForm(null));
   const modal = $('user-form-modal');
@@ -2699,9 +2825,10 @@ async function saveAsstForm() {
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) return toast((data.error && data.error.message) || '保存失败', true);
+  const wasEdit = !!ASST_FORM_ID; // closeAsstForm 会清空 ASST_FORM_ID,先记下
   closeAsstForm();
   await loadAssistants();
-  toast(ASST_FORM_ID ? '已保存' : '已添加助手');
+  toast(wasEdit ? '助手已保存' : '已添加助手');
 }
 
 function openAsstCatForm(cat) {
@@ -2873,8 +3000,19 @@ function mailTplBind() {
   });
 }
 
+let VERIFY_LOADED = false; // 「验证设置」表单是否已从服务端加载成功;未加载时禁止保存,防止把 HTML 默认值写回
 async function loadVerifySettings() {
-  const r = await api('/api/admin/settings'); const d = await r.json(); if (!r.ok) return;
+  VERIFY_LOADED = false;
+  let d;
+  try {
+    const r = await api('/api/admin/settings');
+    d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error((d.error && d.error.message) || ('HTTP ' + r.status));
+  } catch (e) {
+    toast('验证设置加载失败：' + (e.message || '网络错误') + '，为防覆盖未加载保存已禁用', true);
+    return;
+  }
+  VERIFY_LOADED = true;
   const s = d.settings || {}; const set = (id, v) => { const e = $(id); if (e) e.value = v == null ? '' : v; };
   ['verify-email-enabled','verify-reset-enabled','verify-quota-unlimited'].forEach((id, i) => { const e=$(id); if(e) e.checked=!![s.emailVerificationEnabled,s.passwordResetEnabled,s.freeQuotaUnlimited][i]; });
   set('verify-free-quota', s.freeQuota); const smtp=s.smtp||{}; set('smtp-host',smtp.host); set('smtp-port',smtp.port||587); set('smtp-user',smtp.username); set('smtp-pass',smtp.password); set('smtp-encryption',smtp.encryption||'tls'); set('smtp-from-name',smtp.fromName||'TinyChat'); set('smtp-from-email',smtp.fromEmail);
@@ -2925,10 +3063,21 @@ async function loadInvites() {
     if ($('invite-empty')) $('invite-empty').style.display = codes.length ? 'none' : 'block';
     tb.querySelectorAll('[data-del-invite]').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        const r = await api('/api/admin/invites/' + encodeURIComponent(btn.dataset.delInvite), { method: 'DELETE' });
-        const d = await r.json();
-        if (!r.ok) return toast((d.error && d.error.message) || '删除失败', true);
-        loadInvites();
+        const ok = window.OCUI
+          ? await window.OCUI.confirm({ title: '删除邀请码', message: '确认删除邀请码「' + btn.dataset.delInvite + '」？已注册的账号不受影响。', danger: true, confirmText: '删除' })
+          : confirm('确认删除邀请码 ' + btn.dataset.delInvite + '?');
+        if (!ok) return;
+        btn.disabled = true;
+        try {
+          const r = await api('/api/admin/invites/' + encodeURIComponent(btn.dataset.delInvite), { method: 'DELETE' });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) { toast((d.error && d.error.message) || '删除失败', true); btn.disabled = false; return; }
+          toast('邀请码已删除');
+          loadInvites();
+        } catch (e) {
+          btn.disabled = false;
+          toast('删除失败：' + ((e && e.message) || '网络错误'), true);
+        }
       });
     });
   } catch (e) { toast('邀请码加载失败: ' + e.message, true); }
@@ -3281,7 +3430,12 @@ async function loadPackages() {
   });
 })();
 (function initVerifyAndPackages(){
-  const save=$('verify-save'); if(save) save.addEventListener('click',async()=>{ const tplPayload=MAIL_TPL.loaded?{mailTemplates:{tplVersion:2,verifySubject:MAIL_TPL.tpl.verify.subject,verifyHtml:MAIL_TPL.tpl.verify.html,resetSubject:MAIL_TPL.tpl.reset.subject,resetHtml:MAIL_TPL.tpl.reset.html}}:{}; const payload=Object.assign({emailVerificationEnabled:!!$('verify-email-enabled').checked,passwordResetEnabled:!!$('verify-reset-enabled').checked,freeQuotaUnlimited:!!$('verify-quota-unlimited').checked,freeQuota:parseInt($('verify-free-quota').value,10)||0,sessionDays:Math.min(30,Math.max(1,parseInt($('session-days')&&$('session-days').value,10)||7)),apiKeysEnabled:!!($('apikeys-enabled')&&$('apikeys-enabled').checked),registerInviteRequired:!!($('invite-required')&&$('invite-required').checked),guestEnabled:!!($('guest-enabled')&&$('guest-enabled').checked),guestRounds:Math.min(1000,Math.max(1,parseInt($('guest-rounds')&&$('guest-rounds').value,10)||3)),allowRegister:!!($('register-open')&&$('register-open').checked),registerLimitPerHour:Math.min(1000,Math.max(1,parseInt($('register-limit')&&$('register-limit').value,10)||5)),allowUserProviders:!!($('user-providers-allowed')&&$('user-providers-allowed').checked),accountDeletionMode:($('account-deletion-mode')&&$('account-deletion-mode').value)||'soft',loginMaxFails:Math.min(50,Math.max(0,parseInt($('login-max-fails')&&$('login-max-fails').value,10)||0)),loginLockMs:Math.min(3600000,Math.max(0,parseInt($('login-lock-sec')&&$('login-lock-sec').value,10)||0))*1000,smtp:{host:$('smtp-host').value.trim(),port:parseInt($('smtp-port').value,10)||587,username:$('smtp-user').value.trim(),password:$('smtp-pass').value,encryption:$('smtp-encryption').value,fromName:$('smtp-from-name').value.trim(),fromEmail:$('smtp-from-email').value.trim()}},tplPayload); const r=await api('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'保存失败',true); toast('验证设置已保存'); });
+  const save=$('verify-save'); if(save) save.addEventListener('click',async()=>{
+    // 表单未从服务端加载成功时禁止保存:防止把 HTML 默认值(空 SMTP 等)整包写回
+    if (!VERIFY_LOADED) { toast('验证设置尚未加载完成，已取消保存', true); return; }
+    const old=save.textContent; save.disabled=true; save.textContent='保存中…';
+    try {
+    const tplPayload=MAIL_TPL.loaded?{mailTemplates:{tplVersion:2,verifySubject:MAIL_TPL.tpl.verify.subject,verifyHtml:MAIL_TPL.tpl.verify.html,resetSubject:MAIL_TPL.tpl.reset.subject,resetHtml:MAIL_TPL.tpl.reset.html}}:{}; const payload=Object.assign({emailVerificationEnabled:!!$('verify-email-enabled').checked,passwordResetEnabled:!!$('verify-reset-enabled').checked,freeQuotaUnlimited:!!$('verify-quota-unlimited').checked,freeQuota:parseInt($('verify-free-quota').value,10)||0,sessionDays:Math.min(30,Math.max(1,parseInt($('session-days')&&$('session-days').value,10)||7)),apiKeysEnabled:!!($('apikeys-enabled')&&$('apikeys-enabled').checked),registerInviteRequired:!!($('invite-required')&&$('invite-required').checked),guestEnabled:!!($('guest-enabled')&&$('guest-enabled').checked),guestRounds:Math.min(1000,Math.max(1,parseInt($('guest-rounds')&&$('guest-rounds').value,10)||3)),allowRegister:!!($('register-open')&&$('register-open').checked),registerLimitPerHour:Math.min(1000,Math.max(1,parseInt($('register-limit')&&$('register-limit').value,10)||5)),allowUserProviders:!!($('user-providers-allowed')&&$('user-providers-allowed').checked),accountDeletionMode:($('account-deletion-mode')&&$('account-deletion-mode').value)||'soft',loginMaxFails:Math.min(50,Math.max(0,parseInt($('login-max-fails')&&$('login-max-fails').value,10)||0)),loginLockMs:Math.min(3600000,Math.max(0,parseInt($('login-lock-sec')&&$('login-lock-sec').value,10)||0))*1000,smtp:{host:$('smtp-host').value.trim(),port:parseInt($('smtp-port').value,10)||587,username:$('smtp-user').value.trim(),password:$('smtp-pass').value,encryption:$('smtp-encryption').value,fromName:$('smtp-from-name').value.trim(),fromEmail:$('smtp-from-email').value.trim()}},tplPayload); const r=await api('/api/admin/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const d=await r.json(); if(!r.ok)return toast((d.error&&d.error.message)||'保存失败',true); toast('验证设置已保存'); } catch(e) { toast('保存失败：' + ((e && e.message) || '网络错误'), true); } finally { save.disabled=false; save.textContent=old; } });
   const invalidate=$('session-invalidate'); if(invalidate) invalidate.addEventListener('click',async()=>{
     const ok=window.OCUI&&OCUI.confirm?await OCUI.confirm({title:'强制全站下线',message:'所有人的现有登录态会立即失效（包括你自己），需要重新登录。确认执行？',danger:true,confirmText:'执行'}):confirm('所有人的现有登录态会立即失效（包括你自己），确认执行？');
     if(!ok) return;
@@ -3633,7 +3787,9 @@ const TAB_LOADERS = {
   docs: () => loadSearchSettings(),
   oauth: () => loadOauthSettings(),
   verify: () => loadVerifySettings(),
-  invite: () => loadInvites(),
+  // 邀请码页的开关会触发「验证设置」保存:必须先加载完整表单,否则会把未加载的
+  // SMTP/注册等默认值整包写回服务端(历史事故:SMTP 配置被清空)
+  invite: () => loadVerifySettings(),
   openapi: () => loadOpenApi(),
   packages: () => loadPackages(),
   codes: () => loadPackages(),
@@ -3755,7 +3911,10 @@ $('usage-export')?.addEventListener('click', async () => {
   btn.disabled = true;
   try {
     const r = await api('/api/admin/usage/export');
-    if (!r.ok) return toast('导出失败', true);
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      return toast('导出失败' + (d.error && d.error.message ? '：' + d.error.message : ''), true);
+    }
     const blob = await r.blob();
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -3831,12 +3990,14 @@ window.addEventListener('hashchange', () => {
       ['announce-save'].forEach((id) => { const el = $(id); if (el) el.disabled = true; });
       const announceBox = $('announce-enabled'); if (announceBox) announceBox.disabled = true;
       const announceText = $('announce-text'); if (announceText) announceText.disabled = true;
-      try {
-        const cr = await api('/api/config');
-        const cfg = await cr.json();
-        if ($('admin-demo-minutes')) $('admin-demo-minutes').textContent = cfg.demoExpireMinutes == null ? 10 : cfg.demoExpireMinutes;
-      } catch (e) { /* 提示条不影响后台使用 */ }
     }
+    // 全局演示还原窗口:用户表单回填用(所有管理员都拉一次,避免编辑表单写死 10)
+    try {
+      const cr = await api('/api/config');
+      const cfg = await cr.json();
+      if (cfg && cfg.demoExpireMinutes != null) DEMO_MINUTES_CFG = Math.min(1440, Math.max(1, parseInt(cfg.demoExpireMinutes, 10) || 10));
+      if ($('admin-demo-minutes') && data.user && data.user.demo) $('admin-demo-minutes').textContent = DEMO_MINUTES_CFG;
+    } catch (e) { /* 提示条/回填不影响后台使用 */ }
     const rawStart = (location.hash || '').replace(/^#/, '');
     const startParts = rawStart.split('/');
     const start = startParts[0] && ADMIN_GROUPS[startParts[0]] ? (startParts[1] || ADMIN_GROUPS[startParts[0]][0].id) : (rawStart || 'overview');

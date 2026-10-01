@@ -105,7 +105,9 @@
       // 移除旧列表(保留搜索框)
       listEl.querySelectorAll('.chat-item-wrap, .chat-group, .chat-group-section').forEach((el) => el.remove());
       const kw = keyword.trim().toLowerCase();
-      const filtered = sorted.filter((c) => !kw || (c.title || '').toLowerCase().includes(kw) || (c.messages || []).some((m) => (m.content || '').toLowerCase().includes(kw)));
+      // 多模态消息的 content 可能是数组,不能直接 toLowerCase
+      const filtered = sorted.filter((c) => !kw || (c.title || '').toLowerCase().includes(kw)
+        || (c.messages || []).some((m) => typeof m.content === 'string' && m.content.toLowerCase().includes(kw)));
       if (!filtered.length) {
         const empty = document.createElement('div');
         empty.className = 'chat-list-empty';
@@ -237,12 +239,20 @@
     titleEl.replaceWith(input);
     input.focus();
     input.select();
-    const commit = () => { onDone(input.value.trim() || currentTitle); };
+    // 只允许第一次结果生效:Esc 取消后 input 被移除会再触发 blur,不能把编辑内容又保存回去
+    let finished = false;
+    const finish = (value) => {
+      if (finished) return;
+      finished = true;
+      onDone(value);
+    };
+    const commit = () => finish(input.value.trim() || currentTitle);
     input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') commit();
-      if (e.key === 'Escape') onDone(currentTitle);
+      if (e.isComposing || e.keyCode === 229) return; // 中文输入法组词确认
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      if (e.key === 'Escape') { e.preventDefault(); finish(currentTitle); }
     });
-    input.addEventListener('blur', commit);
+    input.addEventListener('blur', () => { if (!finished) commit(); });
   };
 
   // ============ 对话分支 ============
@@ -272,6 +282,8 @@
     document.addEventListener('keydown', (e) => {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
+      // 弹窗打开时不劫持快捷键:避免后台新建会话/切换侧栏等动作穿透到弹窗之下的页面
+      if (window.OCUI && typeof window.OCUI.isModalOpen === 'function' && window.OCUI.isModalOpen()) return;
       const k = e.key.toLowerCase();
       // 避免输入框内快捷键冲突（保留必要项）
       const target = e.target;

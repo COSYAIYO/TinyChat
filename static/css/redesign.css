@@ -7,7 +7,8 @@
    · 通透留白,信息密度克制
    · 品牌蓝仅用于关键动作(发送 / 主按钮 / 当前状态)
    · 无渐变、无玻璃拟态、无发光,靠阴影与层次营造高级感
-   说明:本文件最后加载,统一覆盖 style/enhanced/refine 三层。
+   加载顺序:style → enhanced → refine → redesign → polish → markdown → chrome。
+   本文件之后还有 polish/markdown/chrome 三层,最终生效规则以 chrome.css 为准。
    ============================================================ */
 
 /* ---------- 0. 设计 Token(统一覆盖,Apple 灰阶 + 品牌蓝) ---------- */

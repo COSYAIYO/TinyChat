@@ -302,8 +302,11 @@
       '.modal-footer .btn:not(.icon-btn):not([disabled]):not([data-no-autofocus])',
     ];
     let focusable = null;
+    const visible = (n) => !!(n.offsetWidth || n.offsetHeight || n.getClientRects().length);
     for (const sel of pick) {
-      const found = el.querySelector(sel);
+      // 只挑可见元素:隐藏面板(display:none)里的候选 focus() 会静默失败,
+      // 弹窗打开后焦点仍留在 body,键盘直接 Tab 就逃出弹窗
+      const found = Array.prototype.slice.call(el.querySelectorAll(sel)).find(visible);
       if (found) { focusable = found; break; }
     }
     if (focusable) setTimeout(() => focusable.focus(), 80);
@@ -324,6 +327,22 @@
     if (typeof el._onClose === 'function') el._onClose();
   };
   UI.isModalOpen = function () { return modalStack.length > 0; };
+  // 动态创建的弹窗遮罩(用完直接 remove())纳入统一管理:
+  // 获得 Esc 关闭 / 焦点管理 / body.modal-open;返回幂等的 close 函数,
+  // 调用方把原有的 mask.remove() 逻辑作为 close 传入即可。
+  UI.adoptModal = function (mask, close) {
+    if (!mask) return close;
+    let closed = false;
+    const once = () => {
+      if (closed) return;
+      closed = true;
+      UI.closeModal(mask);
+      if (typeof close === 'function') close();
+    };
+    UI.openModal(mask);
+    mask._onClose = once; // Esc 走 closeModal → 触发 once
+    return once;
+  };
   /** 绑定：遮罩点击关闭 + Esc 关闭 + 关闭按钮 */
   UI.bindModal = function (el, opts = {}) {
     if (!el) return;
@@ -375,12 +394,57 @@
         done(act.dataset.act === 'ok');
       });
       mask.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') done(true);
+        if (e.key !== 'Enter') return;
+        // 焦点在「取消」上时按 Enter 应执行取消(交给原生 click),不能误触确认
+        const t = e.target;
+        if (t && t.closest && t.closest('[data-act="cancel"]')) return;
+        e.preventDefault();
+        done(true);
       });
       setTimeout(() => {
         const okBtn = mask.querySelector('[data-act="ok"]');
         if (okBtn) okBtn.focus();
       }, 60);
+    });
+  };
+
+  // ============ 输入弹窗（Promise，替代 window.prompt） ============
+  UI.prompt = function (opts = {}) {
+    return new Promise((resolve) => {
+      const mask = document.createElement('div');
+      mask.className = 'modal-mask oc-confirm-mask';
+      mask.innerHTML =
+        '<div class="modal modal-sm" role="dialog" aria-modal="true">'
+        + '<div class="modal-header"><h3>' + UI.escapeHtml(opts.title || '请输入') + '</h3></div>'
+        + '<div class="modal-body">'
+        + (opts.message ? '<p class="confirm-message">' + UI.escapeHtml(opts.message) + '</p>' : '')
+        + '<input type="text" class="oc-prompt-input" data-autofocus maxlength="' + (opts.maxlength || 60) + '" style="width:100%">'
+        + '</div>'
+        + '<div class="modal-footer">'
+        + '<button class="btn" data-act="cancel">' + UI.escapeHtml(opts.cancelText || '取消') + '</button>'
+        + '<button class="btn primary" data-act="ok">' + UI.escapeHtml(opts.confirmText || '确定') + '</button>'
+        + '</div></div>';
+      document.body.appendChild(mask);
+      UI.openModal(mask);
+      const input = mask.querySelector('.oc-prompt-input');
+      input.value = opts.value || '';
+      const done = (v) => {
+        UI.closeModal(mask);
+        setTimeout(() => mask.remove(), 340);
+        resolve(v);
+      };
+      mask.addEventListener('click', (e) => {
+        if (e.target === mask) return done(null);
+        const act = e.target.closest('[data-act]');
+        if (!act) return;
+        done(act.dataset.act === 'ok' ? String(input.value).trim() : null);
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.isComposing || e.keyCode === 229) return;
+        if (e.key === 'Enter') { e.preventDefault(); done(String(input.value).trim()); }
+        if (e.key === 'Escape') { e.preventDefault(); done(null); }
+      });
+      setTimeout(() => { input.focus(); input.select(); }, 60);
     });
   };
 
