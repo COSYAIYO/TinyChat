@@ -5002,7 +5002,6 @@ function resetProviderForm() {
   fmt.setAttribute('data-value', 'chat');
   const fmtLabel = fmt.querySelector('.sb-label');
   if (fmtLabel) fmtLabel.textContent = PROVIDER_FORMAT_LABELS.chat;
-  if ($('p-cost')) $('p-cost').value = 1;
   if (pModelList) pModelList.reset();
   const summary = $('provider-form-summary');
   if (summary) summary.textContent = '+ 添加自定义供应商';
@@ -5027,7 +5026,6 @@ function openProviderEdit(p) {
   fmt.setAttribute('data-value', p.apiFormat || 'chat');
   const fmtLabel = fmt.querySelector('.sb-label');
   if (fmtLabel) fmtLabel.textContent = PROVIDER_FORMAT_LABELS[p.apiFormat] || p.apiFormat || 'OpenAI chat/completions';
-  if ($('p-cost')) $('p-cost').value = p.costPerCall;
   if (pModelList) pModelList.setEnabled(p.models || []);
   const summary = $('provider-form-summary');
   if (summary) summary.textContent = '编辑供应商';
@@ -5255,6 +5253,8 @@ const pModelList = window.OC && window.OC.bindModelChecklist
     allId: 'p-models-all',
     countId: 'p-models-count',
     addId: 'p-model-add',
+    // 自建供应商用自己的 Key,不扣站点次数,不展示「单次扣减」列
+    showCost: false,
   })
   : null;
 
@@ -5285,6 +5285,7 @@ if (pFetchBtn) {
         window.OC.openFetchedModelsModal(models, {
           title: '获取到的模型',
           existing: pModelList ? pModelList.getCatalog() : [],
+          showCost: false, // 自建供应商不扣费,不展示「单次扣减」列
           onApply: (picked, staleIds) => {
             if (pModelList) pModelList.applyFetched(picked, staleIds);
             const n = picked.filter((m) => m.enabled).length;
@@ -5342,8 +5343,6 @@ $('p-save').addEventListener('click', async () => {
   const baseUrl = $('p-baseurl').value.trim();
   const apiKey = $('p-key').value.trim();
   const apiFormat = $('p-format').getAttribute('data-value') || 'chat';
-  const costValue = Number($('p-cost').value);
-  const cost = Number.isFinite(costValue) && costValue >= 0 ? costValue : 1;
   const keyRevealable = !!(($('p-key-keep') && $('p-key-keep').checked));
   const editing = !!providerEditingId;
   if (!baseUrl) { toast('请填写 Base URL', true); return; }
@@ -5351,8 +5350,9 @@ $('p-save').addEventListener('click', async () => {
   const models = pModelList ? pModelList.getEnabled() : [];
   if (!models.length) { toast('请先获取模型并至少勾选一个', true); return; }
 
-  // 编辑时 Key 留空 = 不修改;勾选「保存后保持显示」则保存后仍可点小眼睛查看
-  const payload = { name, baseUrl, apiFormat, models, costPerCall: cost, keyRevealable };
+  // 自建供应商不扣费(用自己的 Key),因此不提交 costPerCall:服务端保留原值(默认 1),
+  // 而计费路径对 ownerId 命中的供应商一律按 0 计(见 lib/proxy.php)。
+  const payload = { name, baseUrl, apiFormat, models, keyRevealable };
   if (!editing || apiKey) payload.apiKey = apiKey;
   const r = await api(editing ? '/api/providers/' + encodeURIComponent(providerEditingId) : '/api/providers', {
     method: 'POST',
