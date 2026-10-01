@@ -2991,7 +2991,6 @@ async function requestAssistantReply(chat, userMsg, extra) {
   if (!state.user || (!quotaIsUnlimited(state.user.quota) && state.user.quota <= 0)) {
     const spent = usageTodayText();
     toast('剩余次数不足' + (spent ? '。' + spent : '') + '，请联系管理员', true);
-    renderUsageLedger();
     return;
   }
   // 若消息列表尾部无 assistant 占位则补一个
@@ -3090,91 +3089,6 @@ function availableModels() {
     });
   });
   return out;
-}
-
-function openReaskDialog() {
-  if (state.streaming) { toast('正在生成中，请稍候', true); return; }
-  const chat = currentChat();
-  const messages = ((chat && chat.messages) || []).map((m, i) => ({ m, i })).filter((x) => {
-    return x.m && x.m.role !== 'system' && !x.m.error && String(stripInterruptMarks(x.m.content)).trim();
-  });
-  if (!messages.length) return toast('当前对话没有可重答的消息', true);
-  const models = availableModels();
-  if (!models.length) return toast('没有可选的模型', true);
-  const mask = document.createElement('div');
-  mask.className = 'modal-mask';
-  // 自定义下拉的候选项(替代原生 select)
-  const reaskItems = models.map((item) => ({
-    value: item.providerId + '\n' + item.model,
-    label: item.provider + '@' + item.model,
-  }));
-  const cur = models.find((item) => item.providerId === state.currentProviderId && item.model === state.currentModel) || models[0];
-  const curValue = cur ? cur.providerId + '\n' + cur.model : '';
-  const rows = messages.map((x) => {
-    const text = stripInterruptMarks(x.m.content).replace(/\s+/g, ' ');
-    const who = x.m.role === 'user' ? '用户' : 'AI';
-    return '<label class="reask-row"><input type="checkbox" data-idx="' + x.i + '" checked>'
-      + '<span><b>' + who + '</b> ' + escapeHtml(text.slice(0, 120)) + '</span></label>';
-  }).join('');
-  mask.innerHTML = '<div class="modal" role="dialog" aria-modal="true">'
-    + '<div class="modal-header"><h3>换模型重答</h3>'
-    + '<button class="icon-btn" data-act="close" aria-label="关闭">' + (window.OC ? window.OC.icon('close', 16) : '×') + '</button></div>'
-    + '<div class="modal-body">'
-    + '<div class="field"><span>用这个模型重新回答</span>'
-    + selectBoxHtml('reask-model', cur ? cur.provider + '@' + cur.model : '请选择模型', curValue) + '</div>'
-    + '<div class="reask-list">' + rows + '</div>'
-    + '<div class="form-actions"><button class="btn primary" data-act="go" type="button">生成新回答</button></div>'
-    + '</div></div>';
-  document.body.appendChild(mask);
-  const close = () => {
-    if (window.OCUI) window.OCUI.closeModal(mask);
-    else mask.remove();
-    setTimeout(() => mask.remove(), 360);
-  };
-  const reaskBox = mask.querySelector('#reask-model');
-  bindModalSelect(reaskBox, reaskItems);
-  mask.addEventListener('click', async (e) => {
-    if (e.target === mask || e.target.closest('[data-act="close"]')) return close();
-    if (!e.target.closest('[data-act="go"]')) return;
-    const picked = Array.from(mask.querySelectorAll('.reask-row input:checked')).map((el) => Number(el.dataset.idx));
-    if (!picked.length) return toast('请至少勾选一条消息', true);
-    const chosen = String(reaskBox ? (reaskBox.getAttribute('data-value') || '') : '').split('\n');
-    const providerId = chosen[0] || '';
-    const model = chosen[1] || '';
-    if (!providerId || !model) return toast('请选择模型', true);
-    close();
-    await reaskWithModel(chat, picked, providerId, model);
-  });
-  if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(mask);
-  else mask.classList.add('show');
-}
-
-async function reaskWithModel(chat, indexes, providerId, model) {
-  if (!chat || state.streaming) return;
-  const picked = indexes.map((i) => chat.messages[i]).filter((m) => m && String(stripInterruptMarks(m.content)).trim());
-  if (!picked.length) return toast('没有可重答的消息', true);
-  const prevProvider = state.currentProviderId;
-  const prevModel = state.currentModel;
-  state.currentProviderId = providerId;
-  state.currentModel = model;
-  const seed = picked.map((m) => (m.role === 'user' ? '用户' : 'AI') + '：' + stripInterruptMarks(m.content)).join('\n\n');
-  const userMsg = {
-    role: 'user',
-    content: '请根据下面挑出的对话，用你自己的话重新回答最后一个问题。不要复述挑选说明。\n\n' + seed.slice(0, 12000),
-    createdAt: Date.now(),
-  };
-  chat.messages.push(userMsg);
-  chat.messages.push({ role: 'assistant', content: '', model: model });
-  chat.updatedAt = Date.now();
-  saveChats();
-  renderMessages();
-  try {
-    await requestAssistantReply(chat, userMsg);
-  } finally {
-    state.currentProviderId = prevProvider;
-    state.currentModel = prevModel;
-    if (typeof renderModelPicker === 'function') renderModelPicker();
-  }
 }
 
 function shareableMessages(chat) {
@@ -3435,7 +3349,7 @@ async function loadAccountPackages() {
         const r2 = await api('/api/packages/claim', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ packageId: btn.dataset.claim }) });
         const d2 = await r2.json();
         if (!r2.ok) { toast((d2.error && d2.error.message) || '领取失败', true); btn.disabled = false; return; }
-        if (d2.user) { state.user = d2.user; renderUser(); renderAccountPanel(); renderUsageLedger(); }
+        if (d2.user) { state.user = d2.user; renderUser(); renderAccountPanel(); }
         toast('领取成功，额度已到账');
         loadAccountPackages();
       } catch (e) { btn.disabled = false; toast('网络错误，请重试', true); }
@@ -3501,7 +3415,6 @@ async function refreshMe() {
       state.user = data.user;
       state.usage = Array.isArray(data.usage) ? data.usage : [];
       renderUser();
-      renderUsageLedger();
       loadAccountPackages();
     }
   } catch (e) {}
@@ -3527,30 +3440,6 @@ function usageTodayText() {
   const models = (row.models || []).slice(0, 3).map((m) => m.model + ' ' + m.calls + ' 次').join('，');
   return '今日已用 ' + row.calls + ' 次' + (models ? '（' + models + '）' : '');
 }
-function renderUsageLedger() {
-  const box = $('acc-usage');
-  if (!box) return;
-  const rows = state.usage || [];
-  if (!rows.length) {
-    box.innerHTML = '<p class="muted small">近 14 天还没有用量记录。</p>';
-    return;
-  }
-  // 注意:-1 表示无限额度,不能当作「已用完」(此前误把 -1 <= 0 判为耗尽)
-  const unlimited = state.user ? quotaIsUnlimited(state.user.quota) : false;
-  const left = state.user ? state.user.quota : 0;
-  const head = unlimited
-    ? '<p class="muted small">近 14 天按模型和日期的消耗。您当前为无限额度。</p>'
-    : (left <= 0
-      ? '<p class="usage-empty">剩余次数已用完。近 14 天的消耗如下，需要管理员充值后才能继续。</p>'
-      : '<p class="muted small">近 14 天按模型和日期的消耗。今天剩余 ' + left + ' 次。</p>');
-  box.innerHTML = head + rows.map((row) => {
-    const models = (row.models || []).map((m) => escapeHtml(m.model) + ' ' + (m.calls || 0) + ' 次').join('，');
-    return '<div class="usage-row"><span class="usage-name">' + escapeHtml(String(row.day || '').slice(5)) + '</span>'
-      + '<span class="usage-sum">' + (row.calls || 0) + ' 次 · ' + (row.cost || 0) + ' 额度</span>'
-      + '<span class="usage-models muted small">' + (models || '') + '</span></div>';
-  }).join('');
-}
-
 // ============ 用量页:消耗总结 + 使用日志 ============
 const USAGE2_PAGE_SIZE = 20;
 let usage2Limit = USAGE2_PAGE_SIZE;
@@ -3941,11 +3830,21 @@ function syncPrefsPanel() {
     if (!el) return;
     el.checked = key === 'aiJudge' ? aiJudgeEnabled() : !!uiPref(key, true);
   });
-  // AI 工具判定总开关关闭时:判定模型置灰(不再发起判定);
-  // 标题与出图仍会以回退方式工作,故不置灰,只在下方的提示里说明区别
+  // AI 工具判定关闭时:受它控制的子项整体置灰并折叠为一行摘要
+  // (保留可展开,用户仍能看到有哪些项、当前值是什么,只是不再随判定生效)
   const judgeOn = aiJudgeEnabled();
   const judgeModelRow = $('pref-judge-model-row');
   if (judgeModelRow) judgeModelRow.classList.toggle('is-disabled', !judgeOn);
+  const controlled = $('pref-judge-controlled');
+  if (controlled) {
+    controlled.classList.toggle('is-disabled', !judgeOn);
+    // 只在开关状态变化时改折叠态,避免覆盖用户手动展开
+    const was = controlled.dataset.judgeOn === '1';
+    if (was !== judgeOn) {
+      controlled.open = judgeOn;
+      controlled.dataset.judgeOn = judgeOn ? '1' : '0';
+    }
+  }
   const judgeHint = $('pref-judge-hint');
   if (judgeHint) {
     judgeHint.textContent = judgeOn
@@ -4826,9 +4725,6 @@ async function saveToolSource(patch) {
     toast('已导出当前对话');
   });
 
-  const reaskBtn = $('chat-reask');
-  if (reaskBtn) reaskBtn.addEventListener('click', () => openReaskDialog());
-
   const exportMd = $('acc-export-md');
   if (exportMd) exportMd.addEventListener('click', () => {
     if (!state.chats.length) return toast('暂无对话可导出');
@@ -5402,7 +5298,7 @@ if (redeemBtn) redeemBtn.addEventListener('click', async () => {
     if (!r.ok) return toast((d.error && d.error.message) || '兑换失败', true);
     if (d.user) state.user = d.user;
     if ($('plan-redeem-code')) $('plan-redeem-code').value = '';
-    renderUser(); renderAccountPanel(); renderUsageLedger(); toast('兑换成功');
+    renderUser(); renderAccountPanel(); toast('兑换成功');
   } catch (e) { toast('兑换失败，请检查网络连接', true); }
 });
 const goPlanBtn = $('acc-go-plan');
@@ -5416,7 +5312,7 @@ if (composerAt) {
     if (window.OCAssistants && typeof window.OCAssistants.open === 'function') window.OCAssistants.open();
   });
 }
-$('logout-btn').addEventListener('click', logout);
+// 退出登录已移入「设置 → 账户」(见 sp-account 里的 acc-logout 绑定)
 $('admin-link').addEventListener('click', () => location.href = apiUrl('/admin'));
 
 // ============ 全站公告 ============
@@ -7462,7 +7358,6 @@ function enterReadonlyHome() {
     // 启动时必须带上用量数据,否则设置→用量/账户面板在首次刷新前显示为 0
     state.usage = Array.isArray(data.usage) ? data.usage : [];
     renderUser();
-    renderUsageLedger();
     loadChats();
     renderChatList();
     state._scrollHistoryToBottom = true;
