@@ -3981,9 +3981,8 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 .pg-err:not(.hidden) { animation: pgErrIn 200ms ease-out; }
 @keyframes pgErrIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
 
-/* 注销账号:危险操作分区,用红色边框与页面主体区分 */
-.acc-danger-zone { margin-top: 18px; padding: 12px 14px; border: 1px solid color-mix(in srgb, #dc2626 28%, transparent); border-radius: 12px; background: color-mix(in srgb, #dc2626 5%, transparent); }
-.acc-danger-zone .section-title { margin-top: 0; color: #dc2626; }
+/* 注销账号:账号页底部只保留一个红色按钮(后果在确认弹窗里说明) */
+.acc-delete-row { margin-top: 18px; }
 
 /* 余量明细:滚动加载哨兵(不可见,仅用于触发自动加载) */
 .usage2-sentinel { height: 1px; }
