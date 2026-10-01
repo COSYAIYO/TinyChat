@@ -34,26 +34,35 @@ $eq('快照记录了基准 siteName', $db['demoSnapshot']['settings']['siteName'
 $eq('快照记录了 accessRules', count($db['demoSnapshot']['accessRules']), 1);
 $eq('快照记录了 providers', count($db['demoSnapshot']['providers']), 1);
 
-// 2) 已有生效快照时再次拍摄不应覆盖
-$expire1 = (int) $db['demoSnapshot']['expireAt'];
+// 2) 生效中的快照:属主继续活动应「顺延到期」(滑动窗口),但基准不得被改写
+//    —— 不打断正在进行的演示;他人活动不得顺延不属于他的快照
 $db['settings']['siteName'] = 'CHANGED-1';
 $db['providers'][0]['costPerCall'] = 99;
+// 把到期时间收紧到 1 秒后:活动应把它重新推回「现在 + 有效期」
+$db['demoSnapshot']['expireAt'] = tc_now() + 1000;
+$expire1 = (int) $db['demoSnapshot']['expireAt'];
 $again = tc_demo_arm($db, $demo);
-$eq('生效中不重复拍摄', $again, false);
-$eq('生效中快照到期时间不变', (int) $db['demoSnapshot']['expireAt'], $expire1);
+$eq('生效中继续活动:顺延到期(滑动窗口)', $again, true);
+$eq('顺延后到期时间不早于原值', (int) $db['demoSnapshot']['expireAt'] >= $expire1, true);
+$eq('顺延到完整的有效窗口', (int) $db['demoSnapshot']['expireAt'] > tc_now() + 30000, true);
 $eq('生效中基准仍是原值', $db['demoSnapshot']['settings']['siteName'], 'ORIGINAL');
+$other = tc_demo_arm($db, array('id' => 'demo2', 'admin' => true, 'demo' => true));
+$eq('他人活动不顺延别人的快照', $other, false);
+$eq('他人活动后快照仍归原属主', $db['demoSnapshot']['userId'], 'demo1');
 
 // 3) 未到期不还原
 $eq('未到期不还原', tc_demo_revert($db), false);
 $eq('未到期保持改动', $db['settings']['siteName'], 'CHANGED-1');
 
-// 4) 到期还原
+// 4) 到期还原(并把「已还原」标记写给客户端,用于整体采纳云端)
 $db['demoSnapshot']['expireAt'] = 1; // 强制过期
 $eq('到期触发还原', tc_demo_revert($db), true);
 $eq('还原 siteName', $db['settings']['siteName'], 'ORIGINAL');
 $eq('还原 demoMode', !empty($db['settings']['demoMode']), false);
 $eq('还原 providers.costPerCall', $db['providers'][0]['costPerCall'], 1);
 $eq('清空快照', $db['demoSnapshot'], null);
+$reverted = tc_assoc($db['demoReverted']);
+$eq('还原后写入客户端还原标记', isset($reverted['demo1']) && (int) $reverted['demo1'] > 0, true);
 
 // 5) 关键回归:还原后再次改动应能重新拍摄并再次还原(旧实现只保护第一轮)。
 //    真实顺序是「先拍摄(改动前) → 再应用改动」,这里按同样顺序模拟。

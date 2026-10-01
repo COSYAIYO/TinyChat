@@ -512,6 +512,8 @@ async function pushChatsToCloud() {
     });
     const data = await r.json().catch(() => ({}));
     if (r.status === 409) {
+      // 演示还原导致的冲突:整体采纳云端,不做按时间戳合并
+      if (adoptDemoRevert(data)) return;
       const revision = Number(data.revision) || 0;
       const prevId = state.currentChatId;
       const prev = (state.chats || []).find((c) => c.id === prevId) || null;
@@ -587,6 +589,8 @@ function applyCloudChats(chats, revision) {
     localStorage.setItem('oc_chats_' + state.user.id, JSON.stringify(state.chats));
     localStorage.setItem('oc_chat_rev_' + state.user.id, String(state.chatRevision));
     state.currentChatId = state.chats.some((c) => c.id === state.currentChatId) ? state.currentChatId : null;
+    // 当前对话被整体还原清掉时,落到列表第一条,避免停在空白页
+    if (!state.currentChatId && state.chats.length) state.currentChatId = state.chats[0].id;
     const next = (state.chats || []).find((c) => c.id === state.currentChatId) || null;
     renderChatList();
     if (state.currentChatId !== prevId || chatViewStamp(next) !== prevStamp) renderMessages();
@@ -595,12 +599,32 @@ function applyCloudChats(chats, revision) {
   }
 }
 
+// 演示管理员到期还原后,服务端会带一个新的 demoRevertedAt 标记。
+// 客户端此时必须「整体采纳云端」而不是按 updatedAt 合并:否则本地残留的演示期内容
+// 会因为时间戳更新而赢过已还原的云端版本,把刚清掉的内容又推回服务端(表现为
+// 对话时有时无、刷新后内容忽隐忽现)。
+function adoptDemoRevert(data) {
+  if (!state.user || !data) return false;
+  const at = Number(data.demoRevertedAt) || 0;
+  if (!at) return false;
+  const key = 'oc_chat_demo_reset_' + state.user.id;
+  const seen = Number(localStorage.getItem(key) || 0);
+  if (at <= seen) return false;
+  applyCloudChats(data.chats || [], Number(data.revision) || 0);
+  // 服务端已把该账号的对话重置为基准:本地墓碑(待删除清单)随之作废
+  state.deletedIds = [];
+  persistTombstones();
+  try { localStorage.setItem(key, String(at)); } catch (e) { /* 存储不可用 */ }
+  return true;
+}
+
 async function pullChatsFromCloud() {
   if (!state.token || !state.user) return;
   try {
     const r = await api('/api/sync/chats');
     if (!r.ok) return;
     const data = await r.json();
+    if (adoptDemoRevert(data)) return;
     const revision = Number(data.revision) || 0;
     const seen = Number(localStorage.getItem('oc_chat_rev_' + state.user.id) || 0);
     if (revision !== seen) {

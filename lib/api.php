@@ -1422,8 +1422,16 @@ function tc_api_sync_get_chats() {
         tc_json(200, array(
             'chats' => tc_chats_of($db, $user['id']),
             'revision' => tc_chat_revision_of($db, $user['id']),
+            'demoRevertedAt' => tc_demo_reverted_at($db, $user['id']),
         ));
     });
+}
+
+// 该用户最近一次演示还原的时间戳(0=从未还原);客户端据此丢弃本地旧副本
+function tc_demo_reverted_at($db, $userId) {
+    $map = tc_assoc(isset($db['demoReverted']) ? $db['demoReverted'] : array());
+    $uid = (string) $userId;
+    return isset($map[$uid]) ? (int) $map[$uid] : 0;
 }
 
 function tc_api_sync_save_chats() {
@@ -1446,6 +1454,7 @@ function tc_api_sync_save_chats() {
                 'error' => array('message' => '聊天记录已在其他页面更新'),
                 'chats' => tc_chats_of($db, $user['id']),
                 'revision' => $current,
+                'demoRevertedAt' => tc_demo_reverted_at($db, $user['id']),
             ));
         }
         $chats = tc_sanitize_chats(isset($b['chats']) ? $b['chats'] : array());
