@@ -39,6 +39,9 @@ function uiPref(key, def) {
 function streamEnabled() { return !!uiPref('stream', true); }
 function followUpsEnabled() { return !!uiPref('followups', true); }
 function autoTitleEnabled() { return !!uiPref('autotitle', true); }
+// AI 工具判定总开关:关闭后不再发起判定调用(省一次额度),联网交给后端启发式、
+// 出图回退关键词粗略识别、会话标题回退本地截取
+function aiJudgeEnabled() { return !!uiPref('aiJudge', true); }
 // 解析「辅助任务(跟进建议/命名)」指定的模型。
 // pref 形如 'providerId\nmodelId';空值返回 null(调用方回退当前模型/本地截取)。
 // 只接受对话模型(生图/生视频模型不用于文本辅助任务)。
@@ -2356,8 +2359,10 @@ async function sendMessage() {
     // 新对话首条消息且开启了自动命名:让判定顺带给出标题,省去单独一次命名调用
     const curChat = currentChat();
     const isFirstMsg = !!curChat && (!curChat.messages || curChat.messages.length === 0) && autoTitleEnabled();
-    // 需要 AI 工具判定的条件:生图设为智能判定,或联网=智能,或需要 AI 命名
-    const needJudge = text && ((aim === 'auto' && hasImageModel) || searchReady || isFirstMsg);
+    // 需要 AI 工具判定的条件:总开关打开,且(生图设为智能判定 / 联网=智能 / 需要 AI 命名)。
+    // 总开关关闭时完全不发起判定调用,上面三处各自回退(粗略识别 / 后端启发式 / 本地截取)。
+    const judgeOn = aiJudgeEnabled();
+    const needJudge = judgeOn && text && ((aim === 'auto' && hasImageModel) || searchReady || isFirstMsg);
     let verdict = null;
     if (needJudge) {
       // 判定期间锁住发送,避免重复触发
@@ -3927,14 +3932,26 @@ function syncPrefsPanel() {
     ['pref-show-api-chats', 'showApiChats'],
     ['pref-followups', 'followups'],
     ['pref-autotitle', 'autotitle'],
+    ['pref-aijudge', 'aiJudge'],
     ['pref-elapsed', 'elapsed'],
     ['pref-reasoning', 'reasoning'],
   ];
   checks.forEach(([id, key]) => {
     const el = $(id);
     if (!el) return;
-    el.checked = !!uiPref(key, true);
+    el.checked = key === 'aiJudge' ? aiJudgeEnabled() : !!uiPref(key, true);
   });
+  // AI 工具判定总开关关闭时:判定模型置灰(不再发起判定);
+  // 标题与出图仍会以回退方式工作,故不置灰,只在下方的提示里说明区别
+  const judgeOn = aiJudgeEnabled();
+  const judgeModelRow = $('pref-judge-model-row');
+  if (judgeModelRow) judgeModelRow.classList.toggle('is-disabled', !judgeOn);
+  const judgeHint = $('pref-judge-hint');
+  if (judgeHint) {
+    judgeHint.textContent = judgeOn
+      ? '一次判定同时决定：本轮要联网还是出图，并用同一个模型为新对话命名，不重复消耗。'
+      : '判定已关闭：不再发起判定调用（省一次额度）。联网改用系统启发式判断，出图回退关键词粗略识别，标题改用本地截取。';
+  }
   syncAuxModelSelect('pref-followups-model', 'followupsModel', '');
   syncAuxModelSelect('pref-judge-model', 'judgeModel', '');
   syncImageModelSelect('pref-image-model', 'imageModel');
@@ -4162,6 +4179,12 @@ async function saveToolSource(patch) {
   bindCheck('pref-show-api-chats', 'showApiChats');
   bindCheck('pref-followups', 'followups');
   bindCheck('pref-autotitle', 'autotitle');
+  // AI 工具判定总开关:切换后即时刷新提示与子项状态
+  const judgeEl = $('pref-aijudge');
+  if (judgeEl) judgeEl.addEventListener('change', () => {
+    if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('aiJudge', judgeEl.checked);
+    syncPrefsPanel();
+  });
   bindAuxModelSelect('pref-followups-model', 'followupsModel', 'followups');
   bindAuxModelSelect('pref-judge-model', 'judgeModel', '');
   bindImageModelSelect('pref-image-model', 'imageModel');
@@ -5002,7 +5025,6 @@ function resetProviderForm() {
   fmt.setAttribute('data-value', 'chat');
   const fmtLabel = fmt.querySelector('.sb-label');
   if (fmtLabel) fmtLabel.textContent = PROVIDER_FORMAT_LABELS.chat;
-  if ($('p-cost')) $('p-cost').value = 1;
   if (pModelList) pModelList.reset();
   const summary = $('provider-form-summary');
   if (summary) summary.textContent = '+ 添加自定义供应商';
@@ -5027,7 +5049,6 @@ function openProviderEdit(p) {
   fmt.setAttribute('data-value', p.apiFormat || 'chat');
   const fmtLabel = fmt.querySelector('.sb-label');
   if (fmtLabel) fmtLabel.textContent = PROVIDER_FORMAT_LABELS[p.apiFormat] || p.apiFormat || 'OpenAI chat/completions';
-  if ($('p-cost')) $('p-cost').value = p.costPerCall;
   if (pModelList) pModelList.setEnabled(p.models || []);
   const summary = $('provider-form-summary');
   if (summary) summary.textContent = '编辑供应商';
@@ -5255,6 +5276,8 @@ const pModelList = window.OC && window.OC.bindModelChecklist
     allId: 'p-models-all',
     countId: 'p-models-count',
     addId: 'p-model-add',
+    // 自建供应商用自己的 Key,不扣站点次数,不展示「单次扣减」列
+    showCost: false,
   })
   : null;
 
@@ -5285,6 +5308,7 @@ if (pFetchBtn) {
         window.OC.openFetchedModelsModal(models, {
           title: '获取到的模型',
           existing: pModelList ? pModelList.getCatalog() : [],
+          showCost: false, // 自建供应商不扣费,不展示「单次扣减」列
           onApply: (picked, staleIds) => {
             if (pModelList) pModelList.applyFetched(picked, staleIds);
             const n = picked.filter((m) => m.enabled).length;
@@ -5342,8 +5366,6 @@ $('p-save').addEventListener('click', async () => {
   const baseUrl = $('p-baseurl').value.trim();
   const apiKey = $('p-key').value.trim();
   const apiFormat = $('p-format').getAttribute('data-value') || 'chat';
-  const costValue = Number($('p-cost').value);
-  const cost = Number.isFinite(costValue) && costValue >= 0 ? costValue : 1;
   const keyRevealable = !!(($('p-key-keep') && $('p-key-keep').checked));
   const editing = !!providerEditingId;
   if (!baseUrl) { toast('请填写 Base URL', true); return; }
@@ -5351,8 +5373,9 @@ $('p-save').addEventListener('click', async () => {
   const models = pModelList ? pModelList.getEnabled() : [];
   if (!models.length) { toast('请先获取模型并至少勾选一个', true); return; }
 
-  // 编辑时 Key 留空 = 不修改;勾选「保存后保持显示」则保存后仍可点小眼睛查看
-  const payload = { name, baseUrl, apiFormat, models, costPerCall: cost, keyRevealable };
+  // 自建供应商不扣费(用自己的 Key),因此不提交 costPerCall:服务端保留原值(默认 1),
+  // 而计费路径对 ownerId 命中的供应商一律按 0 计(见 lib/proxy.php)。
+  const payload = { name, baseUrl, apiFormat, models, keyRevealable };
   if (!editing || apiKey) payload.apiKey = apiKey;
   const r = await api(editing ? '/api/providers/' + encodeURIComponent(providerEditingId) : '/api/providers', {
     method: 'POST',

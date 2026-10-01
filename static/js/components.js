@@ -253,6 +253,10 @@
     const keyHead = opts.showKey
       ? '<th class="col-key" title="该模型用哪把 Key 请求上游；仅在供应商配置了多个 Key 时出现">密钥</th>'
       : '';
+    // showCost=false 用于用户自建供应商:自己的 Key 不扣站点次数,「单次扣减」列没有意义
+    const costHead = opts.showCost === false
+      ? ''
+      : '<th class="col-cost" title="该模型单次调用扣减的额度次数；留空则跟随供应商的「每次调用扣费次数」">单次扣减</th>';
     return '<table class="model-table">'
       + '<thead><tr>'
       + '<th class="col-check"></th>'
@@ -260,7 +264,7 @@
       + '<th class="col-name">显示名称</th>'
       + '<th class="col-mtok" title="单次回答最多生成的 token，留空则跟随全局的单次输出上限">max_tokens</th>'
       + '<th class="col-ctx" title="该模型的上下文窗口（token），留空则不做限制">最大上下文</th>'
-      + '<th class="col-cost" title="该模型单次调用扣减的额度次数；留空则跟随供应商的「每次调用扣费次数」">单次扣减</th>'
+      + costHead
       + keyHead
       + '<th class="col-img" title="标记为生图模型：调用对话接口时会自动改用 images/generations（未标记时按模型名自动判断）">生图</th>'
       + '<th class="col-img" title="标记为视频生成模型：调用对话接口时会自动改用 videos（未标记时按模型名自动判断）">视频</th>'
@@ -345,6 +349,7 @@
     const cls = 'model-row' + (opts.stale ? ' is-stale' : '');
     const numCells = MODEL_NUM_COLS.map((col) => '<td class="' + (col.cls === 'mtokens' ? 'col-mtok' : 'col-ctx') + '">'
       + modelNumCell(m, col, !opts.stale) + '</td>').join('');
+    const costCell = opts.showCost === false ? '' : '<td class="col-cost">' + modelCostCell(m, !opts.stale) + '</td>';
     // 生图标记:显式 image 字段优先;未显式设置时按模型名给出建议默认值(仅用于勾选态展示)
     const isImage = Object.prototype.hasOwnProperty.call(m, 'image') ? !!m.image : (window.OC && OC.isImageModelName ? OC.isImageModelName(m.id) : false);
     const imageCell = opts.stale
@@ -360,7 +365,7 @@
       + '<td class="col-id"><span class="mid">' + escapeHtml(m.id) + '</span></td>'
       + '<td class="col-name">' + modelNameCell(m, !opts.stale) + '</td>'
       + numCells
-      + '<td class="col-cost">' + modelCostCell(m, !opts.stale) + '</td>'
+      + costCell
       + modelKeyCell(m, opts)
       + imageCell
       + videoCell
@@ -491,8 +496,8 @@
         return;
       }
       listEl.innerHTML = modelTableHtml(vis.map((m) =>
-        modelRowHtml(m, { checked: selected.has(m.id), keys: keyOptions })
-      ).join(''), { showKey: keyOptions.length > 1 });
+        modelRowHtml(m, { checked: selected.has(m.id), keys: keyOptions, showCost: cfg.showCost })
+      ).join(''), { showKey: keyOptions.length > 1, showCost: cfg.showCost });
       updateMeta();
     }
 
@@ -707,6 +712,8 @@
    */
   function openFetchedModelsModal(models, opts) {
     opts = opts || {};
+    // showCost=false 用于用户自建供应商:自己的 Key 不扣站点次数,不展示「单次扣减」列
+    const showCost = opts.showCost !== false;
     const existingMap = new Map();
     (opts.existing || []).forEach((m) => {
       const id = String((m && m.id) || '').trim();
@@ -861,8 +868,8 @@
         listEl.innerHTML = '<div class="model-check-empty">' + (items.length ? '没有匹配的模型' : '这次上游没有返回模型') + '</div>';
       } else {
         listEl.innerHTML = modelTableHtml(vis.map((m) =>
-          modelRowHtml(m, { checked: m.enabled, keys: keyList })
-        ).join(''), { showKey: showKey });
+          modelRowHtml(m, { checked: m.enabled, keys: keyList, showCost })
+        ).join(''), { showKey: showKey, showCost });
       }
       renderStale();
       updateMsg();
@@ -878,8 +885,8 @@
         staleAllEl.indeterminate = n > 0 && n < stale.length;
       }
       staleEl.innerHTML = stale.length ? modelTableHtml(stale.map((m) =>
-        modelRowHtml(m, { checked: m.remove, stale: true, keys: keyList })
-      ).join(''), { showKey: showKey }) : '';
+        modelRowHtml(m, { checked: m.remove, stale: true, keys: keyList, showCost })
+      ).join(''), { showKey: showKey, showCost }) : '';
     }
 
     function updateMetaOnly() {
