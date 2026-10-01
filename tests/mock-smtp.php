@@ -8,9 +8,12 @@
  *   gmail535     复现 Gmail 对错误凭据的多行 535 响应
  *   requirepass  仅当密码(去空格后)是 16 位小写字母时通过 —— 用于验证空格被正确剥离
  *   reset        连接后立刻断开(模拟端口不通/防火墙)
+ *   stall        连接后不回复,用于验证发送中途超时能把原因带回调用方
+ *   capture      正常投递,并把收到的 DATA 原文写到第 3 个参数指定的文件
  */
 $port = (int) ($argv[1] ?? 2525);
 $mode = (string) ($argv[2] ?? 'ok');
+$captureFile = (string) ($argv[3] ?? '');
 
 $server = @stream_socket_server('tcp://127.0.0.1:' . $port, $errno, $errstr);
 if (!$server) {
@@ -20,14 +23,24 @@ if (!$server) {
 echo "mock-smtp listening on $port (mode=$mode)\n";
 flush();
 
-$handle = function ($conn) use ($mode) {
+    $handle = function ($conn) use ($mode, $captureFile) {
     if ($mode === 'reset') { fclose($conn); return; }
     fwrite($conn, "220 mock.local ESMTP ready\r\n");
+    if ($mode === 'stall') { sleep(30); return; }
     $inData = false;
-    while (($line = fgets($conn, 2048)) !== false) {
+    $captured = '';
+    while (($line = fgets($conn, 8192)) !== false) {
         $cmd = strtoupper(trim($line));
         if ($inData) {
-            if ($cmd === '.') { $inData = false; fwrite($conn, "250 OK queued\r\n"); continue; }
+            if ($mode === 'capture') $captured .= $line;
+            if ($cmd === '.') {
+                $inData = false;
+                if ($mode === 'capture' && $captureFile !== '') {
+                    file_put_contents($captureFile, $captured);
+                }
+                fwrite($conn, "250 OK queued\r\n");
+                continue;
+            }
             continue;
         }
         if (strpos($cmd, 'EHLO') === 0 || strpos($cmd, 'HELO') === 0) {

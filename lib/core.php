@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.109');
+define('TC_VERSION', '2.0.110');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -1652,6 +1652,10 @@ function tc_mail_send($settings, $to, $subject, $html, $text = '', &$err = null)
     $from = str_replace(array("\r", "\n"), '', $smtp['fromEmail'] ?: $smtp['username']);
     $fromName = str_replace(array("\r", "\n"), '', $smtp['fromName'] ?: 'TinyChat');
     $subject = str_replace(array("\r", "\n"), '', $subject);
+    // 显示名含非 ASCII(中文站点名)时必须按 RFC 2047 编码,否则部分收件服务器拒信或显示乱码
+    if (preg_match('/[^\x20-\x7E]/', $fromName)) {
+        $fromName = '=?UTF-8?B?' . base64_encode($fromName) . '?=';
+    }
     if (!filter_var($from, FILTER_VALIDATE_EMAIL)) { $err = '发件人邮箱无效（' . ($from === '' ? '未填写' : $from) . '）：请填写有效的发件人地址，或先填写 SMTP 用户名作为回退'; return false; }
     // 归一化密码(去首尾空白;Google 应用专用密码去掉内部空格),避免把复制的空格一起拿去认证
     $authUser = trim((string) (isset($smtp['username']) ? $smtp['username'] : ''));
@@ -1661,7 +1665,9 @@ function tc_mail_send($settings, $to, $subject, $html, $text = '', &$err = null)
         $err = '已填写 SMTP 用户名但密码为空：请把邮箱服务商提供的「授权码 / 应用专用密码」填入密码框后重新保存';
         return false;
     }
-    $body = "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\nFrom: " . $fromName . " <" . $from . ">\r\nTo: " . $to . "\r\nSubject: =?UTF-8?B?" . base64_encode($subject) . "?=\r\n\r\n" . $html . "\r\n.";
+    // 正文里单独成行的「.」会被 SMTP 当成 DATA 结束(RFC 5321 transparency),必须转义成「..」
+    $payload = preg_replace('/(^|\r\n)\./', '$1..', (string) $html);
+    $body = "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\nFrom: " . $fromName . " <" . $from . ">\r\nTo: " . $to . "\r\nSubject: =?UTF-8?B?" . base64_encode($subject) . "?=\r\n\r\n" . $payload . "\r\n.";
     $transport = $smtp['encryption'] === 'ssl' ? 'ssl://' : '';
     $deadline = microtime(true) + 20; // 整体预算:超过就主动放弃并报错,避免被网关超时截断成 502 HTML 页
     $connectAt = microtime(true);
@@ -1697,10 +1703,22 @@ function tc_mail_send($settings, $to, $subject, $html, $text = '', &$err = null)
     }
     stream_set_timeout($fp, 8);
     $lastLine = '';
-    // SMTP 服务器原文同样要清洗:中文服务商常用 GBK 回错误描述
-    $read = function () use ($fp, &$lastLine) {
+    $readTimedOut = false;
+    // SMTP 服务器原文同样要清洗:中文服务商常用 GBK 回错误描述。
+    // 单次读最多 8 秒;没读到时记下是不是超时,交给调用方决定继续等还是放弃。
+    // 整体预算(20 秒)先到才算发送超时,否则一次 8 秒的静默会被误报成「没有响应」。
+    $read = function () use ($fp, &$lastLine, &$readTimedOut, $deadline, &$err) {
         $out = '';
+        $readTimedOut = false;
+        $wait = (int) ceil($deadline - microtime(true));
+        if ($wait < 1) { $err = '发送超时（累计超过 20 秒）：服务器响应过慢，请检查网络、SMTP 地址与端口是否正确'; return ''; }
+        stream_set_timeout($fp, min(8, $wait));
         while (($line = fgets($fp, 512)) !== false) { $out .= $line; if (isset($line[3]) && $line[3] === ' ') break; }
+        $meta = stream_get_meta_data($fp);
+        if ($out === '' && !empty($meta['timed_out'])) $readTimedOut = true;
+        if ($out === '' && microtime(true) >= $deadline) {
+            $err = '发送超时（累计超过 20 秒）：服务器响应过慢，请检查网络、SMTP 地址与端口是否正确';
+        }
         $lastLine = tc_utf8_clean(trim($out));
         return $out;
     };
@@ -1720,18 +1738,32 @@ function tc_mail_send($settings, $to, $subject, $html, $text = '', &$err = null)
         elseif ($code === 500 || $code === 502 || $code === 504) $hint = '：服务器不支持该指令，请尝试切换加密方式（TLS / SSL / 无）';
         return 'SMTP 服务器拒绝了请求 (' . $code . ')' . $hint . '（服务器原文：' . $line . '）';
     };
-    $ok = function ($response, $codes) use (&$err, &$lastLine, $explain) {
-        if (trim((string) $response) === '') { $err = 'SMTP 服务器没有响应（连接被中断或超时）'; return false; }
+    $ok = function ($response, $codes) use (&$err, &$lastLine, &$readTimedOut, $deadline, $explain) {
+        if (trim((string) $response) === '') {
+            if ($err === '' && $readTimedOut && microtime(true) < $deadline) return false; // 单次读超时,由外层续上
+            if ($err === '') $err = 'SMTP 服务器没有响应（连接被中断或超时）';
+            return false;
+        }
         $code = (int) substr(trim((string) $response), 0, 3);
         if (!in_array((int) $code, array_map('intval', $codes), true)) { $err = $explain($code, $lastLine); return false; }
         return true;
     };
-    $write = function ($cmd, $codes) use ($fp, $read, $ok, $deadline) {
+    // 单次读超时且总预算还没到:继续等,直到读到响应或累计超过 20 秒。
+    // 每一条命令都走这里,否则只有开场问候能续等,后面某一步卡住仍会报成笼统的「没有响应」。
+    $await = function ($codes) use ($read, $ok, &$readTimedOut, $deadline, &$err) {
+        do {
+            $got = $ok($read(), $codes);
+            if ($got || $err !== '' || !$readTimedOut) return $got;
+        } while (microtime(true) < $deadline);
+        if ($err === '') $err = '发送超时（累计超过 20 秒）：服务器响应过慢，请检查网络、SMTP 地址与端口是否正确';
+        return false;
+    };
+    $write = function ($cmd, $codes) use ($fp, $await, $deadline, &$err) {
         if (microtime(true) > $deadline) { $err = '发送超时（累计超过 20 秒）：服务器响应过慢，请检查网络、SMTP 地址与端口是否正确'; return false; }
         if (fwrite($fp, $cmd . "\r\n") === false) { $err = 'SMTP 连接中断'; return false; }
-        return $ok($read(), $codes);
+        return $await($codes);
     };
-    if (!$ok($read(), array(220))) { fclose($fp); return false; }
+    if (!$await(array(220))) { fclose($fp); return false; }
     if (!$write('EHLO localhost', array(250))) { fclose($fp); return false; }
     if ($smtp['encryption'] === 'tls') { if (!$write('STARTTLS', array(220)) || @stream_socket_enable_crypto($fp, true, STREAM_CRYPTO_METHOD_TLS_CLIENT) !== true || !$write('EHLO localhost', array(250))) { if ($err === '') $err = 'STARTTLS 加密握手失败：服务器可能不支持 STARTTLS，请把加密方式改为 SSL（端口通常 465）或「无」（端口通常 25）后重试'; fclose($fp); return false; } }
     if ($authUser !== '') { if (!$write('AUTH LOGIN', array(334)) || !$write(base64_encode($authUser), array(334)) || !$write(base64_encode($authPass), array(235))) { if ($err === '') { $err = 'SMTP 认证失败：请确认「用户名」填的是完整邮箱，且「密码」用的是该邮箱的 SMTP 授权码（多数邮箱不支持用登录密码直接发信）' . tc_smtp_provider_hint(isset($smtp['host']) ? $smtp['host'] : '', $authUser) . "
