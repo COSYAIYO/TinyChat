@@ -310,22 +310,18 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.18); }
 
 /* ---------- 6. 会话列表:行 hover 底色 + 拖拽条 ---------- */
 .chat-item { transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out); }
-.chat-item-wrap { animation: rowIn var(--dur-2) var(--ease-out) both; }
-@keyframes rowIn {
-  from { opacity: 0; transform: translateY(3px); }
-  to { opacity: 1; transform: none; }
-}
+/* 列表行不做入场动画。云同步会反复重建侧栏,「今天」默认展开,
+   行从透明淡入就表现为这一组一直在闪。 */
+.chat-item-wrap { animation: none; }
 
 /* 时间分组箭头旋转 */
 .chat-group-chev { transition: transform var(--dur-2) var(--ease-spring); }
 .chat-group-section.collapsed .chat-group-chev { transform: rotate(-90deg); }
 
-/* ---------- 7. 消息区:进场、流式光标、操作栏 ---------- */
-.msg { animation: msgRise var(--dur-3) var(--ease-out) both; }
-@keyframes msgRise {
-  from { opacity: 0; transform: translateY(5px); }
-  to { opacity: 1; transform: none; }
-}
+/* ---------- 7. 消息区:流式光标、操作栏 ---------- */
+/* 消息不再做入场动画。对话会整页重绘(云同步、流式收尾、切换版本),
+   每条消息从 opacity:0 淡入,看起来就是页面时不时闪一下。 */
+.msg { animation: none; }
 /* 流式光标:呼吸,不刺眼 */
 .stream-cursor {
   display: inline-block;
@@ -486,10 +482,12 @@ html:not(.oc-streaming) .stream-cursor { display: none; }
 .seg-btn:not(:disabled):active { transform: scale(0.94); }
 
 /* ---------- 13. 代码块 / 表格 / 引用 ---------- */
-.code-block { animation: attachIn var(--dur-2) var(--ease-out) both; }
+.code-block { animation: none; }
 .code-copy { transition: color var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out); }
 .code-copy.copied { color: #34a853; }
-.table-wrap { animation: attachIn var(--dur-2) var(--ease-out) both; }
+/* 表格包在回答里,流式和云同步都会重建 DOM。入场动画从透明缩小开始,
+   fill-mode both 会在每次重建时重播,看起来就是表格一直闪。 */
+.table-wrap { animation: none; }
 .msg.assistant th.sortable { transition: color var(--dur-1) var(--ease-out); }
 
 /* ---------- 14. 管理后台:同一节奏 ---------- */

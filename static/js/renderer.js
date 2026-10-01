@@ -132,6 +132,22 @@
       return '</table></div>';
     };
 
+    // highlight() 已经返回完整的 .code-block（自带 <pre>）。
+    // markdown-it 默认还会再包一层 <pre><code>，那就是用户看到的外层矩形。
+    // 这里直接输出高亮结果，不再套第二层。mermaid / 思维导图仍走各自的 <pre>。
+    md.renderer.rules.fence = function (tokens, idx, options, env, self) {
+      const token = tokens[idx];
+      const info = token.info ? String(token.info).trim() : '';
+      const lang = info ? info.split(/\s+/g)[0] : '';
+      if (options.highlight) {
+        try {
+          const highlighted = options.highlight(token.content, lang, '');
+          if (highlighted) return highlighted + '\n';
+        } catch (e) { /* 高亮失败时退回默认围栏 */ }
+      }
+      return '<pre><code>' + escapeHtml(token.content) + '</code></pre>\n';
+    };
+
     // 图片：灯箱支持
     const defaultImage = md.renderer.rules.image || function (tokens, idx, options, env, self) {
       return self.renderToken(tokens, idx, options);

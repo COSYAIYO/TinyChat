@@ -6,7 +6,7 @@
  *   其余资源(图片/字体/图标)仍用 stale-while-revalidate,省流量、加载快。
  * HTML 页面 / API / SSE 流式 / /v1 出口一律直连,绝不缓存(登录态与流式响应不可缓存)。
  */
-const CACHE = 'tinychat-static-2.0.78';
+const CACHE = 'tinychat-static-2.0.109';
 
 self.addEventListener('install', () => self.skipWaiting());
 
@@ -33,8 +33,11 @@ self.addEventListener('fetch', (e) => {
   if (p.indexOf('/api/') === 0 || p.indexOf('/v1/') === 0 || p.slice(-4) === '.php') return;
   // HTML 页面不缓存(登录态、版本更新需要即时生效)
   if (p === '/' || p.slice(-5) === '.html' || p === '/chat' || p === '/admin' || p === '/login' || p.indexOf('/s/') === 0 || p === '/agreement') return;
-  // 脚本与样式:network-first(拿不到网络才回退缓存),保证发版即刻生效
-  if (p.indexOf('/static/js/') === 0 || p.indexOf('/static/css/') === 0) {
+  // 样式和 sw.js 自身直连。旧的 network-first 仍会把请求放进 Cache Storage,
+  // 浏览器刷新时先拿这份缓存,版本号变了也要等下一次才换成新样式。
+  if (p.indexOf('/static/css/') === 0 || p.slice(-4) === '.css' || p.slice(-6) === '/sw.js') return;
+  // 脚本:network-first(拿不到网络才回退缓存)
+  if (p.indexOf('/static/js/') === 0) {
     e.respondWith(
       fetch(req)
         .then((res) => {

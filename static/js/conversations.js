@@ -27,8 +27,10 @@
     },
   };
   const ITEM_HTML = (c, activeCls) => {
-    // 对话图标优先显示该对话所用模型的 logo(未命中/无模型信息时为站点 logo),OC 缺失时回退置顶/普通图标
-    const logo = window.OC && OC.chatLogo && OC.logoImg ? OC.logoImg(OC.chatLogo(c), 'chat-logo') : (c.pinned ? I.pin : I.chat);
+    // 群聊会话用群聊图标标识;普通对话优先显示所用模型的 logo
+    const logo = c.groupId
+      ? (window.OC && OC.icon ? OC.icon('group', 15) : I.chat)
+      : (window.OC && OC.chatLogo && OC.logoImg ? OC.logoImg(OC.chatLogo(c), 'chat-logo') : (c.pinned ? I.pin : I.chat));
     return '<span class="chat-icon">' + logo + '</span>'
       + '<span class="chat-title">' + escapeHtml(c.title || '新对话') + '</span>';
   };

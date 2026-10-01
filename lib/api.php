@@ -425,6 +425,8 @@ function tc_sanitize_chats($chats) {
                             'citations' => isset($v['citations']) && is_array($v['citations']) ? array_slice($v['citations'], 0, 20) : array(),
                             'vote' => isset($v['vote']) ? $v['vote'] : null,
                             'model' => substr((string) (isset($v['model']) ? $v['model'] : ''), 0, 80),
+                            'providerId' => substr((string) (isset($v['providerId']) ? $v['providerId'] : ''), 0, 64),
+                            'providerName' => substr((string) (isset($v['providerName']) ? $v['providerName'] : ''), 0, 80),
                             'error' => !empty($v['error']),
                             'interrupted' => !empty($v['interrupted']),
                             'failNote' => substr((string) (isset($v['failNote']) ? $v['failNote'] : ''), 0, 300),
@@ -447,6 +449,21 @@ function tc_sanitize_chats($chats) {
                         $msg['versionIndex'] = $vi;
                     }
                 }
+                // 群聊消息:发言成员的名牌(emoji + 名字),服务端只留显示所需的最小字段
+                if (isset($m['participant']) && is_array($m['participant'])) {
+                    $stage = isset($m['participant']['stage']) ? (string) $m['participant']['stage'] : '';
+                    if (!in_array($stage, array('clarify', 'offer', 'plan', 'talk', 'summary'), true)) $stage = '';
+                    $msg['participant'] = array(
+                        'name' => substr((string) (isset($m['participant']['name']) ? $m['participant']['name'] : ''), 0, 60),
+                        'emoji' => substr((string) (isset($m['participant']['emoji']) ? $m['participant']['emoji'] : ''), 0, 16),
+                        // 内置头像序号(static/role/N.png);0 表示旧消息,客户端退回 emoji
+                        'avatar' => isset($m['participant']['avatar']) ? max(0, min(99, (int) $m['participant']['avatar'])) : 0,
+                        'stage' => $stage,
+                        'stageLabel' => substr((string) (isset($m['participant']['stageLabel']) ? $m['participant']['stageLabel'] : ''), 0, 40),
+                        'admin' => !empty($m['participant']['admin']),
+                    );
+                    if (!empty($m['contextBaseline'])) $msg['contextBaseline'] = true;
+                }
                 $messages[] = $msg;
             }
         }
@@ -459,6 +476,8 @@ function tc_sanitize_chats($chats) {
             'assistantId' => !empty($c['assistantId']) ? substr((string) $c['assistantId'], 0, 64) : null,
             'assistantName' => !empty($c['assistantName']) ? substr((string) $c['assistantName'], 0, 80) : '',
             'systemPrompt' => !empty($c['systemPrompt']) ? substr((string) $c['systemPrompt'], 0, 20000) : '',
+            // 群聊会话:记录所属群聊 id(群配置本体在用户浏览器本地,不进服务端)
+            'groupId' => !empty($c['groupId']) ? substr((string) $c['groupId'], 0, 64) : null,
             'createdAt' => isset($c['createdAt']) ? (float) $c['createdAt'] : tc_now(),
             'updatedAt' => isset($c['updatedAt']) ? (float) $c['updatedAt'] : tc_now(),
         );

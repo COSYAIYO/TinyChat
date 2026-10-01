@@ -184,7 +184,10 @@ function upsertReasoningPanel(contentEl, msg, streaming) {
     panel = document.createElement('div');
     panel.className = 'reasoning-wrap live-reasoning';
     panel.dataset.role = 'reasoning';
-    contentEl.insertBefore(panel, contentEl.firstChild);
+    // 标签条和群聊名牌留在最上面,思考链紧跟其后(各模型的思维链不同)
+    const anchor = contentEl.querySelector(':scope > .reply-tabs, :scope > .participant-tag');
+    const after = anchor ? (anchor.nextElementSibling && anchor.nextElementSibling.classList.contains('participant-tag') ? anchor.nextElementSibling : anchor) : null;
+    contentEl.insertBefore(panel, after ? after.nextSibling : contentEl.firstChild);
     panel.addEventListener('click', (e) => {
       if (!e.target.closest('.reasoning-header')) return;
       const next = !panel.classList.contains('open');
@@ -434,6 +437,15 @@ function aiAvatarHtml(modelText) {
   }
   return AI_AVATAR_SVG;
 }
+// 群聊成员头像:按成员序号取 static/role 内置图,没有序号时退回 emoji
+function participantAvatarHtml(p) {
+  const n = Number(p && p.avatar) || 0;
+  if (n > 0) {
+    const src = './static/role/' + (((n - 1) % 20) + 1) + '.png';
+    return '<img class="participant-avatar role-photo" src="' + escapeHtml(src) + '" alt="" draggable="false">';
+  }
+  return '<span class="participant-avatar">' + escapeHtml((p && p.emoji) || '🤖') + '</span>';
+}
 function fillLogoAvatar(el) {
   if (!el) return;
   el.classList.add('avatar-logo');
@@ -507,6 +519,7 @@ function syncNow() {
 }
 async function pushChatsToCloud() {
   syncTimer = null;
+  if (state._groupTurnActive) { scheduleCloudSync(); return; } // 群聊回合期间延后推送,回合结束再同步
   try {
     const r = await api('/api/sync/chats', {
       method: 'POST',
@@ -571,14 +584,32 @@ window.addEventListener('beforeunload', () => {
 function chatViewStamp(chat) {
   if (!chat) return '';
   const msgs = chat.messages || [];
-  const last = msgs.length ? msgs[msgs.length - 1] : null;
-  return [
-    chat.id,
-    chat.updatedAt || 0,
-    msgs.length,
-    chat._visibleCount || 0,
-    last ? (last.id || '') + ':' + (last.role || '') + ':' + String(last.content || '').length + ':' + (last._streaming ? 1 : 0) : '',
-  ].join('|');
+  // 必须覆盖「会画到屏幕上」的字段。只看 updatedAt / 最后一条长度时,
+  // 云同步每轮都换一份内容相同的对象,画面被整页重绘,入场动画就表现为时不时闪一下。
+  const body = msgs.map((m) => {
+    if (!m) return '';
+    const versions = Array.isArray(m.versions) ? m.versions : [];
+    const p = m.participant || {};
+    return [
+      m.role || '',
+      String(m.content || '').length,
+      String(m.reasoning || '').length,
+      m.model || '',
+      m.versionIndex || 0,
+      versions.length,
+      versions.map((v) => String((v && v.content) || '').length + '/' + String((v && v.reasoning) || '').length + '/' + (v && v.model || '')).join(','),
+      m.error ? 1 : 0,
+      m.interrupted ? 1 : 0,
+      m._streaming ? 1 : 0,
+      m.vote || '',
+      (m.followUps || []).length,
+      (m.citations || []).length,
+      m.elapsedMs || 0,
+      p.name || '',
+      p.avatar || '',
+    ].join(':');
+  }).join('\n');
+  return [chat.id, msgs.length, chat._visibleCount || 0, body].join('|');
 }
 function applyCloudChats(chats, revision) {
   if (!state.user) return;
@@ -623,6 +654,7 @@ function adoptDemoRevert(data) {
 
 async function pullChatsFromCloud() {
   if (!state.token || !state.user) return;
+  if (state._groupTurnActive) return; // 群聊回合进行中:避免整体替换 state.chats 丢失成员发言
   try {
     const r = await api('/api/sync/chats');
     if (!r.ok) return;
@@ -631,6 +663,9 @@ async function pullChatsFromCloud() {
     const revision = Number(data.revision) || 0;
     const seen = Number(localStorage.getItem('oc_chat_rev_' + state.user.id) || 0);
     if (revision !== seen) {
+      const prevId = state.currentChatId;
+      const prev = (state.chats || []).find((c) => c.id === prevId) || null;
+      const prevStamp = chatViewStamp(prev);
       const merged = mergeChatLists(data.chats || [], state.chats || []);
       state.chats = merged;
       state.chatRevision = revision;
@@ -638,7 +673,8 @@ async function pullChatsFromCloud() {
       localStorage.setItem('oc_chat_rev_' + state.user.id, String(revision));
       renderChatList();
       if (!state.currentChatId && merged.length) state.currentChatId = merged[0].id;
-      renderMessages();
+      const next = (state.chats || []).find((c) => c.id === state.currentChatId) || null;
+      if (state.currentChatId !== prevId || chatViewStamp(next) !== prevStamp) renderMessages();
       return;
     }
     const cloud = data.chats || [];
@@ -856,6 +892,7 @@ function findBlankChat() {
 }
 function newChat(opts) {
   if (state.streaming) { stopStreaming(); }
+  if (window.OCGroup && typeof window.OCGroup.setMode === 'function') window.OCGroup.setMode('simple');
   const existing = findBlankChat();
   if (existing) {
     state.currentChatId = existing.id;
@@ -865,6 +902,7 @@ function newChat(opts) {
     } else {
       ensureDefaultAssistantOnBlank(existing);
     }
+    existing.groupId = '';
     saveChats();
     renderChatList();
     renderMessages();
@@ -883,6 +921,7 @@ function newChat(opts) {
     title: '新对话',
     messages: [],
     pinned: false,
+    groupId: '',
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -1156,6 +1195,11 @@ function snapshotReplyVersion(msg) {
   if (!msg || msg.role !== 'assistant') return null;
   const content = String(msg.content || '');
   if (!content.trim() && !msg.error) return null;
+  const known = findModelItem(msg.providerId, msg.model);
+  if (known) {
+    if (!msg.providerId) msg.providerId = known.providerId;
+    msg.providerName = known.providerName || providerNameOf(known.providerId);
+  }
   return {
     content: content,
     reasoning: msg.reasoning || '',
@@ -1163,6 +1207,8 @@ function snapshotReplyVersion(msg) {
     citations: Array.isArray(msg.citations) ? msg.citations.slice() : [],
     vote: msg.vote || null,
     model: msg.model || '',
+    providerId: msg.providerId || (known ? known.providerId : ''),
+    providerName: msg.providerName || (known ? (known.providerName || providerNameOf(known.providerId)) : ''),
     error: !!msg.error,
     interrupted: !!msg.interrupted,
     failNote: msg.failNote || '',
@@ -1183,6 +1229,8 @@ function applyReplyVersion(msg, snap) {
   msg.vote = snap.vote || null;
   msg._voteSent = msg.vote;
   msg.model = snap.model || msg.model;
+  msg.providerId = snap.providerId || msg.providerId;
+  msg.providerName = snap.providerName || msg.providerName || '';
   msg.error = !!snap.error;
   msg.interrupted = !!snap.interrupted;
   msg.failNote = snap.failNote != null ? snap.failNote : (msg.failNote || '');
@@ -1220,11 +1268,13 @@ function pushReplyVersion(msg) {
   const versions = ensureReplyVersions(msg);
   versions.push({
     content: '',
-    reasoning: '',
+    reasoning: '', // 每个模型各自一份思维链,切换标签时随版本换回
     followUps: [],
     citations: [],
     vote: null,
     model: state.currentModel || '',
+    providerId: state.currentProviderId || '',
+    providerName: providerNameOf(state.currentProviderId),
     error: false,
     interrupted: false,
     failNote: '',
@@ -1415,44 +1465,7 @@ function renderElapsed(container, msg) {
     cost.title = '生成耗时';
     mount.appendChild(cost);
   }
-  if (showPager) {
-    const idx = Math.min(Math.max(0, msg.versionIndex || 0), versions.length - 1);
-    const pager = document.createElement('div');
-    pager.className = 'reply-versions';
-    pager.setAttribute('role', 'group');
-    pager.setAttribute('aria-label', '切换回答版本');
-    const prev = document.createElement('button');
-    prev.type = 'button';
-    prev.className = 'reply-ver-btn';
-    prev.textContent = '<';
-    prev.disabled = idx <= 0;
-    prev.setAttribute('aria-label', '上一版回答');
-    const label = document.createElement('span');
-    label.className = 'reply-ver-label';
-    label.textContent = (idx + 1) + '/' + versions.length;
-    const next = document.createElement('button');
-    next.type = 'button';
-    next.className = 'reply-ver-btn';
-    next.textContent = '>';
-    next.disabled = idx >= versions.length - 1;
-    next.setAttribute('aria-label', '下一版回答');
-    prev.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const chat = currentChat();
-      if (chat) switchReplyVersion(msg, chat, -1);
-    });
-    next.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const chat = currentChat();
-      if (chat) switchReplyVersion(msg, chat, 1);
-    });
-    pager.appendChild(prev);
-    pager.appendChild(label);
-    pager.appendChild(next);
-    mount.appendChild(pager);
-  }
+  // 多版本切换已由消息顶部的模型标签页(reply-tabs)承担
 
   const bar = container.querySelector('.msg-actions');
   if (bar) bar.appendChild(mount);
@@ -1483,7 +1496,11 @@ function buildMsgNode(m, chat, idx) {
   const div = document.createElement('div');
   div.className = 'msg ' + role + (m.error ? ' msg-errored' : '');
   if (typeof idx === 'number') div.dataset.idx = String(idx);
-  const avatar = role === 'user' ? USER_AVATAR_SVG : aiAvatarHtml((m && m.model) || state.currentModel || '');
+  const avatar = role === 'user'
+    ? USER_AVATAR_SVG
+    : (m && m.participant
+      ? participantAvatarHtml(m.participant)
+      : aiAvatarHtml((m && m.model) || state.currentModel || ''));
   div.innerHTML = '<div class="msg-avatar">' + avatar + '</div>';
   const contentDiv = document.createElement('div');
   contentDiv.className = 'msg-content';
@@ -1534,6 +1551,14 @@ function buildMsgNode(m, chat, idx) {
         }
       }
     }
+    // 多版本回答:浏览器标签条置顶,并且在思考链之上
+    // (不同模型各有自己的思维链,切换模型时思考内容跟着变)
+    // 生成中也挂着:新开的标签先出现,再在里面回答,和浏览器新建标签一样
+    if (Array.isArray(m.versions) && m.versions.length > 1) {
+      contentDiv.appendChild(buildReplyTabs(m, chat));
+    }
+    // 群聊成员名牌:角色、阶段、模型、时间
+    if (m.participant) contentDiv.appendChild(buildParticipantTag(m));
     // 新渲染管线：Markdown + 公式 + 代码 + Mermaid + 组件
     if (m.reasoning) upsertReasoningPanel(contentDiv, m, !!m._streaming);
     if (m._streaming) {
@@ -1555,6 +1580,7 @@ function buildMsgNode(m, chat, idx) {
       const root = document.createElement('div');
       contentDiv.appendChild(root);
       window.OCRenderer.renderInto(root, m.content || '');
+      highlightGroupMentions(root, chat);
       // HTML/SVG 代码块附加「在 Artifacts 中打开」按钮
       if (window.OCMultimodal && window.OCMultimodal.enhanceArtifactButtons) {
         window.OCMultimodal.enhanceArtifactButtons(root);
@@ -1576,6 +1602,7 @@ function buildMsgNode(m, chat, idx) {
   if (role === 'assistant' && !m._streaming && (m.content || m.reasoning || replyWasInterrupted(m))) {
     window.OCMessages.attachActions(div, m, {
       onRegenerate: (mm) => regenerateMessage(mm, chat),
+      onAt: (mm, btn) => openAtAnswerModal(mm, chat, btn),
       onShare: (mm) => shareMessage(mm),
       onVote: submitMessageVote,
       onQuickAction: quickAction,
@@ -1698,6 +1725,8 @@ async function loadProviders() {
   await loadModels({ prefer: pinnedModelId() });
   await applyPinnedModel();
   renderProviderLabel();
+  // 对话在供应商之前就画过一次,标签当时对不上「供应商@模型」,这里补画
+  if (!state.streaming) renderMessages();
 }
 async function loadModels(opts) {
   opts = opts || {};
@@ -1771,10 +1800,29 @@ function healthIconName(stateName) {
   if (stateName === 'bad') return 'healthBad';
   return 'healthIdle';   // idle 与 warn 共用省略号图标(warn 由文字与颜色区分)
 }
+function providerNameOf(providerId) {
+  const p = (state.providers || []).find((x) => x.id === providerId);
+  return (p && p.name) || '';
+}
 function modelDisplayName(model) {
   const provider = state.providers.find((x) => x.id === state.currentProviderId);
   const name = model && (model.name || model.id);
   return provider && name ? provider.name + '@' + name : (name || '');
+}
+// 按「供应商 + 模型」在模型切换列表里找同一项。
+// 旧回答可能只存了模型 id、没有供应商,精确对不上时按模型 id 回退,
+// 这样标签仍能显示 logo 和「供应商@模型」,和侧栏模型切换列表一致。
+function findModelItem(providerId, modelId) {
+  const id = String(modelId || '').trim();
+  if (!id) return null;
+  const flat = [];
+  availableModelItems().forEach((g) => (g.items || []).forEach((it) => flat.push(it)));
+  const pid = String(providerId || '');
+  if (pid) {
+    const exact = flat.find((it) => it.providerId === pid && it.modelId === id);
+    if (exact) return exact;
+  }
+  return flat.find((it) => it.modelId === id) || null;
 }
 function renderModelPicker() {
   const nameEl = $('model-name');
@@ -1866,7 +1914,7 @@ function availableModelItems() {
         : '';
       const item = {
         value: provider.id + '\n' + id, providerId: provider.id, modelId: id,
-        label: provider.name + '@' + name, search: provider.name + ' ' + id + ' ' + name,
+        label: provider.name + '@' + name, providerName: provider.name || '', search: provider.name + ' ' + id + ' ' + name,
         health: health.state, healthTitle: health.title, icon: logo, isImage, isVideo,
       };
       (isVideo ? video : (isImage ? image : chat)).push(item);
@@ -1941,7 +1989,10 @@ function flattenApiContent(content) {
   }).filter(Boolean).join('\n');
 }
 function chatSystemPrompt(chat) {
-  return String((chat && chat.systemPrompt) || '').trim();
+  const base = String((chat && chat.systemPrompt) || '').trim();
+  // 群聊模式下,由发送管线临时挂载当前发言成员的角色预设(state._pendingRolePrompt)
+  const role = String(state._pendingRolePrompt || '').trim();
+  return role ? (base ? base + '\n\n' + role : role) : base;
 }
 function contextLimitNow() {
   const site = state.chatLimits || {};
@@ -1968,7 +2019,19 @@ function currentModelSpec() {
   return (state.models || []).find((x) => x && x.id === state.currentModel) || null;
 }
 function outgoingMessages(chatMessages, chat) {
-  const msgs = (chatMessages || []).filter((m) => m && m.role !== 'system');
+  let source = chatMessages || [];
+  let baselineAt = -1;
+  for (let i = source.length - 1; i >= 0; i--) {
+    if (source[i] && source[i].contextBaseline) { baselineAt = i; break; }
+  }
+  if (baselineAt > 0) {
+    let priorUser = null;
+    for (let i = baselineAt - 1; i >= 0; i--) {
+      if (source[i] && source[i].role === 'user') { priorUser = source[i]; break; }
+    }
+    source = (priorUser ? [priorUser] : []).concat(source.slice(baselineAt));
+  }
+  const msgs = source.filter((m) => m && m.role !== 'system');
   const limit = contextLimitNow();
   let kept = msgs.length > limit ? msgs.slice(-limit) : msgs;
   // 模型配置了最大上下文时,再做一轮 token 预算裁剪:输入 + 预留输出不超过窗口
@@ -2326,6 +2389,19 @@ async function sendMessage() {
     return;
   }
 
+  // 群聊模式:交给群聊管线(多成员按对话模式顺序发言),不走单模型/生图/视频意图
+  if (window.OCGroup && window.OCGroup.isGroupMode()) {
+    input.value = '';
+    autosizeInput();
+    state.pendingAttachments = [];
+    renderAttachments();
+    updateSendBtn();
+    await window.OCGroup.sendGroupTurn(text, attachments);
+    await refreshMe();
+    refreshModelHealth();
+    return;
+  }
+
   // 生图模型:纯文本=文生图,带图=图生图,都走生图接口。
   // 之前只处理「带图」的情况,纯文本会被当成普通对话发出去:后端虽然会自动改走生图接口,
   // 但返回的是 {images:[...]} 结构,对话渲染按 choices 取文本取不到,于是表现为「不出图」。
@@ -2507,7 +2583,10 @@ async function streamRequest(format, body, chat, assistantMsg) {
     let i = 0;
     phaseTimer = setInterval(() => {
       i = (i + 1) % phases.length;
-      const label = document.querySelector('#messages .msg.assistant:last-child .phase-text');
+      const focusSel = typeof state._streamFocusIdx === 'number'
+        ? '#messages .msg.assistant[data-idx="' + state._streamFocusIdx + '"] .phase-text'
+        : '#messages .msg.assistant:last-child .phase-text';
+      const label = document.querySelector(focusSel);
       if (label) label.textContent = phases[i];
     }, 2400);
   };
@@ -2560,7 +2639,6 @@ async function streamRequest(format, body, chat, assistantMsg) {
         buffer = buffer.slice(idx + 2);
         handleSseChunk(chunk, format, assistantMsg);
         if (assistantMsg.taskId) assistantMsg.taskSeq += 1;
-        chat.updatedAt = Date.now();
         scheduleStreamSave();
         updateStreamingText(assistantMsg);
       }
@@ -2587,8 +2665,8 @@ async function streamRequest(format, body, chat, assistantMsg) {
     // 完成后仅重绘最后一条 AI 消息（走 Markdown/公式/code 管线），避免全量重绘跳动
     reRenderLastAssistant(assistantMsg);
     initStreamingState();
-    // 异步生成 AI 跟进建议（受偏好开关控制,不阻塞主回复）
-    if (followUpsEnabled() && assistantMsg.content && !assistantMsg.error) {
+    // 异步生成 AI 跟进建议（受偏好开关控制,不阻塞主回复;群聊成员发言不生成,避免逐条额外计费与重绘）
+    if (followUpsEnabled() && !assistantMsg.participant && assistantMsg.content && !assistantMsg.error) {
       aiFollowUps(assistantMsg.content).then((ups) => {
         if (ups && ups.length && assistantMsg.followUps !== ups) {
           assistantMsg.followUps = ups;
@@ -2609,14 +2687,24 @@ function reRenderLastAssistant(assistantMsg) {
   const last = document.querySelector('#messages .msg.assistant[data-idx="' + idx + '"]');
   if (!last) return;
   const _av = last.querySelector('.msg-avatar');
-  if (_av) _av.innerHTML = aiAvatarHtml(assistantMsg.model || state.currentModel || '');
+  if (_av) {
+    _av.innerHTML = assistantMsg.participant
+      ? participantAvatarHtml(assistantMsg.participant)
+      : aiAvatarHtml(assistantMsg.model || state.currentModel || '');
+  }
   const contentEl = last.querySelector('.msg-content');
   if (!contentEl) return;
   contentEl.innerHTML = '';
+  // 标签条在思考链之上:先挂标签,思考面板插到标签后面
+  if (Array.isArray(assistantMsg.versions) && assistantMsg.versions.length > 1) {
+    contentEl.appendChild(buildReplyTabs(assistantMsg, chat));
+  }
+  if (assistantMsg.participant) contentEl.appendChild(buildParticipantTag(assistantMsg));
   upsertReasoningPanel(contentEl, assistantMsg, false);
   const root = document.createElement('div');
   contentEl.appendChild(root);
   window.OCRenderer.renderInto(root, assistantMsg.content || '');
+  highlightGroupMentions(root, chat);
   if (window.OCMultimodal && window.OCMultimodal.enhanceArtifactButtons) {
     window.OCMultimodal.enhanceArtifactButtons(root);
   }
@@ -2658,8 +2746,15 @@ function cancelStreamPaint() {
 
 function paintStreamingText(assistantMsg) {
   if (!assistantMsg || !assistantMsg._streaming) return;
-  const msgs = document.querySelectorAll('#messages .msg.assistant:not(.msg-errored)');
-  const last = msgs[msgs.length - 1];
+  // @ 重答旧消息时定位到目标节点;常规流式取最后一条
+  let last = null;
+  if (typeof state._streamFocusIdx === 'number') {
+    last = document.querySelector('#messages .msg.assistant[data-idx="' + state._streamFocusIdx + '"]');
+  }
+  if (!last) {
+    const msgs = document.querySelectorAll('#messages .msg.assistant:not(.msg-errored)');
+    last = msgs[msgs.length - 1];
+  }
   if (!last) return;
   const contentEl = last.querySelector('.msg-content');
   if (!contentEl) return;
@@ -2679,6 +2774,7 @@ function paintStreamingText(assistantMsg) {
   }
   if (window.OCRenderer && window.OCRenderer.renderStreamingInto) {
     window.OCRenderer.renderStreamingInto(root, assistantMsg.content || '');
+    highlightGroupMentions(root, currentChat());
   } else {
     root.classList.add('stream-inline');
     root.innerHTML = escapeHtml(assistantMsg.content || '') + '<span class="stream-cursor"></span>';
@@ -3005,12 +3101,20 @@ async function requestAssistantReply(chat, userMsg, extra) {
     toast('剩余次数不足' + (spent ? '。' + spent : '') + '，请联系管理员', true);
     return;
   }
-  // 若消息列表尾部无 assistant 占位则补一个
-  let assistantMsg = chat.messages[chat.messages.length - 1];
-  if (!assistantMsg || assistantMsg.role !== 'assistant') {
-    assistantMsg = { role: 'assistant', content: '' };
-    chat.messages.push(assistantMsg);
+  // @ 重答等场景:目标消息与历史截断点由 extra 指定;常规发送沿用「尾部占位」逻辑
+  const upToIdx = (extra && Number.isInteger(extra.upToIdx))
+    ? Math.max(1, Math.min(extra.upToIdx, chat.messages.length))
+    : chat.messages.length;
+  let assistantMsg = (extra && extra.target) || null;
+  if (!assistantMsg) {
+    assistantMsg = upToIdx > 0 ? chat.messages[upToIdx - 1] : null;
+    if (!assistantMsg || assistantMsg.role !== 'assistant') {
+      assistantMsg = { role: 'assistant', content: '' };
+      chat.messages.splice(upToIdx, 0, assistantMsg);
+    }
   }
+  // 流式定位:重答的是旧消息时,流式渲染要落在该消息节点而不是列表末尾
+  state._streamFocusIdx = chat.messages.indexOf(assistantMsg);
   // 记录本次回答所用的模型/供应商:消息头像按此匹配厂商 logo
   assistantMsg.model = state.currentModel;
   assistantMsg.providerId = state.currentProviderId;
@@ -3021,7 +3125,7 @@ async function requestAssistantReply(chat, userMsg, extra) {
   const continuing = !!(extra && extra.continueFrom === assistantMsg);
   const source = continuing
     ? continueMessages(chat, assistantMsg)
-    : chat.messages.filter((m) => {
+    : chat.messages.slice(0, upToIdx).filter((m) => {
       if (!m || m.error || m.content === undefined) return false;
       if (m === assistantMsg && !String(m.content || '').trim()) return false;
       return true;
@@ -3058,7 +3162,7 @@ async function requestAssistantReply(chat, userMsg, extra) {
       if (think) assistantMsg.reasoning = think;
       absorbThinkTags(assistantMsg, true);
       if (data && data.usage) takeUsage(assistantMsg, data.usage);
-      assistantMsg.followUps = await aiFollowUps(assistantMsg.content);
+      if (!assistantMsg.participant) assistantMsg.followUps = await aiFollowUps(assistantMsg.content);
       refreshMe();
     }
   } catch (e) {
@@ -3085,6 +3189,7 @@ async function requestAssistantReply(chat, userMsg, extra) {
     }
     saveChats();
     initStreamingState();
+    state._streamFocusIdx = null;
   }
   await refreshMe();
   refreshModelHealth();
@@ -6795,7 +6900,7 @@ function toggleSidebar() {
   // 移动端点击会话或选中后自动收起
   document.addEventListener('click', (e) => {
     if (window.innerWidth > 768) return;
-    if (e.target.closest('.chat-item') || e.target.closest('.model-picker')) closeMobile();
+    if (e.target.closest('.chat-item') || e.target.closest('.model-picker') || e.target.closest('.chat-mode-strip')) closeMobile();
   });
   // 窗口放大回桌面时重置
   window.addEventListener('resize', () => { if (window.innerWidth > 768) closeMobile(); });
@@ -7282,7 +7387,7 @@ function openAuthModal(message) {
       }
     });
     const goReg = $('am-go-register');
-    if (goReg) goReg.addEventListener('click', (e) => { e.preventDefault(); location.href = apiUrl('/login'); });
+    if (goReg) goReg.addEventListener('click', (e) => { e.preventDefault(); location.href = apiUrl('/login?register=1'); });
   }
   if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(modal);
   else modal.classList.remove('hidden');
@@ -7515,3 +7620,317 @@ function enterReadonlyHome() {
     openAuthModal('登录状态已失效，请重新登录');
   }
 })();
+// ============ @ 其他模型重答(多版本标签页) ============
+
+// 切换到指定版本(绝对下标;供消息顶部的模型标签页使用)
+function switchReplyVersionTo(msg, chat, target) {
+  if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+  const versions = ensureReplyVersions(msg);
+  if (!Number.isInteger(target) || target < 0 || target >= versions.length || target === msg.versionIndex) return;
+  persistCurrentReplyVersion(msg);
+  msg.versionIndex = target;
+  applyReplyVersion(msg, versions[target]);
+  saveChats();
+  renderMessages();
+}
+
+// 一个回答版本在标签上的展示:和侧栏模型切换同一套 logo 与「供应商@模型」
+function replyTabMeta(v, i) {
+  const modelId = String((v && v.model) || '').trim();
+  const hit = findModelItem(v && v.providerId, modelId);
+  // 供应商名写在版本上:刷新时对话先画、供应商后到,列表还没加载也能显示「供应商@模型」
+  const providerName = (hit && hit.providerName)
+    || (v && v.providerName)
+    || providerNameOf((hit && hit.providerId) || (v && v.providerId))
+    || '';
+  const label = (hit && hit.label)
+    || (providerName && modelId ? (providerName + '@' + modelId) : '')
+    || modelId
+    || ('回答 ' + (i + 1));
+  const icon = hit && hit.icon
+    ? hit.icon
+    : ((window.OC && OC.modelIcon && (modelId + ' ' + providerName))
+      ? OC.modelIcon(modelId + ' ' + providerName, providerName, false, false)
+      : '');
+  return { label, icon };
+}
+function replyTabButton(meta, active) {
+  const tab = document.createElement('button');
+  tab.type = 'button';
+  tab.className = 'reply-tab' + (active ? ' active' : '');
+  tab.title = '切换到 ' + meta.label + ' 的回答';
+  tab.setAttribute('role', 'tab');
+  tab.setAttribute('aria-selected', active ? 'true' : 'false');
+  tab.innerHTML = (meta.icon && window.OC && OC.logoImg ? OC.logoImg(meta.icon, 'reply-tab-logo') : '')
+    + '<span class="reply-tab-label">' + escapeHtml(meta.label) + '</span>';
+  return tab;
+}
+// 放不下的靠左标签收进这个按钮,点开是一份带 logo 的回答列表(和浏览器标签溢出一样)
+function openReplyTabList(anchor, versions, current, msg, chat) {
+  const items = versions.map((v, i) => {
+    const meta = replyTabMeta(v, i);
+    return { value: String(i), label: meta.label, icon: meta.icon };
+  });
+  OC.openSelect(anchor, items, {
+    menuClass: 'oc-model-menu reply-tab-menu',
+    fitWidth: true,
+    searchable: items.length > 8,
+    searchPlaceholder: '搜索回答…',
+    selected: String(current),
+    onSelect: (val) => switchReplyVersionTo(msg, chat, Number(val)),
+  });
+}
+// 消息顶部的模型标签页:浏览器标签风格,显示供应商 logo 与 供应商@模型,点击切换。
+// 一条里放不下时,左侧超出的收成展开按钮,点开查看全部回答。
+function buildReplyTabs(msg, chat) {
+  const versions = ensureReplyVersions(msg);
+  const strip = document.createElement('div');
+  strip.className = 'reply-tabs';
+  strip.setAttribute('role', 'tablist');
+  strip.setAttribute('aria-label', '不同模型的回答');
+  const idx = Math.min(Math.max(0, msg.versionIndex || 0), versions.length - 1);
+  const metas = versions.map((v, i) => replyTabMeta(v, i));
+
+  const more = document.createElement('button');
+  more.type = 'button';
+  more.className = 'reply-tab-more';
+  more.hidden = true;
+  more.title = '查看全部回答';
+  more.setAttribute('aria-label', '查看全部回答');
+  more.innerHTML = '<span class="reply-tab-more-chev" aria-hidden="true"></span><span class="reply-tab-more-count"></span>';
+  more.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openReplyTabList(more, versions, idx, msg, chat);
+  });
+  strip.appendChild(more);
+
+  const tabs = metas.map((meta, i) => {
+    const tab = replyTabButton(meta, i === idx);
+    tab.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      switchReplyVersionTo(msg, chat, i);
+    });
+    strip.appendChild(tab);
+    return tab;
+  });
+
+  // 从左往右藏,直到当前标签和剩下的标签都能排进这一行
+  const fit = () => {
+    tabs.forEach((tab) => { tab.hidden = false; });
+    more.hidden = true;
+    if (strip.scrollWidth <= strip.clientWidth + 1) return;
+    more.hidden = false;
+    let hidden = 0;
+    for (let i = 0; i < tabs.length; i++) {
+      if (strip.scrollWidth <= strip.clientWidth + 1) break;
+      if (i === idx) continue;
+      tabs[i].hidden = true;
+      hidden++;
+    }
+    // 当前标签自己就超宽时,它留在条上(文字省略),其余全部进列表
+    if (strip.scrollWidth > strip.clientWidth + 1) {
+      tabs.forEach((tab, i) => { if (i !== idx) tab.hidden = true; });
+    }
+    hidden = tabs.filter((tab) => tab.hidden).length;
+    const count = more.querySelector('.reply-tab-more-count');
+    if (count) count.textContent = hidden > 0 ? String(hidden) : '';
+    more.hidden = hidden === 0;
+    more.title = hidden > 0 ? ('还有 ' + hidden + ' 个回答') : '查看全部回答';
+  };
+  if (typeof ResizeObserver === 'function') {
+    const ro = new ResizeObserver(() => fit());
+    ro.observe(strip);
+  }
+  requestAnimationFrame(fit);
+  return strip;
+}
+
+// 打开模型选择菜单:选中后以该模型重答当前问题
+function openAtAnswerModal(msg, chat, anchorBtn) {
+  if (!chat) chat = currentChat();
+  if (!msg || chat.messages.indexOf(msg) < 0) return;
+  const items = availableModelItems();
+  const total = items.reduce((n, g) => n + g.items.length, 0);
+  if (!total) { toast('暂无可用模型', true); return; }
+  OC.openSelect(anchorBtn, items, {
+    menuClass: 'oc-model-menu',
+    fitWidth: true,
+    searchable: total > 8,
+    searchPlaceholder: '搜索供应商或模型…',
+    onSelect: (val) => {
+      const parts = String(val).split('\n');
+      const providerId = parts[0];
+      const modelId = parts.slice(1).join('\n');
+      reanswerWithModel(msg, chat, providerId, modelId);
+    },
+  });
+}
+
+// 以指定模型重答:历史仅取该消息之前的上下文,新回答成为该消息的一个可切换版本;
+// 后续对话以上方当前选中的回答作为上文(版本内容会同步回消息本身)
+async function reanswerWithModel(msg, chat, providerId, modelId) {
+  if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+  if (!chat) chat = currentChat();
+  if (!msg || !chat) return;
+  const n = chat.messages.indexOf(msg);
+  if (n < 0) { toast('找不到原回答', true); return; }
+  if (!chat.messages.slice(0, n).some((m) => m && m.role === 'user')) { toast('找不到原始问题', true); return; }
+  if (!providerId || !modelId) return;
+  // 同一个模型也可以再答一次:每次 @ 都新开一个标签,再在这个标签里生成
+  const savedProv = state.currentProviderId;
+  const savedModel = state.currentModel;
+  state.currentProviderId = providerId;
+  state.currentModel = modelId;
+  persistCurrentReplyVersion(msg);
+  pushReplyVersion(msg);
+  msg.error = false;
+  msg.interrupted = false;
+  msg.failNote = '';
+  msg._startTime = Date.now();
+  saveChats();
+  renderMessages();
+  try {
+    await requestAssistantReply(chat, { role: 'user', content: '' }, { target: msg, upToIdx: n + 1 });
+  } finally {
+    state.currentProviderId = savedProv;
+    state.currentModel = savedModel;
+    renderProviderLabel();
+    renderModelPicker();
+  }
+}
+
+function groupMentionNames(chat) {
+  if (!chat || !chat.groupId || !window.OCGroup || typeof window.OCGroup.groups !== 'function') return [];
+  const group = window.OCGroup.groups().find((g) => g && g.id === chat.groupId);
+  if (!group) return [];
+  const names = [];
+  (group.participants || []).forEach((p) => {
+    const name = String((p && p.name) || '').trim();
+    if (name && names.indexOf(name) < 0) names.push(name);
+  });
+  names.sort((a, b) => b.length - a.length);
+  return names;
+}
+function highlightGroupMentions(root, chat) {
+  if (!root) return;
+  const names = groupMentionNames(chat);
+  if (!names.length) return;
+  const pattern = new RegExp('@(' + names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'g');
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent || parent.closest('pre, code, a, .group-mention, .katex')) return NodeFilter.FILTER_REJECT;
+      return node.nodeValue && node.nodeValue.indexOf('@') >= 0 ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const hits = [];
+  while (walker.nextNode()) hits.push(walker.currentNode);
+  hits.forEach((node) => {
+    const text = node.nodeValue;
+    pattern.lastIndex = 0;
+    if (!pattern.test(text)) return;
+    pattern.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    let m;
+    while ((m = pattern.exec(text))) {
+      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+      const mark = document.createElement('span');
+      mark.className = 'group-mention';
+      mark.textContent = m[0];
+      frag.appendChild(mark);
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    if (node.parentNode) node.parentNode.replaceChild(frag, node);
+  });
+}
+function buildParticipantTag(m) {
+  const p = (m && m.participant) || {};
+  const tag = document.createElement('div');
+  tag.className = 'participant-tag' + (p.admin ? ' is-admin' : '');
+  const name = document.createElement('span');
+  name.className = 'participant-name' + (p.admin ? ' is-admin' : '');
+  name.textContent = p.name || '成员';
+  tag.appendChild(name);
+  if (p.stageLabel) {
+    const stage = document.createElement('span');
+    stage.className = 'participant-stage' + (p.stage ? ' is-' + p.stage : '');
+    stage.textContent = p.stageLabel;
+    tag.appendChild(stage);
+  }
+  if (m.model) {
+    const model = document.createElement('span');
+    model.className = 'participant-model';
+    model.textContent = m.model;
+    tag.appendChild(model);
+  }
+  const clock = formatMsgClock(m.createdAt);
+  if (clock) {
+    const time = document.createElement('span');
+    time.className = 'participant-time';
+    time.textContent = clock;
+    tag.appendChild(time);
+  }
+  if (p.stage === 'talk' && !m._streaming && m.content) {
+    const pin = document.createElement('button');
+    pin.type = 'button';
+    pin.className = 'participant-pin' + (m.contextBaseline ? ' active' : '');
+    pin.textContent = m.contextBaseline ? '本轮基准' : '设为基准';
+    pin.title = '之后的提问优先参考这条回答';
+    pin.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const chat = currentChat();
+      if (!chat || !Array.isArray(chat.messages)) return;
+      const on = !m.contextBaseline;
+      chat.messages.forEach((x) => { if (x) x.contextBaseline = false; });
+      m.contextBaseline = on;
+      saveChats();
+      renderMessages();
+    });
+    tag.appendChild(pin);
+  }
+  return tag;
+}
+
+// ============ 群聊:成员发言管线 ============
+// 由 OCGroup 驱动;与单聊共用流式管线,角色预设经 state._pendingRolePrompt 注入 system。
+async function requestGroupReply(chat, participant, stageInfo) {
+  if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+  if (!state.user || (!quotaIsUnlimited(state.user.quota) && state.user.quota <= 0)) {
+    toast('剩余次数不足，请联系管理员', true);
+    return;
+  }
+  const stage = stageInfo || {};
+  const placeholder = {
+    role: 'assistant',
+    content: '',
+    createdAt: Date.now(),
+    participant: {
+      name: participant.name,
+      emoji: participant.emoji || '',
+      avatar: Number(participant.avatar) || 0,
+      admin: !!participant.admin,
+      stage: stage.stage || '',
+      stageLabel: stage.stageLabel || '',
+    },
+  };
+  chat.messages.push(placeholder);
+  saveChats();
+  renderMessages();
+  const savedProv = state.currentProviderId;
+  const savedModel = state.currentModel;
+  state.currentProviderId = participant.providerId;
+  state.currentModel = participant.model;
+  state._pendingRolePrompt = participant._rolePrompt || '';
+  try {
+    await requestAssistantReply(chat, { role: 'user', content: '' }, { target: placeholder, upToIdx: chat.messages.length });
+  } finally {
+    state.currentProviderId = savedProv;
+    state.currentModel = savedModel;
+    state._pendingRolePrompt = null;
+  }
+}

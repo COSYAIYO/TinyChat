@@ -46,6 +46,7 @@
       + '<button class="msg-action" data-act="like" data-tip="点赞" data-vote="up">' + ic('like', 14) + '</button>'
       + '<button class="msg-action" data-act="dislike" data-tip="点踩" data-vote="down">' + ic('dislike', 14) + '</button>'
       + '<button class="msg-action" data-act="regenerate" data-tip="重新生成">' + ic('refresh', 14) + '</button>'
+      + '<button class="msg-action" data-act="at" data-tip="@ 其他模型重新回答" aria-label="@ 其他模型重新回答"><span class="at-glyph">@</span></button>'
       + '<button class="msg-action" data-act="share" data-tip="分享对话">' + ic('share', 14) + '</button>'
       + '<button class="msg-action" data-act="edit" data-tip="编辑此消息">' + ic('edit', 14) + '</button>'
       + '<button class="msg-action" data-act="branch" data-tip="从此处另开对话">' + ic('branch', 14) + '</button>'
@@ -61,6 +62,9 @@
     const isAssistant = msgEl.classList.contains('assistant');
     const isUser = msgEl.classList.contains('user');
     bar.querySelector('[data-act="regenerate"]').style.display = isAssistant ? '' : 'none';
+    const atBtn = bar.querySelector('[data-act="at"]');
+    // @ 其他模型重答仅用于简单对话;群聊成员已绑定模型,不显示
+    if (atBtn) atBtn.style.display = isAssistant && hooks.onAt && !msg.participant ? '' : 'none';
     bar.querySelector('[data-act="share"]').style.display = isAssistant ? '' : 'none';
     bar.querySelector('[data-act="edit"]').style.display = isUser ? '' : 'none';
     bar.querySelector('[data-act="dislike"]').style.display = isAssistant ? '' : 'none';
@@ -113,6 +117,8 @@
         if (hooks.onVote) hooks.onVote(msg);
       } else if (act === 'regenerate') {
         if (hooks.onRegenerate) hooks.onRegenerate(msg);
+      } else if (act === 'at') {
+        if (hooks.onAt) hooks.onAt(msg, btn);
       } else if (act === 'share') {
         if (hooks.onShare) hooks.onShare(msg);
       } else if (act === 'edit') {

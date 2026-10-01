@@ -25,19 +25,20 @@
 </script>
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
-<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.78">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.78" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.78">
-<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.78">
-<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.78">
-<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.78">
-<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.78">
-<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.78">
-<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.78">
-<script src="./static/js/theme-boot.min.js?v=2.0.78"></script>
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.109">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.109" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.109">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.109">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.109">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.109">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.109">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.109">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.109">
+<link rel="stylesheet" href="./static/css/groupchat.min.css?v=2.0.109">
+<script src="./static/js/theme-boot.min.js?v=2.0.109"></script>
 <!-- 性能门控:按后台设置决定是否加载渲染依赖(markdown-it 始终加载;KaTeX/highlight 可关)。
      必须在渲染依赖之前同步执行;具体的 <script> 标签由 perf.js 用 document.write 注入。 -->
-<script src="./static/js/perf.min.js?v=2.0.78"></script>
+<script src="./static/js/perf.min.js?v=2.0.109"></script>
 </head>
 <body>
   <!-- 移动端侧边栏遮罩 -->
@@ -82,6 +83,11 @@
         <span class="provider-chip hidden" id="provider-chip"></span>
         <span class="chevron"><svg class="oc-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
       </div>
+      <button type="button" class="assistant-lib-btn chat-mode-row" id="chat-mode-row" title="简单对话 / 群聊" aria-label="对话模式">
+        <span class="model-icon" id="chat-mode-icon"></span>
+        <span class="model-name" id="chat-mode-label">简单对话</span>
+        <span class="switch chat-mode-switch"><input type="checkbox" id="chat-mode-toggle"><span class="slider"></span></span>
+      </button>
     </div>
     <nav class="chat-list" id="chat-list" aria-label="对话列表"></nav>
     <div class="sidebar-footer">
@@ -172,7 +178,8 @@
         </div>
         <div class="empty-hint" id="empty-hint"></div>
       </div>
-      <div class="messages" id="messages" aria-live="polite"></div>
+      <div id="group-phase" class="group-phase hidden" aria-live="polite"></div>
+<div class="messages" id="messages" aria-live="polite"></div>
       <button class="scroll-bottom-btn" id="scroll-bottom-btn" title="回到底部" aria-label="回到底部">
         <svg class="oc-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M12 5v14M7.5 14.5L12 19l4.5-4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
@@ -838,14 +845,16 @@
 
   <!-- 游客登录/注册弹窗:未登录访客点击输入框或额度用尽时弹出 -->
   <div class="modal-mask hidden" id="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
-    <div class="modal modal-sm">
-      <div class="modal-header">
-        <h3 id="auth-modal-title">登录后继续对话</h3>
-        <button class="icon-btn" id="auth-modal-close" type="button" aria-label="关闭">
-          <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke-linecap="round"/></svg>
-        </button>
-      </div>
+    <div class="modal modal-sm auth-modal">
+      <button class="icon-btn auth-modal-close" id="auth-modal-close" type="button" aria-label="关闭">
+        <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke-linecap="round"/></svg>
+      </button>
       <div class="modal-body">
+        <div class="auth-logo">
+          <img src="./logo.svg" class="brand-logo brand-logo-light" alt="TinyChat">
+          <img src="./logo-dark.svg" class="brand-logo brand-logo-dark" alt="">
+          <p class="muted" id="auth-modal-title">登录后继续对话</p>
+        </div>
         <div class="auth-error hidden" id="auth-modal-error" role="alert"></div>
         <form id="auth-modal-login" autocomplete="on">
           <label class="field"><span>用户名</span><input type="text" id="am-name" autocomplete="username"></label>
@@ -863,19 +872,20 @@
     <button class="btn small primary" id="guest-bar-login" type="button">登录 / 注册</button>
   </div>
 
-  <script defer src="./static/js/config.min.js?v=2.0.78"></script>
-  <script defer src="./static/js/icons.min.js?v=2.0.78"></script>
-  <script defer src="./static/js/logos.min.js?v=2.0.78"></script>
-  <script defer src="./static/js/components.min.js?v=2.0.78"></script>
-  <script defer src="./static/js/ui.min.js?v=2.0.78"></script>
-  <script defer src="./static/js/assistants.min.js?v=2.0.78"></script>
-  <script defer src="./static/js/conversations.min.js?v=2.0.78"></script>
-  <script defer src="./static/js/renderer.min.js?v=2.0.78"></script>
-  <script defer src="./static/js/reasoning.min.js?v=2.0.78"></script>
-  <script defer src="./static/js/office-formula-copy.min.js?v=2.0.78"></script>
-  <script defer src="./static/js/citations.min.js?v=2.0.78"></script>
-  <script defer src="./static/js/messages.min.js?v=2.0.78"></script>
-  <script defer src="./static/js/multimodal.min.js?v=2.0.78"></script>
-  <script defer src="./static/js/app.min.js?v=2.0.78"></script>
+  <script defer src="./static/js/config.min.js?v=2.0.109"></script>
+  <script defer src="./static/js/icons.min.js?v=2.0.109"></script>
+  <script defer src="./static/js/logos.min.js?v=2.0.109"></script>
+  <script defer src="./static/js/components.min.js?v=2.0.109"></script>
+  <script defer src="./static/js/ui.min.js?v=2.0.109"></script>
+  <script defer src="./static/js/assistants.min.js?v=2.0.109"></script>
+  <script defer src="./static/js/conversations.min.js?v=2.0.109"></script>
+  <script defer src="./static/js/renderer.min.js?v=2.0.109"></script>
+  <script defer src="./static/js/reasoning.min.js?v=2.0.109"></script>
+  <script defer src="./static/js/office-formula-copy.min.js?v=2.0.109"></script>
+  <script defer src="./static/js/citations.min.js?v=2.0.109"></script>
+  <script defer src="./static/js/messages.min.js?v=2.0.109"></script>
+  <script defer src="./static/js/multimodal.min.js?v=2.0.109"></script>
+  <script defer src="./static/js/app.min.js?v=2.0.109"></script>
+  <script defer src="./static/js/groupchat.min.js?v=2.0.109"></script>
 </body>
 </html>
