@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -42,6 +43,10 @@ jobs:
             node --check "$f" || fail=1
           done < <(git ls-files '*.js')
           exit $fail
+      - name: 发版产物新鲜度(min/版本号/checksums 与源码一致)
+        # release.mjs 幂等:重跑后无 diff 说明 .min 与源码同步、HTML ?v= 与 TC_VERSION
+        # 一致、sw 缓存名已联动、checksums.txt 是最新。有 diff = 忘跑发版工具。
+        run: node tools/release.mjs && git diff --exit-code
       - name: 图标匹配自检(规则目标文件必须存在 + 关键模型命中)
         run: node tests/logos-check.js
       - name: 演示管理员还原自检(拍摄/到期还原/反复还原)

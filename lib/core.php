@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.77');
+define('TC_VERSION', '2.0.78');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -1239,9 +1239,27 @@ function tc_rate_limit_file($key) {
     return $dir . '/' . hash('sha256', (string) $key) . '.json';
 }
 
+// 限流计数文件按 IP/用户分片,公网部署下来源会持续增加;惰性清理:
+// 以五十分之一的概率触发,删掉 1 小时没再写过的分片(限流窗口最长 1 分钟,远超即失效)
+function tc_rate_limit_gc() {
+    static $ran = false;
+    if ($ran) return;
+    $ran = true;
+    if (random_int(1, 50) !== 1) return;
+    $dir = tc_data_dir() . '/ratelimit';
+    if (!is_dir($dir)) return;
+    $cut = time() - 3600;
+    foreach ((array) @scandir($dir) as $f) {
+        if (substr((string) $f, -5) !== '.json') continue;
+        $full = $dir . '/' . $f;
+        if (@filemtime($full) < $cut) @unlink($full);
+    }
+}
+
 function tc_rate_limit_check($key, $limitPerMin, $windowMs = 60000) {
     $limit = (int) $limitPerMin;
     if ($limit <= 0 || $key === '') return true;
+    tc_rate_limit_gc();
     $window = max(1000, (int) $windowMs);
     $fp = @fopen(tc_rate_limit_file($key), 'c+');
     if (!$fp) return true; // 计数存储不可用时不拦截主流程
@@ -1365,39 +1383,38 @@ function tc_db_import_legacy($pdo) {
 
 // 从 store 表装配出业务数组(含迁移与默认值),userChats 保持 stdClass 形状
 function tc_db_load_all($pdo) {
+    list($db) = tc_db_load_with_baseline($pdo);
+    return $db;
+}
+
+// 单遍装配:一次 SELECT 同时产出业务数组与逐行原始 JSON 基线。
+// 此前装配与快照各做一次全表扫描,每个 tc_with_db 要读两遍库;合并后减半。
+// 变更检测基线取自"迁移前"的原始存储;若取自迁移后,迁移过程新建的
+// userGroups / defaultGroupId 会被视为"未变化"而永不落库,导致每次请求都生成
+// 新的用户组 ID,授权规则随之全部失效。
+function tc_db_load_with_baseline($pdo) {
     $db = tc_empty_db();
     $db['userChats'] = new stdClass();
+    $orig = array();
+    $origChats = array();
     $rows = $pdo->query('SELECT k, v FROM store')->fetchAll();
     foreach ($rows as $row) {
         $k = (string) $row['k'];
+        $raw = (string) $row['v'];
         if (strncmp($k, 'chat:', 5) === 0) {
-            $val = json_decode($row['v'], true);
+            $origChats[substr($k, 5)] = $raw;
+            $val = json_decode($raw, true);
             if (is_array($val)) {
-                $uid = substr($k, 5);
-                $db['userChats']->$uid = $val;
+                $db['userChats']->{substr($k, 5)} = $val;
             }
             continue;
         }
-        $val = json_decode($row['v'], true);
-        if ($val === null && $row['v'] !== 'null') continue;
+        $orig[$k] = $raw;
+        $val = json_decode($raw, true);
+        if ($val === null && $raw !== 'null') continue;
         $db[$k] = $val;
     }
-    return tc_migrate_db($db);
-}
-
-// 存储层原始快照:顶层键与 chat: 行分别给出 JSON 文本,用于提交时的逐键变更检测
-function tc_db_raw_snapshot($pdo) {
-    $orig = array();
-    $origChats = array();
-    foreach ($pdo->query('SELECT k, v FROM store') as $row) {
-        $k = (string) $row['k'];
-        if (strncmp($k, 'chat:', 5) === 0) {
-            $origChats[substr($k, 5)] = (string) $row['v'];
-        } else {
-            $orig[$k] = (string) $row['v'];
-        }
-    }
-    return array($orig, $origChats);
+    return array(tc_migrate_db($db), $orig, $origChats);
 }
 
 // 整库快照写入(迁移导入 / 恢复备份用):清空后按顶层键落行
@@ -1420,11 +1437,7 @@ function tc_with_db($write, $fn) {
     // 结果按请求缓存,不产生额外文件读取开销。
     tc_integrity_guard();
     $pdo = tc_db();
-    // 变更检测基线取自"迁移前"的原始存储;若取自迁移后,迁移过程新建的
-    // userGroups / defaultGroupId 会被视为"未变化"而永不落库,导致每次请求都生成
-    // 新的用户组 ID,授权规则随之全部失效。
-    list($orig, $origChats) = tc_db_raw_snapshot($pdo);
-    $db = tc_db_load_all($pdo);
+    list($db, $orig, $origChats) = tc_db_load_with_baseline($pdo);
     $GLOBALS['_tc_db'] = &$db;
     $GLOBALS['_tc_demo_before'] = null;
     $GLOBALS['_tc_db_ctx'] = array(
@@ -1503,6 +1516,38 @@ function tc_db_release() {
     unset($GLOBALS['_tc_db'], $GLOBALS['_tc_db_ctx']);
 }
 
+// 入口引导(建管理员/内置助手/演示还原)低频触发。
+// 这些种子逻辑是幂等的,但每个请求都为此全量装配一次数据库代价太高;
+// 满足任一条件才真正执行:从未跑过、版本变更(在线更新/恢复备份后)、距上次超过 5 分钟、
+// 或演示快照已到期(还原是时间敏感的,不能等 5 分钟窗口)。
+// 到期检测用单行主键查询(微秒级),不装配全库;直接改库/恢复备份的场景也能感知。
+// 标记存 data/.bootstrap(不经数据库);种子未跑的窗口内极端情况最多延迟 5 分钟补上。
+function tc_bootstrap_maybe($fn) {
+    $file = tc_data_dir() . '/.bootstrap';
+    $j = json_decode((string) @file_get_contents($file), true);
+    if (is_array($j)) {
+        $fresh = (tc_now() - (isset($j['t']) ? (int) $j['t'] : 0)) < 5 * 60 * 1000;
+        $sameVer = (string) (isset($j['v']) ? $j['v'] : '') === TC_VERSION;
+        if ($fresh && $sameVer && !tc_demo_revert_due()) return;
+    }
+    $fn();
+    @file_put_contents($file, tc_json_encode(array('v' => TC_VERSION, 't' => tc_now())), LOCK_EX);
+}
+
+// 演示快照是否已到期待还原(单行查询;任何异常按「未到期」处理,不阻塞引导)
+function tc_demo_revert_due() {
+    try {
+        $st = tc_db()->prepare('SELECT v FROM store WHERE k = ?');
+        $st->execute(array('demoSnapshot'));
+        $row = $st->fetchColumn();
+        if ($row === false || $row === null) return false;
+        $snap = json_decode((string) $row, true);
+        return is_array($snap) && !empty($snap['expireAt']) && tc_now() >= (int) $snap['expireAt'];
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
 function tc_secret() {
     static $secret = null;
     if ($secret !== null) return $secret;
@@ -1518,6 +1563,7 @@ function tc_secret() {
     }
     $secret = tc_uid(32);
     @file_put_contents($file, $secret, LOCK_EX);
+    @chmod($file, 0600); // JWT 签名密钥,仅限 PHP 进程可读
     return $secret;
 }
 
@@ -2122,11 +2168,15 @@ function tc_clear_login_fail($name) {
     tc_save_login_state($state);
 }
 
-function tc_logs_file() { return tc_data_dir() . '/logs.json'; }
+// 日志存储:每行一条 JSON(NDJSON,追加写)。
+// 旧实现是单 JSON 对象,每条日志都整文件读出再整体重写,多用户并发时锁竞争明显;
+// 追加式把常规写入降为 O(1),仅在超过体积上限压缩时才整文件重写一次。
+function tc_logs_file() { return tc_data_dir() . '/logs.ndjson'; }
 
-// 日志内容上限:提示词/回复按字符截断,避免 logs.json 过度膨胀
-// (日志文件每次写入都整体重写,内容上限直接决定单次 I/O 大小)
+// 日志内容上限:提示词/回复按字符截断,避免日志过度膨胀
 if (!defined('TC_LOG_TEXT_LIMIT')) define('TC_LOG_TEXT_LIMIT', 10000);
+// 文件超过该体积时压缩到最近 TC_LOG_LIMIT 条(常规增量追加不受影响)
+if (!defined('TC_LOG_FILE_MAX_BYTES')) define('TC_LOG_FILE_MAX_BYTES', 8 * 1024 * 1024);
 
 function tc_log_clip($s, $n) {
     $s = (string) $s;
@@ -2136,25 +2186,83 @@ function tc_log_clip($s, $n) {
     return $cut . "\n…（已截断，共 " . mb_strlen($s, 'UTF-8') . ' 字）';
 }
 
+// 旧版 logs.json(单 JSON 对象)一次性迁移为 NDJSON;成功后原文件改名留档
+function tc_logs_migrate_legacy() {
+    $file = tc_logs_file();
+    if (is_file($file)) return;
+    $legacy = tc_data_dir() . '/logs.json';
+    if (!is_file($legacy)) return;
+    $data = json_decode((string) @file_get_contents($legacy), true);
+    $items = (is_array($data) && isset($data['items']) && is_array($data['items'])) ? $data['items'] : array();
+    $lines = '';
+    foreach ($items as $it) {
+        if (!is_array($it)) continue;
+        $lines .= tc_json_encode($it) . "\n";
+    }
+    if ($lines !== '') @file_put_contents($file, $lines, LOCK_EX);
+    @rename($legacy, $legacy . '.migrated');
+}
+
+// 取文件末尾最后一条日志(用 fseek 只读尾部,不整文件加载)
+function tc_log_last_item($fp, $size) {
+    $tail = min($size, 65536);
+    fseek($fp, max(0, $size - $tail));
+    $raw = (string) stream_get_contents($fp);
+    $lines = explode("\n", $raw);
+    for ($i = count($lines) - 1; $i >= 0; $i--) {
+        $line = trim($lines[$i]);
+        if ($line === '') continue;
+        $j = json_decode($line, true);
+        if (is_array($j)) return $j;
+    }
+    return null;
+}
+
+// 读出全部日志条目(旧→新顺序);返回 [items, lastId]
+function tc_log_read_all($fp) {
+    $items = array();
+    $lastId = 0;
+    fseek($fp, 0);
+    while (($line = fgets($fp)) !== false) {
+        $line = trim($line);
+        if ($line === '') continue;
+        $j = json_decode($line, true);
+        if (!is_array($j)) continue;
+        $items[] = $j;
+        $lastId = max($lastId, (int) (isset($j['id']) ? $j['id'] : 0));
+    }
+    return array($items, $lastId);
+}
+
 function tc_push_log($entry) {
+    tc_logs_migrate_legacy();
     $file = tc_logs_file();
     $fp = fopen($file, 'c+');
     if (!$fp) return 0;
     flock($fp, LOCK_EX);
-    $raw = stream_get_contents($fp);
-    $data = json_decode($raw, true);
-    if (!is_array($data)) $data = array('seq' => 0, 'items' => array());
-    $data['seq'] = (isset($data['seq']) ? (int) $data['seq'] : 0) + 1;
+    $size = (int) fstat($fp)['size'];
+    $last = tc_log_last_item($fp, $size);
     $item = $entry;
-    $item['id'] = $data['seq'];
+    $item['id'] = ($last && isset($last['id'])) ? ((int) $last['id'] + 1) : 1;
     $item['t'] = tc_now();
-    $data['items'][] = $item;
-    if (count($data['items']) > TC_LOG_LIMIT) {
-        $data['items'] = array_slice($data['items'], -TC_LOG_LIMIT);
+    $line = tc_json_encode($item) . "\n";
+    // 体积超限时顺手压缩到最近 TC_LOG_LIMIT 条(复用同一把锁,避免与追加竞争)
+    if ($size + strlen($line) > TC_LOG_FILE_MAX_BYTES) {
+        list($items, $lastId) = tc_log_read_all($fp);
+        $items = array_slice($items, -TC_LOG_LIMIT);
+        $items[] = $item;
+        $buf = '';
+        foreach ($items as $it) $buf .= tc_json_encode($it) . "\n";
+        ftruncate($fp, 0);
+        fseek($fp, 0);
+        fwrite($fp, $buf);
+        fflush($fp);
+        flock($fp, LOCK_UN);
+        fclose($fp);
+        return isset($items[count($items) - 1]['id']) ? $items[count($items) - 1]['id'] : $lastId + 1;
     }
-    ftruncate($fp, 0);
-    rewind($fp);
-    fwrite($fp, tc_json_encode($data));
+    fseek($fp, 0, SEEK_END);
+    fwrite($fp, $line);
     fflush($fp);
     flock($fp, LOCK_UN);
     fclose($fp);
@@ -2165,15 +2273,15 @@ function tc_push_log($entry) {
 function tc_update_log($id, $patch) {
     $id = (int) $id;
     if ($id <= 0 || !is_array($patch) || !$patch) return false;
+    tc_logs_migrate_legacy();
     $file = tc_logs_file();
     if (!is_file($file)) return false;
     $fp = fopen($file, 'c+');
     if (!$fp) return false;
     flock($fp, LOCK_EX);
-    $data = json_decode((string) stream_get_contents($fp), true);
-    if (!is_array($data) || empty($data['items'])) { flock($fp, LOCK_UN); fclose($fp); return false; }
+    list($items, ) = tc_log_read_all($fp);
     $hit = false;
-    foreach ($data['items'] as &$it) {
+    foreach ($items as &$it) {
         if (isset($it['id']) && (int) $it['id'] === $id) {
             foreach ($patch as $k => $v) $it[$k] = $v;
             $hit = true;
@@ -2182,9 +2290,11 @@ function tc_update_log($id, $patch) {
     }
     unset($it);
     if ($hit) {
+        $buf = '';
+        foreach ($items as $it) $buf .= tc_json_encode($it) . "\n";
         ftruncate($fp, 0);
-        rewind($fp);
-        fwrite($fp, tc_json_encode($data));
+        fseek($fp, 0);
+        fwrite($fp, $buf);
         fflush($fp);
     }
     flock($fp, LOCK_UN);
@@ -2204,16 +2314,19 @@ function tc_log_chat_meta($body, $format) {
 
 function tc_list_logs($limit) {
     $n = min(TC_LOG_LIMIT, max(1, (int) $limit ?: 100));
+    tc_logs_migrate_legacy();
     $file = tc_logs_file();
     if (!is_file($file)) return array();
-    $data = json_decode((string) file_get_contents($file), true);
-    $items = (isset($data['items']) && is_array($data['items'])) ? $data['items'] : array();
-    $slice = array_slice($items, -$n);
-    return array_reverse($slice);
+    $fp = @fopen($file, 'r');
+    if (!$fp) return array();
+    list($items, ) = tc_log_read_all($fp);
+    fclose($fp);
+    return array_reverse(array_slice($items, -$n));
 }
 
 function tc_clear_logs() {
-    file_put_contents(tc_logs_file(), tc_json_encode(array('seq' => 0, 'items' => array())), LOCK_EX);
+    tc_logs_migrate_legacy();
+    @file_put_contents(tc_logs_file(), '', LOCK_EX);
 }
 
 function tc_provider_cost($provider) {
@@ -2474,6 +2587,11 @@ function tc_charge_user(&$db, &$user, $cost, $model = '', $purpose = '') {
     $k = tc_today_key();
     $by = tc_assoc($db['stats']['callsByDay']);
     $by[$k] = (isset($by[$k]) ? (int) $by[$k] : 0) + 1;
+    // 与用量台账同样只保留最近 45 天,避免逐日累加、逐年膨胀
+    if (count($by) > 45) {
+        ksort($by);
+        $by = array_slice($by, -45, null, true);
+    }
     $db['stats']['callsByDay'] = tc_object_map($by);
     tc_replace_user($db, $user);
     return $unlimited ? 0 : $n;

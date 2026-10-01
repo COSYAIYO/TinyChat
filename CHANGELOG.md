@@ -2,6 +2,53 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.78] - 2026-10-02
+
+### 性能
+
+- **内置字体切片为 woff2 按需加载**：思源宋体 / AlibabaPuHuiTi 从单文件 11MB+8.5MB 的 OTF/TTF 切成 500 码位一片的 woff2 分包（`static/fonts/`，unicode-range 按需下载），访客读一页中文只需下载用到的十几片（约数百 KB）；拉丁字体整包转 woff2。切片由 `tools/slice_fonts.py` 生成（只需在换字体时重跑）。字体改在用户选用时注入（theme-boot + ui.js），CSS 里原先会让浏览器整包下载 11MB OTF 的死 @font-face 一并移除。
+- **业务 JS/CSS 首次压缩**：新增发版工具 `tools/release.mjs`（esbuild minify + 版本号统一 + sw 缓存名联动 + checksums 刷新，一条命令），全部 `.min` 产物入库；HTML 里约 600KB 未压缩源码改为压缩后加载，文本类资源 gzip 后体积降 70%+。CI 校验产物新鲜度（重跑 release.mjs 有 diff 即失败）。
+- **body 末尾业务脚本全部加 defer**：并行下载、按序执行，缩短主线程阻塞。
+- **存储层读减半**：`tc_with_db` 原先每次做两次全表扫描（原始快照 + 业务装配各一遍），合并为单遍（`tc_db_load_with_baseline`）。
+- **入口引导低频化**：建管理员 / 内置助手 / 演示还原不再每请求全量装配数据库，改为 5 分钟窗口 + 版本变更 + 「演示快照已到期」单行查询触发；到期还原的实时性不受影响（e2e 验证）。
+- **任务文件改追加式 NDJSON**：流式转发原先每收一个 chunk 都把整个任务文件读出→追加→整体重写（长回复磁盘写随长度平方增长），改为 O(1) 追加 + 状态旁车文件，读取端折行还原旧结构，断线恢复协议不变；旧格式任务在 GC 窗口内兼容。
+- **运行日志改追加式 NDJSON**：`logs.ndjson` 每条 O(1) 追加（原先整文件重写、flock 全局串行），超 8MB 自动压缩到最近 500 条；首次使用自动迁移旧 `logs.json`。
+- **限流分片文件自动清理**：`data/ratelimit/` 按 IP 分片只增不清的问题修复，惰性清理 1 小时未活跃的分片。
+- **调用次数按日统计剪枝**：`stats.callsByDay` 与用量台账一致只保留最近 45 天，不再逐年膨胀。
+- **HTTP 缓存与压缩**：`.htaccess` 为静态资源补 `Cache-Control: max-age=31536000, immutable`（配合全量 `?v=` 版本号）、文本资源 DEFLATE、`sw.js` 单独 no-cache；PWA 的 SW 缓存名与 TC_VERSION 联动，发版即清旧缓存。
+
+### 安全
+
+- **静态直达页面补齐安全响应头**：直接访问 `/index.html` 等磁盘文件时绕过 PHP、缺 CSP / X-Frame-Options 的问题修复（`.htaccess` 补 `Header always set`，与 PHP 侧一致）。
+- **`/api/config` 故障兜底不再泄露异常原文**：数据库不可用时对外只返回 `dbError: true`，原文写后台运行日志。
+- **`/api/env-check` 安装完成后关闭**（403）：该接口暴露服务器路径与 PHP 版本；未安装或库不可用时仍可用，登录页排障流程不受影响。
+- **在线更新加包完整性校验**：发布包自带 `checksums.txt`（`tools/make-checksums.php` 生成），解压后逐文件 sha256 比对，不匹配即中止覆盖；CI 校验清单是否最新。
+- **JWT 密钥文件落盘权限收紧为 0600**；`data/.htaccess` 兼容 Apache 2.2（双版本指令写法）；`.htaccess` 补 `php_flag display_errors off` 兜底。
+
+### 修复
+
+- **流式转发断连检测与保活**：客户端断开（取消生成/关页面）后立即中止上游请求，不再空烧配额；新增 300 秒空闲超时与 `: ping` SSE 心跳（前端 SSE 解析本就忽略注释行），上游卡死不再占住 PHP worker 到执行时限。
+- **子目录部署时 Service Worker 误缓存接口响应**：SW 路径判断按注册前缀剥离部署前缀，`/subdir/api/...` 不再落入静态缓存分支。
+- **分享页跟随站点主题色**：share 页此前不读取用户的主题色偏好，且主题在页尾才应用（慢网络先闪默认色）；统一由 `theme-boot.js` 在首帧前完成。
+- **图片导出的字体相对路径**：导出画布内联 @font-face 时按所属样式表的 URL 解析相对路径（外链字体 CSS 此前会解析错）。
+- **消息「加载更早」改增量展开**：每次点按多展开 100 条，不再一次性渲染整会话（几千条消息的会话点一下会卡死）；目录跳转按目标位置按需扩窗。
+- **弹窗焦点归还**：关闭弹窗后焦点回到触发元素（键盘/读屏用户不再被丢回 body）。
+- **`.gitignore` 的 `data/` + `!data/.htaccess` 负向规则无效**：git 不下探已忽略目录，改为标准 `data/*` 写法（`.zcodeignore` 同步修正）。
+- **PWA 图标补齐**：manifest 增加 192/512 PNG 与 maskable 图标（此前仅 SVG，部分 Android/iOS 判定不可安装），`apple-touch-icon` 改用 PNG（iOS 不认 SVG），移除竖屏锁定并增加 `id` 字段。
+
+### 工程
+
+- **主题预置脚本统一为 `static/js/theme-boot.js`**：原先 index/admin/login/share 四页各持一份内联实现且已互相漂移（index 用命名常量、其余用内联三元）；统一后顺带在四页前置 `data-theme`（深色用户不再白闪）、提前注册 Service Worker（原先挂在 app.js 尾部）、向运行时暴露 `OC_ASSET_V` 版本号供字体/高亮/vendor 引用补 `?v=`。
+- **CI 增加 `pull_request` 触发**；新增发版产物新鲜度校验步骤。
+- **发版流程文档化**：改 `lib/core.php` 的 `TC_VERSION` → 跑 `node tools/release.mjs` → 提交（版本号/压缩产物/SW 缓存名/checksums 一条命令全部联动）。
+
+### 测试
+
+- E2E 全量 **399 通过 / 0 失败**（`/api/env-check` 断言更新为「已安装返回 403」；流式转发、断线恢复、日志、限流、演示还原等全部回归通过）。
+- 本地通过全部 CI 自检脚本（demo-revert / html-text / upstream-url / attribution / image-parse / image-chat / image-proxy / logos-check）。
+- 浏览器实测（全新安装 + 主站/分享页/后台四页）：defer 压缩脚本按序执行、主题首帧生效、字体切片按需下载（一页中文仅 10 余个分片）、无任何资源 404。
+- 修复 e2e 在 Windows（Git Bash）下清理失效的问题：bash 的 kill 杀不死原生 php.exe，残留监听进程会让下一次 e2e 连上「数据目录已被删」的僵尸服务器，出现成片 401/空响应假失败；cleanup 现按 WINPID 用 taskkill 按进程树补刀（Linux 下自动跳过），连续两次全量运行验证无残留。
+
 ## [2.0.77] - 2026-10-02
 
 ### 变更

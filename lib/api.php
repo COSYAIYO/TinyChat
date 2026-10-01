@@ -834,8 +834,17 @@ function tc_has_admin($db) {
     return false;
 }
 
-// 首次运行环境自检:不依赖数据库,逐项检查扩展与目录权限,登录页据阻塞项引导
+// 首次运行环境自检:不依赖数据库,逐项检查扩展与目录权限,登录页据阻塞项引导。
+// 该接口会暴露服务器路径等部署细节,安装完成后不再对外提供;
+// 数据库不可用时仍然放行——登录页要靠它排障(data/ 权限类故障)。
 function tc_api_env_check() {
+    $installed = false;
+    try {
+        tc_with_db(false, function ($db) use (&$installed) { $installed = tc_has_admin($db); });
+    } catch (Throwable $e) {
+        $installed = false;
+    }
+    if ($installed) tc_fail(403, '站点已完成安装，环境自检接口已关闭');
     $dir = tc_data_dir();
     $checks = array();
     $add = function ($name, $ok, $detail = '', $critical = true) use (&$checks) {

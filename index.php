@@ -41,14 +41,16 @@ if ($path === '/favicon.ico') {
 tc_integrity_guard();
 
 try {
-    tc_with_db(true, function (&$db) {
-        $changed = tc_seed_admin($db);
-        $changed = tc_seed_default_assistants($db) || $changed;
-        // 演示管理员改动的设置在有效期后自动还原
-        $changed = tc_demo_revert($db) || $changed;
-        tc_uptime_sec();
-        if (!$changed) tc_db_skip_write();
+    tc_bootstrap_maybe(function () {
+        tc_with_db(true, function (&$db) {
+            $changed = tc_seed_admin($db);
+            $changed = tc_seed_default_assistants($db) || $changed;
+            // 演示管理员改动的设置在有效期后自动还原
+            $changed = tc_demo_revert($db) || $changed;
+            if (!$changed) tc_db_skip_write();
+        });
     });
+    tc_uptime_sec();
 } catch (Exception $e) {
     // 首次写库失败时仍允许继续，具体接口会再报错
 }
@@ -280,6 +282,8 @@ function tc_api_public_config_wrap() {
 }
 
 function tc_fail_public_config($reason) {
+    // 异常原文可能带绝对路径/驱动细节,只记后台日志;对外仅给布尔标记。
+    try { tc_push_log(array('kind' => 'err', 'userName' => 'system', 'action' => '公共配置读取失败: ' . $reason, 'error' => true)); } catch (Throwable $t) {}
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
     echo tc_json_encode(array(
@@ -289,7 +293,7 @@ function tc_fail_public_config($reason) {
         'version' => TC_VERSION,
         'hasProvider' => false,
         'needsSetup' => true,
-        'dbError' => (string) $reason,
+        'dbError' => true,
         'emailVerificationEnabled' => false,
         'passwordResetEnabled' => false,
         'mailReady' => false,

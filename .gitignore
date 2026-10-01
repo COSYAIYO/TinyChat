@@ -1,4 +1,6 @@
-data/
+# 用户数据与本地配置整体忽略;用 data/* 而非 data/ —— git 不会下探已忽略目录,
+# 负向规则(!data/.htaccess)只有在目录本身未被整目录忽略时才生效
+data/*
 !data/.htaccess
 !data/.gitkeep
 config.php

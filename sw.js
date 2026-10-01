@@ -6,7 +6,7 @@
  *   其余资源(图片/字体/图标)仍用 stale-while-revalidate,省流量、加载快。
  * HTML 页面 / API / SSE 流式 / /v1 出口一律直连,绝不缓存(登录态与流式响应不可缓存)。
  */
-const CACHE = 'tinychat-static-v2';
+const CACHE = 'tinychat-static-2.0.78';
 
 self.addEventListener('install', () => self.skipWaiting());
 
@@ -18,12 +18,17 @@ self.addEventListener('activate', (e) => {
   );
 });
 
+// 部署前缀:SW 可能注册在子目录(/subdir/),路径判断前先剥掉前缀,
+// 否则子目录部署时 /subdir/api/... 会被误判为静态资源而缓存(旧版 bug)。
+const BASE = new URL(self.registration.scope).pathname.replace(/\/$/, '');
+
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== location.origin) return;
-  const p = url.pathname;
+  let p = url.pathname;
+  if (BASE && p.indexOf(BASE) === 0) p = p.slice(BASE.length) || '/';
   // 接口与流式响应永不缓存
   if (p.indexOf('/api/') === 0 || p.indexOf('/v1/') === 0 || p.slice(-4) === '.php') return;
   // HTML 页面不缓存(登录态、版本更新需要即时生效)
