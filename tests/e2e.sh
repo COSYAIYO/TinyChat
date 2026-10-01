@@ -1202,6 +1202,15 @@ demo_expire_now() { # 把演示快照的到期时间拨到过去,模拟「10 分
 demo_del() { # 删除测试用的演示账号
   php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("users")); foreach((array)json_decode($q->fetchColumn(),true) as $u) if(($u["name"]??"")==="chatdemo"){ echo $u["id"]; break; }' "$1"
 }
+demo_expire_in() { # 把到期时间设为「距现在 N 毫秒」,用于验证活动顺延
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("demoSnapshot")); $j=json_decode($q->fetchColumn(),true); if(!is_array($j)) exit(1); $j["expireAt"]=(int)round(microtime(true)*1000)+(int)$argv[2]; $st=$pdo->prepare("UPDATE store SET v=? WHERE k=?"); $st->execute(array(json_encode($j),"demoSnapshot"));' "$1" "$2"
+}
+demo_expire_at() { # 读当前到期时间
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("demoSnapshot")); $j=json_decode($q->fetchColumn(),true); echo (is_array($j) && !empty($j["expireAt"])) ? (int)$j["expireAt"] : 0;' "$1"
+}
+demo_reverted_at() { # 读还原标记(客户端据此整体采纳云端)
+  php -r '$pdo=new PDO("sqlite:".$argv[1]."/tinychat.sqlite"); $q=$pdo->prepare("SELECT v FROM store WHERE k=?"); $q->execute(array("demoReverted")); $j=json_decode($q->fetchColumn(),true); $out=0; foreach((array)$j as $t) $out=(int)$t; echo $out;' "$1"
+}
 
 # 第一轮:只在前台聊天,完全不碰后台
 cat > "$TMP/cd1.json" <<'EOF'
@@ -1210,9 +1219,19 @@ EOF
 curl -s -X POST "$BASE/api/sync/chats" -H "$CDA" -H "Content-Type: application/json" --data-binary @"$TMP/cd1.json" > /dev/null
 assert_eq "演示账号聊天已保存" "$(demo_chats "$TMP/data")" "1"
 assert_eq "聊天即建立还原快照(无需后台操作)" "$(demo_has_snapshot "$TMP/data")" "yes"
+# 关键:演示中继续活动应把到期时间顺延(滑动窗口),不打断正在进行的对话
+demo_expire_in "$TMP/data" 3000
+EXPIRE_BEFORE=$(demo_expire_at "$TMP/data")
+curl -s -X POST "$BASE/api/sync/chats" -H "$CDA" -H "Content-Type: application/json" --data-binary @"$TMP/cd1.json" > /dev/null
+EXPIRE_AFTER=$(demo_expire_at "$TMP/data")
+if [ "$EXPIRE_AFTER" -gt "$EXPIRE_BEFORE" ]; then ok "演示中继续活动:到期时间被顺延(不打断演示)"; else bad "演示中继续活动后到期时间未顺延 ($EXPIRE_BEFORE -> $EXPIRE_AFTER)"; fi
+assert_eq "顺延后对话仍在(未被中途抹除)" "$(demo_chats "$TMP/data")" "1"
 demo_expire_now "$TMP/data"
 curl -s -o /dev/null "$BASE/"
 assert_eq "第一轮到期后对话被清除" "$(demo_chats "$TMP/data")" "0"
+# 客户端凭还原标记整体采纳云端(否则本地旧副本会把已还原内容推回来)
+if [ "$(demo_reverted_at "$TMP/data")" -gt 0 ]; then ok "到期还原写入客户端还原标记"; else bad "到期还原未写入客户端还原标记"; fi
+assert_contains "同步接口下发还原标记" "$(curl -s "$BASE/api/sync/chats" -H "$CDA")" '"demoRevertedAt":'
 # 第二轮:还原后继续聊天 —— 快照必须自动重建,新对话同样要被清除(核心回归)
 cat > "$TMP/cd2.json" <<'EOF'
 {"chats":[{"id":"cd2","title":"演示第二轮","messages":[{"role":"user","content":"第二轮"}],"createdAt":1790789000000,"updatedAt":1790789000000}]}

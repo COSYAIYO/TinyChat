@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.65');
+define('TC_VERSION', '2.0.66');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -690,6 +690,8 @@ function tc_empty_db() {
         'inviteCodes' => array(),
         // 演示模式快照:演示管理员改动前的站点状态,到期后由 tc_demo_revert 还原
         'demoSnapshot' => null,
+        // 演示还原标记:{userId: 时间戳},客户端据此整体采纳云端(见 tc_demo_revert)
+        'demoReverted' => new stdClass(),
     );
 }
 
@@ -704,15 +706,30 @@ function tc_demo_snapshot_fields() {
 
 // 拍一张演示快照(改动前的状态),并按设置的有效期计时。
 // 已有生效中的快照时不覆盖——必须保留最早那份作为还原基准。
+// 但「生效中」的快照会随演示活动的继续而**顺延到期时间**(滑动窗口):
+// 否则演示者正在进行的对话会被中途抹掉(表现为"刷新就没了")。
 // $force=true 用于「把某个用户转为演示管理员」:以转为演示的那一刻作为还原原点,
 // 强制重拍快照并重新计时,而不是沿用上一轮还没到期的旧基准。
 function tc_demo_arm(&$db, $user, $force = false) {
     if (!tc_is_demo_user($user)) return false;
     $snap = isset($db['demoSnapshot']) ? $db['demoSnapshot'] : null;
-    if (!$force && is_array($snap) && !empty($snap['expireAt']) && tc_now() < (int) $snap['expireAt']) return false;
     $minutes = (int) (isset($db['settings']['demoExpireMinutes']) ? $db['settings']['demoExpireMinutes'] : 10);
     $minutes = min(1440, max(1, $minutes ?: 10));
     $uid = isset($user['id']) ? (string) $user['id'] : '';
+    $active = is_array($snap) && !empty($snap['expireAt']) && tc_now() < (int) $snap['expireAt'];
+    if (!$force && $active) {
+        // 属主发起的活动:把到期时间顺延到「现在 + 有效期」。
+        // 别家演示账号占着生效快照时不顺延(同一时刻只维护一份快照)。
+        if (isset($snap['userId']) && (string) $snap['userId'] === $uid) {
+            $next = tc_now() + $minutes * 60000;
+            if ($next > (int) $snap['expireAt']) {
+                $db['demoSnapshot']['expireAt'] = $next;
+                $db['demoSnapshot']['minutes'] = $minutes;
+                return true;
+            }
+        }
+        return false;
+    }
     // 上一轮还原后遗留的基准:重建快照时必须沿用「最初的干净状态」,而不是把演示期间的
     // 改动当成新基准 —— 否则那些改动会被永久固化,再也清不掉。
     $prevBase = null;
@@ -797,6 +814,13 @@ function tc_demo_revert(&$db) {
         'demoQuota' => array_key_exists('demoQuota', $snap) ? $snap['demoQuota'] : 0,
         'demoQuotaGrants' => array_key_exists('demoQuotaGrants', $snap) ? $snap['demoQuotaGrants'] : array(),
     );
+    // 还原标记:客户端凭它识别「这是一次整体还原」,从而丢弃本地旧副本整体采纳云端。
+    // 没有这个标记,浏览器里残留的旧对话会在下一次合并时把已还原的内容"复活"回服务端。
+    if (isset($snap['userId']) && (string) $snap['userId'] !== '') {
+        $map = tc_assoc(isset($db['demoReverted']) ? $db['demoReverted'] : array());
+        $map[(string) $snap['userId']] = tc_now();
+        $db['demoReverted'] = tc_object_map($map);
+    }
     $db['demoSnapshot'] = null;
     return true;
 }
