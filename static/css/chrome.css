@@ -42,9 +42,6 @@
   overflow-wrap: anywhere;
   white-space: normal;
 }
-.reask-list { display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow: auto; margin: 8px 0 12px; }
-.reask-row { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; }
-.reask-row input { margin-top: 3px; }
 
 /* ============================================================
    Chrome — 壳层收口(最后加载)
@@ -3981,8 +3978,76 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 .pg-err:not(.hidden) { animation: pgErrIn 200ms ease-out; }
 @keyframes pgErrIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
 
-/* 注销账号:账号页底部只保留一个红色按钮(后果在确认弹窗里说明) */
-.acc-delete-row { margin-top: 18px; }
+/* 危险操作区(注销账号):默认折叠,点标题才展开,防止误点 */
+.acc-danger-zone {
+  margin-top: 18px;
+  border: 1px solid color-mix(in srgb, #dc2626 26%, transparent);
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: color-mix(in srgb, #dc2626 4%, transparent);
+}
+.acc-danger-zone[hidden] { display: none; }
+.acc-danger-zone > summary {
+  cursor: pointer;
+  font-size: 13.5px;
+  font-weight: 550;
+  color: #dc2626;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.acc-danger-zone > summary::-webkit-details-marker { display: none; }
+.acc-danger-zone > summary::before {
+  content: '';
+  width: 6px; height: 6px;
+  border-right: 1.6px solid currentColor;
+  border-bottom: 1.6px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+  margin-right: 2px;
+}
+.acc-danger-zone[open] > summary::before { transform: rotate(45deg); }
+.acc-danger-zone > summary:hover { text-decoration: underline; }
+.acc-danger-zone p { margin: 10px 0 10px; line-height: 1.6; }
+/* 受总开关控制的子项区:关闭时整体置灰并折叠为一行摘要(可手动展开查看) */
+.pref-judge-more { border-bottom: 1px solid var(--hairline); }
+.pref-judge-more[hidden] { display: none; }
+.pref-judge-more > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 11px 4px 11px 16px;
+  position: relative;
+  font-size: 13px;
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pref-judge-more > summary::-webkit-details-marker { display: none; }
+.pref-judge-more > summary::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 12px;
+  bottom: 12px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--hairline-strong, var(--hairline));
+}
+.pref-judge-more > summary::after {
+  content: '';
+  width: 6px; height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+  margin-left: auto;
+  margin-right: 6px;
+}
+.pref-judge-more[open] > summary::after { transform: rotate(45deg); }
+.pref-judge-more > summary:hover { color: var(--text); }
+.pref-judge-more.is-disabled { opacity: 0.55; }
 
 /* 余量明细:滚动加载哨兵(不可见,仅用于触发自动加载) */
 .usage2-sentinel { height: 1px; }
