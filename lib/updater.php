@@ -295,6 +295,37 @@ function tc_update_perform() {
     tc_json(200, $result);
 }
 
+// 校验更新包完整性:发布包自带 checksums.txt(相对路径 + sha256),解压后逐文件比对。
+// 能拦住下载损坏、CDN/加速前缀被篡改、半新半旧包等;注意它防不了能同时重算
+// checksums.txt 的攻击者(那需要代码签名,纯 PHP 虚拟主机无法验签)。
+// checksums.txt 由 tools/make-checksums.php 生成并随仓库发布。
+function tc_update_verify_checksums($srcRoot) {
+    $file = $srcRoot . '/checksums.txt';
+    if (!is_file($file)) return; // 旧版发布包没有清单,跳过(保持向后兼容)
+    $listed = 0;
+    $failed = array();
+    $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: array();
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '' || $line[0] === '#') continue;
+        if (!preg_match('/^([a-f0-9]{64})\s+\*?(.+)$/i', $line, $m)) continue;
+        $rel = str_replace('\\', '/', $m[2]);
+        if (strpos($rel, '..') !== false) continue; // 清单异常路径直接忽略
+        $target = $srcRoot . '/' . $rel;
+        if (!is_file($target)) { $failed[] = $rel . '（缺失）'; continue; }
+        $actual = hash_file('sha256', $target);
+        if ($actual !== strtolower($m[1])) { $failed[] = $rel; continue; }
+        $listed++;
+    }
+    // 清单里一条都没校验成功视为清单无效,不据此中止(避免误杀合法包);
+    // 只要清单有效,任何 listed 文件不匹配都中止覆盖
+    if ($listed === 0) return;
+    if ($failed) {
+        throw new RuntimeException('更新包完整性校验未通过：' . implode(', ', array_slice($failed, 0, 5))
+            . '，已中止覆盖。可重新下载或手动安装。');
+    }
+}
+
 function tc_update_do() {
     @set_time_limit(0);
     ignore_user_abort(true);
@@ -343,6 +374,8 @@ function tc_update_do() {
         if (!is_dir($exDir)) @mkdir($exDir, 0755, true);
         tc_update_extract($pkgPath, $exDir);
         $srcRoot = tc_update_locate_root($exDir);
+        // 4.5) 包完整性校验(解压后、覆盖前)
+        tc_update_verify_checksums($srcRoot);
 
         // 5) 校验核心文件与版本号,可行时做语法检查
         if (!is_file($srcRoot . '/index.php') || !is_file($srcRoot . '/lib/core.php')) {

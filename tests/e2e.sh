@@ -29,15 +29,28 @@ jget() { # 从 stdin JSON 提取 "key":"value" 或 "key":value 的值
   sed -n "s/.*\"$1\":\"\{0,1\}\([^,\"}]*\)\"\{0,1\}.*/\1/p" | head -1
 }
 
+# Windows(Git Bash)下 bash 的 kill 杀不死原生 php.exe,残留的监听进程会让
+# 下一次 e2e 连上「数据目录已被删」的僵尸服务器,出现成片的 401/空响应假失败。
+# 因此 kill 之后再按 WINPID 用 taskkill 按进程树补刀(Linux 下无 taskkill 自动跳过)。
+kill_tree() {
+  [ -n "${1:-}" ] || return 0
+  kill "$1" 2>/dev/null
+  if command -v taskkill > /dev/null 2>&1 && command -v ps > /dev/null 2>&1; then
+    wpid=$(ps -W 2>/dev/null | awk -v p="$1" '$1==p && $4+0>0 {print $4; exit}')
+    [ -n "$wpid" ] && taskkill //F //T //PID "$wpid" > /dev/null 2>&1
+  fi
+}
+
 cleanup() {
-  [ -n "${APP_PID:-}" ] && kill "$APP_PID" 2>/dev/null
-  [ -n "${MOCK_PID:-}" ] && kill "$MOCK_PID" 2>/dev/null
-  [ -n "${OAUTH_PID:-}" ] && kill "$OAUTH_PID" 2>/dev/null
-  [ -n "${SMTP_PID:-}" ] && kill "$SMTP_PID" 2>/dev/null
-  [ -n "${SMTP_GBK_PID:-}" ] && kill "$SMTP_GBK_PID" 2>/dev/null
-  [ -n "${SMTP_REQ_PID:-}" ] && kill "$SMTP_REQ_PID" 2>/dev/null
-  [ -n "${SMTP_GMAIL_PID:-}" ] && kill "$SMTP_GMAIL_PID" 2>/dev/null
-  rm -rf "$TMP"
+  kill_tree "$APP_PID"
+  kill_tree "$MOCK_PID"
+  kill_tree "$OAUTH_PID"
+  kill_tree "$SMTP_PID"
+  kill_tree "$SMTP_GBK_PID"
+  kill_tree "$SMTP_REQ_PID"
+  kill_tree "$SMTP_GMAIL_PID"
+  # Windows 上被占用的文件删不掉:先补刀再清目录,仍删不掉(极端情况)只提示不报错
+  rm -rf "$TMP" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -90,7 +103,8 @@ code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/")
 assert_eq "首页 200" "$code" "200"
 cfg=$(curl -s "$BASE/api/config")
 assert_contains "config 返回版本" "$cfg" '"version":"2.'
-assert_contains "环境自检通过" "$(curl -s "$BASE/api/env-check")" '"allOk":true'
+ecode=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/env-check")
+assert_eq "已安装时环境自检接口关闭(403)" "$ecode" "403"
 assert_contains "config 返回公告字段" "$cfg" '"announcement"'
 hdr=$(curl -s -D - -o /dev/null "$BASE/api/config")
 assert_contains "CSP 头" "$hdr" "Content-Security-Policy:"

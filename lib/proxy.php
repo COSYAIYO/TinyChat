@@ -702,13 +702,41 @@ function tc_http_request($url, $method, $headers, $body, $timeoutMs, $stream = f
     $raw = '';
     if ($stream && is_callable($onChunk)) {
         $errBody = '';
-        curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $data) use ($onChunk, &$status, &$errBody) {
+        $lastOut = microtime(true);
+        // 空闲超时:流式不设总时长上限,但上游连续 N 秒没有任何字节即视为卡死并中止
+        // (原先 TIMEOUT=0,上游挂起会一直占住 PHP worker 直到执行时限)
+        $idleSec = defined('TC_STREAM_IDLE_SEC') ? (int) TC_STREAM_IDLE_SEC : 300;
+        if ($idleSec > 0) {
+            curl_setopt($ch, CURLOPT_LOW_SPEED_LIMIT, 1);
+            curl_setopt($ch, CURLOPT_LOW_SPEED_TIME, $idleSec);
+        }
+        // 进度回调(约每秒触发一次,空闲时也有):空闲时向客户端发 SSE 注释帧(: ping)
+        // 保活,并感知客户端断开 —— 返回非 0 中止 curl,不再为已离开的读者消耗上游。
+        // 心跳仅在 SSE 响应头已发出后进行,避免抢在首字节前输出污染响应头
+        $heartbeat = function () use (&$lastOut) {
+            if (microtime(true) - $lastOut < 15 || headers_sent() === false) return;
+            $lastOut = microtime(true);
+            echo ": ping\n\n";
+            if (function_exists('ob_flush')) @ob_flush();
+            flush();
+        };
+        $progress = function () use ($heartbeat) {
+            $heartbeat();
+            return connection_aborted() ? 1 : 0;
+        };
+        curl_setopt($ch, CURLOPT_NOPROGRESS, false);
+        if (defined('CURLOPT_XFERINFOFUNCTION')) curl_setopt($ch, CURLOPT_XFERINFOFUNCTION, $progress);
+        elseif (defined('CURLOPT_PROGRESSFUNCTION')) curl_setopt($ch, CURLOPT_PROGRESSFUNCTION, $progress);
+        curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $data) use ($onChunk, &$status, &$errBody, &$lastOut) {
             if (!$status) $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
             if ($status >= 400) {
                 $errBody .= $data;
                 return strlen($data);
             }
-            $onChunk($data);
+            $ret = $onChunk($data);
+            $lastOut = microtime(true);
+            // onChunk 返回 false 或 -1 都表示客户端已断开,中止上游传输
+            if ($ret === false || $ret === -1) return -1;
             return strlen($data);
         });
         $ok = curl_exec($ch);
@@ -2241,6 +2269,90 @@ function tc_settle_stream_charge(&$db, $userId, $provider, $baseCost, $charged, 
     return $trueCost;
 }
 
+// ---- 流式转发的公共扣费/发头/结算块(原先 4 处近乎重复的实现收敛于此) ----
+
+// 扣费:取最新用户记录按实际用量计费,回写余量到 $GLOBALS['_tc_quota_after']
+function tc_stream_charge(&$db, $userId, $provider, $body, $cost, $streamUsage, $purpose, &$charged) {
+    $fresh = null;
+    foreach ($db['users'] as $u) if ((string) $u['id'] === (string) $userId) { $fresh = $u; break; }
+    if (!$fresh) return;
+    $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '', $purpose);
+    tc_touch_user($db, $userId);
+    $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
+}
+
+// X-Oc-* 元信息响应头($withTask=false 用于空流收尾,任务头此前已发过)
+function tc_stream_headers($charged, $citations, $ms, $withTask, $taskId, $format) {
+    header('X-Oc-Cost: ' . $charged);
+    header('X-Oc-Quota: ' . (isset($GLOBALS['_tc_quota_after']) ? $GLOBALS['_tc_quota_after'] : 0));
+    header('X-Oc-Elapsed: ' . $ms);
+    if ($withTask) {
+        header('X-Oc-Task-Id: ' . $taskId);
+        header('X-Oc-Task-Format: ' . $format);
+    }
+    if ($citations) header('X-Oc-Citations: ' . rawurlencode(tc_json_encode($citations)));
+}
+
+// 首字节:扣费 + 落一条日志(收尾回填) + 记模型健康 + 发送 SSE 响应头。返回日志 id
+function tc_stream_begin($user, $provider, $body, $cost, $streamUsage, $ctx, $started, $format, $isStream, $citations, $taskId, &$charged) {
+    $ms = tc_now() - $started;
+    $charged = 0;
+    tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage, $ctx) {
+        tc_stream_charge($db, $user['id'], $provider, $body, $cost, $streamUsage, isset($ctx['purpose']) ? (string) $ctx['purpose'] : '', $charged);
+    });
+    // 扣费落库后立即提交并释放写锁:流式响应要持续几十秒到几分钟,
+    // 若把事务留到请求结束才提交,一个长回复会让全站所有写操作排队
+    // (实测 6 秒流式会让另一名管理员的保存操作阻塞 4 秒以上,长流式直接吃满 busy_timeout)。
+    // 收尾结算(tc_stream_settle)本就在独立事务里,提前提交不影响多退少补。
+    tc_db_commit();
+    $logId = tc_push_log(array_merge(array(
+        'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
+        'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
+        'format' => $format, 'status' => 200, 'ms' => $ms, 'cost' => $charged, 'stream' => $isStream,
+    ), tc_log_chat_meta($body, $format)));
+    tc_note_model_health($provider, $body, true);
+    tc_disable_buffers();
+    header('Content-Type: text/event-stream; charset=utf-8');
+    header('Cache-Control: no-cache, no-transform');
+    header('Connection: keep-alive');
+    tc_stream_headers($charged, $citations, $ms, true, $taskId, $format);
+    return $logId;
+}
+
+// 空流收尾(上游 200 但一个分片都没发):一次扣费 + 记台账 + 输出 [DONE]
+function tc_stream_charge_done($user, $provider, $body, $cost, $streamUsage, $ctx, $started, $citations, &$charged) {
+    $ms = tc_now() - $started;
+    $charged = 0;
+    tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage, $ctx) {
+        tc_stream_charge($db, $user['id'], $provider, $body, $cost, $streamUsage, isset($ctx['purpose']) ? (string) $ctx['purpose'] : '', $charged);
+        tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $charged, $streamUsage['prompt'], $streamUsage['completion']);
+    });
+    header('Content-Type: text/event-stream; charset=utf-8');
+    header('Cache-Control: no-cache, no-transform');
+    tc_stream_headers($charged, $citations, $ms, false, '', '');
+    echo "data: [DONE]\n\n";
+}
+
+// 流结束结算:按实际用量多退少补、写台账、按需把对话落库、回填日志
+function tc_stream_settle($user, $provider, $body, $cost, &$charged, $streamUsage, $streamText, $ctx, $format, $modelStr, $streamLogId) {
+    $saveApiChat = !empty($ctx['saveApiChat']);
+    tc_with_db(true, function (&$db) use ($user, $provider, $cost, &$charged, $streamUsage, $streamText, $body, $saveApiChat, $format, $modelStr) {
+        $final = tc_settle_stream_charge($db, $user['id'], $provider, $cost, $charged, $streamUsage);
+        tc_record_usage_entry($db, $user['id'], $modelStr, $final, $streamUsage['prompt'], $streamUsage['completion']);
+        if ($saveApiChat) {
+            // 传全量历史:落库按「首条用户消息」判断是否同一段上下文,并自动去重
+            $msgs = tc_api_history_messages($body, $format);
+            if ($streamText !== '') $msgs[] = array('role' => 'assistant', 'content' => $streamText);
+            tc_api_append_chat($db, $user['id'], $msgs, array('model' => $modelStr, 'usage' => $streamUsage));
+        }
+    });
+    if ($streamLogId) tc_update_log($streamLogId, array(
+        'reply' => tc_log_clip($streamText, TC_LOG_TEXT_LIMIT),
+        'usage' => array('prompt' => (int) $streamUsage['prompt'], 'completion' => (int) $streamUsage['completion']),
+        'cost' => $charged,
+    ));
+}
+
 function tc_api_proxy($format, $apiKeyOwner = null) {
     $started = tc_now();
     $ctx = tc_with_db(false, function ($db) use ($format, $apiKeyOwner) {
@@ -2457,43 +2569,20 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         $attempt = 0;
         do {
             $attempt++;
-            $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage, &$streamText, &$streamLogId) {
+            $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage, &$streamText, &$streamLogId, $ctx) {
             tc_capture_stream_usage($streamUsage, $chunk, $format);
             tc_capture_stream_text($streamText, $chunk, $format);
             if (!$headersSent) {
                 // First successful bytes: charge then start SSE.
-                $ms = tc_now() - $started;
-                $charged = 0;
-                tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage, $ctx) {
-                    $fresh = null;
-                    foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
-                    if (!$fresh) return;
-                    $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '', isset($ctx['purpose']) ? (string) $ctx['purpose'] : '');
-                    tc_touch_user($db, $user['id']);
-                    $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
-                });
-                $streamLogId = tc_push_log(array_merge(array(
-                    'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
-                    'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
-                    'format' => $format, 'status' => 200, 'ms' => $ms, 'cost' => $charged, 'stream' => $isStream,
-                ), tc_log_chat_meta($body, $format)));
-                tc_note_model_health($provider, $body, true);
-                tc_disable_buffers();
-                header('Content-Type: text/event-stream; charset=utf-8');
-                header('Cache-Control: no-cache, no-transform');
-                header('Connection: keep-alive');
-                header('X-Oc-Cost: ' . $charged);
-                header('X-Oc-Quota: ' . (isset($GLOBALS['_tc_quota_after']) ? $GLOBALS['_tc_quota_after'] : 0));
-                header('X-Oc-Elapsed: ' . $ms);
-                header('X-Oc-Task-Id: ' . $taskId);
-        header('X-Oc-Task-Format: ' . $format);
-                if ($citations) header('X-Oc-Citations: ' . rawurlencode(tc_json_encode($citations)));
+                $streamLogId = tc_stream_begin($user, $provider, $body, $cost, $streamUsage, $ctx, $started, $format, $isStream, $citations, $taskId, $charged);
                 $headersSent = true;
             }
             tc_task_append($taskId, $chunk);
             echo $chunk;
             if (function_exists('ob_flush')) @ob_flush();
             flush();
+            // 客户端已断开:返回非分片长度让 curl 中止上游,避免继续空烧配额
+            if (connection_aborted()) return -1;
         });
             // 密钥回退:认证失败 / 连接失败,且还未向客户端发出任何字节时,换下一把密钥重试
             if ($keyIdx + 1 < count($keyChain) && !$headersSent && tc_key_failure_retryable($res)) {
@@ -2505,27 +2594,17 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             sleep(1);
         } while (true);
 
-        // 流结束:按实际用量与首字节预扣额多退少补,并把最终费用写入台账
-        if ($headersSent) {
-            $modelStr = isset($body['model']) ? $body['model'] : '';
-            $saveApiChat = !empty($ctx['saveApiChat']);
-            tc_with_db(true, function (&$db) use ($user, $modelStr, $provider, $cost, &$charged, $streamUsage, $streamText, $body, $saveApiChat, $format) {
-                $final = tc_settle_stream_charge($db, $user['id'], $provider, $cost, $charged, $streamUsage);
-                tc_record_usage_entry($db, $user['id'], $modelStr, $final, $streamUsage['prompt'], $streamUsage['completion']);
-                if ($saveApiChat) {
-                    // 传全量历史:落库按「首条用户消息」判断是否同一段上下文,并自动去重
-                    $msgs = tc_api_history_messages($body, $format);
-                    if ($streamText !== '') $msgs[] = array('role' => 'assistant', 'content' => $streamText);
-                    tc_api_append_chat($db, $user['id'], $msgs, array('model' => $modelStr, 'usage' => $streamUsage));
-                }
-            });
-            // 回填日志:流式首字节时只落了元信息,收尾补上完整回复与用量
-            if ($streamLogId) tc_update_log($streamLogId, array(
-                'reply' => tc_log_clip($streamText, TC_LOG_TEXT_LIMIT),
-                'usage' => array('prompt' => (int) $streamUsage['prompt'], 'completion' => (int) $streamUsage['completion']),
-                'cost' => $charged,
-            ));
-        }
+    // 流结束:按实际用量与首字节预扣额多退少补,并把最终费用写入台账
+    if ($headersSent && connection_aborted()) {
+        // 客户端已断开(用户取消生成/关闭页面):上游已随写回调中止,
+        // 结算已产生的用量后按取消收尾;上游本身没有错,不记模型失败
+        tc_stream_settle($user, $provider, $body, $cost, $charged, $streamUsage, $streamText, $ctx, $format, isset($body['model']) ? $body['model'] : '', $streamLogId);
+        tc_task_finish($taskId, 'cancelled', '客户端断开');
+        exit;
+    }
+    if ($headersSent) {
+        tc_stream_settle($user, $provider, $body, $cost, $charged, $streamUsage, $streamText, $ctx, $format, isset($body['model']) ? $body['model'] : '', $streamLogId);
+    }
 
         if (!$res['ok']) {
             tc_task_finish($taskId, 'failed', $res['error'] ?? 'upstream_error');
@@ -2567,84 +2646,33 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                 $streamUsage = array('prompt' => 0, 'completion' => 0);
                 $streamText = '';
                 $streamLogId = 0;
-                $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$errorBuf, &$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage, &$streamText, &$streamLogId) {
+                $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage, &$streamText, &$streamLogId, $ctx) {
                     tc_capture_stream_usage($streamUsage, $chunk, $format);
                     tc_capture_stream_text($streamText, $chunk, $format);
                     if (!$headersSent) {
-                        $ms = tc_now() - $started;
-                        $charged = 0;
-                        tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage, $ctx) {
-                            $fresh = null;
-                            foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
-                            if (!$fresh) return;
-                            $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '', isset($ctx['purpose']) ? (string) $ctx['purpose'] : '');
-                            tc_touch_user($db, $user['id']);
-                            $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
-                        });
-                        $streamLogId = tc_push_log(array_merge(array(
-                            'kind' => 'chat', 'userName' => $user['name'], 'userId' => $user['id'],
-                            'provider' => $provider['name'], 'model' => isset($body['model']) ? $body['model'] : '',
-                            'format' => $format, 'status' => 200, 'ms' => $ms, 'cost' => $charged, 'stream' => $isStream,
-                        ), tc_log_chat_meta($body, $format)));
-                        tc_note_model_health($provider, $body, true);
-                        tc_disable_buffers();
-                        header('Content-Type: text/event-stream; charset=utf-8');
-                        header('Cache-Control: no-cache, no-transform');
-                        header('Connection: keep-alive');
-                        header('X-Oc-Cost: ' . $charged);
-                        header('X-Oc-Quota: ' . (isset($GLOBALS['_tc_quota_after']) ? $GLOBALS['_tc_quota_after'] : 0));
-                        header('X-Oc-Elapsed: ' . $ms);
-                        header('X-Oc-Task-Id: ' . $taskId);
-                        header('X-Oc-Task-Format: ' . $format);
-                        if ($citations) header('X-Oc-Citations: ' . rawurlencode(tc_json_encode($citations)));
+                        $streamLogId = tc_stream_begin($user, $provider, $body, $cost, $streamUsage, $ctx, $started, $format, $isStream, $citations, $taskId, $charged);
                         $headersSent = true;
                     }
                     tc_task_append($taskId, $chunk);
                     echo $chunk;
                     if (function_exists('ob_flush')) @ob_flush();
                     flush();
+                    if (connection_aborted()) return -1;
                 });
                 if (!empty($res['ok']) && (empty($res['status']) || $res['status'] < 400)) {
                     if (!$headersSent) {
                         tc_task_finish($taskId, 'completed');
-                        $ms = tc_now() - $started;
-                        $charged = 0;
-                        tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage, $ctx) {
-                            $fresh = null;
-                            foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
-                            if (!$fresh) return;
-                            $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '', isset($ctx['purpose']) ? (string) $ctx['purpose'] : '');
-                            tc_touch_user($db, $user['id']);
-                            $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
-                            tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $charged, $streamUsage['prompt'], $streamUsage['completion']);
-                        });
-                        header('Content-Type: text/event-stream; charset=utf-8');
-                        header('Cache-Control: no-cache, no-transform');
-                        header('X-Oc-Cost: ' . $charged);
-                        header('X-Oc-Quota: ' . (isset($GLOBALS['_tc_quota_after']) ? $GLOBALS['_tc_quota_after'] : 0));
-                        header('X-Oc-Elapsed: ' . $ms);
-                        if ($citations) header('X-Oc-Citations: ' . rawurlencode(tc_json_encode($citations)));
-                        echo "data: [DONE]\n\n";
+                        tc_stream_charge_done($user, $provider, $body, $cost, $streamUsage, $ctx, $started, $citations, $charged);
+                        exit;
                     }
-                    if ($headersSent) {
-                        $rModel = isset($body['model']) ? $body['model'] : '';
-                        $saveApiChat2 = !empty($ctx['saveApiChat']);
-                        tc_with_db(true, function (&$db) use ($user, $body, $provider, $cost, &$charged, $streamUsage, $rModel, $streamText, $saveApiChat2, $format) {
-                            $final = tc_settle_stream_charge($db, $user['id'], $provider, $cost, $charged, $streamUsage);
-                            tc_record_usage_entry($db, $user['id'], $rModel, $final, $streamUsage['prompt'], $streamUsage['completion']);
-                            if ($saveApiChat2) {
-                                $msgs = tc_api_history_messages($body, $format);
-                                if ($streamText !== '') $msgs[] = array('role' => 'assistant', 'content' => $streamText);
-                                tc_api_append_chat($db, $user['id'], $msgs, array('model' => $rModel, 'usage' => $streamUsage));
-                            }
-                        });
-                        if ($streamLogId) tc_update_log($streamLogId, array(
-                            'reply' => tc_log_clip($streamText, TC_LOG_TEXT_LIMIT),
-                            'usage' => array('prompt' => (int) $streamUsage['prompt'], 'completion' => (int) $streamUsage['completion']),
-                            'cost' => $charged,
-                        ));
-                        tc_task_finish($taskId, 'completed');
-                    }
+                    tc_stream_settle($user, $provider, $body, $cost, $charged, $streamUsage, $streamText, $ctx, $format, isset($body['model']) ? $body['model'] : '', $streamLogId);
+                    tc_task_finish($taskId, 'completed');
+                    exit;
+                }
+                // 重试流途中客户端断开:按取消结算,不误记模型失败
+                if ($headersSent && connection_aborted()) {
+                    tc_stream_settle($user, $provider, $body, $cost, $charged, $streamUsage, $streamText, $ctx, $format, isset($body['model']) ? $body['model'] : '', $streamLogId);
+                    tc_task_finish($taskId, 'cancelled', '客户端断开');
                     exit;
                 }
             }
@@ -2663,24 +2691,7 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         }
         if (!$headersSent) {
             tc_task_finish($taskId, 'completed');
-            $ms = tc_now() - $started;
-            $charged = 0;
-            tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage, $ctx) {
-                $fresh = null;
-                foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
-                if (!$fresh) return;
-                $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '', isset($ctx['purpose']) ? (string) $ctx['purpose'] : '');
-                tc_touch_user($db, $user['id']);
-                $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
-                tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $cost, $streamUsage['prompt'], $streamUsage['completion']);
-            });
-            header('Content-Type: text/event-stream; charset=utf-8');
-            header('Cache-Control: no-cache, no-transform');
-            header('X-Oc-Cost: ' . $charged);
-            header('X-Oc-Quota: ' . (isset($GLOBALS['_tc_quota_after']) ? $GLOBALS['_tc_quota_after'] : 0));
-            header('X-Oc-Elapsed: ' . $ms);
-            if ($citations) header('X-Oc-Citations: ' . rawurlencode(tc_json_encode($citations)));
-            echo "data: [DONE]\n\n";
+            tc_stream_charge_done($user, $provider, $body, $cost, $streamUsage, $ctx, $started, $citations, $charged);
         }
         if ($headersSent) tc_task_finish($taskId, 'completed');
         exit;

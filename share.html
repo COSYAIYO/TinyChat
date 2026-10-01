@@ -15,17 +15,18 @@
 <meta name="twitter:card" content="summary">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./logo-icon.svg">
-<link rel="stylesheet" href="/static/css/style.css?v=20261007.36">
-<link rel="stylesheet" href="/vendor/highlight/github.min.css" id="hljs-theme">
-<link rel="stylesheet" href="/vendor/katex/katex.min.css">
-<link rel="stylesheet" href="/static/css/enhanced.css?v=20261007.36">
-<link rel="stylesheet" href="/static/css/refine.css?v=20261007.36">
-<link rel="stylesheet" href="/static/css/redesign.css?v=20261007.36">
-<link rel="stylesheet" href="/static/css/polish.css?v=20261007.36">
-<link rel="stylesheet" href="/static/css/markdown.css?v=20261007.36">
-<link rel="stylesheet" href="/static/css/chrome.css?v=20261007.36">
+<link rel="stylesheet" href="/static/css/style.min.css?v=2.0.78">
+<link rel="stylesheet" href="/vendor/highlight/github.min.css?v=2.0.78" id="hljs-theme">
+<link rel="stylesheet" href="/vendor/katex/katex.min.css?v=2.0.78">
+<link rel="stylesheet" href="/static/css/enhanced.min.css?v=2.0.78">
+<link rel="stylesheet" href="/static/css/refine.min.css?v=2.0.78">
+<link rel="stylesheet" href="/static/css/redesign.min.css?v=2.0.78">
+<link rel="stylesheet" href="/static/css/polish.min.css?v=2.0.78">
+<link rel="stylesheet" href="/static/css/markdown.min.css?v=2.0.78">
+<link rel="stylesheet" href="/static/css/chrome.min.css?v=2.0.78">
+<script src="/static/js/theme-boot.min.js?v=2.0.78"></script>
 <!-- 性能门控:按后台设置决定是否加载渲染依赖(markdown-it 始终加载;KaTeX/highlight 可关) -->
-<script src="/static/js/perf.js?v=20261007.36"></script>
+<script src="/static/js/perf.min.js?v=2.0.78"></script>
 </head>
 <body class="share-page">
   <header class="share-top">
@@ -38,21 +39,12 @@
   <main class="share-main" id="share-root">
     <p class="muted">正在加载分享…</p>
   </main>
-  <script src="/static/js/config.js?v=20261007.36"></script>
-  <script src="/static/js/icons.js?v=20261007.36"></script>
-  <script src="/static/js/renderer.js?v=20261007.36"></script>
-  <script src="/static/js/office-formula-copy.js?v=20261007.36"></script>
+  <script defer src="/static/js/config.min.js?v=2.0.78"></script>
+  <script defer src="/static/js/icons.min.js?v=2.0.78"></script>
+  <script defer src="/static/js/renderer.min.js?v=2.0.78"></script>
+  <script defer src="/static/js/office-formula-copy.min.js?v=2.0.78"></script>
   <script>
     (function () {
-      const saved = localStorage.getItem('oc_theme');
-      const theme = saved === 'dark' || saved === 'light'
-        ? saved
-        : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-      document.documentElement.setAttribute('data-theme', theme);
-      // 代码高亮主题必须跟 data-theme 一起切,否则深色访客会看到深色页面贴一块白底代码块
-      const hljsLink = document.getElementById('hljs-theme');
-      if (hljsLink) hljsLink.setAttribute('href', '/vendor/highlight/' + (theme === 'dark' ? 'github-dark.min.css' : 'github.min.css'));
-
       const LOGO = '<img src="/logo.svg" class="brand-logo-light avatar-logo-img" alt="">'
         + '<img src="/logo-dark.svg" class="brand-logo-dark avatar-logo-img" alt="">';
       const root = document.getElementById('share-root');

@@ -89,20 +89,9 @@
 }
 
 /* ---------- 基础 ---------- */
-@font-face {
-  font-family: "思源宋体";
-  src: url("../SourceHanSerifCN.otf") format("opentype");
-  font-display: swap;
-  font-weight: 200 900;
-  font-style: normal;
-}
-@font-face {
-  font-family: "Times New Roman 内置";
-  src: url("../Times%20New%20Roman.ttf") format("truetype");
-  font-display: swap;
-  font-weight: 400 700;
-  font-style: normal;
-}
+/* 内置字体不再在此整体声明:思源宋体/普惠体已切片为 static/fonts/*.woff2(unicode-range
+   按需下载),由 ui.js 在用户选用时注入 fonts/*.css;此处的大文件 @font-face 会让
+   浏览器在匹配到族名时下载整包 11MB OTF,已移除。 */
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body { height: 100%; }

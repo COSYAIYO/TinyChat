@@ -576,7 +576,7 @@ function chatViewStamp(chat) {
     chat.id,
     chat.updatedAt || 0,
     msgs.length,
-    chat._showAll ? 1 : 0,
+    chat._visibleCount || 0,
     last ? (last.id || '') + ':' + (last.role || '') + ':' + String(last.content || '').length + ':' + (last._streaming ? 1 : 0) : '',
   ].join('|');
 }
@@ -703,7 +703,7 @@ function renderChatList() {
       if (state.streaming) { stopStreaming(); }
       state.currentChatId = c.id;
       state._scrollHistoryToBottom = true;
-      if (c._showAll) delete c._showAll;
+      if (c._visibleCount != null) delete c._visibleCount;
       renderChatList(); renderMessages(); resetComposer(); updateAssistantChip();
     },
     onDelete: async (c) => {
@@ -974,26 +974,29 @@ function renderMessages() {
   box.innerHTML = '';
   renderEmptyState();
   if (!chat) return;
-  // 长对话分页：最多渲染最近 100 条，提供「加载更早消息」
+  // 长对话分页:默认渲染最近 100 条,「加载更早」每次增量展开 100 条。
+  // 不再一次性渲染全部 —— 几千条消息的会话点一下按钮会连 DOM 带高亮全部重建,直接卡死。
   const MAX_VISIBLE = 100;
   const msgs = chat.messages;
-  if (msgs.length > MAX_VISIBLE) {
+  if (chat._visibleCount == null || chat._visibleCount < MAX_VISIBLE) chat._visibleCount = Math.min(MAX_VISIBLE, msgs.length);
+  if (msgs.length > chat._visibleCount) {
+    const rest = msgs.length - chat._visibleCount;
     const pg = document.createElement('div');
     pg.className = 'msgs-pagination';
     const btn = document.createElement('button');
-    btn.textContent = '↑ 加载更早的 ' + (msgs.length - MAX_VISIBLE) + ' 条消息';
+    btn.textContent = '↑ 加载更早的 ' + Math.min(rest, MAX_VISIBLE) + ' 条消息（还有 ' + rest + ' 条）';
     btn.addEventListener('click', () => {
       const area = $('chat-area');
       const before = area ? area.scrollHeight : 0;
       const top = area ? area.scrollTop : 0;
-      chat._showAll = true;
+      chat._visibleCount = Math.min(chat._visibleCount + MAX_VISIBLE, msgs.length);
       renderMessages();
       if (area) area.scrollTop = top + (area.scrollHeight - before);
     });
     pg.appendChild(btn);
     box.appendChild(pg);
   }
-  const startIdx = chat._showAll ? 0 : Math.max(0, msgs.length - MAX_VISIBLE);
+  const startIdx = Math.max(0, msgs.length - chat._visibleCount);
   for (let i = startIdx; i < msgs.length; i++) {
     if (msgs[i] && msgs[i].role === 'system') continue;
     box.appendChild(buildMsgNode(msgs[i], chat, i));
@@ -1108,8 +1111,9 @@ function renderChatToc() {
 function jumpToRound(idx) {
   const chat = currentChat();
   if (!chat) return;
-  if (!chat._showAll && chat.messages && chat.messages.length > 100) {
-    chat._showAll = true;
+  if (chat.messages && chat.messages.length > (chat._visibleCount || 100)) {
+    // 目标轮次在未展开区时,把可见窗口扩到能覆盖它(按需增量,不整会话全开)
+    chat._visibleCount = Math.max(chat._visibleCount || 100, chat.messages.length - idx);
     renderMessages();
   }
   const node = document.querySelector('#messages .msg[data-idx="' + idx + '"]');
@@ -3589,7 +3593,7 @@ function applyTheme(t) {
   const hljsLink = document.getElementById('hljs-theme');
   const resolved = t === 'dark' ? 'dark' : 'light';
   if (hljsLink) {
-    hljsLink.setAttribute('href', window.API_BASE + '/vendor/highlight/' + (resolved === 'dark' ? 'github-dark.min.css' : 'github.min.css'));
+    hljsLink.setAttribute('href', window.API_BASE + '/vendor/highlight/' + (resolved === 'dark' ? 'github-dark.min.css' : 'github.min.css') + (window.OC_ASSET_V ? '?v=' + encodeURIComponent(window.OC_ASSET_V) : ''));
   }
   if (window.OCRenderer && typeof window.OCRenderer.syncMermaidTheme === 'function') {
     window.OCRenderer.syncMermaidTheme();
@@ -5325,12 +5329,7 @@ $('admin-link').addEventListener('click', () => location.href = apiUrl('/admin')
 
 // ============ 全站公告 ============
 (function initAnnouncement() {
-  // PWA:注册 service worker(静态资源离线缓存,"添加到主屏幕")
-  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register(apiUrl('sw.js')).catch(() => {});
-    });
-  }
+  // PWA 的 service worker 注册已提前到 theme-boot.js(head 内,静态资源更早进入离线缓存)
   const modal = $('announce-modal');
   if (!modal) return;
   let current = null;

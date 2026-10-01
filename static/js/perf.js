@@ -30,7 +30,9 @@
   // 分享页在 /s/ 路径下,资源用绝对路径;主站用相对路径。
   var base = (location.pathname.indexOf('/s/') === 0) ? '/vendor/' : './vendor/';
   function ws(path) {
-    document.write('<script defer src="' + base + path + '"><\/script>');
+    // 静态资源走长缓存,发版靠 ?v= 刷新(theme-boot.js 从自身 URL 提取版本)
+    var v = window.OC_ASSET_V ? '?v=' + encodeURIComponent(window.OC_ASSET_V) : '';
+    document.write('<script defer src="' + base + path + v + '"><\/script>');
   }
   ws('markdown-it/markdown-it.min.js');
   ws('markdown-it/markdown-it-footnote.min.js');

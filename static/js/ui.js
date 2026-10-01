@@ -293,6 +293,8 @@
     requestAnimationFrame(() => el.classList.add('show'));
     if (modalStack.indexOf(el) === -1) modalStack.push(el);
     document.body.classList.add('modal-open');
+    // 记住触发元素,关闭时把焦点还给它(键盘/读屏用户不再被丢回 body)
+    el._prevFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     // 默认焦点优先落在输入框,其次是主操作按钮;绝不落在右上角关闭(X)等图标按钮上,
     // 否则弹窗一打开关闭按钮就带着焦点高亮,视觉上像是被"选中"了。
     const pick = [
@@ -325,6 +327,12 @@
     const i = modalStack.indexOf(el);
     if (i >= 0) modalStack.splice(i, 1);
     if (!modalStack.length) document.body.classList.remove('modal-open');
+    // 焦点归还触发元素;触发元素已从 DOM 移除时(如重渲染后的列表项)跳过
+    const prev = el._prevFocus;
+    el._prevFocus = null;
+    if (prev && prev.isConnected) {
+      setTimeout(() => { try { prev.focus({ preventScroll: true }); } catch (e) {} }, 60);
+    }
     if (typeof el._onClose === 'function') el._onClose();
   };
   UI.isModalOpen = function () { return modalStack.length > 0; };
@@ -462,7 +470,7 @@
     document.documentElement.setAttribute('data-theme', resolved);
     localStorage.setItem('oc_theme', resolved); // 兼容旧逻辑
     const link = document.getElementById('hljs-theme');
-    if (link) link.setAttribute('href', (window.API_BASE || '') + HLJS[resolved]);
+    if (link) link.setAttribute('href', (window.API_BASE || '') + HLJS[resolved] + (window.OC_ASSET_V ? '?v=' + encodeURIComponent(window.OC_ASSET_V) : ''));
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) meta.setAttribute('content', resolved === 'dark' ? '#000000' : '#ffffff');
     if (window.OCRenderer && typeof window.OCRenderer.syncMermaidTheme === 'function') {
@@ -558,12 +566,29 @@ UI.toggleTheme = function () {
     catch (e) { return './static/' + name; }
   }
   const BUILTIN_FONT_FILES = {
-    'source-han-serif': ['SourceHanSerifCN.otf', 'opentype'],
-    'times-new-roman': ['Times New Roman.ttf', 'truetype'],
-    'alibaba-puhuiti': ['AlibabaPuHuiTi.ttf', 'truetype'],
-    helvetica: ['Helvetica.ttf', 'truetype'],
-    'alibaba-sans': ['AlibabaSans.ttf', 'truetype'],
+    // CJK 字体是切片分包(woff2 + unicode-range),由 fonts/*.css 声明;
+    // 拉丁字体为单文件 woff2。
+    'source-han-serif': { css: 'fonts/SourceHanSerifCN.css' },
+    'alibaba-puhuiti': { css: 'fonts/AlibabaPuHuiTi.css' },
+    'times-new-roman': ['fonts/TimesNewRoman.woff2', 'woff2'],
+    helvetica: ['fonts/Helvetica.woff2', 'woff2'],
+    'alibaba-sans': ['fonts/AlibabaSans.woff2', 'woff2'],
   };
+  // 切片字体 CSS 只注入一次;链接带 OC_ASSET_V(theme-boot.js 从自身 ?v= 提取)做缓存刷新
+  const FONT_CSS_LINKED = {};
+  function ensureFontCss(key) {
+    if (FONT_CSS_LINKED[key]) return;
+    const def = BUILTIN_FONT_FILES[key];
+    if (!def || !def.css) return;
+    FONT_CSS_LINKED[key] = true;
+    try {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = fontAsset(def.css) + (window.OC_ASSET_V ? '?v=' + encodeURIComponent(window.OC_ASSET_V) : '');
+      document.head.appendChild(link);
+    } catch (e) { /* 注入失败时退回系统字体 */ }
+  }
+  // 返回 @font-face 的 src 值;切片字体返回 null(改由外部 CSS 提供 unicode-range 分片)
   function fontSource(value, kind) {
     const name = String(value == null ? '' : value).trim();
     const builtin = BUILTIN_FONT_FILES[name];
@@ -571,6 +596,7 @@ UI.toggleTheme = function () {
       ? name === 'source-han-serif' || name === 'alibaba-puhuiti'
       : name === 'times-new-roman' || name === 'helvetica' || name === 'alibaba-sans';
     if (builtin && allowed) {
+      if (builtin.css) { ensureFontCss(name); return null; }
       return 'url("' + cssString(fontAsset(builtin[0])) + '") format("' + builtin[1] + '")';
     }
     if (name === 'system' || !name) {
@@ -586,12 +612,15 @@ UI.toggleTheme = function () {
       document.head.appendChild(styleEl);
     }
     const family = 'TinyChat Text';
-    styleEl.textContent = '@font-face {'
+    const face = (src, range) => '@font-face {'
       + 'font-family:"' + family + '";font-style:normal;font-weight:200 900;font-display:swap;'
-      + 'src:' + fontSource(cjkValue, 'cjk') + ';unicode-range:' + CJK_UNICODE_RANGE + ';}'
-      + '@font-face {'
-      + 'font-family:"' + family + '";font-style:normal;font-weight:200 900;font-display:swap;'
-      + 'src:' + fontSource(latinValue, 'latin') + ';unicode-range:' + LATIN_UNICODE_RANGE + ';}';
+      + 'src:' + src + ';unicode-range:' + range + ';}';
+    let css = '';
+    const cjkSrc = fontSource(cjkValue, 'cjk');
+    if (cjkSrc) css += face(cjkSrc, CJK_UNICODE_RANGE);
+    const latinSrc = fontSource(latinValue, 'latin');
+    if (latinSrc) css += face(latinSrc, LATIN_UNICODE_RANGE);
+    styleEl.textContent = css;
   }
 
   // 应用外观:字号/字体/主题色 → CSS 变量

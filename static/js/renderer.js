@@ -1542,18 +1542,20 @@ R.render = function (text) {
   function collectFontFaceRules() {
     const out = [];
     const seen = new Set();
-    function walk(rules) {
+    function walk(rules, base) {
       if (!rules) return;
       Array.from(rules).forEach((rule) => {
         const text = String(rule.cssText || '');
         if (/^@font-face/i.test(text.trim()) && !seen.has(text)) {
           seen.add(text);
-          out.push(text);
-        } else if (rule.cssRules) walk(rule.cssRules);
+          // 记录规则所属样式表地址:url() 的相对路径要相对它解析,
+          // 不能统一按 document.baseURI(外链字体 CSS 会解析错)
+          out.push({ text: text, base: base });
+        } else if (rule.cssRules) walk(rule.cssRules, base);
       });
     }
     Array.from(document.styleSheets || []).forEach((sheet) => {
-      try { walk(sheet.cssRules); } catch (e) {}
+      try { walk(sheet.cssRules, sheet.href || document.baseURI); } catch (e) {}
     });
     return out;
   }
@@ -1581,34 +1583,39 @@ R.render = function (text) {
       return m;
     });
     const rules = collectFontFaceRules().filter((rule) => {
-      const match = rule.match(/font-family\s*:\s*(?:"([^"]+)"|'([^']+)'|([^;]+))/i);
+      const match = rule.text.match(/font-family\s*:\s*(?:"([^"]+)"|'([^']+)'|([^;]+))/i);
       const name = String(match && (match[1] || match[2] || match[3]) || '').trim().toLowerCase();
       return familyNames.has(name);
     });
-    let css = rules.join('\n').replace(/font-display\s*:\s*swap/gi, 'font-display:block');
-    const urls = [];
-    const re = /url\(\s*(?:"([^"]+)"|'([^']+)'|([^\)\s]+))\s*\)/gi;
-    css.replace(re, (whole, quoted1, quoted2, bare) => {
-      const raw = quoted1 || quoted2 || bare || '';
-      if (raw && !/^data:|^blob:|^local\(/i.test(raw)) urls.push(raw);
-      return whole;
+    let css = rules.map((rule) => rule.text).join('\n').replace(/font-display\s*:\s*swap/gi, 'font-display:block');
+    const urlRe = /url\(\s*(?:"([^"]+)"|'([^']+)'|([^\)\s]+))\s*\)/gi;
+    // 每条规则记录了自己的解析基准,先按规则收集 url,再逐个转 data URL
+    const urlJobs = [];
+    rules.forEach((rule) => {
+      urlRe.lastIndex = 0;
+      rule.text.replace(urlRe, (whole, quoted1, quoted2, bare) => {
+        const raw = quoted1 || quoted2 || bare || '';
+        if (raw && !/^data:|^blob:|^local\(/i.test(raw)) urlJobs.push({ raw: raw, base: rule.base });
+        return whole;
+      });
     });
     const replacements = new Map();
-    await Promise.all(Array.from(new Set(urls)).map(async (raw) => {
+    await Promise.all(Array.from(new Set(urlJobs.map((j) => j.raw))).map(async (raw) => {
       try {
-        const absolute = new URL(raw, document.baseURI).href;
+        const job = urlJobs.find((j) => j.raw === raw) || { base: document.baseURI };
+        const absolute = new URL(raw, job.base || document.baseURI).href;
         const data = await fontDataUrl(absolute);
         if (data) replacements.set(raw, data);
       } catch (e) {}
     }));
-    css = css.replace(re, (whole, quoted1, quoted2, bare) => {
+    css = css.replace(urlRe, (whole, quoted1, quoted2, bare) => {
       const raw = quoted1 || quoted2 || bare || '';
       const data = replacements.get(raw);
       return data ? 'url("' + data + '")' : whole;
     });
-    const symbol = await fontDataUrl(assetUrl('Times New Roman.ttf'));
+    const symbol = await fontDataUrl(assetUrl('fonts/TimesNewRoman.woff2'));
     if (symbol) {
-      css += '@font-face{font-family:"TinyChat Export Symbols";src:url("' + symbol + '") format("truetype");font-style:normal;font-weight:400 700;font-display:block;unicode-range:U+2190-21FF;}';
+      css += '@font-face{font-family:"TinyChat Export Symbols";src:url("' + symbol + '") format("woff2");font-style:normal;font-weight:400 700;font-display:block;unicode-range:U+2190-21FF;}';
     }
     return { css: css, family: family, symbol: !!symbol };
   }
