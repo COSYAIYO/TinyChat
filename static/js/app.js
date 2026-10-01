@@ -4544,7 +4544,8 @@ async function saveToolSource(patch) {
     });
   });
 
-  // 注销账号:后台可配置为不允许 / 软注销 / 硬注销,具体文案随模式变化
+  // 注销账号:后台可配置为不允许 / 软注销 / 硬注销。
+  // 确认弹窗只保留一句后果说明,细节不在前台铺陈(追问细节请联系管理员)
   const delAcc = $('acc-delete-account');
   if (delAcc) {
     delAcc.addEventListener('click', async () => {
@@ -4552,11 +4553,11 @@ async function saveToolSource(patch) {
       const hasPwd = !!(state.user && state.user.hasPassword);
       const soft = mode !== 'hard';
       const note = soft
-        ? '将立即清除你的账号资料、全部对话与自建供应商，并把用户名改为「原名-已注销-随机码」；账号记录保留以便追溯。完成后原用户名与原邮箱都可重新注册。'
+        ? '将立即清除你的账号资料、全部对话与自建供应商。'
         : '将立即删除你的账号及其全部数据（对话、自建供应商、API 密钥等），此操作不可恢复。';
       const ok = window.OCUI && window.OCUI.confirm
-        ? await window.OCUI.confirm({ title: '注销账号', message: note + '确定继续？', danger: true, confirmText: '继续注销' })
-        : window.confirm(note + '\n\n确定继续？');
+        ? await window.OCUI.confirm({ title: '注销账号', message: note, danger: true, confirmText: '继续注销' })
+        : window.confirm(note);
       if (!ok) return;
       // 二次确认:有密码验密码,无密码要求手输用户名
       const fields = hasPwd
@@ -4582,19 +4583,12 @@ async function saveToolSource(patch) {
     });
   }
 
-  // 注销入口可见性与文案:后端关掉时不显示
+  // 注销入口可见性:后台关掉时不显示(具体后果在点击后的确认弹窗里说明)
   function renderDeleteAccount() {
     const zone = $('acc-danger-zone');
     if (!zone) return;
     const mode = String((state.config && state.config.accountDeletionMode) || 'soft');
-    if (mode === 'off') { zone.classList.add('hidden'); return; }
-    zone.classList.remove('hidden');
-    const note = $('acc-delete-note');
-    if (note) {
-      note.textContent = mode === 'hard'
-        ? '注销会永久删除你的账号与全部数据（对话、自建供应商、API 密钥），不可恢复。'
-        : '注销会清除你的账号资料、全部对话与自建供应商；用户名会被加上「已注销」标记，之后原名与原邮箱都可重新注册。';
-    }
+    zone.classList.toggle('hidden', mode === 'off');
   }
   window.OCRefreshDeleteAccount = renderDeleteAccount;
   renderDeleteAccount();
