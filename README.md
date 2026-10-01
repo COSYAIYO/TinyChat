@@ -1,7 +1,9 @@
 # TinyChat
 
 **自托管的 AI 对话站点系统**：纯 PHP，上传虚拟主机即可运行——不需要独立的数据库服务（数据存于 PHP 自带的 SQLite）、不需要 Composer / Node / 常驻进程。ChatGPT 风格界面，支持 OpenAI、Anthropic 及各类兼容接口的多模型切换，内置文生图、用户注册、额度计费、兑换码、助手库、联网搜索、游客体验与在线更新——部署一次，即可让团队或朋友注册使用，所有数据都在你自己手里。
+
 **维护中站点：https://tinychat.us.ci/**
+
 开源地址：[github.com/HCARX/TinyChat](https://github.com/HCARX/TinyChat) · License: MIT
 
 ## 目录
