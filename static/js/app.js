@@ -5716,6 +5716,37 @@ async function attachDocument(file, attach) {
   }
   return result;
 }
+// 把一个文件收进待发送附件:读取 → 必要时解析 → 入列。
+// 上传按钮、粘贴、拖拽三条入口共用这一条路径,行为保持一致。
+async function ingestOneFile(file) {
+  if (!file) return false;
+  const attach = await window.OCMultimodal.readFile(file);
+  const ready = await attachDocument(file, attach);
+  if (!ready) return false;
+  if (state.pendingAttachments.indexOf(ready) < 0) state.pendingAttachments.push(ready);
+  renderAttachments();
+  updateSendBtn();
+  return true;
+}
+
+// 批量收取(粘贴/拖拽可能一次带来多个文件):逐个处理,失败逐个提示,不影响其余文件
+async function ingestFiles(files, opts) {
+  const list = Array.from(files || []).filter(Boolean);
+  if (!list.length) return 0;
+  let ok = 0;
+  for (const f of list) {
+    try {
+      if (await ingestOneFile(f)) ok++;
+    } catch (e) {
+      toast('读取「' + (f.name || '文件') + '」失败：' + ((e && e.message) || '未知错误'), true);
+    }
+  }
+  if (ok && opts && opts.toastOnSuccess) {
+    toast(ok === 1 ? ('已添加 ' + (list.length === 1 ? (opts.singleLabel || '附件') : '附件')) : ('已添加 ' + ok + ' 个附件'));
+  }
+  return ok;
+}
+
 (function initUpload() {
   const attachBtn = $('attach-btn');
   if (!attachBtn) return;
@@ -5806,6 +5837,81 @@ async function attachDocument(file, attach) {
       openVideoDialog();
     });
   }
+})();
+
+// ============ 粘贴上传:截图 / 复制的图片或文件直接进附件 ============
+// 只读游客、未登录等状态不做拦截(它们的发送入口本来就会弹登录)。
+(function initPasteUpload() {
+  const inputEl = $('input');
+  if (!inputEl) return;
+  inputEl.addEventListener('paste', (e) => {
+    const dt = e.clipboardData;
+    if (!dt) return;
+    const files = [];
+    // 截图/复制的图片以 file 形式出现在 items 里;某些浏览器只在 files 里给出
+    if (dt.items && dt.items.length) {
+      for (const it of dt.items) {
+        if (!it || it.kind !== 'file') continue;
+        const f = it.getAsFile && it.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (!files.length && dt.files && dt.files.length) files.push(...dt.files);
+    if (!files.length) return; // 纯文本粘贴:交给浏览器默认行为
+    e.preventDefault();
+    ingestFiles(files, { toastOnSuccess: true });
+  });
+})();
+
+// ============ 拖拽上传:把文件拖到输入区或整页任意位置 ============
+// 用计数器抵消子元素冒泡产生的 dragenter/dragleave 抖动,避免遮罩闪烁。
+(function initDropUpload() {
+  const inputEl = $('input');
+  const main = document.querySelector('.main');
+  if (!inputEl) return;
+  let depth = 0;
+  const hasFiles = (e) => {
+    const dt = e && e.dataTransfer;
+    if (!dt) return false;
+    if (dt.types && Array.from(dt.types).indexOf('Files') >= 0) return true;
+    return !!(dt.files && dt.files.length);
+  };
+  const showOverlay = () => {
+    if (!main) return;
+    main.classList.add('drop-active');
+  };
+  const hideOverlay = () => {
+    depth = 0;
+    if (main) main.classList.remove('drop-active');
+  };
+  document.addEventListener('dragenter', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth += 1;
+    showOverlay();
+  });
+  document.addEventListener('dragover', (e) => {
+    if (!hasFiles(e)) return;
+    // 必须 preventDefault,否则浏览器会直接打开文件
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  });
+  document.addEventListener('dragleave', (e) => {
+    if (!hasFiles(e)) return;
+    depth -= 1;
+    if (depth <= 0) hideOverlay();
+  });
+  document.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    hideOverlay();
+    const files = e.dataTransfer ? Array.from(e.dataTransfer.files || []) : [];
+    if (!files.length) return;
+    ingestFiles(files, { toastOnSuccess: true });
+  });
+  // 拖到非文件区域(如整页空白)时不要触发浏览器打开文件
+  ['dragend'].forEach((ev) => document.addEventListener(ev, hideOverlay));
+  window.addEventListener('blur', hideOverlay);
 })();
 
 // ============ 图像生成 ============
