@@ -17,7 +17,13 @@ const state = {
   _followStream: true, // 流式期间是否自动吸底(用户上翻时暂停)
   chats: [], // {id, title, messages: [{role, content}]}
   currentChatId: null,
-  deletedIds: [], // 本端已删除的聊天 id(墓碑,合并云端时排除,防止删除记录复活)
+  // 云同步删除模型(软删除,云端始终留档):
+  //   deletedIds    本端已删、待推送给云端归档的 id(推送成功即清)
+  //   _deletedCopies 本端删除时暂存的对话副本,随推送带给云端留档(本端可能比云端最后一次推送更新)
+  //   serverTombs   云端已删除 id(墓碑),合并/加载时据此排除,保证 A 删 B 也删、旧设备回推不复活
+  deletedIds: [],
+  _deletedCopies: {},
+  serverTombs: null,
   streamToggle: true,
   assistants: [],
   assistantCategories: [],
@@ -549,16 +555,92 @@ function loadChats() {
     }
   }));
   if (healed) saveChats();
-  // 恢复本端删除墓碑(按用户隔离),防止刷新后又被云端合并回来
+  // 恢复删除状态(按用户隔离):
+  //  - 待推送删除(墓碑):刷新后继续把删除同步给云端
+  //  - 被删对话副本:随下次推送带给云端留档
+  //  - 云端墓碑:刷新后立刻把别处删掉的对话从列表里排除,不必等首次拉取
   try {
     const tombs = JSON.parse(localStorage.getItem('oc_chat_tombs_' + state.user.id) || '[]');
     state.deletedIds = Array.isArray(tombs) ? tombs.filter((x) => typeof x === 'string') : [];
   } catch (e) { state.deletedIds = []; }
+  try {
+    const copies = JSON.parse(localStorage.getItem('oc_chat_delcopies_' + state.user.id) || '{}');
+    state._deletedCopies = (copies && typeof copies === 'object' && !Array.isArray(copies)) ? copies : {};
+  } catch (e) { state._deletedCopies = {}; }
+  try {
+    const st = JSON.parse(localStorage.getItem('oc_chat_stombs_' + state.user.id) || '{}');
+    state.serverTombs = (st && typeof st === 'object' && !Array.isArray(st)) ? st : {};
+  } catch (e) { state.serverTombs = {}; }
+  state.chats = state.chats.filter((c) => c && !state.serverTombs[c.id] && !(state.deletedIds || []).includes(c.id));
   state.currentChatId = state.chats[0] ? state.chats[0].id : null;
 }
 function persistTombstones() {
   if (!state.user) return;
-  try { localStorage.setItem('oc_chat_tombs_' + state.user.id, JSON.stringify(state.deletedIds || [])); } catch (e) { /* 忽略 */ }
+  try {
+    // 与推送端点接受的上限一致:更早的删除即便丢了显式清单,
+    // 云端也能从「新列表里没有」推断出来并归档
+    if ((state.deletedIds || []).length > 500) state.deletedIds = state.deletedIds.slice(-500);
+    localStorage.setItem('oc_chat_tombs_' + state.user.id, JSON.stringify(state.deletedIds || []));
+  } catch (e) { /* 忽略 */ }
+}
+function persistDeletedCopies() {
+  if (!state.user) return;
+  try {
+    const entries = Object.entries(state._deletedCopies || {}).slice(-20);
+    state._deletedCopies = Object.fromEntries(entries);
+    localStorage.setItem('oc_chat_delcopies_' + state.user.id, JSON.stringify(state._deletedCopies));
+  } catch (e) { /* 存储已满等场景忽略,删除仍会随列表同步生效 */ }
+}
+function persistServerTombs() {
+  if (!state.user) return;
+  try {
+    // 只保留最近 2000 条(对象键序即写入序),与云端墓碑上限一致,避免本地存储无限膨胀
+    const all = Object.keys(state.serverTombs || {});
+    if (all.length > 2000) {
+      state.serverTombs = Object.fromEntries(all.slice(-2000).map((id) => [id, 1]));
+    }
+    localStorage.setItem('oc_chat_stombs_' + state.user.id, JSON.stringify(state.serverTombs || {}));
+  } catch (e) { /* 忽略 */ }
+}
+// 把云端墓碑合进本端:排除本地列表里对应对话。返回是否有内容被移除(用于决定是否重绘)
+function applyServerTombs(ids) {
+  if (!state.serverTombs || typeof state.serverTombs !== 'object') state.serverTombs = {};
+  const list = Array.isArray(ids) ? ids : Object.keys(ids || {});
+  if (!list.length) return false;
+  let added = false;
+  list.forEach((id) => {
+    if (typeof id !== 'string' || !id) return;
+    if (!state.serverTombs[id]) { state.serverTombs[id] = 1; added = true; }
+  });
+  if (!added) return false;
+  const before = (state.chats || []).length;
+  state.chats = (state.chats || []).filter((c) => c && !state.serverTombs[c.id]);
+  if (state.currentChatId && !state.chats.some((c) => c.id === state.currentChatId)) {
+    state.currentChatId = state.chats[0] ? state.chats[0].id : null;
+  }
+  persistServerTombs();
+  return state.chats.length !== before;
+}
+// 记录一条本端删除:进待推送清单,并暂存对话副本供云端留档
+function markChatDeleted(chat) {
+  if (!chat || !chat.id) return;
+  if (!(state.deletedIds || []).includes(chat.id)) state.deletedIds.push(chat.id);
+  if (!state._deletedCopies || typeof state._deletedCopies !== 'object') state._deletedCopies = {};
+  try {
+    // 只带近期若干条,避免刷新前最后一个大对话把 localStorage 撑满
+    const copy = JSON.parse(JSON.stringify(chat));
+    state._deletedCopies[chat.id] = copy;
+  } catch (e) { /* 结构不可序列化时跳过副本,服务端仍会自行留档 */ }
+  persistTombstones();
+  persistDeletedCopies();
+  // 云端墓碑立即生效:同一页面内的后续合并不会再把它捞回来
+  if (!state.serverTombs || typeof state.serverTombs !== 'object') state.serverTombs = {};
+  state.serverTombs[chat.id] = 1;
+  persistServerTombs();
+}
+// 同步进行中(流式/编辑/群聊回合):此时整套替换 state.chats 会打断正在写的回答
+function syncBusy() {
+  return !!(state.streaming || state._editingMsg || state._groupTurnActive || state.applyingCloudChats);
 }
 
 // 云同步：保存到本地 + 防抖推送云端
@@ -606,6 +688,28 @@ function syncNow() {
   if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
   return pushChatsToCloud();
 }
+// 推送载荷:列表 + 待归档的删除(id 清单 + 本端副本)
+function syncPayload() {
+  const deletedChats = Object.values(state._deletedCopies || {}).slice(0, 20);
+  return JSON.stringify({
+    chats: state.chats,
+    baseRevision: state.chatRevision || 0,
+    deletedIds: state.deletedIds || [],
+    deletedChats,
+  });
+}
+// 推送成功后清掉「已确认归档」的待删清单与副本(服务端返回的墓碑集合整体采纳)
+function ackDeleted(data) {
+  const serverIds = data && data.deletedIds ? Object.keys(data.deletedIds) : [];
+  if (serverIds.length) {
+    applyServerTombs(serverIds);
+  }
+  if ((state.deletedIds || []).length) { state.deletedIds = []; persistTombstones(); }
+  if (state._deletedCopies && Object.keys(state._deletedCopies).length) {
+    state._deletedCopies = {};
+    persistDeletedCopies();
+  }
+}
 async function pushChatsToCloud() {
   syncTimer = null;
   if (state._groupTurnActive) { scheduleCloudSync(); return; } // 群聊回合期间延后推送,回合结束再同步
@@ -613,13 +717,16 @@ async function pushChatsToCloud() {
     const r = await api('/api/sync/chats', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chats: state.chats, baseRevision: state.chatRevision || 0 }),
+      body: syncPayload(),
     });
     const data = await r.json().catch(() => ({}));
     if (r.status === 409) {
-      // 演示还原导致的冲突:整体采纳云端,不做按时间戳合并
+      // 演示还原导致的冲突:整体采纳云端,不做按时间戳合并。
+      // 流式/编辑/群聊回合期间不能整套替换(会把正在写的回答换掉,表现为不出字),延后到空闲再处理。
+      if (syncBusy()) { scheduleCloudSync(); return; }
       if (adoptDemoRevert(data)) return;
       const revision = Number(data.revision) || 0;
+      if (data.deletedIds) applyServerTombs(Object.keys(data.deletedIds));
       const prevId = state.currentChatId;
       const prev = (state.chats || []).find((c) => c.id === prevId) || null;
       const prevStamp = chatViewStamp(prev);
@@ -637,8 +744,8 @@ async function pushChatsToCloud() {
     if (!r.ok) throw new Error('sync failed');
     state.chatRevision = Number(data.revision) || state.chatRevision || 0;
     if (state.user) localStorage.setItem('oc_chat_rev_' + state.user.id, String(state.chatRevision));
-    // 推送成功:服务端已按本端列表落库(含删除),墓碑可清空
-    if ((state.deletedIds || []).length) { state.deletedIds = []; persistTombstones(); }
+    // 推送成功:服务端已按本端列表落库(含删除归档),待删清单可清空
+    ackDeleted(data);
   } catch (e) {
     // 静默失败,下次修改会重试
   }
@@ -648,10 +755,10 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && !state.streaming) pullChatsFromCloud();
 });
 window.addEventListener('focus', () => { if (!state.streaming) pullChatsFromCloud(); });
-// 已打开的页面不会收到焦点事件。只在可见、且没有待上传改动时对一下版本号。
+// 已打开的页面不会收到焦点事件。只在可见、且没有待上传改动、也没有正在进行的生成/编辑时对一下版本号。
 setInterval(() => {
   if (document.visibilityState !== 'visible') return;
-  if (syncTimer || state.streaming || state.applyingCloudChats) return;
+  if (syncTimer || syncBusy()) return;
   pullChatsFromCloud();
 }, 8000);
 window.addEventListener('beforeunload', () => {
@@ -664,7 +771,7 @@ window.addEventListener('beforeunload', () => {
         method: 'POST',
         keepalive: true,
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + state.token },
-        body: JSON.stringify({ chats: state.chats, baseRevision: state.chatRevision || 0 }),
+        body: syncPayload(),
       }).catch(() => {});
     } catch (e) { /* 降级:放弃本次冲刷 */ }
   }
@@ -736,25 +843,29 @@ function adoptDemoRevert(data) {
   const seen = Number(localStorage.getItem(key) || 0);
   if (at <= seen) return false;
   applyCloudChats(data.chats || [], Number(data.revision) || 0);
-  // 服务端已把该账号的对话重置为基准:本地墓碑(待删除清单)随之作废
+  // 服务端已把该账号的对话重置为基准:本地墓碑(待删除清单)与云端墓碑随之作废
   state.deletedIds = [];
+  state._deletedCopies = {};
+  state.serverTombs = {};
   persistTombstones();
+  persistDeletedCopies();
+  persistServerTombs();
   try { localStorage.setItem(key, String(at)); } catch (e) { /* 存储不可用 */ }
   return true;
 }
 
 async function pullChatsFromCloud() {
   if (!state.token || !state.user) return;
-  if (state._groupTurnActive) return; // 群聊回合进行中:避免整体替换 state.chats 丢失成员发言
-  // 正在编辑消息:此时替换 state.chats 会把编辑框连同引用一起作废(输入到一半被清空)。
-  // 编辑结束后的下一次轮询会正常同步。
-  if (state._editingMsg) return;
+  if (syncBusy()) return; // 流式/编辑/群聊回合进行中:整套替换 state.chats 会打断正在写的回答
   try {
     const r = await api('/api/sync/chats');
     if (!r.ok) return;
     const data = await r.json();
+    if (syncBusy()) return;
     if (adoptDemoRevert(data)) return;
     const revision = Number(data.revision) || 0;
+    // 云端墓碑先落地:A 设备删除的对话在这里让本端也删掉(不必等 revision 变化)
+    const tombChanged = data.deletedIds ? applyServerTombs(Object.keys(data.deletedIds)) : false;
     const seen = Number(localStorage.getItem('oc_chat_rev_' + state.user.id) || 0);
     if (revision !== seen) {
       const prevId = state.currentChatId;
@@ -772,12 +883,15 @@ async function pullChatsFromCloud() {
       return;
     }
     const cloud = data.chats || [];
-    if (!cloud.length && !(state.chats || []).length) return;
+    if (!cloud.length && !(state.chats || []).length) {
+      if (tombChanged) { saveChats(); renderChatList(); renderMessages(); }
+      return;
+    }
     const prevId = state.currentChatId;
     const prev = (state.chats || []).find((c) => c.id === prevId) || null;
     const prevStamp = chatViewStamp(prev);
     const merged = mergeChatLists(cloud, state.chats || []);
-    if (merged.length === (state.chats || []).length && chatViewStamp(merged.find((c) => c.id === prevId) || null) === prevStamp) {
+    if (!tombChanged && merged.length === (state.chats || []).length && chatViewStamp(merged.find((c) => c.id === prevId) || null) === prevStamp) {
       const sameIds = merged.every((c, i) => state.chats[i] && state.chats[i].id === c.id && (state.chats[i].updatedAt || 0) === (c.updatedAt || 0) && !!state.chats[i].pinned === !!c.pinned);
       if (sameIds) return;
     }
@@ -792,10 +906,24 @@ async function pullChatsFromCloud() {
   }
 }
 
+// 副本「信息量」:条数 + 可见内容总长。仅用于 updatedAt 完全相同时的决胜,
+// 让更完整的一份胜出(同一会话两个标签页时,旧标签页的短副本不会覆盖新写的长回答)。
+function chatRichness(chat) {
+  if (!chat) return 0;
+  const msgs = chat.messages || [];
+  let n = msgs.length * 1000;
+  for (const m of msgs) {
+    if (!m) continue;
+    n += String(m.content || '').length + String(m.reasoning || '').length;
+  }
+  return n;
+}
+
 function mergeChatLists(cloudChats, localChats) {
   // 合并云端与本端列表:云端有、本端没有的补进来(多端同步);
-  // 但本端**主动删除**的聊天要排除(tombstone),否则删除后再次合并会被云端版本复活。
-  const deleted = new Set(state.deletedIds || []);
+  // 但删除的聊天要排除:本端待推送删除(deletedIds)与云端墓碑(serverTombs)都不能复活,
+  // 否则删除后再次合并会被云端旧副本捞回来。
+  const deleted = new Set([...(state.deletedIds || []), ...Object.keys(state.serverTombs || {})]);
   const cloud = window.OCConversations.normalize(cloudChats || []).filter((c) => !deleted.has(c.id));
   const local = window.OCConversations.normalize(localChats || []).filter((c) => !deleted.has(c.id));
   const merged = cloud.slice();
@@ -805,9 +933,11 @@ function mergeChatLists(cloudChats, localChats) {
       merged.push(lc);
       return;
     }
-    // 时间戳相同也要保留本端副本:回复刚写完、推送还没落地时,两端 updatedAt 一样,
-    // 旧实现取云端副本,刷新后刚生成的回答会被「同一时刻的旧副本」覆盖,从对话里消失。
-    if ((lc.updatedAt || 0) >= (found.updatedAt || 0)) {
+    // 时间戳相同时:保留信息量更大的一份。回复刚写完、推送还没落地时两端 updatedAt 一样,
+    // 取云端旧副本会让刚生成的回答刷新后消失;取本地短副本则会在多标签页时把长回答推回旧版。
+    const lt = lc.updatedAt || 0;
+    const ft = found.updatedAt || 0;
+    if (lt > ft || (lt === ft && chatRichness(lc) >= chatRichness(found))) {
       merged[merged.indexOf(found)] = lc;
     } else if ((found._visibleCount || 0) < (lc._visibleCount || 0)) {
       // 云端副本赢了也不能丢本地已展开的分页进度
@@ -820,6 +950,29 @@ function mergeChatLists(cloudChats, localChats) {
 
 function currentChat() {
   return state.chats.find((c) => c.id === state.currentChatId) || null;
+}
+// 云同步合并会整体替换 state.chats(连同消息对象),而消息操作栏/菜单回调里握着的是
+// 渲染那一刻的对象引用。生成前一律用这两个函数把引用换回「当前列表里的活对象」:
+// 否则写进旧对象的内容画不出来(表现为 @重答/编辑重答不出字),会话也会因为写错对象而丢更新。
+function liveChat(chat) {
+  if (!chat || !chat.id) return currentChat();
+  return (state.chats || []).find((c) => c.id === chat.id) || null;
+}
+function liveMessage(chat, msg) {
+  const live = liveChat(chat);
+  if (!live || !msg) return null;
+  const msgs = live.messages || [];
+  let idx = msgs.indexOf(msg);
+  if (idx >= 0) return { chat: live, msg, idx };
+  // 对象已被替换:先按「旧列表里的位置」取新列表同位置副本,再退回 createdAt+role 匹配
+  const staleIdx = (chat.messages || []).indexOf(msg);
+  const cand = staleIdx >= 0 ? msgs[staleIdx] : null;
+  if (cand && cand.role === msg.role && (!msg.createdAt || !cand.createdAt || cand.createdAt === msg.createdAt)) {
+    return { chat: live, msg: cand, idx: staleIdx };
+  }
+  const hit = msgs.findIndex((m) => m && m.role === msg.role && m.createdAt && msg.createdAt && m.createdAt === msg.createdAt);
+  if (hit >= 0) return { chat: live, msg: msgs[hit], idx: hit };
+  return null;
 }
 // API 对话是否显示在列表:用户偏好(默认开启),关闭后列表只显示网页端对话
 function showApiChats() { return !!uiPref('showApiChats', true); }
@@ -843,15 +996,14 @@ function renderChatList() {
     },
     onDelete: async (c) => {
       const ok = window.OCUI
-        ? await window.OCUI.confirm({ title: '删除对话', message: '确认删除此对话？删除后不可恢复。', danger: true, confirmText: '删除' })
-        : confirm('确认删除此对话?');
+        ? await window.OCUI.confirm({ title: '删除对话', message: '确认删除此对话？删除后本机与其它设备都会同步移除。', danger: true, confirmText: '删除' })
+        : confirm('确认删除此对话？删除后本机与其它设备都会同步移除。');
       if (!ok) return;
       // 正在流式输出的会话被删除:先停止,否则内容会画进切换后的新会话里
       if (state.streaming && state.currentChatId === c.id) stopStreaming();
       state.chats = state.chats.filter((x) => x.id !== c.id);
-      // 记墓碑:避免删除后与云端/其它页面合并时把这条又合并回来
-      if (!state.deletedIds.includes(c.id)) state.deletedIds.push(c.id);
-      persistTombstones();
+      // 软删除:内容进云端留档(管理员可查看/清理),并记墓碑让其它设备同步删除
+      markChatDeleted(c);
       if (state.currentChatId === c.id) state.currentChatId = state.chats[0] ? state.chats[0].id : null;
       saveChats(); renderChatList(); renderMessages();
       syncNow();
@@ -910,9 +1062,9 @@ function renderChatListSimple(list) {
 
 // 分支：从消息处创建（右键/悬浮菜单触发专用）
 function branchFromMessage(msg, chat) {
-  const idx = chat.messages.indexOf(msg);
-  if (idx < 0) return;
-  const branch = window.OCConversations.createBranch(chat, idx);
+  const live = liveMessage(chat, msg);
+  if (!live) return;
+  const branch = window.OCConversations.createBranch(live.chat, live.idx);
   state.chats.unshift(branch);
   state.currentChatId = branch.id;
   saveChats(); renderChatList(); renderMessages(); resetComposer();
@@ -923,9 +1075,10 @@ function branchFromMessage(msg, chat) {
 // 删除单条消息:用于清理无关上下文(用户消息与回答分别删除)
 function deleteMessage(msg, chat) {
   if (!msg || !chat) return;
-  const idx = chat.messages.indexOf(msg);
-  if (idx < 0) return;
-  chat.messages.splice(idx, 1);
+  const live = liveMessage(chat, msg);
+  if (!live) return;
+  chat = live.chat;
+  chat.messages.splice(live.idx, 1);
   chat.updatedAt = Date.now();
   saveChats(); renderChatList(); renderMessages();
   toast('已删除该消息');
@@ -1389,6 +1542,9 @@ function pushReplyVersion(msg) {
 
 function switchReplyVersion(msg, chat, delta) {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+  const live = liveMessage(chat, msg);
+  if (!live) return;
+  chat = live.chat; msg = live.msg;
   const versions = ensureReplyVersions(msg);
   if (versions.length < 2) return;
   persistCurrentReplyVersion(msg);
@@ -1396,7 +1552,7 @@ function switchReplyVersion(msg, chat, delta) {
   if (next === msg.versionIndex) return;
   msg.versionIndex = next;
   applyReplyVersion(msg, versions[next]);
-  if (chat) chat.updatedAt = Date.now();
+  chat.updatedAt = Date.now();
   saveChats();
   renderMessages();
 }
@@ -3103,6 +3259,9 @@ function noteModelFailure(msg, reason) {
 async function continueInterrupted(msg, chat) {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
   if (!msg || !chat) return;
+  const live = liveMessage(chat, msg);
+  if (!live) { toast('找不到这条回答', true); return; }
+  chat = live.chat; msg = live.msg;
   // 通道级故障由请求失败路径统一提示(noteModelFailure),不再对特定模型名一刀切拒绝
   msg.content = stripInterruptMarks(msg.content);
   msg.interrupted = false;
@@ -3117,8 +3276,10 @@ async function continueInterrupted(msg, chat) {
 
 async function regenerateMessage(msg, chat) {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
-  const idx = chat.messages.indexOf(msg);
-  if (idx < 0) return;
+  const live = liveMessage(chat, msg);
+  if (!live) { toast('找不到这条回答', true); return; }
+  chat = live.chat; msg = live.msg;
+  const idx = live.idx;
   chat.messages = chat.messages.slice(0, idx + 1);
   persistCurrentReplyVersion(msg);
   pushReplyVersion(msg);
@@ -3170,9 +3331,14 @@ function editAndResend(msg, chat, msgEl) {
       state._editingMsg = null;
       const next = String(newText || '').trim();
       if (!next) return toast('消息不能为空', true);
+      // 编辑期间列表可能被合并替换过:保存时取回活对象,新回答才会写进画面上的那条消息
+      const live = liveMessage(chat, msg);
+      if (!live) { toast('该消息已不在当前对话中', true); return; }
+      chat = live.chat; msg = live.msg;
+      const at = live.idx;
       msg.content = next;
       if (msg.text !== undefined) msg.text = next;
-      chat.messages = chat.messages.slice(0, idx + 1);
+      chat.messages = chat.messages.slice(0, at + 1);
       chat.messages.push({ role: 'assistant', content: '' });
       chat.updatedAt = Date.now();
       saveChats();
@@ -5055,8 +5221,8 @@ async function saveToolSource(patch) {
   if (clearChats) clearChats.addEventListener('click', async () => {
     if (!state.chats.length) return toast('没有可清空的聊天记录');
     const ok = window.OCUI
-      ? await window.OCUI.confirm({ title: '清空聊天记录', message: '将删除本机与云端的全部对话记录,且不可恢复。确定继续吗?', danger: true, confirmText: '清空' })
-      : confirm('将删除本机与云端的全部对话记录,且不可恢复。确定继续吗?');
+      ? await window.OCUI.confirm({ title: '清空聊天记录', message: '将从本机与云端删除全部对话,所有设备同步清空。确定继续吗?', danger: true, confirmText: '清空' })
+      : confirm('将从本机与云端删除全部对话,所有设备同步清空。确定继续吗?');
     if (!ok) return;
     try {
       const r = await api('/api/sync/chats', { method: 'DELETE' });
@@ -5065,6 +5231,11 @@ async function saveToolSource(patch) {
       state.chats = [];
       state.currentChatId = null;
       state.chatRevision = Number(data.revision) || (Number(state.chatRevision) || 0) + 1;
+      // 服务端已把全部对话归档并立墓碑:本端待推送删除随即作废
+      state.deletedIds = [];
+      state._deletedCopies = {};
+      persistTombstones();
+      persistDeletedCopies();
       localStorage.setItem('oc_chats_' + state.user.id, '[]');
       localStorage.setItem('oc_chat_rev_' + state.user.id, String(state.chatRevision));
       renderChatList();
@@ -7819,12 +7990,15 @@ function enterReadonlyHome() {
 // 切换到指定版本(绝对下标;供消息顶部的模型标签页使用)
 function switchReplyVersionTo(msg, chat, target) {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+  const live = liveMessage(chat, msg);
+  if (!live) return;
+  chat = live.chat; msg = live.msg;
   const versions = ensureReplyVersions(msg);
   if (!Number.isInteger(target) || target < 0 || target >= versions.length || target === msg.versionIndex) return;
   persistCurrentReplyVersion(msg);
   msg.versionIndex = target;
   applyReplyVersion(msg, versions[target]);
-  if (chat) chat.updatedAt = Date.now();
+  chat.updatedAt = Date.now();
   saveChats();
   renderMessages();
 }
@@ -7945,7 +8119,7 @@ function buildReplyTabs(msg, chat) {
 // 打开模型选择菜单:选中后以该模型重答当前问题
 function openAtAnswerModal(msg, chat, anchorBtn) {
   if (!chat) chat = currentChat();
-  if (!msg || chat.messages.indexOf(msg) < 0) return;
+  if (!msg || !chat || chat.messages.indexOf(msg) < 0) return;
   const items = availableModelItems();
   const total = items.reduce((n, g) => n + g.items.length, 0);
   if (!total) { toast('暂无可用模型', true); return; }
@@ -7969,8 +8143,12 @@ async function reanswerWithModel(msg, chat, providerId, modelId) {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
   if (!chat) chat = currentChat();
   if (!msg || !chat) return;
-  const n = chat.messages.indexOf(msg);
-  if (n < 0) { toast('找不到原回答', true); return; }
+  // 菜单打开期间云同步可能整段替换过 state.chats:把引用换回当前列表里的活对象,
+  // 否则新回答写进被丢弃的旧对象,界面上什么都不显示(表现为 @模型重答不出字)。
+  const live = liveMessage(chat, msg);
+  if (!live) { toast('找不到原回答', true); return; }
+  chat = live.chat; msg = live.msg;
+  const n = live.idx;
   if (!chat.messages.slice(0, n).some((m) => m && m.role === 'user')) { toast('找不到原始问题', true); return; }
   if (!providerId || !modelId) return;
   // 同一个模型也可以再答一次:每次 @ 都新开一个标签,再在这个标签里生成

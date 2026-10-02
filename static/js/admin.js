@@ -194,6 +194,15 @@ async function loadStorage() {
     + '<div class="st-row-desc">' + escapeHtml(x[2]) + '</div></div>'
     + '<div class="st-row-val"><button class="btn small st-danger" type="button" data-st-clean="' + x[0] + '">清理</button></div></div>').join('')
     : '<p class="muted small">暂无可清理项。</p>';
+  if ($('st-deleted')) {
+    const del = d.deleted || { count: 0, bytes: 0, users: [] };
+    $('st-deleted').innerHTML = del.count
+      ? '<div class="st-row"><div class="st-row-main"><div class="st-row-name">已删除对话留档（' + del.count + ' 条）</div>'
+        + '<div class="st-row-desc">涉及 ' + (del.users || []).length + ' 个用户 · 估算 ' + fmtBytesBig(del.bytes)
+        + ' · 清理后不可恢复' + (del.users || []).slice(0, 3).map((u) => ' · ' + escapeHtml(u.name) + ' ' + u.count + ' 条').join('') + '</div></div>'
+        + '<div class="st-row-val"><button class="btn small" type="button" id="st-deleted-open">查看 / 清理</button></div></div>'
+      : '<p class="muted small">暂无用户删除的对话。</p>';
+  }
   const fileRow = (f) => '<div class="st-row"><div class="st-row-main"><div class="st-row-name">' + escapeHtml(f.name) + '</div>'
     + '<div class="st-row-desc">' + fmtTime(f.mtime) + '</div></div>'
     + '<div class="st-row-val">' + fmtBytesBig(f.bytes) + '</div></div>';
@@ -204,6 +213,196 @@ async function loadStorage() {
     ? d.backups.items.map(fileRow).join('') + (d.backups.count > d.backups.items.length ? '<p class="muted small">仅显示最近 ' + d.backups.items.length + ' 个，共 ' + d.backups.count + ' 个。</p>' : '')
     : '<p class="muted small">暂无备份文件（可在「版本更新」页开启自动备份）。</p>';
 }
+// ============ 用户删除的对话（云端留档）查看 / 批量清理 ============
+let DC_PAGE = 1;
+let DC_DATA = { items: [], total: 0, pageSize: 50 };
+const DC_SELECTED = new Set(); // 'userId\nchatId'
+function dcKey(it) { return it.userId + '\n' + it.chatId; }
+function dcOpenModal() {
+  const modal = $('deleted-chats-modal');
+  if (!modal) return;
+  if (window.OCUI) window.OCUI.openModal(modal);
+  else modal.classList.remove('hidden');
+}
+function dcCloseModal() {
+  const modal = $('deleted-chats-modal');
+  if (!modal) return;
+  if (window.OCUI) window.OCUI.closeModal(modal);
+  else modal.classList.add('hidden');
+}
+async function loadDeletedChats(page) {
+  const content = $('deleted-chats-content');
+  if (!content) return;
+  if (page) DC_PAGE = page;
+  content.innerHTML = '<p class="muted small" style="text-align:center;padding:24px 0">加载中…</p>';
+  try {
+    const q = $('dc-search');
+    const kw = q ? q.value.trim() : '';
+    const url = '/api/admin/chats/deleted?page=' + DC_PAGE + '&pageSize=50' + (kw ? '&q=' + encodeURIComponent(kw) : '');
+    const r = await api(url);
+    const d = await readJsonSafe(r);
+    if (!r.ok) throw new Error((d.error && d.error.message) || '加载失败');
+    DC_DATA = { items: d.items || [], total: d.total || 0, pageSize: d.pageSize || 50 };
+    // 清掉不在当前结果里的选中项
+    const valid = new Set(DC_DATA.items.map(dcKey));
+    Array.from(DC_SELECTED).forEach((k) => { if (!valid.has(k)) DC_SELECTED.delete(k); });
+    renderDeletedChats();
+  } catch (e) {
+    content.innerHTML = '<p class="muted small" style="text-align:center;padding:24px 0">加载失败：' + escapeHtml(e.message || '') + '</p>';
+  }
+}
+function renderDeletedChats() {
+  const content = $('deleted-chats-content');
+  if (!content) return;
+  const items = DC_DATA.items || [];
+  if (!items.length) {
+    content.innerHTML = '<p class="muted small" style="text-align:center;padding:24px 0">' + (DC_PAGE > 1 ? '本页没有记录' : '暂无用户删除的对话') + '</p>';
+  } else {
+    content.innerHTML = items.map((it) => {
+      const k = dcKey(it);
+      const when = it.deletedAt ? it.deletedAt : it.updatedAt;
+      return '<div class="st-row"><div class="st-row-main">'
+        + '<label class="user-form-admin" style="margin:0"><span class="switch"><input type="checkbox" class="dc-pick" data-k="' + escapeHtml(k) + '"' + (DC_SELECTED.has(k) ? ' checked' : '') + '><span class="slider"></span></span>'
+        + '<span class="st-row-name">' + escapeHtml(it.title || '新对话') + (it.pinned ? ' · 置顶' : '') + '</span></label>'
+        + '<div class="st-row-desc">' + escapeHtml(it.userName) + ' · ' + (it.messageCount || 0) + ' 条消息 · 删除于 ' + (when ? fmtTime(when) : '—')
+        + (it.preview ? '<br>' + escapeHtml(it.preview) + (it.preview.length >= 80 ? '…' : '') : '') + '</div></div>'
+        + '<div class="st-row-val"><button class="btn small" type="button" data-dc-view="' + escapeHtml(k) + '">查看</button></div></div>';
+    }).join('');
+  }
+  const info = $('dc-page-info');
+  if (info) info.textContent = DC_DATA.total ? ('共 ' + DC_DATA.total + ' 条 · 第 ' + DC_PAGE + ' 页 / 共 ' + Math.max(1, Math.ceil(DC_DATA.total / DC_DATA.pageSize)) + ' 页') : '';
+  const prev = $('dc-prev');
+  const next = $('dc-next');
+  if (prev) prev.disabled = DC_PAGE <= 1;
+  if (next) next.disabled = DC_PAGE >= Math.ceil(DC_DATA.total / DC_DATA.pageSize);
+  const sel = $('dc-purge-selected');
+  if (sel) { sel.disabled = DC_SELECTED.size === 0; sel.textContent = DC_SELECTED.size ? ('清理所选 (' + DC_SELECTED.size + ')') : '清理所选'; }
+}
+// 单条全文查看(与用户对话历史同样的 Markdown/思维链渲染)
+async function viewDeletedChat(key) {
+  const modal = $('deleted-chat-view-modal');
+  const content = $('deleted-chat-view-content');
+  if (!modal || !content) return;
+  const parts = String(key).split('\n');
+  const userId = parts[0];
+  const chatId = parts.slice(1).join('\n');
+  if (window.OCUI) window.OCUI.openModal(modal); else modal.classList.remove('hidden');
+  $('deleted-chat-view-title').textContent = '对话详情';
+  content.innerHTML = '<p class="muted small" style="text-align:center;padding:24px 0">加载中…</p>';
+  try {
+    const r = await api('/api/admin/chats/deleted/view?userId=' + encodeURIComponent(userId) + '&chatId=' + encodeURIComponent(chatId));
+    const d = await readJsonSafe(r);
+    if (!r.ok) throw new Error((d.error && d.error.message) || '加载失败');
+    const c = d.chat;
+    if (!c) { content.innerHTML = '<p class="muted small">该留档已被清理</p>'; return; }
+    $('deleted-chat-view-title').textContent = (c.title || '对话') + ' · ' + ((d.user && d.user.name) || '');
+    const renderMarkdown = (el, text) => {
+      if (window.OCRenderer && OCRenderer.renderInto) {
+        try { OCRenderer.renderInto(el, String(text || '')); return; } catch (e) { /* 回退纯文本 */ }
+      }
+      el.textContent = String(text || '');
+    };
+    const msgs = (c.messages || []).map((m) => {
+      const who = m.role === 'user' ? '用户' : (m.role === 'system' ? '系统' : 'AI');
+      const err = m.error ? ' <span class="log-badge err">失败</span>' : '';
+      const reasoning = m.reasoning
+        ? '<details class="chat-reasoning"><summary>思维链</summary><div class="chat-reasoning-body"></div></details>'
+        : '';
+      return '<div class="chat-msg ' + (m.role === 'user' ? 'u' : 'a') + '"><span class="chat-msg-who">' + who + escapeHtml(m.model ? ' · ' + m.model : '') + err + '</span>'
+        + reasoning
+        + '<div class="chat-msg-text md-prose" data-md></div></div>';
+    }).join('');
+    content.innerHTML = '<div class="muted small" style="margin-bottom:8px">删除时间：' + (d.deletedAt ? fmtTime(d.deletedAt) : '—')
+      + ' · ' + (c.messages || []).length + ' 条消息</div><div class="chat-detail"><div class="chat-detail-msgs">' + msgs + '</div></div>';
+    let mi = 0;
+    (c.messages || []).forEach((m) => {
+      const root = content.querySelectorAll('[data-md]')[mi++];
+      if (!root) return;
+      renderMarkdown(root, m.content);
+      if (m.reasoning) {
+        const rb = root.closest('.chat-msg') ? root.closest('.chat-msg').querySelector('.chat-reasoning-body') : null;
+        if (rb) renderMarkdown(rb, m.reasoning);
+      }
+    });
+  } catch (e) {
+    content.innerHTML = '<p class="muted small">加载失败：' + escapeHtml(e.message || '') + '</p>';
+  }
+}
+async function purgeDeletedChats(payload, confirmMsg) {
+  const ok = window.OCUI && window.OCUI.confirm
+    ? await window.OCUI.confirm({ title: '清理留档', message: confirmMsg, danger: true, confirmText: '清理' })
+    : window.confirm(confirmMsg);
+  if (!ok) return;
+  try {
+    const r = await api('/api/admin/chats/deleted/purge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const d = await readJsonSafe(r);
+    if (!r.ok) throw new Error((d.error && d.error.message) || '清理失败');
+    DC_SELECTED.clear();
+    toast('已清理 ' + (d.removed || 0) + ' 条留档，释放 ' + fmtBytesBig(d.freedBytes || 0));
+    await loadDeletedChats(1);
+    await loadStorage();
+  } catch (e) {
+    toast('清理失败：' + (e.message || ''), true);
+  }
+}
+(function initDeletedChats() {
+  // 存储管理页里的入口按钮是动态渲染的:用委托绑定
+  const st = $('st-deleted');
+  if (st) st.addEventListener('click', (e) => {
+    if (e.target.closest('#st-deleted-open')) { DC_PAGE = 1; DC_SELECTED.clear(); dcOpenModal(); loadDeletedChats(1); }
+  });
+  const close = $('deleted-chats-close');
+  if (close) close.addEventListener('click', dcCloseModal);
+  const modal = $('deleted-chats-modal');
+  if (modal) modal.addEventListener('click', (e) => { if (e.target === modal) dcCloseModal(); });
+  const viewModal = $('deleted-chat-view-modal');
+  const viewClose = $('deleted-chat-view-close');
+  if (viewClose) viewClose.addEventListener('click', () => {
+    if (window.OCUI) window.OCUI.closeModal(viewModal); else viewModal.classList.add('hidden');
+  });
+  if (viewModal) viewModal.addEventListener('click', (e) => { if (e.target === viewModal) { if (window.OCUI) window.OCUI.closeModal(viewModal); else viewModal.classList.add('hidden'); } });
+  const content = $('deleted-chats-content');
+  if (content) {
+    content.addEventListener('change', (e) => {
+      const pick = e.target.closest('.dc-pick');
+      if (!pick) return;
+      const k = pick.getAttribute('data-k');
+      if (pick.checked) DC_SELECTED.add(k); else DC_SELECTED.delete(k);
+      renderDeletedChats();
+    });
+    content.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-dc-view]');
+      if (!btn) return;
+      viewDeletedChat(btn.getAttribute('data-dc-view'));
+    });
+  }
+  const search = $('dc-search');
+  if (search) search.addEventListener('input', () => { clearTimeout(search._t); search._t = setTimeout(() => loadDeletedChats(1), 300); });
+  const reload = $('dc-reload');
+  if (reload) reload.addEventListener('click', () => loadDeletedChats(DC_PAGE));
+  const prev = $('dc-prev');
+  if (prev) prev.addEventListener('click', () => { if (DC_PAGE > 1) loadDeletedChats(DC_PAGE - 1); });
+  const next = $('dc-next');
+  if (next) next.addEventListener('click', () => loadDeletedChats(DC_PAGE + 1));
+  const sel = $('dc-purge-selected');
+  if (sel) sel.addEventListener('click', () => {
+    const items = Array.from(DC_SELECTED).map((k) => {
+      const p = k.split('\n');
+      return { userId: p[0], chatId: p.slice(1).join('\n') };
+    });
+    if (!items.length) return;
+    const withTombs = !!($('dc-with-tombs') && $('dc-with-tombs').checked);
+    purgeDeletedChats({ items: items, withTombstones: withTombs },
+      '确认清理选中的 ' + items.length + ' 条留档？清理后不可恢复。' + (withTombs ? '（将同时删除墓碑）' : ''));
+  });
+  const all = $('dc-purge-all');
+  if (all) all.addEventListener('click', () => {
+    const withTombs = !!($('dc-with-tombs') && $('dc-with-tombs').checked);
+    purgeDeletedChats({ all: true, withTombstones: withTombs },
+      '确认清空全部用户删除的对话留档？所有用户的留档都会被删除，且不可恢复。' + (withTombs ? '（将同时删除墓碑）' : ''));
+  });
+})();
+
 (function initStoragePanel() {
   const b = $('st-refresh');
   if (b) b.addEventListener('click', () => { b.disabled = true; Promise.resolve(loadStorage()).then(() => { b.disabled = false; }); });
@@ -2780,7 +2979,12 @@ function asstIcon(name) {
 function asstCatMark(c) {
   if (!c) return '';
   if (asstIsEmoji(c.icon)) return c.icon;
-  return ({ 'ac-academic': '📚', 'ac-code': '💻', 'ac-life': '🌿', 'ac-write': '✍️', 'ac-study': '🎓' })[c.id] || '';
+  return ({
+    'ac-present': '🎨', 'ac-academic': '📚', 'ac-code': '💻', 'ac-life': '🌿',
+    'ac-write': '✍️', 'ac-study': '🎓', 'ac-as-ai': '🤖', 'ac-as-mind': '🧠',
+    'ac-as-social': '💬', 'ac-as-philosophy': '🏛️', 'ac-as-language': '🌐',
+    'ac-as-comments': '⭐', 'ac-as-company': '🏢', 'ac-as-tool': '🧰', 'ac-as-games': '🎲',
+  })[c.id] || '';
 }
 
 function setAsstCatSelect(id) {
@@ -2808,11 +3012,14 @@ function bindAsstCatSelect() {
 function renderAssistantCats() {
   const el = $('asst-cats');
   if (!el) return;
-  const tabs = [{ id: 'all', name: '全部', count: ASST_ITEMS.length }]
-    .concat(ASST_CATS.map((c) => ({ id: c.id, name: c.name, count: c.count || 0 })));
+  const pinned = [];
+  const rest = [];
+  ASST_CATS.forEach((c) => (c.id === 'ac-present' ? pinned : rest).push(c));
+  const tabs = [{ id: 'all', name: '全部', mark: '📚', count: ASST_ITEMS.length }]
+    .concat(pinned.concat(rest).map((c) => ({ id: c.id, name: c.name, mark: asstCatMark(c), count: c.count || 0 })));
   el.innerHTML = tabs.map((t) =>
     '<button class="al-cat' + (t.id === ASST_FILTER ? ' active' : '') + '" type="button" role="tab" aria-selected="' + (t.id === ASST_FILTER ? 'true' : 'false') + '" data-cat="' + escapeHtml(t.id) + '">'
-    + (t.id !== 'all' && asstCatMark(ASST_CATS.find((c) => c.id === t.id)) ? '<i>' + escapeHtml(asstCatMark(ASST_CATS.find((c) => c.id === t.id))) + '</i>' : '')
+    + (t.mark ? '<i>' + escapeHtml(t.mark) + '</i>' : '')
     + '<span>' + escapeHtml(t.name) + '</span>'
     + '<small>' + (t.count || 0) + '</small>'
     + '</button>'
@@ -2829,7 +3036,8 @@ function renderAssistants() {
     el.innerHTML = '<div class="al-empty">暂无助手，先添加分类再添加助手。</div>';
     return;
   }
-  const groups = (ASST_FILTER === 'all' ? ASST_CATS : ASST_CATS.filter((c) => c.id === ASST_FILTER)).map((c) => ({
+  const ordered = ASST_CATS.slice().sort((a, b) => (a.id === 'ac-present' ? -1 : b.id === 'ac-present' ? 1 : 0));
+  const groups = (ASST_FILTER === 'all' ? ordered : ordered.filter((c) => c.id === ASST_FILTER)).map((c) => ({
     cat: c,
     items: list.filter((a) => a.categoryId === c.id),
   })).filter((g) => g.items.length);

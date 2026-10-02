@@ -211,6 +211,10 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/admin/backup/restore$#', 'tc_api_admin_backup_restore'),
         array('GET', '#^/api/admin/users$#', 'tc_api_admin_users'),
         array('GET', '#^/api/admin/users/chats$#', 'tc_api_admin_user_chats'),
+        // 已删除对话留档(A 设备删除后仍保留在云端,管理员可看可清)
+        array('GET', '#^/api/admin/chats/deleted$#', 'tc_api_admin_deleted_chats'),
+        array('GET', '#^/api/admin/chats/deleted/view$#', 'tc_api_admin_deleted_chat_view'),
+        array('POST', '#^/api/admin/chats/deleted/purge$#', 'tc_api_admin_deleted_chats_purge'),
         array('POST', '#^/api/admin/users$#', 'tc_api_admin_create_user'),
         array('POST', '#^/api/admin/users/update$#', 'tc_api_admin_update_user'),
         array('POST', '#^/api/admin/users/quota$#', 'tc_api_admin_set_quota'),
