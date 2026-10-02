@@ -1096,6 +1096,27 @@ R.render = function (text) {
     btn.addEventListener('click', () => copyBlockText(btn, read()));
   }
 
+  // 把复制菜单摆到按钮下方。图表/表格容器是 overflow:auto(需要横向滚动),
+  // 处在这样的容器里时绝对定位的下拉会被容器裁掉,只剩一条边。
+  // 这里改挂 position:fixed 并算好视口坐标,让它脱离裁剪;空间不够就向上弹。
+  function positionCopyMenu(menu, btn) {
+    const r = btn.getBoundingClientRect();
+    menu.style.position = 'fixed';
+    menu.style.right = 'auto';
+    menu.style.top = '0px';
+    menu.style.left = '0px';
+    const mw = menu.offsetWidth;
+    const mh = menu.offsetHeight;
+    const gap = 4;
+    let top = r.bottom + gap;
+    if (top + mh > window.innerHeight - 8 && r.top - mh - gap > 0) top = r.top - mh - gap;
+    let left = r.right - mw;   // 与按钮右缘对齐
+    if (left < 8) left = 8;
+    if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
+    menu.style.top = Math.round(top) + 'px';
+    menu.style.left = Math.round(left) + 'px';
+  }
+
   function attachCopyMenu(block, readSource, imageName) {
     if (!block || block.querySelector(':scope > .visual-actions .copy-menu')) return;
     const holder = document.createElement('div');
@@ -1113,6 +1134,7 @@ R.render = function (text) {
       const open = menu.classList.contains('hidden');
       document.querySelectorAll('.copy-menu-list').forEach((el) => el.classList.add('hidden'));
       menu.classList.toggle('hidden', !open);
+      if (open) positionCopyMenu(menu, btn);
     });
     menu.addEventListener('click', (e) => {
       const item = e.target.closest('[data-copy]');

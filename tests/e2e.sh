@@ -78,6 +78,7 @@ DATA_DIR="$TMP/data" ADMIN_NAME=admin ADMIN_PASSWORD=e2e-pass \
   TC_QQ_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
   TC_LINUXDO_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
   TC_NODELOC_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
+  TC_ALLOW_PRIVATE_UPSTREAM=1 \
   php -S "127.0.0.1:$PORT" router.php >"$TMP/app.log" 2>&1 &
 APP_PID=$!
 TC_MOCK_ECHO_FILE="$TMP/pf_echo_out.txt" php -S "127.0.0.1:$MOCK_PORT" tests/mock-upstream.php >"$TMP/mock.log" 2>&1 &

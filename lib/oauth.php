@@ -153,15 +153,19 @@ function tc_oauth_make_ticket($userId) {
 
 // 校验并消费票据:同一张票据只能成功兑换一次
 function tc_oauth_consume_ticket(&$db, $ticket) {
+    // tc_jwt_verify 现在会拒绝已过期的令牌:票据本身 120 秒有效期,
+    // 过了这个点即使 jti 已被清理也无法重放。下面的已用清单是第二道防线,
+    // 拦住「有效期内并发重复兑换」。
     $d = tc_jwt_verify($ticket);
     if (!is_array($d) || empty($d['ot']) || empty($d['sub']) || empty($d['jti'])) return '';
     $jti = (string) $d['jti'];
     $used = (isset($db['usedOauthTickets']) && is_array($db['usedOauthTickets'])) ? $db['usedOauthTickets'] : array();
     if (isset($used[$jti])) return '';
-    // 顺带清理过期条目,避免无限增长
+    // 清理已用条目避免无限增长。保留窗口要明显长于票据有效期(120s),
+    // 否则清单先于票据失效,重放窗口又会被重新打开。
     $now = (int) floor(tc_now() / 1000);
     foreach ($used as $k => $ts) {
-        if ($now - (int) $ts > 600) unset($used[$k]);
+        if ($now - (int) $ts > 3600) unset($used[$k]);
     }
     $used[$jti] = $now;
     $db['usedOauthTickets'] = $used;

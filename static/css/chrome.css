@@ -20,10 +20,10 @@
       1000     .modal-mask 基准(本文件尾部统一抬到 1600)
       1500     .artifact-panel
       1600     .modal-mask(收口:必须盖过 artifact,见文件尾说明)
-      9998     图片 lightbox
-      9999     .oc-menu 自定义下拉
+      1700     .oc-menu 自定义下拉(高过弹窗内容,但低于 toast/确认框)
       3000     .toast-host(压过普通弹窗)
       3100     .oc-confirm-mask(压过 toast)
+      9998     图片 lightbox
      10050     .oc-tip(跟随光标的提示,永远最顶)
    ============================================================ */
 .usage-ledger { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
@@ -4171,6 +4171,12 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 .users-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .users-pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 10px 2px 0; }
 .users-pager[hidden] { display: none; }
+
+/* [hidden] 必须始终生效。
+   .field 是 display:block,优先级盖过浏览器默认的 [hidden]{display:none},
+   于是「AI 思考策略」里靠 hidden 切换的两个字段会同时显示(模式选「自动映射」时
+   「强制档位」也照常露出来)。这里把 hidden 的语义补回到 .field 上。 */
+.field[hidden] { display: none !important; }
 
 /* 后台:SMTP 测试结果明细(成功/失败都给出可读原因,便于自查) */
 .smtp-test-result {

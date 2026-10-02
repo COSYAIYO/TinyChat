@@ -1765,14 +1765,21 @@ function buildMsgNode(m, chat, idx) {
   const contentDiv = document.createElement('div');
   contentDiv.className = 'msg-content';
   if (m.error) {
+    // 失败的那次若是 @模型重答,这条消息上还挂着别的模型的回答:标签条要照常画出来。
+    // 否则报错会把之前那个模型的回答一起藏掉,再也切不回去。
+    if (Array.isArray(m.versions) && m.versions.length > 1) {
+      contentDiv.appendChild(buildReplyTabs(m, chat));
+    }
     const kept = stripInterruptMarks(m.content);
     const note = String(m.failNote || m.content || '请求出错');
-    contentDiv.innerHTML = (kept
+    const body = document.createElement('div');
+    body.innerHTML = (kept
       ? '<div class="msg-render-root md-prose"></div>'
       : '') + '<div class="msg-error">' + escapeHtml(note) + '</div>';
     if (kept && window.OCRenderer) {
-      window.OCRenderer.renderInto(contentDiv.querySelector('.msg-render-root'), kept);
+      window.OCRenderer.renderInto(body.querySelector('.msg-render-root'), kept);
     }
+    contentDiv.appendChild(body);
     if (role === 'assistant') {
       // 失败时提供重试按钮
       const retryRow = document.createElement('div');
@@ -2859,6 +2866,11 @@ async function streamRequest(format, body, chat, assistantMsg) {
       const text = await resp.text();
       const data = JSON.parse(text);
       assistantMsg.content = extractText(data, format);
+      // @ 到生图模型时后端会改走生图接口,返回 {images:[...]} 而不是 choices。
+      // 只按文本取会是空串,标签里就剩一个没有任何内容的空气泡:把图片渲染进这次回答。
+      if (!assistantMsg.content && data && Array.isArray(data.images) && data.images.length) {
+        assistantMsg.content = imageLinksFromResults(data.images, '生成图片');
+      }
       const think = extractReasoning(data, format);
       if (think) assistantMsg.reasoning = think;
       absorbThinkTags(assistantMsg, true);
@@ -2959,6 +2971,7 @@ function reRenderLastAssistant(assistantMsg) {
   if (assistantMsg.content || assistantMsg.reasoning || replyWasInterrupted(assistantMsg)) {
     window.OCMessages.attachActions(last, assistantMsg, {
       onRegenerate: (mm) => regenerateMessage(mm, chat),
+      onAt: (mm, btn) => openAtAnswerModal(mm, chat, btn),
       onShare: (mm) => shareMessage(mm),
       onVote: submitMessageVote,
       onQuickAction: quickAction,
@@ -8086,30 +8099,48 @@ function buildReplyTabs(msg, chat) {
   });
 
   // 从左往右藏,直到当前标签和剩下的标签都能排进这一行
+  let fitting = false;
   const fit = () => {
-    tabs.forEach((tab) => { tab.hidden = false; });
-    more.hidden = true;
-    if (strip.scrollWidth <= strip.clientWidth + 1) return;
-    more.hidden = false;
-    let hidden = 0;
-    for (let i = 0; i < tabs.length; i++) {
-      if (strip.scrollWidth <= strip.clientWidth + 1) break;
-      if (i === idx) continue;
-      tabs[i].hidden = true;
-      hidden++;
+    // fit 会改子元素的 hidden,从而改变 strip 自身的宽度:不挡住重入,
+    // ResizeObserver 就会被自己触发的尺寸变化反复叫醒,标签条一直抖,
+    // 下面的操作栏(含 @)也跟着迟迟定不下来。
+    if (fitting) return;
+    fitting = true;
+    try {
+      tabs.forEach((tab) => { tab.hidden = false; });
+      more.hidden = true;
+      if (strip.scrollWidth <= strip.clientWidth + 1) return;
+      more.hidden = false;
+      let hidden = 0;
+      for (let i = 0; i < tabs.length; i++) {
+        if (strip.scrollWidth <= strip.clientWidth + 1) break;
+        if (i === idx) continue;
+        tabs[i].hidden = true;
+        hidden++;
+      }
+      // 当前标签自己就超宽时,它留在条上(文字省略),其余全部进列表
+      if (strip.scrollWidth > strip.clientWidth + 1) {
+        tabs.forEach((tab, i) => { if (i !== idx) tab.hidden = true; });
+      }
+      hidden = tabs.filter((tab) => tab.hidden).length;
+      const count = more.querySelector('.reply-tab-more-count');
+      if (count) count.textContent = hidden > 0 ? String(hidden) : '';
+      more.hidden = hidden === 0;
+      more.title = hidden > 0 ? ('还有 ' + hidden + ' 个回答') : '查看全部回答';
+    } finally {
+      fitting = false;
     }
-    // 当前标签自己就超宽时,它留在条上(文字省略),其余全部进列表
-    if (strip.scrollWidth > strip.clientWidth + 1) {
-      tabs.forEach((tab, i) => { if (i !== idx) tab.hidden = true; });
-    }
-    hidden = tabs.filter((tab) => tab.hidden).length;
-    const count = more.querySelector('.reply-tab-more-count');
-    if (count) count.textContent = hidden > 0 ? String(hidden) : '';
-    more.hidden = hidden === 0;
-    more.title = hidden > 0 ? ('还有 ' + hidden + ' 个回答') : '查看全部回答';
   };
   if (typeof ResizeObserver === 'function') {
-    const ro = new ResizeObserver(() => fit());
+    // 只对「可用宽度」变化重新排版。子元素增删导致的 strip 尺寸抖动不在此列,
+    // 否则隐藏/显示标签会再次触发观察,形成自我循环。
+    let lastWidth = -1;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries.length && entries[0].contentRect ? entries[0].contentRect.width : strip.clientWidth;
+      if (Math.abs(w - lastWidth) < 1) return;
+      lastWidth = w;
+      fit();
+    });
     ro.observe(strip);
   }
   requestAnimationFrame(fit);

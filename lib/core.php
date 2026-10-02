@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.113');
+define('TC_VERSION', '2.0.114');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -225,18 +225,89 @@ function tc_now() {
     return (int) round(microtime(true) * 1000);
 }
 
+// 站点对外基址。用于生成重置密码/验证邮件里的链接,所以「谁来决定这个域名」很关键:
+// Host 头由请求方自由填写,直接采信等于让攻击者把受害者引到他自己的域名上收 token
+// (伪造 Host 发一封找回密码请求,受害者点到的就是攻击者站)。
+// 因此:优先用配置的 site_url;否则只在 Host 与本机 SERVER_NAME 一致时采信它
+// (一致才说明没有被伪造,同时能保留 Host 里的端口),不一致就退回 SERVER_NAME + SERVER_PORT。
 function tc_public_base_url() {
     $configured = trim((string) tc_cfg('site_url'));
     if ($configured !== '') return rtrim($configured, '/');
     $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = isset($_SERVER['HTTP_HOST']) ? preg_replace('/[^A-Za-z0-9.:-]/', '', (string) $_SERVER['HTTP_HOST']) : 'localhost';
+    $clean = function ($h) { return preg_replace('/[^A-Za-z0-9.:-]/', '', (string) $h); };
+    $serverName = $clean(isset($_SERVER['SERVER_NAME']) ? $_SERVER['SERVER_NAME'] : '');
+    $httpHost = $clean(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '');
+    // Host 里的主机名部分与 SERVER_NAME 相同(仅大小写/端口可能不同)才认它
+    $httpHostName = preg_replace('/:\d+$/', '', $httpHost);
+    if ($httpHost !== '' && ($serverName === '' || strcasecmp($httpHostName, $serverName) === 0)) {
+        $safeHost = $httpHost;
+    } else {
+        $safeHost = $serverName;
+        // SERVER_NAME 不带端口:非默认端口要从 SERVER_PORT 补回来,
+        // 否则站点跑在 :8099 这类端口时,邮件里的链接会指向默认端口而打不开。
+        $port = isset($_SERVER['SERVER_PORT']) ? (int) $_SERVER['SERVER_PORT'] : 0;
+        if ($port > 0 && !in_array($port, array(80, 443), true)) $safeHost .= ':' . $port;
+    }
+    if ($safeHost === '') $safeHost = 'localhost';
     $script = str_replace('\\', '/', dirname(isset($_SERVER['SCRIPT_NAME']) ? $_SERVER['SCRIPT_NAME'] : '/'));
     $script = rtrim($script, '/');
-    return $scheme . '://' . $host . ($script === '/' ? '' : $script);
+    return $scheme . '://' . $safeHost . ($script === '/' ? '' : $script);
 }
 
 function tc_public_link($path, $token) {
     return tc_public_base_url() . '/' . ltrim($path, '/') . '?token=' . rawurlencode($token);
+}
+
+// 测试/自建环境的例外开关:置 1 时允许上游指向内网(如 E2E 用 127.0.0.1 的 mock 上游)。
+// 与 TC_PAGE_FETCH_BASE 等测试钩子同一约定——只能由部署者通过环境变量开启,
+// 不来自任何请求内容,所以不会成为绕过 SSRF 防线的口子。生产环境不要设置。
+function tc_upstream_allow_private() {
+    $v = strtolower(trim((string) getenv('TC_ALLOW_PRIVATE_UPSTREAM')));
+    return $v === '1' || $v === 'true' || $v === 'yes' || $v === 'on';
+}
+
+// 供应商 Base URL 的出站目标校验(SSRF 防线)。
+// 供应商地址由用户自行填写,服务端却会带着自己的网络身份去请求它:不拦住内网目标,
+// 等于把「读内网服务」的能力交给任何能填供应商的人(云上 169.254.169.254 更直接)。
+// 只允许 http/https + 常见端口,且所有解析结果都必须是公网地址。
+// 写入时与请求时都会校验,避免旧数据绕过。
+function tc_upstream_url_is_safe($url) {
+    $p = @parse_url((string) $url);
+    if (!is_array($p) || empty($p['host'])) return false;
+    // 端口与协议限制对内网 mock 同样适用,所以放在例外开关之前判断
+    $scheme = strtolower(isset($p['scheme']) ? $p['scheme'] : '');
+    if ($scheme !== 'http' && $scheme !== 'https') return false;
+    $port = isset($p['port']) ? (int) $p['port'] : ($scheme === 'https' ? 443 : 80);
+    // 测试/自建例外:允许任意端口与内网地址(E2E 的 mock 上游跑在 127.0.0.1:8100)
+    if (tc_upstream_allow_private()) {
+        if (isset($p['user']) || isset($p['pass'])) return false;
+        return trim((string) $p['host']) !== '';
+    }
+    if (!in_array($port, array(80, 443, 8080, 8443), true)) return false;
+    // 带用户信息的 URL(user:pass@host)会让主机判断失真,直接拒绝
+    if (isset($p['user']) || isset($p['pass'])) return false;
+    $host = trim(strtolower((string) $p['host']), '[]');
+    if ($host === '' || $host === 'localhost') return false;
+    if (preg_match('/\.(local|internal|intranet|lan|home\.arpa|arpa)$/i', $host)) return false;
+    $ipOk = function ($ip) {
+        return is_string($ip) && $ip !== ''
+            && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+    };
+    $ips = array();
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        $ips[] = $host;
+    } else {
+        foreach ((array) @gethostbynamel($host) as $ip) $ips[] = $ip;
+        if (!$ips && function_exists('dns_get_record')) {
+            foreach ((array) @dns_get_record($host, DNS_AAAA) as $rec) {
+                if (!empty($rec['ipv6'])) $ips[] = $rec['ipv6'];
+            }
+        }
+    }
+    if (!$ips) return false;
+    // 任一解析结果是内网/保留地址就拒绝:DNS 轮询可能让校验与请求落到不同 IP
+    foreach ($ips as $ip) if (!$ipOk($ip)) return false;
+    return true;
 }
 
 function tc_uid($len = 16) {
@@ -1642,7 +1713,12 @@ function tc_jwt_verify($token) {
     if (!hash_equals($expect, $s)) return null;
     $json = tc_b64url_decode($b);
     $payload = json_decode($json, true);
-    return is_array($payload) ? $payload : null;
+    if (!is_array($payload)) return null;
+    // 有效期在这里统一把关:签名只证明「是我们签发的」,不代表「还能用」。
+    // 以前只有会话令牌在调用处查 exp,一次性票据(登录/绑定)全都漏检,
+    // 导致票据被记录后可以无限期重放。签发处一律带 exp,所以在这里拒绝是安全的。
+    if (empty($payload['exp']) || (int) $payload['exp'] < tc_now()) return null;
+    return $payload;
 }
 
 function tc_hash_password($password, $salt) {
@@ -2214,8 +2290,49 @@ function tc_json($code, $obj, $extraHeaders = array()) {
 }
 
 function tc_fail($code, $msg) {
+    // 已预扣额度但本次请求要失败退出:把预扣部分退回,免得用户为一次没拿到的回答买单。
+    // (预留成功→上游失败→tc_fail 的路径有多条,集中在这里兜住,避免逐个出口去补。)
+    tc_quota_refund_pending();
     tc_db_skip_write();
     tc_json($code, array('error' => array('message' => $msg)));
+}
+
+// 记录一笔待结算的预扣(供失败退款)。
+function tc_quota_mark_pending($userId, $cost) {
+    $GLOBALS['_tc_quota_pending'] = array('userId' => (string) $userId, 'cost' => max(0, (float) $cost));
+}
+
+// 失败退款:把待结算的预扣按全额退回,并清除待结算标记。
+function tc_quota_refund_pending() {
+    if (empty($GLOBALS['_tc_quota_pending'])) return;
+    $p = $GLOBALS['_tc_quota_pending'];
+    $GLOBALS['_tc_quota_pending'] = null;
+    $uid = isset($p['userId']) ? (string) $p['userId'] : '';
+    $cost = isset($p['cost']) ? (float) $p['cost'] : 0;
+    if ($uid === '' || $cost <= 0) return;
+    try {
+        tc_with_db(true, function (&$db) use ($uid, $cost) {
+            foreach ($db['users'] as $i => $u) {
+                if ((string) $u['id'] !== $uid) continue;
+                unset($db['users'][$i]['_quotaReserved']);
+                if (tc_is_unlimited_quota($u)) return;
+                $before = isset($u['quota']) ? (float) $u['quota'] : 0;
+                $db['users'][$i]['quota'] = round($before + $cost, 4);
+                tc_quota_note($db, $uid, array(
+                    'amount' => $cost, 'source' => 'refund',
+                    'purpose' => '请求失败,预扣额度已退回',
+                    'before' => round($before, 4),
+                    'after' => round((float) $db['users'][$i]['quota'], 4),
+                ));
+                return;
+            }
+        });
+    } catch (Throwable $e) { /* 退款失败不应遮蔽原始错误 */ }
+}
+
+// 结算完成后清除待结算标记(成功路径)。
+function tc_quota_clear_pending() {
+    $GLOBALS['_tc_quota_pending'] = null;
 }
 
 function tc_require_auth($db) {
@@ -2715,6 +2832,64 @@ function tc_replace_user(&$db, $user) {
     }
 }
 
+// 额度预扣:在写事务里「检查 + 扣减」一次完成。
+// 原来是在只读事务里查余额、等上游返回后再另开写事务扣费,两个事务之间留有窗口:
+// 并发请求会同时读到同一笔余额并全部放行,最后每笔都 max(0,…) 落到 0,
+// 等于用 1 次的额度换到了 N 次调用。BEGIN IMMEDIATE 下这里天然串行。
+// 返回 true=预扣成功(或无需扣费),false=余额不足。
+function tc_quota_reserve(&$db, $userId, $cost) {
+    $n = max(0, (float) $cost);
+    foreach ($db['users'] as $i => $u) {
+        if ((string) $u['id'] !== (string) $userId) continue;
+        if ($n <= 0 || tc_is_unlimited_quota($u)) {
+            $db['users'][$i]['_quotaReserved'] = 0.0;
+            return true;
+        }
+        tc_enforce_quota_expiry($db, $u);
+        $effective = tc_quota_effective($u);
+        if ($effective < $n) {
+            $db['users'][$i] = $u;   // 过期清理后的状态要落库
+            return false;
+        }
+        $before = isset($u['quota']) ? (float) $u['quota'] : 0;
+        $u['quota'] = max(0, round($before - $n, 4));
+        tc_consume_quota_grants($u, $n);
+        $u['_quotaReserved'] = $n;
+        $db['users'][$i] = $u;
+        return true;
+    }
+    return false;
+}
+
+// 结算预扣:按实际费用多退少补,并记一条「消耗明细」。
+// 明细的金额取实际消耗,而 before/after 跨越预扣与找零,所以一条就能说明整次调用,
+// 不需要额外再记退款条目(否则一次调用会出现两条明细)。
+function tc_quota_settle(&$db, $userId, $actualCost, $model = '', $purpose = '') {
+    $actual = max(0, (float) $actualCost);
+    foreach ($db['users'] as $i => $u) {
+        if ((string) $u['id'] !== (string) $userId) continue;
+        $reserved = isset($u['_quotaReserved']) ? (float) $u['_quotaReserved'] : 0.0;
+        unset($db['users'][$i]['_quotaReserved']);
+        if (tc_is_unlimited_quota($u)) return $actual;
+        $before = isset($u['quota']) ? (float) $u['quota'] : 0;   // 预扣之后的余额
+        $diff = round($reserved - $actual, 4);
+        $after = max(0, round($before + $diff, 4));
+        if (abs($diff) >= 0.00005) $db['users'][$i]['quota'] = $after;
+        if ($actual > 0) {
+            tc_quota_note($db, (string) $u['id'], array(
+                'amount' => -$actual,
+                'source' => 'usage',
+                'purpose' => tc_quota_purpose_label($purpose, $model),
+                'model' => (string) $model,
+                'before' => round($before + $reserved, 4),   // 这次调用之前的余额
+                'after' => $after,
+            ));
+        }
+        return $actual;
+    }
+    return $actual;
+}
+
 function tc_charge_user(&$db, &$user, $cost, $model = '', $purpose = '') {
     $n = max(0, (float) $cost);
     $unlimited = tc_is_unlimited_quota($user);
@@ -2735,6 +2910,13 @@ function tc_charge_user(&$db, &$user, $cost, $model = '', $purpose = '') {
             'after' => round((float) $user['quota'], 4),
         ));
     }
+    tc_charge_user_stats($db, $user, $model, $purpose);
+    return $unlimited ? 0 : $n;
+}
+
+// 只记调用统计,不动额度。额度已由 tc_quota_reserve / tc_quota_settle 处理,
+// 分开是为了让「预扣 + 结算」路径不会把费用扣第二遍。
+function tc_charge_user_stats(&$db, &$user, $model = '', $purpose = '') {
     // 生命周期调用计数:存用户记录上,清空对话也不丢失
     if (!isset($user['totalCalls'])) {
         // 首次建立计数:用台账里可查的历史调用打底,避免老用户计数从 0 跳变
@@ -2762,7 +2944,6 @@ function tc_charge_user(&$db, &$user, $cost, $model = '', $purpose = '') {
     }
     $db['stats']['callsByDay'] = tc_object_map($by);
     tc_replace_user($db, $user);
-    return $unlimited ? 0 : $n;
 }
 
 function tc_health_key($providerId, $model) {

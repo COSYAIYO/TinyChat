@@ -325,6 +325,11 @@ function tc_normalize_provider_input($b, $base = array(), $demo = false) {
 function tc_validate_provider($p) {
     if (empty($p['baseUrl'])) return 'Base URL 不能为空';
     if (!preg_match('/^https?:\/\//i', $p['baseUrl'])) return 'Base URL 需以 http:// 或 https:// 开头';
+    // 服务端会带着自己的身份去请求这个地址:内网/保留目标必须在这里就挡住,
+    // 否则填个 http://127.0.0.1:6379 就能借服务端探内网(SSRF)。
+    if (!tc_upstream_url_is_safe($p['baseUrl'])) {
+        return 'Base URL 指向内网或保留地址,或端口不被允许(仅支持 80/443/8080/8443 的公网地址)';
+    }
     if (empty($p['apiKey'])) return 'API Key 不能为空';
     if (empty($p['models'])) return '请至少提供一个模型';
     return null;
