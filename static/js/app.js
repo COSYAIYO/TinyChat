@@ -283,6 +283,45 @@ async function readJsonSafe(res) {
   return { error: { message: '服务器返回了非预期内容（HTTP ' + res.status + '），请检查站点配置或稍后重试' } };
 }
 
+// 出字前的状态:在干嘛就写在干嘛,显示在输入框下方。空文本恢复免责声明。
+function setComposerStatus(text) {
+  const box = $('composer-status');
+  const label = $('composer-status-text');
+  const hint = $('composer-hint-text');
+  if (!box || !label) return;
+  const next = text || '';
+  if (!next) {
+    label.textContent = '';
+    label.classList.remove('is-in');
+    box.classList.add('hidden');
+    if (hint) hint.classList.remove('hidden');
+    return;
+  }
+  const changed = label.textContent !== next;
+  label.textContent = next;
+  box.classList.remove('hidden');
+  if (hint) hint.classList.add('hidden');
+  if (changed) {
+    label.classList.remove('is-in');
+    void label.offsetWidth;
+    label.classList.add('is-in');
+  }
+}
+function phaseIndicatorHtml(text) {
+  return '<div class="phase-indicator" aria-live="polite">'
+    + '<span class="phase-live" aria-hidden="true"><i></i><i></i><i></i></span>'
+    + '<span class="phase-text">' + escapeHtml(text || '思考中') + '</span>'
+    + '</div>';
+}
+function judgePhaseText(opts) {
+  opts = opts || {};
+  const parts = [];
+  if (opts.image) parts.push('生图');
+  if (opts.search) parts.push('联网');
+  if (opts.title) parts.push('标题');
+  if (!parts.length) return '正在判定';
+  return '正在判定是否' + parts.join('、');
+}
 function toast(msg, isError = false) {
   if (window.OCUI) return window.OCUI.toast(msg, isError ? 'error' : undefined);
   const t = document.createElement('div');
@@ -1538,7 +1577,7 @@ function buildMsgNode(m, chat, idx) {
     if (m.imagePending && !m.content) {
       // 生图/生视频占位:出图通常要 10–60 秒,出视频更久,给出明确的等待提示而不是空白气泡
       const waiting = m.pendingKind === 'video' ? '正在生成视频（可能需要 1–5 分钟）…' : '正在生成图片…';
-      contentDiv.innerHTML = '<div class="phase-indicator"><span class="phase-spinner"></span><span class="phase-text">' + waiting + '</span></div>';
+      contentDiv.innerHTML = phaseIndicatorHtml(waiting);
       div.appendChild(contentDiv);
       return div;
     }
@@ -1562,7 +1601,7 @@ function buildMsgNode(m, chat, idx) {
     // 新渲染管线：Markdown + 公式 + 代码 + Mermaid + 组件
     if (m.reasoning) upsertReasoningPanel(contentDiv, m, !!m._streaming);
     if (m._streaming) {
-      // 流式中先出头像+思考态,有字后再跟光标,避免首 token 前像没头像
+      // 流式中先出头像+当前步骤,有字后再跟光标,避免首 token 前像没头像
       if (m.content) {
         const root = document.createElement('div');
         root.className = 'stream-answer';
@@ -1574,7 +1613,7 @@ function buildMsgNode(m, chat, idx) {
           root.innerHTML = escapeHtml(m.content) + '<span class="stream-cursor"></span>';
         }
       } else if (!m.reasoning) {
-        contentDiv.innerHTML = '<div class="phase-indicator"><span class="phase-spinner"></span><span class="phase-text">思考中</span></div>';
+        contentDiv.innerHTML = phaseIndicatorHtml(m.phase || '思考中');
       }
     } else {
       const root = document.createElement('div');
@@ -2413,7 +2452,9 @@ async function sendMessage() {
     state.pendingAttachments = [];
     renderAttachments();
     updateSendBtn();
-    await sendImageTurn(text, imageAtts);
+    setComposerStatus(imageAtts.length ? '正在按参考图改图' : '正在生成图片');
+    try { await sendImageTurn(text, imageAtts); }
+    finally { setComposerStatus(''); }
     return;
   }
 
@@ -2425,7 +2466,9 @@ async function sendMessage() {
     state.pendingAttachments = [];
     renderAttachments();
     updateSendBtn();
-    await sendVideoTurn(text, imageAtts);
+    setComposerStatus('正在生成视频');
+    try { await sendVideoTurn(text, imageAtts); }
+    finally { setComposerStatus(''); }
     return;
   }
 
@@ -2456,6 +2499,8 @@ async function sendMessage() {
       // 判定期间锁住发送,避免重复触发。判定请求必须有超时:
       // 它不走流式、也没有停止按钮,上游一挂起 streaming 就会一直为真,
       // 表现为消息没进对话、输入框还在,再点发送只提示「正在生成中」。
+      // 判定发生在消息入库之前,先写明正在判定什么。
+      setComposerStatus(judgePhaseText({ image: aim === 'auto' && hasImageModel, search: searchReady, title: isFirstMsg }));
       state.streaming = true; updateSendBtn();
       const judgeAc = new AbortController();
       const judgeTimer = setTimeout(() => judgeAc.abort(), 12000);
@@ -2463,6 +2508,7 @@ async function sendMessage() {
         verdict = await aiJudgeTools(text, { imageEnabled: hasImageModel, searchEnabled: searchReady, prevImage: hasRef, wantTitle: isFirstMsg, signal: judgeAc.signal });
       } finally {
         clearTimeout(judgeTimer);
+        setComposerStatus('');
         state.streaming = false; updateSendBtn();
       }
     }
@@ -2508,9 +2554,11 @@ async function sendMessage() {
         renderModelPicker();
         const withRef = imgAtts.length > 0 || usePrevRef;
         toast((isEdit ? '识别到改图意图，已用生图模型「' : '识别到绘图意图，已用生图模型「') + (target.label || target.modelId) + '」' + (withRef ? '并带上参考图' : ''));
+        setComposerStatus(isEdit ? '判定为改图，正在生成' : '判定为生图，正在生成');
         try {
           await sendImageTurn(text, imgAtts, { autoRef: usePrevRef });
         } finally {
+          setComposerStatus('');
           // 无论出图成功或失败,都恢复到用户原本的对话模型
           state.currentProviderId = prevProviderId;
           await loadModels({ prefer: prevModel });
@@ -2555,12 +2603,15 @@ async function sendMessage() {
   chat.updatedAt = Date.now();
   saveChats(); renderMessages();
 
-  // 添加 assistant 占位并请求回复
-  const assistantMsg = { role: 'assistant', content: '' };
+  // 添加 assistant 占位并请求回复。联网开启时先把这一步写出来,出字后自动让位。
+  const searching = state._toolSearch === true || webSearchMode() === 'on';
+  const assistantMsg = { role: 'assistant', content: '', phase: searching ? '正在联网检索' : '思考中' };
+  setComposerStatus(assistantMsg.phase);
   chat.messages.push(assistantMsg);
   saveChats();
   renderMessages();
-  await requestAssistantReply(chat, userMsg);
+  try { await requestAssistantReply(chat, userMsg); }
+  finally { setComposerStatus(''); }
   await refreshMe();
   refreshModelHealth();
 }
@@ -2585,23 +2636,8 @@ async function streamRequest(format, body, chat, assistantMsg) {
   const ac = new AbortController();
   state.abortController = ac;
 
-  let phaseTimer = null;
-  const startPhases = () => {
-    const phases = (window.OCReasoning && window.OCReasoning.PHASES) || ['思考中', '整理中', '生成中'];
-    let i = 0;
-    phaseTimer = setInterval(() => {
-      i = (i + 1) % phases.length;
-      const focusSel = typeof state._streamFocusIdx === 'number'
-        ? '#messages .msg.assistant[data-idx="' + state._streamFocusIdx + '"] .phase-text'
-        : '#messages .msg.assistant:last-child .phase-text';
-      const label = document.querySelector(focusSel);
-      if (label) label.textContent = phases[i];
-    }, 2400);
-  };
-
-  // 渲染占位（待 AI 回复）
+  // 渲染占位（待 AI 回复）。文案保持这一步真正在做的事,不再轮播成「分析中 / 整理中」。
   renderMessages();
-  startPhases();
 
   try {
     const resp = await api(ENDPOINT_BY_FORMAT[format], {
@@ -2665,7 +2701,6 @@ async function streamRequest(format, body, chat, assistantMsg) {
       throw e;
     }
   } finally {
-    if (phaseTimer) clearInterval(phaseTimer);
     cancelStreamPaint();
     assistantMsg._streaming = false;
     if (assistantMsg.taskId) assistantMsg.taskStatus = assistantMsg.interrupted ? 'interrupted' : (assistantMsg.error ? 'failed' : 'completed');
@@ -2768,7 +2803,10 @@ function paintStreamingText(assistantMsg) {
   if (!contentEl) return;
   upsertReasoningPanel(contentEl, assistantMsg, true);
   const phase = contentEl.querySelector('.phase-indicator');
-  if ((assistantMsg.reasoning || assistantMsg.content) && phase) phase.remove();
+  if ((assistantMsg.reasoning || assistantMsg.content) && phase) {
+    phase.remove();
+    setComposerStatus('');
+  }
   let root = contentEl.querySelector(':scope > .stream-answer');
   if (!assistantMsg.content) {
     if (root) root.remove();
@@ -3384,6 +3422,7 @@ async function aiFollowUps(content) {
 }
 
 function stopStreaming() {
+  setComposerStatus('');
   cancelStreamPaint();
   const chat = currentChat();
   const pending = chat && [...(chat.messages || [])].reverse().find((m) => m && m.role === 'assistant' && m.taskId && m.taskStatus === 'running');
@@ -3398,6 +3437,7 @@ function stopStreaming() {
 }
 
 function initStreamingState() {
+  setComposerStatus('');
   state.streaming = false;
   document.documentElement.classList.remove('oc-streaming');
   state.abortController = null;
