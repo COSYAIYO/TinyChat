@@ -1813,32 +1813,178 @@
   cursor: pointer;
 }
 .pref-row-accent {
-  flex-direction: column;
-  align-items: stretch;
+  align-items: center;
   cursor: default;
-  gap: 12px;
 }
+.accent-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  height: 36px;
+  padding: 0 12px 0 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+.accent-entry:hover { background: var(--bg-hover); }
+.accent-entry-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background-color: #fff;
+  background-image:
+    linear-gradient(var(--swatch, var(--brand, var(--accent))), var(--swatch, var(--brand, var(--accent)))),
+    linear-gradient(45deg, #d7d9de 25%, transparent 25%),
+    linear-gradient(-45deg, #d7d9de 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #d7d9de 75%),
+    linear-gradient(-45deg, transparent 75%, #d7d9de 75%);
+  background-size: auto, 8px 8px, 8px 8px, 8px 8px, 8px 8px;
+  background-position: 0 0, 0 0, 0 4px, 4px -4px, -4px 0;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 12%, transparent);
+}
+.accent-modal { width: min(560px, 94vw) !important; }
+.accent-modal .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.accent-modal .modal-body { padding: 18px 18px 8px; }
 .accent-picker {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
   width: 100%;
 }
-.accent-preview {
-  width: 100%;
-  height: 28px;
-  border-radius: 8px;
-  background: var(--brand, var(--accent));
+.accent-hex-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.accent-chip,
+.accent-swatch {
+  background-color: #fff;
+  background-image:
+    linear-gradient(var(--swatch, transparent), var(--swatch, transparent)),
+    linear-gradient(45deg, #e4e6ea 25%, transparent 25%),
+    linear-gradient(-45deg, #e4e6ea 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e4e6ea 75%),
+    linear-gradient(-45deg, transparent 75%, #e4e6ea 75%);
+  background-size: auto, 14px 14px, 14px 14px, 14px 14px, 14px 14px;
+  background-position: 0 0, 0 0, 0 7px, 7px -7px, -7px 0;
+}
+.accent-chip {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 10%, transparent);
+}
+.accent-hex-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--bg-surface);
+}
+.accent-hex-field:focus-within { box-shadow: 0 0 0 3px var(--ring-brand); }
+.accent-hex-prefix {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+}
+.accent-hex {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  outline: none;
+}
+.accent-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.accent-tool:hover,
+.accent-tool-close:hover { background: var(--bg-hover); color: var(--text); }
+.accent-tool.is-clear { color: var(--text-tertiary); }
+.accent-tool-close { flex-shrink: 0; }
+.accent-stage {
+  display: flex;
+  align-items: stretch;
+  gap: 18px;
+  padding: 16px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--bg-hover) 70%, var(--bg-surface));
+}
+.accent-swatch {
+  width: 132px;
+  flex-shrink: 0;
+  border-radius: 16px;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 8%, transparent);
 }
 .accent-bars {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  justify-content: space-between;
+  gap: 12px;
+}
+.accent-slider-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+.accent-slider-val {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  font-weight: 600;
 }
 .accent-track {
   position: relative;
-  height: 22px;
+  height: 14px;
   border-radius: 999px;
   cursor: pointer;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 8%, transparent);
@@ -1850,50 +1996,51 @@
 }
 .accent-hue {
   background: linear-gradient(90deg,
-    #f06e16 0%,
-    #f5bc1a 12%,
-    #e8ef39 22%,
-    #6dea67 38%,
-    #56e6bf 50%,
-    #3d85ed 66%,
-    #6b45ef 78%,
-    #db79e0 88%,
-    #f277b0 94%,
-    #f06e16 100%);
+    #ff2a2a 0%,
+    #ff8a00 14%,
+    #ffe600 28%,
+    #3dff2a 42%,
+    #2af0ff 57%,
+    #2a4bff 71%,
+    #b02aff 85%,
+    #ff2a2a 100%);
 }
-.accent-light {
-  background: linear-gradient(90deg, #2a2d33 0%, #8b9098 48%, #f4f5f7 100%);
+.accent-alpha {
+  background-color: transparent;
+  background-image:
+    linear-gradient(90deg, transparent, var(--accent-solid, #e64b35)),
+    linear-gradient(45deg, #d7d9de 25%, transparent 25%),
+    linear-gradient(-45deg, #d7d9de 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #d7d9de 75%),
+    linear-gradient(-45deg, transparent 75%, #d7d9de 75%);
+  background-size: 100% 100%, 10px 10px, 10px 10px, 10px 10px, 10px 10px;
+  background-position: 0 0, 0 0, 0 5px, 5px -5px, -5px 0;
+  background-repeat: no-repeat, repeat, repeat, repeat, repeat;
 }
 .accent-thumb {
   position: absolute;
   top: 50%;
-  width: 18px;
-  height: 18px;
-  margin-left: -9px;
+  width: 20px;
+  height: 20px;
+  margin-left: -10px;
   border-radius: 50%;
   background: #fff;
-  border: 2px solid #1f2430;
+  border: 3px solid #2a3142;
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.28);
   transform: translateY(-50%);
   pointer-events: none;
 }
-.accent-meta {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
+.accent-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
 }
-.accent-hex {
-  width: 92px;
-  height: 32px;
-  padding: 0 10px;
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-  background: var(--bg-hover);
-  color: var(--text);
-  font: inherit;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.02em;
+.accent-footer { justify-content: flex-end; }
+@media (max-width: 560px) {
+  .accent-stage { flex-direction: column; }
+  .accent-swatch { width: 100%; height: 72px; }
+  .accent-tool span { display: none; }
 }
 /* 应用 CSS 变量 */
 .font-size-value::after { content: " 字号"; }

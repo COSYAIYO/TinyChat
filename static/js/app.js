@@ -4349,18 +4349,25 @@ async function saveToolSource(patch) {
   bindFontChoice({ key: 'fontCjk', inputId: 'pref-font-cjk', selectId: 'pref-font-cjk-select', browseId: 'pref-font-cjk-browse', fallback: 'source-han-serif', options: ['source-han-serif', 'alibaba-puhuiti', 'system'], labels: { 'source-han-serif': '思源宋体', 'alibaba-puhuiti': 'AlibabaPuHuiTi', system: '系统字体' } });
   bindFontChoice({ key: 'fontLatin', inputId: 'pref-font-latin', selectId: 'pref-font-latin-select', browseId: 'pref-font-latin-browse', fallback: 'alibaba-sans', options: ['alibaba-sans', 'times-new-roman', 'helvetica', 'system'], labels: { 'times-new-roman': 'Times New Roman', helvetica: 'Helvetica', 'alibaba-sans': 'AlibabaSans', system: '系统字体' } });
 
-  // ---- 外观:主题色（色相条 + 明暗条）----
-  function hexToRgb(hex) {
+  // ---- 外观:主题色（色相 / 饱和度 / 明度 / 透明度）----
+  function hexToRgba(hex) {
     const m = String(hex || '').trim().match(/^#([0-9a-fA-F]{3,8})$/);
     if (!m) return null;
     let h = m[1];
     if (h.length === 3 || h.length === 4) h = h.split('').map((c) => c + c).join('');
     if (h.length !== 6 && h.length !== 8) return null;
-    return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16) };
+    return {
+      r: parseInt(h.slice(0, 2), 16),
+      g: parseInt(h.slice(2, 4), 16),
+      b: parseInt(h.slice(4, 6), 16),
+      a: h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1,
+    };
+  }
+  function pad2(n) {
+    return Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
   }
   function rgbToHex(r, g, b) {
-    const pad = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
-    return '#' + pad(r) + pad(g) + pad(b);
+    return '#' + pad2(r) + pad2(g) + pad2(b);
   }
   function rgbToHsl(r, g, b) {
     r /= 255; g /= 255; b /= 255;
@@ -4395,44 +4402,80 @@ async function saveToolSource(patch) {
     };
     return { r: tk(hue + 1 / 3) * 255, g: tk(hue) * 255, b: tk(hue - 1 / 3) * 255 };
   }
-  const accentState = { h: 221, s: 0.83, l: 0.53 };
+  const accentState = { h: 221, s: 0.83, l: 0.53, a: 1 };
   function currentAccentHex() {
     const rgb = hslToRgb(accentState.h, accentState.s, accentState.l);
-    return rgbToHex(rgb.r, rgb.g, rgb.b);
+    let hex = rgbToHex(rgb.r, rgb.g, rgb.b);
+    if (accentState.a < 0.999) hex += pad2(accentState.a * 255);
+    return hex.toUpperCase();
   }
-  function placeAccentThumbs() {
+  function paintAccent() {
+    const rgb = hslToRgb(accentState.h, accentState.s, accentState.l);
+    const solid = rgbToHex(rgb.r, rgb.g, rgb.b);
+    const css = 'rgba(' + Math.round(rgb.r) + ', ' + Math.round(rgb.g) + ', ' + Math.round(rgb.b) + ', ' + accentState.a + ')';
     const hueThumb = $('accent-hue-thumb');
+    const satThumb = $('accent-sat-thumb');
     const lightThumb = $('accent-light-thumb');
+    const alphaThumb = $('accent-alpha-thumb');
     if (hueThumb) hueThumb.style.left = ((accentState.h / 360) * 100) + '%';
+    if (satThumb) satThumb.style.left = (accentState.s * 100) + '%';
     if (lightThumb) lightThumb.style.left = (accentState.l * 100) + '%';
+    if (alphaThumb) alphaThumb.style.left = (accentState.a * 100) + '%';
     const hue = $('accent-hue');
+    const sat = $('accent-sat');
     const light = $('accent-light');
-    if (hue) {
-      hue.setAttribute('aria-valuenow', String(Math.round(accentState.h)));
-      hue.style.setProperty('--thumb', currentAccentHex());
+    const alpha = $('accent-alpha');
+    if (hue) hue.setAttribute('aria-valuenow', String(Math.round(accentState.h)));
+    if (sat) {
+      sat.setAttribute('aria-valuenow', String(Math.round(accentState.s * 100)));
+      const gray = hslToRgb(accentState.h, 0, accentState.l);
+      const full = hslToRgb(accentState.h, 1, accentState.l);
+      sat.style.background = 'linear-gradient(90deg, ' + rgbToHex(gray.r, gray.g, gray.b) + ', ' + rgbToHex(full.r, full.g, full.b) + ')';
     }
     if (light) {
       light.setAttribute('aria-valuenow', String(Math.round(accentState.l * 100)));
-      const mid = hslToRgb(accentState.h, Math.max(0.35, accentState.s), 0.5);
-      light.style.background = 'linear-gradient(90deg, #2a2d33 0%, ' + rgbToHex(mid.r, mid.g, mid.b) + ' 52%, #f4f5f7 100%)';
+      const mid = hslToRgb(accentState.h, accentState.s, 0.5);
+      light.style.background = 'linear-gradient(90deg, #141414, ' + rgbToHex(mid.r, mid.g, mid.b) + ' 50%, #fff)';
     }
-    const preview = $('accent-preview');
-    if (preview) preview.style.background = currentAccentHex();
+    if (alpha) {
+      alpha.setAttribute('aria-valuenow', String(Math.round(accentState.a * 100)));
+      alpha.style.setProperty('--accent-solid', solid);
+    }
+    const hueVal = $('accent-hue-val');
+    const satVal = $('accent-sat-val');
+    const lightVal = $('accent-light-val');
+    const alphaVal = $('accent-alpha-val');
+    if (hueVal) hueVal.textContent = Math.round(accentState.h) + '°';
+    if (satVal) satVal.textContent = Math.round(accentState.s * 100) + '%';
+    if (lightVal) lightVal.textContent = Math.round(accentState.l * 100) + '%';
+    if (alphaVal) alphaVal.textContent = Math.round(accentState.a * 100) + '%';
+    const fill = (el) => { if (el) el.style.setProperty('--swatch', css); };
+    fill($('accent-preview'));
+    fill($('accent-swatch'));
+    const entry = $('accent-entry-swatch');
+    if (entry) entry.style.setProperty('--swatch', css);
+    const entryHex = $('accent-entry-hex');
+    if (entryHex) entryHex.textContent = currentAccentHex();
     const hexEl = $('pref-accent-hex');
     if (hexEl && document.activeElement !== hexEl) hexEl.value = currentAccentHex();
+    const clearBtn = $('pref-accent-clear');
+    if (clearBtn) clearBtn.classList.toggle('is-clear', accentState.a < 0.01);
+  }
+  function commitAccent() {
+    if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('accent', currentAccentHex());
+    if (window.OCUI && window.OCUI.applyAppearance) window.OCUI.applyAppearance();
   }
   function applyAccentHex(hex, persist) {
-    const rgb = hexToRgb(hex);
-    if (!rgb) return;
-    const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+    const rgba = hexToRgba(hex);
+    if (!rgba) return false;
+    const hsl = rgbToHsl(rgba.r, rgba.g, rgba.b);
     accentState.h = hsl.h;
-    accentState.s = hsl.s || 0.65;
+    accentState.s = hsl.s;
     accentState.l = hsl.l;
-    placeAccentThumbs();
-    if (persist) {
-      if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('accent', currentAccentHex());
-      if (window.OCUI && window.OCUI.applyAppearance) window.OCUI.applyAppearance();
-    }
+    accentState.a = rgba.a;
+    paintAccent();
+    if (persist) commitAccent();
+    return true;
   }
   window.syncAccentPicker = function (hex) {
     applyAccentHex(hex || ((window.OCUI && window.OCUI.defaultAccent) || '#2563eb'), false);
@@ -4441,13 +4484,13 @@ async function saveToolSource(patch) {
     if (!el) return;
     const setFromEvent = (ev) => {
       const rect = el.getBoundingClientRect();
-      const t = Math.max(0, Math.min(1, ((ev.touches ? ev.touches[0].clientX : ev.clientX) - rect.left) / rect.width));
+      const t = Math.max(0, Math.min(1, ((ev.touches ? ev.touches[0].clientX : ev.clientX) - rect.left) / (rect.width || 1)));
       if (kind === 'hue') accentState.h = t * 360;
-      else accentState.l = t;
-      if (accentState.s < 0.28) accentState.s = 0.65;
-      placeAccentThumbs();
-      if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('accent', currentAccentHex());
-      if (window.OCUI && window.OCUI.applyAppearance) window.OCUI.applyAppearance();
+      else if (kind === 'sat') accentState.s = t;
+      else if (kind === 'light') accentState.l = t;
+      else accentState.a = t;
+      paintAccent();
+      commitAccent();
     };
     const onMove = (ev) => { ev.preventDefault(); setFromEvent(ev); };
     const onUp = () => {
@@ -4456,42 +4499,55 @@ async function saveToolSource(patch) {
     };
     el.addEventListener('pointerdown', (ev) => {
       ev.preventDefault();
-      el.setPointerCapture && el.setPointerCapture(ev.pointerId);
+      if (el.setPointerCapture) el.setPointerCapture(ev.pointerId);
       setFromEvent(ev);
       document.addEventListener('pointermove', onMove);
       document.addEventListener('pointerup', onUp);
     });
     el.addEventListener('keydown', (ev) => {
       const step = ev.shiftKey ? 8 : 2;
-      if (ev.key === 'ArrowLeft' || ev.key === 'ArrowDown') {
-        ev.preventDefault();
-        if (kind === 'hue') accentState.h = (accentState.h - step + 360) % 360;
-        else accentState.l = Math.max(0.08, accentState.l - step / 100);
-      } else if (ev.key === 'ArrowRight' || ev.key === 'ArrowUp') {
-        ev.preventDefault();
-        if (kind === 'hue') accentState.h = (accentState.h + step) % 360;
-        else accentState.l = Math.min(0.92, accentState.l + step / 100);
-      } else return;
-      placeAccentThumbs();
-      if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('accent', currentAccentHex());
-      if (window.OCUI && window.OCUI.applyAppearance) window.OCUI.applyAppearance();
+      const dir = (ev.key === 'ArrowLeft' || ev.key === 'ArrowDown') ? -1
+        : (ev.key === 'ArrowRight' || ev.key === 'ArrowUp') ? 1 : 0;
+      if (!dir) return;
+      ev.preventDefault();
+      if (kind === 'hue') accentState.h = (accentState.h + dir * step + 360) % 360;
+      else if (kind === 'sat') accentState.s = Math.max(0, Math.min(1, accentState.s + dir * step / 100));
+      else if (kind === 'light') accentState.l = Math.max(0, Math.min(1, accentState.l + dir * step / 100));
+      else accentState.a = Math.max(0, Math.min(1, accentState.a + dir * step / 100));
+      paintAccent();
+      commitAccent();
     });
   }
   bindAccentTrack($('accent-hue'), 'hue');
+  bindAccentTrack($('accent-sat'), 'sat');
   bindAccentTrack($('accent-light'), 'light');
+  bindAccentTrack($('accent-alpha'), 'alpha');
   const accHex = $('pref-accent-hex');
   if (accHex) {
-    accHex.addEventListener('change', () => applyAccentHex(accHex.value, true));
+    accHex.addEventListener('change', () => { if (!applyAccentHex(accHex.value, true)) paintAccent(); });
     accHex.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); applyAccentHex(accHex.value, true); accHex.blur(); }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (!applyAccentHex(accHex.value, true)) paintAccent();
+        accHex.blur();
+      }
     });
   }
-  const accReset = $('pref-accent-reset');
-  if (accReset) accReset.addEventListener('click', () => {
-    if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('accent', '');
-    if (window.OCUI && window.OCUI.applyAppearance) window.OCUI.applyAppearance();
-    applyAccentHex((window.OCUI && window.OCUI.defaultAccent) || '#2563eb', false);
+  const accClear = $('pref-accent-clear');
+  if (accClear) accClear.addEventListener('click', () => {
+    accentState.a = accentState.a < 0.01 ? 1 : 0;
+    paintAccent();
+    commitAccent();
   });
+  const accOpen = $('accent-open');
+  if (accOpen) accOpen.addEventListener('click', () => {
+    const stored = (window.OCUI && window.OCUI.getPref) ? window.OCUI.getPref('accent') : '';
+    applyAccentHex(stored || ((window.OCUI && window.OCUI.defaultAccent) || '#2563eb'), false);
+    if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal($('accent-modal'));
+  });
+  if (window.OCUI && window.OCUI.bindModal) {
+    window.OCUI.bindModal($('accent-modal'), { closeSelector: '#accent-modal-x, #accent-modal-done' });
+  }
 
 })();
 

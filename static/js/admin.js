@@ -1318,7 +1318,7 @@ async function loadProviders() {
           ${isDefault ? '<span class="badge default">默认</span>' : ''}
           ${disabled ? '<span class="badge disabled">已停用</span>' : ''}
         </div>
-        <div class="pc-url">${escapeHtml(p.baseUrl)} · ${escapeHtml(p.apiFormat)} · 模型: ${escapeHtml(p.models.map((m) => m.id).join(', '))} · ${p.billingMode === 'token' ? ('按 token ' + (p.pricePer1k || 0) + '/1K') : ('扣 ' + p.costPerCall + ' 次')}</div>
+        <div class="pc-url">${escapeHtml(p.baseUrl)} · ${escapeHtml(p.apiFormat)} · ${Array.isArray(p.models) ? p.models.length : 0} 个模型 · ${p.billingMode === 'token' ? ('按 token ' + (p.pricePer1k || 0) + '/1K') : ('扣 ' + p.costPerCall + ' 次')}</div>
         ${keyHtml}
       </div>
       <div class="provider-card-actions" style="display:flex;gap:6px;flex-shrink:0">

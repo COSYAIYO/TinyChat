@@ -41,25 +41,28 @@
       if (h.length === 3 || h.length === 4) h = h.split('').map(function (c) { return c + c; }).join('');
       if (h.length === 6 || h.length === 8) {
         var r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+        var alpha = h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1;
         var t = dark ? 0.28 : 0.18;
         var mix = function (c, d) { return Math.max(0, Math.min(255, Math.round(c + (d - c) * t))); };
-        var pad = function (n) { return n.toString(16).padStart(2, '0'); };
-        var acc = '#' + pad(r) + pad(g) + pad(b);
-        var hover = '#' + pad(mix(r, dark ? 255 : 0)) + pad(mix(g, dark ? 255 : 0)) + pad(mix(b, dark ? 255 : 0));
-        var rgba = function (a) { return 'rgba(' + r + ', ' + g + ', ' + b + ', ' + a + ')'; };
+        var hr = mix(r, dark ? 255 : 0), hg = mix(g, dark ? 255 : 0), hb = mix(b, dark ? 255 : 0);
+        var rgba = function (rr, gg, bb, a) {
+          return 'rgba(' + rr + ', ' + gg + ', ' + bb + ', ' + Math.round(a * alpha * 1000) / 1000 + ')';
+        };
+        var acc = rgba(r, g, b, 1);
+        var hover = rgba(hr, hg, hb, 1);
         var root = document.documentElement;
         root.style.setProperty('--accent', acc);
         root.style.setProperty('--accent-hover', hover);
         root.style.setProperty('--brand', acc);
         root.style.setProperty('--brand-hover', hover);
-        root.style.setProperty('--brand-soft', rgba(dark ? 0.12 : 0.08));
-        root.style.setProperty('--brand-soft-strong', rgba(dark ? 0.2 : 0.14));
-        root.style.setProperty('--ring-brand', rgba(dark ? 0.3 : 0.2));
+        root.style.setProperty('--brand-soft', rgba(r, g, b, dark ? 0.12 : 0.08));
+        root.style.setProperty('--brand-soft-strong', rgba(r, g, b, dark ? 0.2 : 0.14));
+        root.style.setProperty('--ring-brand', rgba(r, g, b, dark ? 0.3 : 0.2));
         root.style.setProperty('--primary', acc);
         root.style.setProperty('--primary-hover', hover);
         root.style.setProperty('--active-text', dark ? hover : acc);
         root.style.setProperty('--active-bar', acc);
-        root.style.setProperty('--bg-selected', rgba(dark ? 0.14 : 0.07));
+        root.style.setProperty('--bg-selected', rgba(r, g, b, dark ? 0.14 : 0.07));
       }
     }
   } catch (e) {}
