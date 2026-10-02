@@ -283,29 +283,55 @@ async function readJsonSafe(res) {
   return { error: { message: '服务器返回了非预期内容（HTTP ' + res.status + '），请检查站点配置或稍后重试' } };
 }
 
-// 出字前的状态:在干嘛就写在干嘛,显示在输入框下方。空文本恢复免责声明。
-function setComposerStatus(text) {
-  const box = $('composer-status');
-  const label = $('composer-status-text');
-  const hint = $('composer-hint-text');
-  if (!box || !label) return;
-  const next = text || '';
-  if (!next) {
-    label.textContent = '';
-    label.classList.remove('is-in');
-    box.classList.add('hidden');
-    if (hint) hint.classList.remove('hidden');
-    return;
+// 出字前的状态:在干嘛就写在干嘛。显示在 AI 回复气泡里(m.phase),不占输入框下方。
+function setReplyPhase(msg, text) {
+  if (!msg) return;
+  msg.phase = text || '';
+  const chat = currentChat();
+  if (!chat) return;
+  const idx = (chat.messages || []).indexOf(msg);
+  if (idx < 0) { renderMessages(); return; }
+  const node = document.querySelector('#messages .msg.assistant[data-idx="' + idx + '"] .phase-text');
+  if (node) { node.textContent = text || '思考中'; return; }
+  renderMessages();
+}
+
+// 把这一轮用户消息立刻发进对话(含 AI 占位),输入框随即清空。
+// existing 是判定阶段已经发出去的那条时直接复用,避免同一条消息发两遍。
+function postUserTurn(text, attachments, existing) {
+  if (existing && existing.chat && existing.userMsg && existing.assistantMsg) return existing;
+  const input = $('input');
+  input.value = '';
+  autosizeInput();
+  state.pendingAttachments = [];
+  renderAttachments();
+  updateSendBtn();
+  let chat = currentChat();
+  if (!chat || !chat.id) chat = newChat();
+  // 新会话第一个消息先按本地截取起标题;判定给出的标题稍后由调用方补上
+  if (chat.messages.length === 0 && autoTitleEnabled()) {
+    const seed = text || (attachments[0] && attachments[0].name) || '新对话';
+    chat.title = (state._judgeTitle && state._judgeTitle.trim()) || window.OCConversations.autoTitle(seed);
+    chat._autoTitled = true;
+    renderChatList();
   }
-  const changed = label.textContent !== next;
-  label.textContent = next;
-  box.classList.remove('hidden');
-  if (hint) hint.classList.add('hidden');
-  if (changed) {
-    label.classList.remove('is-in');
-    void label.offsetWidth;
-    label.classList.add('is-in');
+  state._judgeTitle = '';
+  const displayParts = [];
+  if (text) displayParts.push(text);
+  if (attachments.length && window.OCMultimodal) {
+    attachments.forEach((a) => displayParts.push(window.OCMultimodal.toMarkdown(a)));
   }
+  const content = displayParts.join('\n\n') || '（附件）';
+  const userMsg = { role: 'user', content, text, attachments, createdAt: Date.now() };
+  chat.messages.push(userMsg);
+  jumpToLatestOnSend();
+  chat.updatedAt = Date.now();
+  // 占位先挂 _streaming:首 token 之前气泡里显示当前步骤(判定/检索/思考)
+  const assistantMsg = { role: 'assistant', content: '', phase: '思考中', _streaming: true, createdAt: Date.now() };
+  chat.messages.push(assistantMsg);
+  saveChats();
+  renderMessages();
+  return { chat, userMsg, assistantMsg };
 }
 function phaseIndicatorHtml(text) {
   return '<div class="phase-indicator" aria-live="polite">'
@@ -499,6 +525,30 @@ function loadChats() {
     state.chats = window.OCConversations.normalize(JSON.parse(localStorage.getItem('oc_chats_' + state.user.id) || '[]'));
     state.chats.forEach((c) => (c.messages || []).forEach((m) => { if (m && m.role === 'assistant') m._voteSent = m.vote || null; }));
   } catch (e) { state.chats = []; }
+  // 刷新/重进页面时,把上次没跑完的「流式回答 / 生图占位」定稿:普通对话请求没有服务端任务可续,
+  // 挂着 _streaming 会永远显示「思考中」,占位被合并丢掉后又只剩一条点不动的空白消息。
+  // 有 taskId 且仍在跑的交给 resumePendingTasks 续传,这里不动。
+  let healed = false;
+  state.chats.forEach((c) => (c.messages || []).forEach((m) => {
+    if (!m || m.role !== 'assistant') return;
+    if (m.taskId && m.taskStatus === 'running') return;
+    if (m._streaming) {
+      m._streaming = false;
+      m.interrupted = true;
+      healed = true;
+      if (!String(m.content || '').trim() && !m.reasoning) {
+        m.error = true;
+        m.failNote = '页面刷新，本次回答中断（未产生内容），可点击重试';
+      }
+    }
+    if (m.imagePending) {
+      m.imagePending = false;
+      m.error = true;
+      m.failNote = '页面刷新，生成已中断，请重新发送';
+      healed = true;
+    }
+  }));
+  if (healed) saveChats();
   // 恢复本端删除墓碑(按用户隔离),防止刷新后又被云端合并回来
   try {
     const tombs = JSON.parse(localStorage.getItem('oc_chat_tombs_' + state.user.id) || '[]');
@@ -648,7 +698,9 @@ function chatViewStamp(chat) {
       p.avatar || '',
     ].join(':');
   }).join('\n');
-  return [chat.id, msgs.length, chat._visibleCount || 0, body].join('|');
+  // 只比对云端也会回传的内容:像 _visibleCount 这类纯本地字段云端永远没有,
+  // 放进来会让每一轮同步都误判「有变化」,把消息列表整页重绘(正在编辑的输入框会被销毁)。
+  return [chat.id, msgs.length, body].join('|');
 }
 function applyCloudChats(chats, revision) {
   if (!state.user) return;
@@ -694,6 +746,9 @@ function adoptDemoRevert(data) {
 async function pullChatsFromCloud() {
   if (!state.token || !state.user) return;
   if (state._groupTurnActive) return; // 群聊回合进行中:避免整体替换 state.chats 丢失成员发言
+  // 正在编辑消息:此时替换 state.chats 会把编辑框连同引用一起作废(输入到一半被清空)。
+  // 编辑结束后的下一次轮询会正常同步。
+  if (state._editingMsg) return;
   try {
     const r = await api('/api/sync/chats');
     if (!r.ok) return;
@@ -750,8 +805,13 @@ function mergeChatLists(cloudChats, localChats) {
       merged.push(lc);
       return;
     }
-    if ((lc.updatedAt || 0) > (found.updatedAt || 0)) {
+    // 时间戳相同也要保留本端副本:回复刚写完、推送还没落地时,两端 updatedAt 一样,
+    // 旧实现取云端副本,刷新后刚生成的回答会被「同一时刻的旧副本」覆盖,从对话里消失。
+    if ((lc.updatedAt || 0) >= (found.updatedAt || 0)) {
       merged[merged.indexOf(found)] = lc;
+    } else if ((found._visibleCount || 0) < (lc._visibleCount || 0)) {
+      // 云端副本赢了也不能丢本地已展开的分页进度
+      found._visibleCount = lc._visibleCount;
     }
   });
   merged.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.updatedAt || 0) - (a.updatedAt || 0));
@@ -1336,6 +1396,7 @@ function switchReplyVersion(msg, chat, delta) {
   if (next === msg.versionIndex) return;
   msg.versionIndex = next;
   applyReplyVersion(msg, versions[next]);
+  if (chat) chat.updatedAt = Date.now();
   saveChats();
   renderMessages();
 }
@@ -1344,6 +1405,10 @@ function finalizeReplyTiming(msg) {
   if (!msg || !msg._startTime) return;
   msg.elapsedMs = Math.max(0, Date.now() - msg._startTime);
   persistCurrentReplyVersion(msg);
+  // 回复写完必须把所属会话的时间戳推到最新:否则云端还留着「生成中/占位」那一版,
+  // 时间戳相同的旧副本会在下次合并(刷新/轮询)时把刚写好的回答覆盖掉。
+  const owner = (state.chats || []).find((c) => (c.messages || []).indexOf(msg) >= 0);
+  if (owner) owner.updatedAt = Date.now();
 }
 
 function formatElapsedMs(ms) {
@@ -1575,8 +1640,9 @@ function buildMsgNode(m, chat, idx) {
     }
   } else if (role === 'assistant') {
     if (m.imagePending && !m.content) {
-      // 生图/生视频占位:出图通常要 10–60 秒,出视频更久,给出明确的等待提示而不是空白气泡
-      const waiting = m.pendingKind === 'video' ? '正在生成视频（可能需要 1–5 分钟）…' : '正在生成图片…';
+      // 生图/生视频占位:出图通常要 10–60 秒,出视频更久,给出明确的等待提示而不是空白气泡。
+      // m.phase 优先(判定/改图等更具体的步骤),没有再按类型给兜底文案。
+      const waiting = m.phase || (m.pendingKind === 'video' ? '正在生成视频（可能需要 1–5 分钟）…' : '正在生成图片…');
       contentDiv.innerHTML = phaseIndicatorHtml(waiting);
       div.appendChild(contentDiv);
       return div;
@@ -2452,9 +2518,8 @@ async function sendMessage() {
     state.pendingAttachments = [];
     renderAttachments();
     updateSendBtn();
-    setComposerStatus(imageAtts.length ? '正在按参考图改图' : '正在生成图片');
-    try { await sendImageTurn(text, imageAtts); }
-    finally { setComposerStatus(''); }
+    // 消息立刻进对话,生成进展写在 AI 回复那一格里
+    await sendImageTurn(text, imageAtts, { phase: imageAtts.length ? '正在按参考图改图' : '正在生成图片' });
     return;
   }
 
@@ -2466,9 +2531,7 @@ async function sendMessage() {
     state.pendingAttachments = [];
     renderAttachments();
     updateSendBtn();
-    setComposerStatus('正在生成视频');
-    try { await sendVideoTurn(text, imageAtts); }
-    finally { setComposerStatus(''); }
+    await sendVideoTurn(text, imageAtts, { phase: '正在生成视频' });
     return;
   }
 
@@ -2477,6 +2540,8 @@ async function sendMessage() {
   // off=关闭 | rough=粗略关键词识别 | auto=统一 AI 工具判定(更准,但多一次调用)。
   // 「联网=智能」时也复用同一次判定,避免再用主模型多判一次、也更省 token。
   const aim = autoImageMode();
+  // 判定阶段已发出去的那一轮(用户消息 + AI 占位):块外的发送收尾也要用,提升到外层作用域
+  let posted = null;
   {
     const imgAtts = attachments.filter((a) => a && a.type === 'image' && a.dataUrl).slice(0, 4);
     let prevImg = '';
@@ -2498,9 +2563,9 @@ async function sendMessage() {
     if (needJudge) {
       // 判定期间锁住发送,避免重复触发。判定请求必须有超时:
       // 它不走流式、也没有停止按钮,上游一挂起 streaming 就会一直为真,
-      // 表现为消息没进对话、输入框还在,再点发送只提示「正在生成中」。
-      // 判定发生在消息入库之前,先写明正在判定什么。
-      setComposerStatus(judgePhaseText({ image: aim === 'auto' && hasImageModel, search: searchReady, title: isFirstMsg }));
+      // 再点发送只提示「正在生成中」。判定进展写在 AI 回复气泡里,消息即时进对话。
+      posted = postUserTurn(text, attachments);
+      setReplyPhase(posted.assistantMsg, judgePhaseText({ image: aim === 'auto' && hasImageModel, search: searchReady, title: isFirstMsg }));
       state.streaming = true; updateSendBtn();
       const judgeAc = new AbortController();
       const judgeTimer = setTimeout(() => judgeAc.abort(), 12000);
@@ -2508,14 +2573,19 @@ async function sendMessage() {
         verdict = await aiJudgeTools(text, { imageEnabled: hasImageModel, searchEnabled: searchReady, prevImage: hasRef, wantTitle: isFirstMsg, signal: judgeAc.signal });
       } finally {
         clearTimeout(judgeTimer);
-        setComposerStatus('');
         state.streaming = false; updateSendBtn();
       }
     }
     // 联网:判定成功则按结果显式开关;失败则回退后端启发式(body.webSearch 保持 'auto')
     state._toolSearch = (verdict && searchReady) ? !!verdict.search : null;
-    // 判定给出的标题:建对话时先用上(本地截取作为兜底)
-    state._judgeTitle = (verdict && verdict.title) ? verdict.title : '';
+    // 判定给出的标题:首条消息刚发出去时,用判定结果刷新自动标题
+    const judgeTitle = (verdict && verdict.title) ? String(verdict.title).trim() : '';
+    if (posted && judgeTitle && posted.chat && posted.chat._autoTitled) {
+      posted.chat.title = judgeTitle;
+      renderChatList();
+    }
+    // 标题已消费:正常路径的 postUserTurn 复用 posted 时不会再读它
+    state._judgeTitle = '';
     let isDraw = false, isEdit = false;
     if (aim !== 'off') {
       const feedback = wantsImageFeedback(text);
@@ -2554,11 +2624,9 @@ async function sendMessage() {
         renderModelPicker();
         const withRef = imgAtts.length > 0 || usePrevRef;
         toast((isEdit ? '识别到改图意图，已用生图模型「' : '识别到绘图意图，已用生图模型「') + (target.label || target.modelId) + '」' + (withRef ? '并带上参考图' : ''));
-        setComposerStatus(isEdit ? '判定为改图，正在生成' : '判定为生图，正在生成');
         try {
-          await sendImageTurn(text, imgAtts, { autoRef: usePrevRef });
+          await sendImageTurn(text, imgAtts, { autoRef: usePrevRef, posted, phase: isEdit ? '判定为改图，正在生成' : '判定为生图，正在生成' });
         } finally {
-          setComposerStatus('');
           // 无论出图成功或失败,都恢复到用户原本的对话模型
           state.currentProviderId = prevProviderId;
           await loadModels({ prefer: prevModel });
@@ -2571,47 +2639,23 @@ async function sendMessage() {
     }
   }
 
-  input.value = '';
-  autosizeInput();
-  state.pendingAttachments = [];
-  renderAttachments();
-  updateSendBtn();
-  // 没有当前会话时自动新建
-  let chat = currentChat();
-  if (!chat || !chat.id) {
-    chat = newChat();
-  }
-  // 新会话给第一个消息生成标题:优先用统一工具判定已生成的标题(省一次调用),否则本地截取
-  if (chat.messages.length === 0 && autoTitleEnabled()) {
-    const seed = text || (attachments[0] && attachments[0].name) || '新对话';
-    chat.title = (state._judgeTitle && state._judgeTitle.trim()) || window.OCConversations.autoTitle(seed);
-    chat._autoTitled = true;
-    renderChatList();
-  }
-  state._judgeTitle = '';
-
-  const displayParts = [];
-  if (text) displayParts.push(text);
-  if (attachments.length && window.OCMultimodal) {
-    attachments.forEach((a) => displayParts.push(window.OCMultimodal.toMarkdown(a)));
-  }
-  const content = displayParts.join('\n\n') || '（附件）';
-
-  const userMsg = { role: 'user', content, text, attachments, createdAt: Date.now() };
-  chat.messages.push(userMsg);
-  jumpToLatestOnSend();
-  chat.updatedAt = Date.now();
-  saveChats(); renderMessages();
-
-  // 添加 assistant 占位并请求回复。联网开启时先把这一步写出来,出字后自动让位。
+  // 消息立刻进对话(判定阶段已发过就复用),输入框随即清空;进展写在 AI 回复气泡里。
+  const turn = postUserTurn(text, attachments, posted);
   const searching = state._toolSearch === true || webSearchMode() === 'on';
-  const assistantMsg = { role: 'assistant', content: '', phase: searching ? '正在联网检索' : '思考中' };
-  setComposerStatus(assistantMsg.phase);
-  chat.messages.push(assistantMsg);
-  saveChats();
-  renderMessages();
-  try { await requestAssistantReply(chat, userMsg); }
-  finally { setComposerStatus(''); }
+  setReplyPhase(turn.assistantMsg, searching ? '正在联网检索' : '思考中');
+  try {
+    await requestAssistantReply(turn.chat, turn.userMsg);
+  } finally {
+    // 前置校验没过(无可用模型/额度不足等)时请求根本没开始:占位不能一直挂着「思考中」
+    const am = turn.assistantMsg;
+    if (am && am._streaming && !String(am.content || '').trim() && !am.error && !am.taskId && !state.streaming) {
+      am._streaming = false;
+      am.error = true;
+      am.failNote = am.failNote || '未能开始生成，请检查模型与额度后重试';
+      saveChats();
+      renderMessages();
+    }
+  }
   await refreshMe();
   refreshModelHealth();
 }
@@ -2803,10 +2847,7 @@ function paintStreamingText(assistantMsg) {
   if (!contentEl) return;
   upsertReasoningPanel(contentEl, assistantMsg, true);
   const phase = contentEl.querySelector('.phase-indicator');
-  if ((assistantMsg.reasoning || assistantMsg.content) && phase) {
-    phase.remove();
-    setComposerStatus('');
-  }
+  if ((assistantMsg.reasoning || assistantMsg.content) && phase) phase.remove();
   let root = contentEl.querySelector(':scope > .stream-answer');
   if (!assistantMsg.content) {
     if (root) root.remove();
@@ -3092,6 +3133,8 @@ async function regenerateMessage(msg, chat) {
   msg.elapsedMs = null;
   msg._startTime = Date.now();
   msg.createdAt = Date.now();
+  // 重答会截断消息列表:时间戳必须跟着更新,否则旧的云端副本(含更长的历史)会赢下合并
+  chat.updatedAt = Date.now();
   saveChats();
   renderMessages();
   const lastUser = [...chat.messages.slice(0, idx)].reverse().find((m) => m.role === 'user');
@@ -3119,19 +3162,24 @@ function editAndResend(msg, chat, msgEl) {
   if (idx < 0) return toast('找不到这条消息', true);
   const target = msgEl || document.querySelector('#messages .msg.user[data-idx="' + idx + '"]');
   if (!target || !window.OCMessages) return;
+  // 编辑期间挂起云同步拉取:轮询合并会整段替换 state.chats 并重绘消息列表,
+  // 正在输入的编辑框会被连带销毁(表现为刚点编辑就自己弹回)。
+  state._editingMsg = msg;
   window.OCMessages.enterEditMode(target, msg, {
     onSaveEdit: async (newText) => {
+      state._editingMsg = null;
       const next = String(newText || '').trim();
       if (!next) return toast('消息不能为空', true);
       msg.content = next;
       if (msg.text !== undefined) msg.text = next;
       chat.messages = chat.messages.slice(0, idx + 1);
       chat.messages.push({ role: 'assistant', content: '' });
+      chat.updatedAt = Date.now();
       saveChats();
       renderMessages();
       await requestAssistantReply(chat, msg);
     },
-    onExitEdit: () => renderMessages(),
+    onExitEdit: () => { state._editingMsg = null; renderMessages(); },
   });
 }
 
@@ -3422,7 +3470,6 @@ async function aiFollowUps(content) {
 }
 
 function stopStreaming() {
-  setComposerStatus('');
   cancelStreamPaint();
   const chat = currentChat();
   const pending = chat && [...(chat.messages || [])].reverse().find((m) => m && m.role === 'assistant' && m.taskId && m.taskStatus === 'running');
@@ -3433,11 +3480,12 @@ function stopStreaming() {
   document.documentElement.classList.remove('oc-streaming');
   $('stop-btn').classList.add('hidden');
   $('send-btn').classList.remove('hidden');
+  // 停止后消息内容已定稿,时间戳同步推进,已写出的内容不会被云端旧副本合并覆盖
+  if (chat) chat.updatedAt = Date.now();
   saveChats();
 }
 
 function initStreamingState() {
-  setComposerStatus('');
   state.streaming = false;
   document.documentElement.classList.remove('oc-streaming');
   state.abortController = null;
@@ -6636,11 +6684,27 @@ async function sendImageTurn(prompt, imageAtts, opts) {
   const parts = [];
   if (text) parts.push(text);
   if (refAtts.length && window.OCMultimodal) refAtts.forEach((a) => parts.push(window.OCMultimodal.toMarkdown(a)));
-  const userMsg = { role: 'user', content: parts.join('\n\n') || '（参考图）', text, attachments: refAtts, createdAt: Date.now() };
-  chat.messages.push(userMsg);
-  jumpToLatestOnSend();
-  const placeholder = { role: 'assistant', content: '', imagePending: true, model, providerId, createdAt: Date.now() };
-  chat.messages.push(placeholder);
+  // 判定阶段消息已进对话时复用它:只补齐参考图附件,不重复落一条用户消息
+  const reuse = opts.posted && opts.posted.userMsg && chat.messages.indexOf(opts.posted.userMsg) >= 0 ? opts.posted : null;
+  let userMsg;
+  let placeholder;
+  if (reuse) {
+    userMsg = reuse.userMsg;
+    userMsg.content = parts.join('\n\n') || '（参考图）';
+    userMsg.text = text;
+    userMsg.attachments = refAtts;
+    placeholder = reuse.assistantMsg;
+  } else {
+    userMsg = { role: 'user', content: parts.join('\n\n') || '（参考图）', text, attachments: refAtts, createdAt: Date.now() };
+    placeholder = { role: 'assistant', content: '', createdAt: Date.now() };
+    chat.messages.push(userMsg, placeholder);
+    jumpToLatestOnSend();
+  }
+  placeholder.imagePending = true;
+  placeholder.model = model;
+  placeholder.providerId = providerId;
+  placeholder.phase = opts.phase || (atts.length ? '正在按参考图改图' : '正在生成图片');
+  placeholder._streaming = true;
   if (chat.messages.filter((m) => m.role === 'user').length === 1) {
     chat.title = (hasRefs ? '改图' : '绘画') + ' · ' + String(text || '参考图').slice(0, 18);
     renderChatList();
@@ -6676,6 +6740,7 @@ async function sendImageTurn(prompt, imageAtts, opts) {
     const head = '**' + (hasRefs ? '修改要求' : '提示词') + '：** ' + (text || '参考图');
     placeholder.content = head + '\n\n' + links;
     placeholder.imagePending = false;
+    placeholder._streaming = false;
     placeholder.createdAt = Date.now();
     saveChats();
     renderMessages();
@@ -6683,6 +6748,7 @@ async function sendImageTurn(prompt, imageAtts, opts) {
     await refreshMe();
   } catch (e) {
     placeholder.imagePending = false;
+    placeholder._streaming = false;
     if (e && e.name === 'AbortError') {
       placeholder.content = '已停止生成。';
       saveChats();
@@ -6696,6 +6762,8 @@ async function sendImageTurn(prompt, imageAtts, opts) {
       toast('生图失败: ' + ((e && e.message) || '未知错误'), true);
     }
   } finally {
+    // 出图/失败都在这里定稿:时间戳推进,已生成的结果不会被云端旧副本合并覆盖
+    chat.updatedAt = Date.now();
     initStreamingState();
     refreshModelHealth();
   }
@@ -6722,7 +6790,8 @@ function videoLinksFromResults(videos, prompt) {
 }
 // 对话内生视频:视频模型下在输入框发指令(纯文本=文生视频,带图=以图生视频)。
 // 后端建任务并轮询到出片后返回视频地址;期间显示「正在生成视频…」占位。
-async function sendVideoTurn(prompt, imageAtts) {
+async function sendVideoTurn(prompt, imageAtts, opts) {
+  opts = opts || {};
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
   const model = state.currentModel;
   const providerId = state.currentProviderId;
@@ -6741,11 +6810,28 @@ async function sendVideoTurn(prompt, imageAtts) {
   const parts = [];
   if (text) parts.push(text);
   if (refAtts.length && window.OCMultimodal) refAtts.forEach((a) => parts.push(window.OCMultimodal.toMarkdown(a)));
-  const userMsg = { role: 'user', content: parts.join('\n\n') || '（参考图）', text, attachments: refAtts, createdAt: Date.now() };
-  chat.messages.push(userMsg);
-  jumpToLatestOnSend();
-  const placeholder = { role: 'assistant', content: '', imagePending: true, pendingKind: 'video', model, providerId, createdAt: Date.now() };
-  chat.messages.push(placeholder);
+  // 判定阶段消息已进对话时复用,不重复落用户消息
+  const reuse = opts.posted && opts.posted.userMsg && chat.messages.indexOf(opts.posted.userMsg) >= 0 ? opts.posted : null;
+  let userMsg;
+  let placeholder;
+  if (reuse) {
+    userMsg = reuse.userMsg;
+    userMsg.content = parts.join('\n\n') || '（参考图）';
+    userMsg.text = text;
+    userMsg.attachments = refAtts;
+    placeholder = reuse.assistantMsg;
+  } else {
+    userMsg = { role: 'user', content: parts.join('\n\n') || '（参考图）', text, attachments: refAtts, createdAt: Date.now() };
+    placeholder = { role: 'assistant', content: '', createdAt: Date.now() };
+    chat.messages.push(userMsg, placeholder);
+    jumpToLatestOnSend();
+  }
+  placeholder.imagePending = true;
+  placeholder.pendingKind = 'video';
+  placeholder.model = model;
+  placeholder.providerId = providerId;
+  placeholder.phase = opts.phase || '正在生成视频';
+  placeholder._streaming = true;
   if (chat.messages.filter((m) => m.role === 'user').length === 1) {
     chat.title = '视频 · ' + String(text || '参考图').slice(0, 18);
     renderChatList();
@@ -6779,6 +6865,7 @@ async function sendVideoTurn(prompt, imageAtts) {
     const head = '**' + (hasRefs ? '参考图视频' : '提示词') + '：** ' + (text || '参考图');
     placeholder.content = head + '\n\n' + links;
     placeholder.imagePending = false;
+    placeholder._streaming = false;
     placeholder.createdAt = Date.now();
     saveChats();
     renderMessages();
@@ -6786,6 +6873,7 @@ async function sendVideoTurn(prompt, imageAtts) {
     await refreshMe();
   } catch (e) {
     placeholder.imagePending = false;
+    placeholder._streaming = false;
     if (e && e.name === 'AbortError') {
       placeholder.content = '已停止生成。';
       saveChats();
@@ -6799,6 +6887,8 @@ async function sendVideoTurn(prompt, imageAtts) {
       toast('生视频失败: ' + ((e && e.message) || '未知错误'), true);
     }
   } finally {
+    // 视频定稿同样推进时间戳,防止云端旧副本把结果合并掉
+    chat.updatedAt = Date.now();
     initStreamingState();
     refreshModelHealth();
   }
@@ -7734,6 +7824,7 @@ function switchReplyVersionTo(msg, chat, target) {
   persistCurrentReplyVersion(msg);
   msg.versionIndex = target;
   applyReplyVersion(msg, versions[target]);
+  if (chat) chat.updatedAt = Date.now();
   saveChats();
   renderMessages();
 }
@@ -7893,6 +7984,8 @@ async function reanswerWithModel(msg, chat, providerId, modelId) {
   msg.interrupted = false;
   msg.failNote = '';
   msg._startTime = Date.now();
+  // 新版本开始生成,会话时间戳随之更新,避免刚重答的内容被云端旧副本合并掉
+  chat.updatedAt = Date.now();
   saveChats();
   renderMessages();
   try {
