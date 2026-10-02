@@ -2433,8 +2433,8 @@ body.share-page {
 .assistant-lib-btn .model-icon,
 .assistant-lib-btn .chevron { color: var(--text-tertiary); display: inline-flex; }
 .assistant-lib-modal {
-  width: min(920px, calc(100vw - 28px));
-  max-height: min(88vh, 820px);
+  width: min(1180px, calc(100vw - 28px));
+  max-height: min(92vh, 920px);
   display: flex;
   flex-direction: column;
 }
@@ -2462,11 +2462,10 @@ body.share-page {
   gap: 10px;
   height: 40px;
   padding: 0 14px;
-  border: 1px solid var(--hairline);
+  border: 1px solid transparent;
   border-radius: 12px;
-  background: color-mix(in srgb, var(--bg-hover) 88%, var(--bg-surface));
+  background: var(--bg-hover);
   color: var(--text-tertiary);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 6%, transparent);
 }
 .al-search .oc-icon { flex-shrink: 0; opacity: 0.78; }
 .al-search input[type="search"] {
@@ -2500,9 +2499,8 @@ body.share-page {
   appearance: none;
 }
 .al-search:focus-within {
-  background: var(--bg-surface);
-  border-color: color-mix(in srgb, var(--brand) 42%, var(--hairline));
-  box-shadow: 0 0 0 3px var(--ring-brand);
+  background: var(--bg-active);
+  border-color: transparent;
   color: var(--text-secondary);
 }
 .assistant-lib-split {
@@ -2510,18 +2508,18 @@ body.share-page {
   align-items: stretch;
   min-height: 0;
   flex: 1;
-  border-top: 1px solid var(--hairline);
+  border-top: 0;
 }
 .assistant-lib-cats {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   width: 196px;
   flex-shrink: 0;
-  padding: 10px 8px 14px;
+  padding: 10px 10px 14px;
   overflow: auto;
-  border-right: 1px solid var(--hairline);
-  background: color-mix(in srgb, var(--bg) 55%, var(--bg-surface));
+  border-right: 0;
+  background: transparent;
 }
 .al-cat {
   display: flex;
@@ -2531,7 +2529,7 @@ body.share-page {
   min-height: 34px;
   padding: 6px 8px 6px 10px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 9px;
   background: transparent;
   color: var(--text-secondary);
   font-size: 13px;
@@ -2583,12 +2581,13 @@ body.share-page {
 .assistant-lib-body {
   flex: 1;
   min-width: 0;
-  max-height: min(62vh, 560px);
+  max-height: min(72vh, 720px);
   overflow: auto;
 }
 .admin-asst-split { min-height: 420px; }
 .admin-asst-body { max-height: none; padding: 16px 18px 8px; }
-.al-section + .al-section { margin-top: 22px; }
+/* 分区标题:用间距和字重分层,不加分隔线 */
+.al-section + .al-section { margin-top: 26px; }
 .al-section-head {
   display: flex;
   align-items: center;
@@ -2608,20 +2607,24 @@ body.share-page {
 .al-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
+/* 无描边圆角卡片:靠底色深浅分层,而不是描边。
+   静止=轻填充,悬停=加深,图标块用弹窗底色"挖"出来。 */
 .al-card {
   position: relative;
   display: flex;
   flex-direction: column;
   min-height: 92px;
-  border: 1px solid var(--hairline);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--bg-surface) 92%, var(--bg));
+  border: 0;
+  border-radius: 16px;
+  background: var(--bg-hover);
+  transition: background 0.15s ease;
 }
-.al-card:hover {
-  border-color: color-mix(in srgb, var(--brand) 28%, var(--hairline));
-  background: var(--bg-surface);
+.al-card:hover { background: var(--bg-active); }
+.al-card:has(.al-card-main:focus-visible) {
+  background: var(--bg-active);
+  box-shadow: inset 0 0 0 2px var(--ring-brand);
 }
 .al-card-main {
   display: flex;
@@ -2640,12 +2643,12 @@ body.share-page {
 .al-card-icon {
   width: 36px;
   height: 36px;
-  border-radius: 11px;
+  border-radius: 12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  background: color-mix(in srgb, var(--bg-hover) 80%, var(--brand-soft));
+  background: var(--bg-surface);
   color: var(--brand);
 }
 .al-emoji {
@@ -2681,7 +2684,7 @@ body.share-page {
   border-radius: 999px;
   padding: 1px 6px;
 }
-.al-badge.mine { color: var(--text-secondary); background: var(--bg-hover); }
+.al-badge.mine { color: var(--text-secondary); background: var(--bg-surface); }
 .al-card-ops {
   position: absolute;
   top: 6px;
@@ -2731,10 +2734,10 @@ body.share-page {
     width: auto;
     max-width: 100%;
     flex-direction: row;
-    gap: 2px;
+    gap: 4px;
     padding: 8px 12px;
     border-right: 0;
-    border-bottom: 1px solid var(--hairline);
+    border-bottom: 0;
     overflow-x: auto;
   }
   .log-table { min-width: 760px; }
