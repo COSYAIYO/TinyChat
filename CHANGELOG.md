@@ -2,6 +2,12 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.112] - 2026-10-02
+
+### 修复
+
+- **发版完整性清单不再重复收录同一文件**：`checksums.txt` 里 `static/js/app.js` 与 `static/js/app.min.js` 各出现了三次，重跑发版工具后只保留一行。CI 的发版产物新鲜度检查因此失败。
+
 ## [2.0.111] - 2026-10-02
 
 ### 修复
