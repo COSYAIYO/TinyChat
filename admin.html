@@ -9,16 +9,16 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
-<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.114">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.114" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.114">
-<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.114">
-<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.114">
-<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.114">
-<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.114">
-<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.114">
-<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.114">
-<script src="./static/js/theme-boot.min.js?v=2.0.114"></script>
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.115">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.115" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.115">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.115">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.115">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.115">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.115">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.115">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.115">
+<script src="./static/js/theme-boot.min.js?v=2.0.115"></script>
 </head>
 <body class="admin-body">
 <form id="admin-fields" autocomplete="off" style="display:contents">
@@ -48,7 +48,8 @@
 
   <!-- 概览 -->
   <div class="admin-panel active" id="panel-overview">
-    <!-- 服务器状态看板:数据来自 /api/admin/system;取不到的指标自动隐藏(不显示误导性的 0) -->
+    <!-- 服务器状态看板:只放服务器指标(数据来自 /api/admin/system);取不到的项自动隐藏(不显示误导性的 0)。
+         用户 / 调用 / 对话等运营数据在下方「概览」卡片 -->
     <div class="sys-board" id="sys-board">
       <div class="sys-board-head">
         <div class="sys-board-title">
@@ -62,14 +63,14 @@
         </div>
       </div>
       <div class="sys-meters" id="sys-meters"></div>
-      <div class="sys-facts" id="sys-facts"></div>
     </div>
 
     <div class="admin-card">
       <h2>概览</h2>
+      <p class="muted small">用户、调用与内容数据；服务器指标见上方「服务器状态」。</p>
       <div class="admin-grid" id="stats-grid"></div>
 
-      <div class="overview-note muted small">核心状态概览。详细趋势、用量和排行请进入“用量分析”。</div>
+      <div class="overview-note muted small">详细趋势、用量和排行请进入“用量分析”。</div>
     </div>
   </div>
 
@@ -983,16 +984,16 @@
   </div>
 </div>
 </form>
-<script defer src="./static/js/config.min.js?v=2.0.114"></script>
-<script defer src="./static/js/icons.min.js?v=2.0.114"></script>
-<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.114"></script>
-<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.114"></script>
-<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.114"></script>
-<script defer src="./vendor/katex/katex.min.js?v=2.0.114"></script>
-<script defer src="./vendor/highlight/highlight.min.js?v=2.0.114"></script>
-<script defer src="./static/js/ui.min.js?v=2.0.114"></script>
-<script defer src="./static/js/components.min.js?v=2.0.114"></script>
-<script defer src="./static/js/renderer.min.js?v=2.0.114"></script>
-<script defer src="./static/js/admin.min.js?v=2.0.114"></script>
+<script defer src="./static/js/config.min.js?v=2.0.115"></script>
+<script defer src="./static/js/icons.min.js?v=2.0.115"></script>
+<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.115"></script>
+<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.115"></script>
+<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.115"></script>
+<script defer src="./vendor/katex/katex.min.js?v=2.0.115"></script>
+<script defer src="./vendor/highlight/highlight.min.js?v=2.0.115"></script>
+<script defer src="./static/js/ui.min.js?v=2.0.115"></script>
+<script defer src="./static/js/components.min.js?v=2.0.115"></script>
+<script defer src="./static/js/renderer.min.js?v=2.0.115"></script>
+<script defer src="./static/js/admin.min.js?v=2.0.115"></script>
 </body>
 </html>

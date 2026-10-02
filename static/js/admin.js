@@ -168,14 +168,18 @@ function sysRing(label, sub, pct, color) {
     + '<div class="sys-meter-meta"><div class="k">' + escapeHtml(label) + '</div><div class="v">' + escapeHtml(sub) + '</div></div>'
     + '</div>';
 }
-function sysFact(k, v, sub) {
-  return '<div class="sys-fact"><div class="k">' + escapeHtml(k) + '</div><div class="v">' + escapeHtml(String(v)) + '</div>'
-    + (sub ? '<div class="sub">' + escapeHtml(sub) + '</div>' : '') + '</div>';
-}
 function sysRingColor(pct) { return pct >= 85 ? '#dc2626' : (pct >= 60 ? '#f59e0b' : '#16a34a'); }
+// 无环数值卡片:网速、运行时长、体积这类没有百分比可言的指标用大字直接显示
+function sysStat(label, value, sub) {
+  return '<div class="sys-meter sys-stat"><div class="sys-meter-meta">'
+    + '<div class="k">' + escapeHtml(label) + '</div><div class="v">' + escapeHtml(String(value)) + '</div>'
+    + (sub ? '<div class="sub">' + escapeHtml(sub) + '</div>' : '') + '</div></div>';
+}
+function fmtBps(n) { return fmtBytesBig(n) + '/s'; }
+function fmtCores(n) { return (Math.round(Number(n) * 100) / 100) + ' 核'; }
 async function loadSystemBoard() {
-  const metersEl = $('sys-meters'); const factsEl = $('sys-facts');
-  if (!metersEl || !factsEl) return;
+  const metersEl = $('sys-meters');
+  if (!metersEl) return;
   let d = null;
   try {
     const r = await api('/api/admin/system');
@@ -185,48 +189,111 @@ async function loadSystemBoard() {
     metersEl.innerHTML = '<p class="muted small" style="margin:0">服务器指标加载失败：' + escapeHtml(e.message || '') + '</p>';
     return;
   }
-  const cpu = d.cpu || {}, mem = d.memory || {}, disk = d.disk || {}, users = d.users || {};
-  const calls = d.calls || {}, content = d.content || {}, srv = d.server || {};
+  const cpu = d.cpu || {}, mem = d.memory || {}, disk = d.disk || {}, net = d.net || {};
+  const uptime = d.uptime || {}, srv = d.server || {}, quota = d.quota || {};
   const meters = [];
-  if (cpu.percent !== null && cpu.percent !== undefined) {
+  // 虚拟主机/容器里整机 CPU 取不到,后端会退一步读 cgroup 配额,这里同样按「配额 > 整机 > 核数」兜底
+  const hasQuotaCpu = (quota.cpuPercent !== null && quota.cpuPercent !== undefined)
+    || (quota.cpuCoreUsage !== null && quota.cpuCoreUsage !== undefined);
+  if (hasQuotaCpu) {
+    const sub = [];
+    if (quota.cpuCores) sub.push('配额 ' + fmtCores(quota.cpuCores));
+    if (quota.cpuCoreUsage !== null && quota.cpuCoreUsage !== undefined) sub.push('现用 ' + fmtCores(quota.cpuCoreUsage));
+    meters.push(sysRing(quota.cpuCores ? 'CPU（配额）' : 'CPU（账户用量）', sub.join(' · ') || '—',
+      quota.cpuPercent, sysRingColor(quota.cpuPercent || 0)));
+  } else if (cpu.percent !== null && cpu.percent !== undefined) {
     const la = (cpu.loadavg && cpu.loadavg.length) ? '负载 ' + cpu.loadavg.join(' / ') : (cpu.cores ? cpu.cores + ' 核' : '—');
     meters.push(sysRing('CPU 使用率', la, cpu.percent, sysRingColor(cpu.percent)));
   } else if (cpu.cores) {
     meters.push(sysRing('CPU', cpu.cores + ' 核', null, '#cbd5e1'));
   }
-  if (mem.totalBytes) {
-    const pct = mem.usedBytes * 100 / mem.totalBytes;
-    meters.push(sysRing('内存', fmtBytesBig(mem.usedBytes) + ' / ' + fmtBytesBig(mem.totalBytes), pct, sysRingColor(pct)));
-  } else if (mem.phpBytes) {
+  // 内存同理:配额比整机更有约束力时(或整机取不到)用配额;此时 PHP 进程内存另立一格,免得丢掉 memory_limit 视角
+  const hasQuotaMem = quota.memLimitBytes > 0 && quota.memUsedBytes !== null && quota.memUsedBytes !== undefined
+    && (!mem.totalBytes || quota.memLimitBytes < mem.totalBytes);
+  const phpRing = () => {
+    if (!mem.phpBytes) return;
     const lim = mem.phpLimitBytes;
     meters.push(sysRing('PHP 进程内存', fmtBytesBig(mem.phpBytes) + (lim ? ' / ' + fmtBytesBig(lim) : ''),
       lim ? mem.phpBytes * 100 / lim : null, sysRingColor(lim ? mem.phpBytes * 100 / lim : 0)));
+  };
+  if (hasQuotaMem) {
+    const pct = quota.memUsedBytes * 100 / quota.memLimitBytes;
+    meters.push(sysRing('内存（配额）', fmtBytesBig(quota.memUsedBytes) + ' / ' + fmtBytesBig(quota.memLimitBytes), pct, sysRingColor(pct)));
+  } else if (mem.totalBytes) {
+    const pct = mem.usedBytes * 100 / mem.totalBytes;
+    meters.push(sysRing('内存', fmtBytesBig(mem.usedBytes) + ' / ' + fmtBytesBig(mem.totalBytes), pct, sysRingColor(pct)));
   }
   if (disk.totalBytes && disk.freeBytes !== null && disk.freeBytes !== undefined) {
     const used = disk.totalBytes - disk.freeBytes;
     const pct = used * 100 / disk.totalBytes;
     meters.push(sysRing('磁盘', fmtBytesBig(used) + ' / ' + fmtBytesBig(disk.totalBytes), pct, sysRingColor(pct)));
   }
+  // 网速:上行=出站(回复与图片发给用户),下行=入站(用户请求进来)
+  if (net.txBps !== null && net.txBps !== undefined) {
+    meters.push(sysStat('上行网速', fmtBps(net.txBps), '累计出站 ' + fmtBytesBig(net.txBytes)));
+  }
+  if (net.rxBps !== null && net.rxBps !== undefined) {
+    meters.push(sysStat('下行网速', fmtBps(net.rxBps), '累计入站 ' + fmtBytesBig(net.rxBytes)));
+  }
+  if (uptime.systemSec !== null && uptime.systemSec !== undefined) meters.push(sysStat('系统运行时长', fmtUptime(uptime.systemSec)));
+  if (uptime.appSec !== null && uptime.appSec !== undefined) meters.push(sysStat('应用运行时长', fmtUptime(uptime.appSec)));
+  if (d.db && d.db.bytes) {
+    const dataBytes = (d.storage || []).reduce((sum, c) => sum + (c.bytes || 0), 0);
+    meters.push(sysStat('数据库大小', fmtBytesBig(d.db.bytes), dataBytes ? '数据目录共 ' + fmtBytesBig(dataBytes) : ''));
+  }
+  phpRing();
+  if ((hasQuotaCpu || hasQuotaMem) && quota.source) {
+    meters.push('<p class="muted small sys-note">整机指标被当前环境屏蔽，CPU / 内存为账户配额用量（' + escapeHtml(quota.source) + '），非物理机总量。</p>');
+  }
   metersEl.innerHTML = meters.join('') || '<p class="muted small" style="margin:0">当前环境未提供 CPU / 内存指标。</p>';
-  factsEl.innerHTML = [
-    sysFact('在线用户', users.online, '最近 ' + (users.onlineWindowMin || 5) + ' 分钟活跃'),
-    sysFact('总用户', users.total, '24 小时活跃 ' + (users.active24h || 0)),
-    sysFact('今日调用', calls.today, '近 7 天 ' + (calls.last7d || 0)),
-    sysFact('累计调用', calls.total),
-    sysFact('对话总数', content.chats),
-    sysFact('模型供应商', content.providers),
-    sysFact('助手数', content.assistants),
-    sysFact('运行时长', fmtUptime(d.uptimeSec)),
-  ].join('');
   const hostEl = $('sys-host');
-  if (hostEl) hostEl.textContent = ['v' + (d.version || '?'), srv.phpVersion ? 'PHP ' + srv.phpVersion : '', srv.os, srv.sqliteVersion ? 'SQLite ' + srv.sqliteVersion : '', srv.arch].filter(Boolean).join(' · ');
+  if (hostEl) {
+    hostEl.textContent = [
+      'v' + (d.version || '?'), srv.phpVersion ? 'PHP ' + srv.phpVersion : '', srv.sapi, srv.os,
+      srv.arch, srv.sqliteVersion ? 'SQLite ' + srv.sqliteVersion : '', srv.host, srv.timezone,
+    ].filter(Boolean).join(' · ');
+  }
   const upEl = $('sys-updated');
   if (upEl) upEl.textContent = '更新于 ' + fmtTime(Date.now()).replace(/^.*\s/, '').replace(/:\d\d$/, '');
+  OV.sys = d;
+  renderOverviewGrid();
 }
 (function initSystemBoard() {
   const btn = $('sys-refresh');
   if (btn) btn.addEventListener('click', () => { btn.disabled = true; Promise.resolve(loadSystemBoard()).then(() => { btn.disabled = false; }); });
 })();
+
+// ============ 概览(只放用户 / 运营 / 对话 / 调用,服务器指标见上方看板) ============
+// 两块数据来自不同接口(系统看板给用户与调用,统计接口给额度),谁先到都先渲染一次,
+// 后到的补齐;这样单独刷新任一边都不会把另一边的格子抹掉。
+const OV = { sys: null, stats: null };
+function ovCard(label, value, sub) {
+  return '<div class="stat-card"><div class="stat-value">' + escapeHtml(String(value)) + '</div>'
+    + '<div class="stat-label">' + escapeHtml(label) + '</div>'
+    + (sub ? '<div class="stat-sub">' + escapeHtml(sub) + '</div>' : '') + '</div>';
+}
+function renderOverviewGrid() {
+  const el = $('stats-grid');
+  if (!el) return;
+  const sys = OV.sys || {}, s = (OV.stats || {}).stats || {};
+  const users = sys.users || {}, calls = sys.calls || {}, content = sys.content || {};
+  const cards = [];
+  if (OV.sys) {
+    cards.push(['当前在线用户', users.online, '最近 ' + (users.onlineWindowMin || 5) + ' 分钟活跃']);
+    const adminN = s.adminCount ? ' · 管理员 ' + s.adminCount : '';
+    cards.push(['总用户', users.total, '24 小时活跃 ' + (users.active24h || 0) + adminN]);
+    cards.push(['今日调用', calls.today, '近 7 天 ' + (calls.last7d || 0)]);
+    cards.push(['累计调用', calls.total]);
+    cards.push(['对话总数', content.chats, content.deletedChats ? '已删除留档 ' + content.deletedChats : '']);
+    cards.push(['模型供应商', content.providers, '用户分组 ' + (content.groups || 0)]);
+    cards.push(['助手数', content.assistants]);
+  }
+  if (OV.stats) {
+    cards.push(['已发放额度', s.totalQuotaGiven || 0]);
+    cards.push(['注册默认额度', OV.stats.freeQuotaUnlimited ? '不限' : (OV.stats.freeQuota || 0)]);
+  }
+  el.innerHTML = cards.map((c) => ovCard(c[0], c[1], c[2])).join('');
+}
 
 // ============ 存储管理 ============
 function stRow(name, desc, bytes, maxBytes, action) {
@@ -526,16 +593,8 @@ async function loadStats() {
   const r = await api('/api/admin/stats');
   const data = await r.json();
   const s = data.stats || {};
-  $('stats-grid').innerHTML = [
-    ['用户总数', s.userCount ?? 0],
-    ['累计调用', s.totalCalls ?? 0],
-    ['今日调用', s.todayCalls ?? 0],
-    ['已发放额度', s.totalQuotaGiven ?? 0],
-    ['注册默认额度', data.freeQuota ?? 100],
-    ['供应商数', s.providerCount ?? 0],
-  ].map(([label, value]) =>
-    `<div class="stat-card"><div class="stat-value">${value}</div><div class="stat-label">${label}</div></div>`
-  ).join('');
+  OV.stats = data;
+  renderOverviewGrid();   // 概览格子:与系统看板的用户/调用数据合在一处渲染
 
   // 近 14 天趋势(纯 CSS 柱状)
   const trendEl = $('trend-chart');
