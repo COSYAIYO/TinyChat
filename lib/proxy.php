@@ -2366,9 +2366,13 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         } else {
             $user = tc_require_auth($db);
         }
-        $rateLimit = isset($db['settings']['rateLimitPerMin']) ? (int) $db['settings']['rateLimitPerMin'] : 30;
-        if (!tc_rate_limit_check('u:' . $user['id'], $rateLimit)) {
-            tc_fail(429, '请求太频繁了，请稍后再试（当前上限 ' . $rateLimit . ' 次/分钟）');
+        // 开放接口已在 tc_v1_authenticate 记过用户级窗口;这里再记会把同一次请求算成两次,
+        // 自动分流到生图/生视频时还会再记第三次。网页端没有外层计数,仍在这里记。
+        if ($apiKeyOwner === null) {
+            $rateLimit = isset($db['settings']['rateLimitPerMin']) ? (int) $db['settings']['rateLimitPerMin'] : 30;
+            if (!tc_rate_limit_check('u:' . $user['id'], $rateLimit)) {
+                tc_fail(429, '请求太频繁了，请稍后再试（当前上限 ' . $rateLimit . ' 次/分钟）');
+            }
         }
         $b = tc_read_json_body(20 * 1024 * 1024);
         $resolved = tc_resolve_provider($db, $user, $b);
@@ -2396,13 +2400,15 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         if ($modHit !== '') tc_fail(400, '消息包含被禁止的内容，请修改后重试');
         // 用户自备供应商(自己的 Key):不扣站点次数,也不设额度门槛
         if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
-        if (!tc_is_unlimited_quota($user) && (isset($user['quota']) ? (float) $user['quota'] : 0) < $cost) {
+        // 过期赠送还留在账面额度里,真正能用的是扣掉这部分之后的余额
+        $quotaNow = tc_is_unlimited_quota($user) ? -1 : tc_quota_effective($user);
+        if ($quotaNow !== -1 && $quotaNow < $cost) {
             $msg = $cost > 1
-                ? '剩余次数不足（本次需要 ' . $cost . ' 次，当前 ' . (isset($user['quota']) ? $user['quota'] : 0) . ' 次），请联系管理员充值'
-                : '剩余次数不足（当前 ' . (isset($user['quota']) ? $user['quota'] : 0) . ' 次），请联系管理员充值';
+                ? '剩余次数不足（本次需要 ' . $cost . ' 次，当前 ' . $quotaNow . ' 次），请联系管理员充值'
+                : '剩余次数不足（当前 ' . $quotaNow . ' 次），请联系管理员充值';
             tc_json(402, array(
                 'error' => array('message' => $msg),
-                'quota' => isset($user['quota']) ? $user['quota'] : 0,
+                'quota' => $quotaNow,
                 'need' => $cost,
             ));
         }
@@ -2924,9 +2930,12 @@ function tc_generate_images($apiKeyOwner = null) {
         } else {
             $user = tc_require_auth($db);
         }
-        $rateLimit = isset($db['settings']['rateLimitPerMin']) ? (int) $db['settings']['rateLimitPerMin'] : 30;
-        if (!tc_rate_limit_check('u:' . $user['id'], $rateLimit)) {
-            tc_fail(429, '请求太频繁了，请稍后再试（当前上限 ' . $rateLimit . ' 次/分钟）');
+        // 密钥路径的用户级窗口已由 tc_v1_authenticate 记过,这里只给网页端计数
+        if ($apiKeyOwner === null) {
+            $rateLimit = isset($db['settings']['rateLimitPerMin']) ? (int) $db['settings']['rateLimitPerMin'] : 30;
+            if (!tc_rate_limit_check('u:' . $user['id'], $rateLimit)) {
+                tc_fail(429, '请求太频繁了，请稍后再试（当前上限 ' . $rateLimit . ' 次/分钟）');
+            }
         }
         // 图生图/改图需要携带参考图(data URL),给足请求体上限(约 4 张 8MB 图)
         $b = tc_read_json_body(48 * 1024 * 1024);
@@ -2953,7 +2962,8 @@ function tc_generate_images($apiKeyOwner = null) {
         }
         $cost = tc_model_cost($provider, $model);
         if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
-        if (!tc_is_unlimited_quota($user) && (isset($user['quota']) ? (float) $user['quota'] : 0) < $cost) {
+        $quotaNow = tc_is_unlimited_quota($user) ? -1 : tc_quota_effective($user);
+        if ($quotaNow !== -1 && $quotaNow < $cost) {
             tc_fail(402, '剩余次数不足，请联系管理员充值');
         }
         // 透传常见可选参数(仅白名单键,避免污染上游请求)
@@ -3196,12 +3206,15 @@ function tc_img_proxy_path($url) {
     return '/api/proxy/image?u=' . rawurlencode($u) . '&s=' . tc_img_proxy_token($u);
 }
 
-// SSRF 防护:只允许指向公网地址的 http(s) URL
+// SSRF 防护:只允许指向公网地址的 http(s) URL。
+// 端口与 tc_url_public_host 对齐,避免签名过的图片/视频地址把本机非常规端口也卷进来。
 function tc_url_is_public_http($url) {
     $p = parse_url((string) $url);
     if (!is_array($p) || empty($p['host'])) return false;
     $scheme = strtolower(isset($p['scheme']) ? $p['scheme'] : '');
     if ($scheme !== 'http' && $scheme !== 'https') return false;
+    $port = isset($p['port']) ? (int) $p['port'] : ($scheme === 'https' ? 443 : 80);
+    if (!in_array($port, array(80, 443, 8080, 8443), true)) return false;
     $host = $p['host'];
     $ips = array();
     if (filter_var($host, FILTER_VALIDATE_IP)) {
@@ -3225,6 +3238,14 @@ function tc_url_is_public_http($url) {
         if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) return false;
     }
     return true;
+}
+
+// 跟随跳转之后,curl 实际落到的地址必须再过一遍公网校验。
+// 起始地址合法不能代表 30x 的目标也合法。
+function tc_http_landed_public($ch) {
+    $eff = (string) curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+    if ($eff === '') return false;
+    return tc_url_is_public_http($eff);
 }
 
 function tc_img_cache_dir() {
@@ -3344,8 +3365,9 @@ function tc_img_store_save($url, $maxBytes = 30 * 1024 * 1024) {
     });
     @curl_exec($ch);
     $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $landed = tc_http_landed_public($ch);
     curl_close($ch);
-    if ($tooBig || $status < 200 || $status >= 300 || $buf === '') return '';
+    if ($tooBig || !$landed || $status < 200 || $status >= 300 || $buf === '') return '';
     $ctype = strtolower(trim(explode(';', $ctype)[0]));
     if (strpos($ctype, 'image/') !== 0) $ctype = 'image/png';
     $id = substr(sha1($url . '|' . tc_secret()), 0, 24);
@@ -3455,9 +3477,17 @@ function tc_api_image_proxy() {
     });
     @curl_exec($ch);
     $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $landed = tc_http_landed_public($ch);
     curl_close($ch);
-    if ($tooBig || $status < 200 || $status >= 300 || $buf === '') {
-        // 代理失败时回退:302 到原始地址(用户浏览器直连,或许能打开)
+    if ($tooBig || !$landed || $status < 200 || $status >= 300 || $buf === '') {
+        // 代理失败时回退:302 到原始地址(用户浏览器直连,或许能打开)。
+        // 跳转落到了不允许的地址时不回退,避免把那个地址交给浏览器。
+        if (!$landed) {
+            http_response_code(400);
+            header('Content-Type: text/plain; charset=utf-8');
+            echo '图片地址不被允许';
+            exit;
+        }
         header('Location: ' . $url, true, 302);
         exit;
     }
@@ -3709,9 +3739,12 @@ function tc_generate_video($apiKeyOwner = null) {
         } else {
             $user = tc_require_auth($db);
         }
-        $rateLimit = isset($db['settings']['rateLimitPerMin']) ? (int) $db['settings']['rateLimitPerMin'] : 30;
-        if (!tc_rate_limit_check('u:' . $user['id'], $rateLimit)) {
-            tc_fail(429, '请求太频繁了，请稍后再试（当前上限 ' . $rateLimit . ' 次/分钟）');
+        // 密钥路径的用户级窗口已由 tc_v1_authenticate 记过,这里只给网页端计数
+        if ($apiKeyOwner === null) {
+            $rateLimit = isset($db['settings']['rateLimitPerMin']) ? (int) $db['settings']['rateLimitPerMin'] : 30;
+            if (!tc_rate_limit_check('u:' . $user['id'], $rateLimit)) {
+                tc_fail(429, '请求太频繁了，请稍后再试（当前上限 ' . $rateLimit . ' 次/分钟）');
+            }
         }
         // 参考图 / 首尾帧都可能是 data URL,给足请求体上限
         $b = tc_read_json_body(48 * 1024 * 1024);
@@ -3735,7 +3768,8 @@ function tc_generate_video($apiKeyOwner = null) {
         }
         $cost = tc_model_cost($provider, $model);
         if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
-        if (!tc_is_unlimited_quota($user) && (isset($user['quota']) ? (float) $user['quota'] : 0) < $cost) {
+        $quotaNow = tc_is_unlimited_quota($user) ? -1 : tc_quota_effective($user);
+        if ($quotaNow !== -1 && $quotaNow < $cost) {
             tc_fail(402, '剩余次数不足，请联系管理员充值');
         }
         // 模式:文字生成 / 首尾帧 / 参考图
@@ -3945,6 +3979,13 @@ function tc_api_video_proxy() {
     curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $data) use (&$sent, &$up) {
         if (!$sent) {
             $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            if (!tc_http_landed_public($ch)) {
+                http_response_code(400);
+                header('Content-Type: text/plain; charset=utf-8');
+                echo '视频地址不被允许';
+                $sent = true;
+                return 0;
+            }
             if ($code >= 400) { http_response_code($code); $sent = true; return strlen($data); }
             http_response_code($code === 206 ? 206 : 200);
             header('Content-Type: ' . (isset($up['content-type']) ? $up['content-type'] : 'video/mp4'));
