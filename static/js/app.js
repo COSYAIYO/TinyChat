@@ -2376,6 +2376,7 @@ async function aiJudgeTools(text, ctx) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: ctx.signal,
     });
     if (!r.ok) return null;
     const data = await r.json();
@@ -2495,12 +2496,18 @@ async function sendMessage() {
     const needJudge = judgeOn && text && ((aim === 'auto' && hasImageModel) || searchReady || isFirstMsg);
     let verdict = null;
     if (needJudge) {
-      // 判定期间锁住发送,避免重复触发。判定发生在消息入库之前,先写明正在判定什么。
+      // 判定期间锁住发送,避免重复触发。判定请求必须有超时:
+      // 它不走流式、也没有停止按钮,上游一挂起 streaming 就会一直为真,
+      // 表现为消息没进对话、输入框还在,再点发送只提示「正在生成中」。
+      // 判定发生在消息入库之前,先写明正在判定什么。
       setComposerStatus(judgePhaseText({ image: aim === 'auto' && hasImageModel, search: searchReady, title: isFirstMsg }));
       state.streaming = true; updateSendBtn();
+      const judgeAc = new AbortController();
+      const judgeTimer = setTimeout(() => judgeAc.abort(), 12000);
       try {
-        verdict = await aiJudgeTools(text, { imageEnabled: hasImageModel, searchEnabled: searchReady, prevImage: hasRef, wantTitle: isFirstMsg });
+        verdict = await aiJudgeTools(text, { imageEnabled: hasImageModel, searchEnabled: searchReady, prevImage: hasRef, wantTitle: isFirstMsg, signal: judgeAc.signal });
       } finally {
+        clearTimeout(judgeTimer);
         setComposerStatus('');
         state.streaming = false; updateSendBtn();
       }
