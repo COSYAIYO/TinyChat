@@ -8,7 +8,12 @@
   const ic = () => (window.OC ? window.OC.icon : function () { return ''; });
   const $ = (id) => document.getElementById(id);
   const ICONS = ['bot', 'spark', 'layers', 'paper', 'code', 'table', 'nodes', 'think', 'user', 'wrench', 'edit', 'calendar'];
-  const CAT_EMOJI = { 'ac-present': '🎨', 'ac-academic': '📚', 'ac-code': '💻', 'ac-life': '🌿', 'ac-write': '✍️', 'ac-study': '🎓' };
+  const CAT_EMOJI = {
+    'ac-present': '🎨', 'ac-academic': '📚', 'ac-code': '💻', 'ac-life': '🌿',
+    'ac-write': '✍️', 'ac-study': '🎓', 'ac-as-ai': '🤖', 'ac-as-mind': '🧠',
+    'ac-as-social': '💬', 'ac-as-philosophy': '🏛️', 'ac-as-language': '🌐',
+    'ac-as-comments': '⭐', 'ac-as-company': '🏢', 'ac-as-tool': '🧰', 'ac-as-games': '🎲',
+  };
 
   let cache = { categories: [], assistants: [] };
   let activeCat = 'all';
@@ -85,9 +90,17 @@
     const el = $('al-cats');
     if (!el) return;
     const mineCount = cache.assistants.filter((a) => a.mine || a.sourceId).length;
+    const pinned = [];
+    const rest = [];
+    cache.categories.forEach((c) => {
+      const tab = { id: c.id, name: c.name, mark: catMark(c), count: c.count || 0, mine: c.mine };
+      if (c.id === 'ac-present') pinned.push(tab);
+      else rest.push(tab);
+    });
     const tabs = [{ id: 'all', name: '全部', mark: '📚', count: cache.assistants.length }]
-      .concat(cache.categories.map((c) => ({ id: c.id, name: c.name, mark: catMark(c), count: c.count || 0, mine: c.mine })))
-      .concat([{ id: 'mine', name: '我的', mark: '👤', count: mineCount }]);
+      .concat([{ id: 'mine', name: '我的', mark: '👤', count: mineCount }])
+      .concat(pinned)
+      .concat(rest);
     el.innerHTML = tabs.map((t) =>
       '<button class="al-cat' + (t.id === activeCat ? ' active' : '') + '" type="button" role="tab" aria-selected="' + (t.id === activeCat ? 'true' : 'false') + '" data-cat="' + escapeHtml(t.id) + '">'
       + (t.mark ? '<i>' + escapeHtml(t.mark) + '</i>' : '')

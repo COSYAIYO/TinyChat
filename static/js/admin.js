@@ -1318,7 +1318,7 @@ async function loadProviders() {
           ${isDefault ? '<span class="badge default">默认</span>' : ''}
           ${disabled ? '<span class="badge disabled">已停用</span>' : ''}
         </div>
-        <div class="pc-url">${escapeHtml(p.baseUrl)} · ${escapeHtml(p.apiFormat)} · 模型: ${escapeHtml(p.models.map((m) => m.id).join(', '))} · ${p.billingMode === 'token' ? ('按 token ' + (p.pricePer1k || 0) + '/1K') : ('扣 ' + p.costPerCall + ' 次')}</div>
+        <div class="pc-url">${escapeHtml(p.baseUrl)} · ${escapeHtml(p.apiFormat)} · ${Array.isArray(p.models) ? p.models.length : 0} 个模型 · ${p.billingMode === 'token' ? ('按 token ' + (p.pricePer1k || 0) + '/1K') : ('扣 ' + p.costPerCall + ' 次')}</div>
         ${keyHtml}
       </div>
       <div class="provider-card-actions" style="display:flex;gap:6px;flex-shrink:0">
@@ -2780,7 +2780,12 @@ function asstIcon(name) {
 function asstCatMark(c) {
   if (!c) return '';
   if (asstIsEmoji(c.icon)) return c.icon;
-  return ({ 'ac-academic': '📚', 'ac-code': '💻', 'ac-life': '🌿', 'ac-write': '✍️', 'ac-study': '🎓' })[c.id] || '';
+  return ({
+    'ac-present': '🎨', 'ac-academic': '📚', 'ac-code': '💻', 'ac-life': '🌿',
+    'ac-write': '✍️', 'ac-study': '🎓', 'ac-as-ai': '🤖', 'ac-as-mind': '🧠',
+    'ac-as-social': '💬', 'ac-as-philosophy': '🏛️', 'ac-as-language': '🌐',
+    'ac-as-comments': '⭐', 'ac-as-company': '🏢', 'ac-as-tool': '🧰', 'ac-as-games': '🎲',
+  })[c.id] || '';
 }
 
 function setAsstCatSelect(id) {
@@ -2808,11 +2813,14 @@ function bindAsstCatSelect() {
 function renderAssistantCats() {
   const el = $('asst-cats');
   if (!el) return;
-  const tabs = [{ id: 'all', name: '全部', count: ASST_ITEMS.length }]
-    .concat(ASST_CATS.map((c) => ({ id: c.id, name: c.name, count: c.count || 0 })));
+  const pinned = [];
+  const rest = [];
+  ASST_CATS.forEach((c) => (c.id === 'ac-present' ? pinned : rest).push(c));
+  const tabs = [{ id: 'all', name: '全部', mark: '📚', count: ASST_ITEMS.length }]
+    .concat(pinned.concat(rest).map((c) => ({ id: c.id, name: c.name, mark: asstCatMark(c), count: c.count || 0 })));
   el.innerHTML = tabs.map((t) =>
     '<button class="al-cat' + (t.id === ASST_FILTER ? ' active' : '') + '" type="button" role="tab" aria-selected="' + (t.id === ASST_FILTER ? 'true' : 'false') + '" data-cat="' + escapeHtml(t.id) + '">'
-    + (t.id !== 'all' && asstCatMark(ASST_CATS.find((c) => c.id === t.id)) ? '<i>' + escapeHtml(asstCatMark(ASST_CATS.find((c) => c.id === t.id))) + '</i>' : '')
+    + (t.mark ? '<i>' + escapeHtml(t.mark) + '</i>' : '')
     + '<span>' + escapeHtml(t.name) + '</span>'
     + '<small>' + (t.count || 0) + '</small>'
     + '</button>'
@@ -2829,7 +2837,8 @@ function renderAssistants() {
     el.innerHTML = '<div class="al-empty">暂无助手，先添加分类再添加助手。</div>';
     return;
   }
-  const groups = (ASST_FILTER === 'all' ? ASST_CATS : ASST_CATS.filter((c) => c.id === ASST_FILTER)).map((c) => ({
+  const ordered = ASST_CATS.slice().sort((a, b) => (a.id === 'ac-present' ? -1 : b.id === 'ac-present' ? 1 : 0));
+  const groups = (ASST_FILTER === 'all' ? ordered : ordered.filter((c) => c.id === ASST_FILTER)).map((c) => ({
     cat: c,
     items: list.filter((a) => a.categoryId === c.id),
   })).filter((g) => g.items.length);

@@ -2433,8 +2433,8 @@ body.share-page {
 .assistant-lib-btn .model-icon,
 .assistant-lib-btn .chevron { color: var(--text-tertiary); display: inline-flex; }
 .assistant-lib-modal {
-  width: min(920px, calc(100vw - 28px));
-  max-height: min(88vh, 820px);
+  width: min(1180px, calc(100vw - 28px));
+  max-height: min(92vh, 920px);
   display: flex;
   flex-direction: column;
 }
@@ -2583,7 +2583,7 @@ body.share-page {
 .assistant-lib-body {
   flex: 1;
   min-width: 0;
-  max-height: min(62vh, 560px);
+  max-height: min(72vh, 720px);
   overflow: auto;
 }
 .admin-asst-split { min-height: 420px; }

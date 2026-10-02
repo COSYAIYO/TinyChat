@@ -283,6 +283,45 @@ async function readJsonSafe(res) {
   return { error: { message: '服务器返回了非预期内容（HTTP ' + res.status + '），请检查站点配置或稍后重试' } };
 }
 
+// 出字前的状态:在干嘛就写在干嘛,显示在输入框下方。空文本恢复免责声明。
+function setComposerStatus(text) {
+  const box = $('composer-status');
+  const label = $('composer-status-text');
+  const hint = $('composer-hint-text');
+  if (!box || !label) return;
+  const next = text || '';
+  if (!next) {
+    label.textContent = '';
+    label.classList.remove('is-in');
+    box.classList.add('hidden');
+    if (hint) hint.classList.remove('hidden');
+    return;
+  }
+  const changed = label.textContent !== next;
+  label.textContent = next;
+  box.classList.remove('hidden');
+  if (hint) hint.classList.add('hidden');
+  if (changed) {
+    label.classList.remove('is-in');
+    void label.offsetWidth;
+    label.classList.add('is-in');
+  }
+}
+function phaseIndicatorHtml(text) {
+  return '<div class="phase-indicator" aria-live="polite">'
+    + '<span class="phase-live" aria-hidden="true"><i></i><i></i><i></i></span>'
+    + '<span class="phase-text">' + escapeHtml(text || '思考中') + '</span>'
+    + '</div>';
+}
+function judgePhaseText(opts) {
+  opts = opts || {};
+  const parts = [];
+  if (opts.image) parts.push('生图');
+  if (opts.search) parts.push('联网');
+  if (opts.title) parts.push('标题');
+  if (!parts.length) return '正在判定';
+  return '正在判定是否' + parts.join('、');
+}
 function toast(msg, isError = false) {
   if (window.OCUI) return window.OCUI.toast(msg, isError ? 'error' : undefined);
   const t = document.createElement('div');
@@ -1538,7 +1577,7 @@ function buildMsgNode(m, chat, idx) {
     if (m.imagePending && !m.content) {
       // 生图/生视频占位:出图通常要 10–60 秒,出视频更久,给出明确的等待提示而不是空白气泡
       const waiting = m.pendingKind === 'video' ? '正在生成视频（可能需要 1–5 分钟）…' : '正在生成图片…';
-      contentDiv.innerHTML = '<div class="phase-indicator"><span class="phase-spinner"></span><span class="phase-text">' + waiting + '</span></div>';
+      contentDiv.innerHTML = phaseIndicatorHtml(waiting);
       div.appendChild(contentDiv);
       return div;
     }
@@ -1562,7 +1601,7 @@ function buildMsgNode(m, chat, idx) {
     // 新渲染管线：Markdown + 公式 + 代码 + Mermaid + 组件
     if (m.reasoning) upsertReasoningPanel(contentDiv, m, !!m._streaming);
     if (m._streaming) {
-      // 流式中先出头像+思考态,有字后再跟光标,避免首 token 前像没头像
+      // 流式中先出头像+当前步骤,有字后再跟光标,避免首 token 前像没头像
       if (m.content) {
         const root = document.createElement('div');
         root.className = 'stream-answer';
@@ -1574,7 +1613,7 @@ function buildMsgNode(m, chat, idx) {
           root.innerHTML = escapeHtml(m.content) + '<span class="stream-cursor"></span>';
         }
       } else if (!m.reasoning) {
-        contentDiv.innerHTML = '<div class="phase-indicator"><span class="phase-spinner"></span><span class="phase-text">思考中</span></div>';
+        contentDiv.innerHTML = phaseIndicatorHtml(m.phase || '思考中');
       }
     } else {
       const root = document.createElement('div');
@@ -2337,6 +2376,7 @@ async function aiJudgeTools(text, ctx) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: ctx.signal,
     });
     if (!r.ok) return null;
     const data = await r.json();
@@ -2412,7 +2452,9 @@ async function sendMessage() {
     state.pendingAttachments = [];
     renderAttachments();
     updateSendBtn();
-    await sendImageTurn(text, imageAtts);
+    setComposerStatus(imageAtts.length ? '正在按参考图改图' : '正在生成图片');
+    try { await sendImageTurn(text, imageAtts); }
+    finally { setComposerStatus(''); }
     return;
   }
 
@@ -2424,7 +2466,9 @@ async function sendMessage() {
     state.pendingAttachments = [];
     renderAttachments();
     updateSendBtn();
-    await sendVideoTurn(text, imageAtts);
+    setComposerStatus('正在生成视频');
+    try { await sendVideoTurn(text, imageAtts); }
+    finally { setComposerStatus(''); }
     return;
   }
 
@@ -2452,11 +2496,21 @@ async function sendMessage() {
     const needJudge = judgeOn && text && ((aim === 'auto' && hasImageModel) || searchReady || isFirstMsg);
     let verdict = null;
     if (needJudge) {
-      // 判定期间锁住发送,避免重复触发
+      // 判定期间锁住发送,避免重复触发。判定请求必须有超时:
+      // 它不走流式、也没有停止按钮,上游一挂起 streaming 就会一直为真,
+      // 表现为消息没进对话、输入框还在,再点发送只提示「正在生成中」。
+      // 判定发生在消息入库之前,先写明正在判定什么。
+      setComposerStatus(judgePhaseText({ image: aim === 'auto' && hasImageModel, search: searchReady, title: isFirstMsg }));
       state.streaming = true; updateSendBtn();
+      const judgeAc = new AbortController();
+      const judgeTimer = setTimeout(() => judgeAc.abort(), 12000);
       try {
-        verdict = await aiJudgeTools(text, { imageEnabled: hasImageModel, searchEnabled: searchReady, prevImage: hasRef, wantTitle: isFirstMsg });
-      } finally { state.streaming = false; updateSendBtn(); }
+        verdict = await aiJudgeTools(text, { imageEnabled: hasImageModel, searchEnabled: searchReady, prevImage: hasRef, wantTitle: isFirstMsg, signal: judgeAc.signal });
+      } finally {
+        clearTimeout(judgeTimer);
+        setComposerStatus('');
+        state.streaming = false; updateSendBtn();
+      }
     }
     // 联网:判定成功则按结果显式开关;失败则回退后端启发式(body.webSearch 保持 'auto')
     state._toolSearch = (verdict && searchReady) ? !!verdict.search : null;
@@ -2500,9 +2554,11 @@ async function sendMessage() {
         renderModelPicker();
         const withRef = imgAtts.length > 0 || usePrevRef;
         toast((isEdit ? '识别到改图意图，已用生图模型「' : '识别到绘图意图，已用生图模型「') + (target.label || target.modelId) + '」' + (withRef ? '并带上参考图' : ''));
+        setComposerStatus(isEdit ? '判定为改图，正在生成' : '判定为生图，正在生成');
         try {
           await sendImageTurn(text, imgAtts, { autoRef: usePrevRef });
         } finally {
+          setComposerStatus('');
           // 无论出图成功或失败,都恢复到用户原本的对话模型
           state.currentProviderId = prevProviderId;
           await loadModels({ prefer: prevModel });
@@ -2547,12 +2603,15 @@ async function sendMessage() {
   chat.updatedAt = Date.now();
   saveChats(); renderMessages();
 
-  // 添加 assistant 占位并请求回复
-  const assistantMsg = { role: 'assistant', content: '' };
+  // 添加 assistant 占位并请求回复。联网开启时先把这一步写出来,出字后自动让位。
+  const searching = state._toolSearch === true || webSearchMode() === 'on';
+  const assistantMsg = { role: 'assistant', content: '', phase: searching ? '正在联网检索' : '思考中' };
+  setComposerStatus(assistantMsg.phase);
   chat.messages.push(assistantMsg);
   saveChats();
   renderMessages();
-  await requestAssistantReply(chat, userMsg);
+  try { await requestAssistantReply(chat, userMsg); }
+  finally { setComposerStatus(''); }
   await refreshMe();
   refreshModelHealth();
 }
@@ -2577,23 +2636,8 @@ async function streamRequest(format, body, chat, assistantMsg) {
   const ac = new AbortController();
   state.abortController = ac;
 
-  let phaseTimer = null;
-  const startPhases = () => {
-    const phases = (window.OCReasoning && window.OCReasoning.PHASES) || ['思考中', '整理中', '生成中'];
-    let i = 0;
-    phaseTimer = setInterval(() => {
-      i = (i + 1) % phases.length;
-      const focusSel = typeof state._streamFocusIdx === 'number'
-        ? '#messages .msg.assistant[data-idx="' + state._streamFocusIdx + '"] .phase-text'
-        : '#messages .msg.assistant:last-child .phase-text';
-      const label = document.querySelector(focusSel);
-      if (label) label.textContent = phases[i];
-    }, 2400);
-  };
-
-  // 渲染占位（待 AI 回复）
+  // 渲染占位（待 AI 回复）。文案保持这一步真正在做的事,不再轮播成「分析中 / 整理中」。
   renderMessages();
-  startPhases();
 
   try {
     const resp = await api(ENDPOINT_BY_FORMAT[format], {
@@ -2657,7 +2701,6 @@ async function streamRequest(format, body, chat, assistantMsg) {
       throw e;
     }
   } finally {
-    if (phaseTimer) clearInterval(phaseTimer);
     cancelStreamPaint();
     assistantMsg._streaming = false;
     if (assistantMsg.taskId) assistantMsg.taskStatus = assistantMsg.interrupted ? 'interrupted' : (assistantMsg.error ? 'failed' : 'completed');
@@ -2760,7 +2803,10 @@ function paintStreamingText(assistantMsg) {
   if (!contentEl) return;
   upsertReasoningPanel(contentEl, assistantMsg, true);
   const phase = contentEl.querySelector('.phase-indicator');
-  if ((assistantMsg.reasoning || assistantMsg.content) && phase) phase.remove();
+  if ((assistantMsg.reasoning || assistantMsg.content) && phase) {
+    phase.remove();
+    setComposerStatus('');
+  }
   let root = contentEl.querySelector(':scope > .stream-answer');
   if (!assistantMsg.content) {
     if (root) root.remove();
@@ -3376,6 +3422,7 @@ async function aiFollowUps(content) {
 }
 
 function stopStreaming() {
+  setComposerStatus('');
   cancelStreamPaint();
   const chat = currentChat();
   const pending = chat && [...(chat.messages || [])].reverse().find((m) => m && m.role === 'assistant' && m.taskId && m.taskStatus === 'running');
@@ -3390,6 +3437,7 @@ function stopStreaming() {
 }
 
 function initStreamingState() {
+  setComposerStatus('');
   state.streaming = false;
   document.documentElement.classList.remove('oc-streaming');
   state.abortController = null;
@@ -4349,18 +4397,25 @@ async function saveToolSource(patch) {
   bindFontChoice({ key: 'fontCjk', inputId: 'pref-font-cjk', selectId: 'pref-font-cjk-select', browseId: 'pref-font-cjk-browse', fallback: 'source-han-serif', options: ['source-han-serif', 'alibaba-puhuiti', 'system'], labels: { 'source-han-serif': '思源宋体', 'alibaba-puhuiti': 'AlibabaPuHuiTi', system: '系统字体' } });
   bindFontChoice({ key: 'fontLatin', inputId: 'pref-font-latin', selectId: 'pref-font-latin-select', browseId: 'pref-font-latin-browse', fallback: 'alibaba-sans', options: ['alibaba-sans', 'times-new-roman', 'helvetica', 'system'], labels: { 'times-new-roman': 'Times New Roman', helvetica: 'Helvetica', 'alibaba-sans': 'AlibabaSans', system: '系统字体' } });
 
-  // ---- 外观:主题色（色相条 + 明暗条）----
-  function hexToRgb(hex) {
+  // ---- 外观:主题色（色相 / 饱和度 / 明度 / 透明度）----
+  function hexToRgba(hex) {
     const m = String(hex || '').trim().match(/^#([0-9a-fA-F]{3,8})$/);
     if (!m) return null;
     let h = m[1];
     if (h.length === 3 || h.length === 4) h = h.split('').map((c) => c + c).join('');
     if (h.length !== 6 && h.length !== 8) return null;
-    return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16) };
+    return {
+      r: parseInt(h.slice(0, 2), 16),
+      g: parseInt(h.slice(2, 4), 16),
+      b: parseInt(h.slice(4, 6), 16),
+      a: h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1,
+    };
+  }
+  function pad2(n) {
+    return Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
   }
   function rgbToHex(r, g, b) {
-    const pad = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
-    return '#' + pad(r) + pad(g) + pad(b);
+    return '#' + pad2(r) + pad2(g) + pad2(b);
   }
   function rgbToHsl(r, g, b) {
     r /= 255; g /= 255; b /= 255;
@@ -4395,44 +4450,80 @@ async function saveToolSource(patch) {
     };
     return { r: tk(hue + 1 / 3) * 255, g: tk(hue) * 255, b: tk(hue - 1 / 3) * 255 };
   }
-  const accentState = { h: 221, s: 0.83, l: 0.53 };
+  const accentState = { h: 221, s: 0.83, l: 0.53, a: 1 };
   function currentAccentHex() {
     const rgb = hslToRgb(accentState.h, accentState.s, accentState.l);
-    return rgbToHex(rgb.r, rgb.g, rgb.b);
+    let hex = rgbToHex(rgb.r, rgb.g, rgb.b);
+    if (accentState.a < 0.999) hex += pad2(accentState.a * 255);
+    return hex.toUpperCase();
   }
-  function placeAccentThumbs() {
+  function paintAccent() {
+    const rgb = hslToRgb(accentState.h, accentState.s, accentState.l);
+    const solid = rgbToHex(rgb.r, rgb.g, rgb.b);
+    const css = 'rgba(' + Math.round(rgb.r) + ', ' + Math.round(rgb.g) + ', ' + Math.round(rgb.b) + ', ' + accentState.a + ')';
     const hueThumb = $('accent-hue-thumb');
+    const satThumb = $('accent-sat-thumb');
     const lightThumb = $('accent-light-thumb');
+    const alphaThumb = $('accent-alpha-thumb');
     if (hueThumb) hueThumb.style.left = ((accentState.h / 360) * 100) + '%';
+    if (satThumb) satThumb.style.left = (accentState.s * 100) + '%';
     if (lightThumb) lightThumb.style.left = (accentState.l * 100) + '%';
+    if (alphaThumb) alphaThumb.style.left = (accentState.a * 100) + '%';
     const hue = $('accent-hue');
+    const sat = $('accent-sat');
     const light = $('accent-light');
-    if (hue) {
-      hue.setAttribute('aria-valuenow', String(Math.round(accentState.h)));
-      hue.style.setProperty('--thumb', currentAccentHex());
+    const alpha = $('accent-alpha');
+    if (hue) hue.setAttribute('aria-valuenow', String(Math.round(accentState.h)));
+    if (sat) {
+      sat.setAttribute('aria-valuenow', String(Math.round(accentState.s * 100)));
+      const gray = hslToRgb(accentState.h, 0, accentState.l);
+      const full = hslToRgb(accentState.h, 1, accentState.l);
+      sat.style.background = 'linear-gradient(90deg, ' + rgbToHex(gray.r, gray.g, gray.b) + ', ' + rgbToHex(full.r, full.g, full.b) + ')';
     }
     if (light) {
       light.setAttribute('aria-valuenow', String(Math.round(accentState.l * 100)));
-      const mid = hslToRgb(accentState.h, Math.max(0.35, accentState.s), 0.5);
-      light.style.background = 'linear-gradient(90deg, #2a2d33 0%, ' + rgbToHex(mid.r, mid.g, mid.b) + ' 52%, #f4f5f7 100%)';
+      const mid = hslToRgb(accentState.h, accentState.s, 0.5);
+      light.style.background = 'linear-gradient(90deg, #141414, ' + rgbToHex(mid.r, mid.g, mid.b) + ' 50%, #fff)';
     }
-    const preview = $('accent-preview');
-    if (preview) preview.style.background = currentAccentHex();
+    if (alpha) {
+      alpha.setAttribute('aria-valuenow', String(Math.round(accentState.a * 100)));
+      alpha.style.setProperty('--accent-solid', solid);
+    }
+    const hueVal = $('accent-hue-val');
+    const satVal = $('accent-sat-val');
+    const lightVal = $('accent-light-val');
+    const alphaVal = $('accent-alpha-val');
+    if (hueVal) hueVal.textContent = Math.round(accentState.h) + '°';
+    if (satVal) satVal.textContent = Math.round(accentState.s * 100) + '%';
+    if (lightVal) lightVal.textContent = Math.round(accentState.l * 100) + '%';
+    if (alphaVal) alphaVal.textContent = Math.round(accentState.a * 100) + '%';
+    const fill = (el) => { if (el) el.style.setProperty('--swatch', css); };
+    fill($('accent-preview'));
+    fill($('accent-swatch'));
+    const entry = $('accent-entry-swatch');
+    if (entry) entry.style.setProperty('--swatch', css);
+    const entryHex = $('accent-entry-hex');
+    if (entryHex) entryHex.textContent = currentAccentHex();
     const hexEl = $('pref-accent-hex');
     if (hexEl && document.activeElement !== hexEl) hexEl.value = currentAccentHex();
+    const clearBtn = $('pref-accent-clear');
+    if (clearBtn) clearBtn.classList.toggle('is-clear', accentState.a < 0.01);
+  }
+  function commitAccent() {
+    if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('accent', currentAccentHex());
+    if (window.OCUI && window.OCUI.applyAppearance) window.OCUI.applyAppearance();
   }
   function applyAccentHex(hex, persist) {
-    const rgb = hexToRgb(hex);
-    if (!rgb) return;
-    const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+    const rgba = hexToRgba(hex);
+    if (!rgba) return false;
+    const hsl = rgbToHsl(rgba.r, rgba.g, rgba.b);
     accentState.h = hsl.h;
-    accentState.s = hsl.s || 0.65;
+    accentState.s = hsl.s;
     accentState.l = hsl.l;
-    placeAccentThumbs();
-    if (persist) {
-      if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('accent', currentAccentHex());
-      if (window.OCUI && window.OCUI.applyAppearance) window.OCUI.applyAppearance();
-    }
+    accentState.a = rgba.a;
+    paintAccent();
+    if (persist) commitAccent();
+    return true;
   }
   window.syncAccentPicker = function (hex) {
     applyAccentHex(hex || ((window.OCUI && window.OCUI.defaultAccent) || '#2563eb'), false);
@@ -4441,13 +4532,13 @@ async function saveToolSource(patch) {
     if (!el) return;
     const setFromEvent = (ev) => {
       const rect = el.getBoundingClientRect();
-      const t = Math.max(0, Math.min(1, ((ev.touches ? ev.touches[0].clientX : ev.clientX) - rect.left) / rect.width));
+      const t = Math.max(0, Math.min(1, ((ev.touches ? ev.touches[0].clientX : ev.clientX) - rect.left) / (rect.width || 1)));
       if (kind === 'hue') accentState.h = t * 360;
-      else accentState.l = t;
-      if (accentState.s < 0.28) accentState.s = 0.65;
-      placeAccentThumbs();
-      if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('accent', currentAccentHex());
-      if (window.OCUI && window.OCUI.applyAppearance) window.OCUI.applyAppearance();
+      else if (kind === 'sat') accentState.s = t;
+      else if (kind === 'light') accentState.l = t;
+      else accentState.a = t;
+      paintAccent();
+      commitAccent();
     };
     const onMove = (ev) => { ev.preventDefault(); setFromEvent(ev); };
     const onUp = () => {
@@ -4456,42 +4547,55 @@ async function saveToolSource(patch) {
     };
     el.addEventListener('pointerdown', (ev) => {
       ev.preventDefault();
-      el.setPointerCapture && el.setPointerCapture(ev.pointerId);
+      if (el.setPointerCapture) el.setPointerCapture(ev.pointerId);
       setFromEvent(ev);
       document.addEventListener('pointermove', onMove);
       document.addEventListener('pointerup', onUp);
     });
     el.addEventListener('keydown', (ev) => {
       const step = ev.shiftKey ? 8 : 2;
-      if (ev.key === 'ArrowLeft' || ev.key === 'ArrowDown') {
-        ev.preventDefault();
-        if (kind === 'hue') accentState.h = (accentState.h - step + 360) % 360;
-        else accentState.l = Math.max(0.08, accentState.l - step / 100);
-      } else if (ev.key === 'ArrowRight' || ev.key === 'ArrowUp') {
-        ev.preventDefault();
-        if (kind === 'hue') accentState.h = (accentState.h + step) % 360;
-        else accentState.l = Math.min(0.92, accentState.l + step / 100);
-      } else return;
-      placeAccentThumbs();
-      if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('accent', currentAccentHex());
-      if (window.OCUI && window.OCUI.applyAppearance) window.OCUI.applyAppearance();
+      const dir = (ev.key === 'ArrowLeft' || ev.key === 'ArrowDown') ? -1
+        : (ev.key === 'ArrowRight' || ev.key === 'ArrowUp') ? 1 : 0;
+      if (!dir) return;
+      ev.preventDefault();
+      if (kind === 'hue') accentState.h = (accentState.h + dir * step + 360) % 360;
+      else if (kind === 'sat') accentState.s = Math.max(0, Math.min(1, accentState.s + dir * step / 100));
+      else if (kind === 'light') accentState.l = Math.max(0, Math.min(1, accentState.l + dir * step / 100));
+      else accentState.a = Math.max(0, Math.min(1, accentState.a + dir * step / 100));
+      paintAccent();
+      commitAccent();
     });
   }
   bindAccentTrack($('accent-hue'), 'hue');
+  bindAccentTrack($('accent-sat'), 'sat');
   bindAccentTrack($('accent-light'), 'light');
+  bindAccentTrack($('accent-alpha'), 'alpha');
   const accHex = $('pref-accent-hex');
   if (accHex) {
-    accHex.addEventListener('change', () => applyAccentHex(accHex.value, true));
+    accHex.addEventListener('change', () => { if (!applyAccentHex(accHex.value, true)) paintAccent(); });
     accHex.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); applyAccentHex(accHex.value, true); accHex.blur(); }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (!applyAccentHex(accHex.value, true)) paintAccent();
+        accHex.blur();
+      }
     });
   }
-  const accReset = $('pref-accent-reset');
-  if (accReset) accReset.addEventListener('click', () => {
-    if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('accent', '');
-    if (window.OCUI && window.OCUI.applyAppearance) window.OCUI.applyAppearance();
-    applyAccentHex((window.OCUI && window.OCUI.defaultAccent) || '#2563eb', false);
+  const accClear = $('pref-accent-clear');
+  if (accClear) accClear.addEventListener('click', () => {
+    accentState.a = accentState.a < 0.01 ? 1 : 0;
+    paintAccent();
+    commitAccent();
   });
+  const accOpen = $('accent-open');
+  if (accOpen) accOpen.addEventListener('click', () => {
+    const stored = (window.OCUI && window.OCUI.getPref) ? window.OCUI.getPref('accent') : '';
+    applyAccentHex(stored || ((window.OCUI && window.OCUI.defaultAccent) || '#2563eb'), false);
+    if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal($('accent-modal'));
+  });
+  if (window.OCUI && window.OCUI.bindModal) {
+    window.OCUI.bindModal($('accent-modal'), { closeSelector: '#accent-modal-x, #accent-modal-done' });
+  }
 
 })();
 

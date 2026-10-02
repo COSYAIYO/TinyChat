@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.110');
+define('TC_VERSION', '2.0.112');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -1827,6 +1827,82 @@ function tc_demo_guard($user, $reason = '演示管理员不可修改此处') {
     if (is_array($user) && !empty($user['demo'])) {
         tc_fail(403, $reason);
     }
+}
+
+// 用户协议是管理员写的 HTML,会原样出现在公开页 /agreement。
+// 规则与前端 renderer.js 的 sanitizeRenderedHtml 对齐:去掉可执行标签、事件属性和危险地址,
+// 保留排版所需的普通标签。没有 DOM 扩展时退回纯文本,避免把未过滤的 HTML 发出去。
+function tc_agreement_html($html) {
+    $html = (string) $html;
+    if (trim($html) === '') return '';
+    if (!class_exists('DOMDocument')) {
+        return htmlspecialchars(trim(strip_tags($html)), ENT_QUOTES, 'UTF-8');
+    }
+    $prev = libxml_use_internal_errors(true);
+    $dom = new DOMDocument();
+    $wrapped = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"></head><body><div id="tc-agreement">'
+        . $html . '</div></body></html>';
+    $loaded = $dom->loadHTML($wrapped, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+    libxml_clear_errors();
+    libxml_use_internal_errors($prev);
+    if (!$loaded) return htmlspecialchars(trim(strip_tags($html)), ENT_QUOTES, 'UTF-8');
+    $root = $dom->getElementById('tc-agreement');
+    if (!$root) return '';
+    tc_agreement_sanitize_node($root);
+    $out = '';
+    foreach ($root->childNodes as $child) $out .= $dom->saveHTML($child);
+    return $out;
+}
+
+function tc_agreement_sanitize_node($node) {
+    $blocked = array(
+        'script' => true, 'style' => true, 'iframe' => true, 'object' => true, 'embed' => true,
+        'link' => true, 'meta' => true, 'base' => true, 'form' => true, 'input' => true,
+        'textarea' => true, 'select' => true, 'button' => true, 'svg' => true, 'math' => true,
+        'html' => true, 'head' => true, 'body' => true, 'frame' => true, 'frameset' => true,
+    );
+    $kids = array();
+    foreach ($node->childNodes as $child) $kids[] = $child;
+    foreach ($kids as $child) {
+        if ($child->nodeType !== XML_ELEMENT_NODE) continue;
+        $tag = strtolower($child->nodeName);
+        if (isset($blocked[$tag])) {
+            $child->parentNode->removeChild($child);
+            continue;
+        }
+        if ($child->hasAttributes()) {
+            $drop = array();
+            foreach ($child->attributes as $attr) {
+                $name = strtolower($attr->name);
+                $val = (string) $attr->value;
+                if (strpos($name, 'on') === 0 || $name === 'srcdoc' || $name === 'srcset') {
+                    $drop[] = $attr->name;
+                    continue;
+                }
+                if (($name === 'href' || $name === 'src' || $name === 'xlink:href') && !tc_agreement_url_ok($name, $val)) {
+                    $drop[] = $attr->name;
+                    continue;
+                }
+                if ($name === 'style' && !tc_agreement_style_ok($val)) $drop[] = $attr->name;
+            }
+            foreach ($drop as $name) $child->removeAttribute($name);
+        }
+        tc_agreement_sanitize_node($child);
+    }
+}
+
+function tc_agreement_url_ok($name, $val) {
+    $v = trim((string) $val);
+    if (!preg_match('/^(javascript|vbscript|data):/i', $v)) return true;
+    if (($name === 'src' || $name === 'xlink:href')
+        && preg_match('#^data:image/(png|jpe?g|gif|webp|avif|bmp);base64,[a-z0-9+/=\s]+$#i', $v)) {
+        return true;
+    }
+    return false;
+}
+
+function tc_agreement_style_ok($val) {
+    return !preg_match('/expression\s*\(|@import|javascript\s*:|vbscript\s*:|behavior\s*:|url\s*\(/i', (string) $val);
 }
 
 function tc_touch_user(&$db, $userId) {

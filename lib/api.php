@@ -657,6 +657,17 @@ function tc_seed_default_assistants(&$db) {
         }
         unset($existing);
     }
+    $keepIds = array();
+    foreach ((isset($cat['categories']) ? $cat['categories'] : array()) as $c) $keepIds[$c['id']] = true;
+    $kept = array();
+    foreach ($db['assistantCategories'] as $c) {
+        if (isset($c['scope']) && $c['scope'] === 'global' && empty($keepIds[$c['id']])) {
+            $changed = true;
+            continue;
+        }
+        $kept[] = $c;
+    }
+    $db['assistantCategories'] = $kept;
     $i = 0;
     foreach ((isset($cat['assistants']) ? $cat['assistants'] : array()) as $a) {
         $i++;
@@ -2509,7 +2520,8 @@ function tc_api_agreement_page() {
     $settings = tc_with_db(false, function ($db) {
         return $db['settings'];
     });
-    if (empty($settings['agreementEnabled']) || trim((string) $settings['agreementHtml']) === '') {
+    $agreementHtml = tc_agreement_html(isset($settings['agreementHtml']) ? $settings['agreementHtml'] : '');
+    if (empty($settings['agreementEnabled']) || $agreementHtml === '') {
         http_response_code(404);
         header('Content-Type: text/plain; charset=utf-8');
         echo '站点未启用用户协议';
@@ -2524,7 +2536,7 @@ function tc_api_agreement_page() {
         . '<div style="max-width:720px;margin:0 auto;padding:36px 16px;">'
         . '<div style="background:#fff;border-radius:16px;padding:32px 28px;box-shadow:0 1px 3px rgba(15,23,42,.06);">'
         . '<h1 style="margin:0 0 20px;font-size:22px;color:#0f172a;">' . $site . ' 用户协议</h1>'
-        . '<div style="font-size:14px;line-height:1.9;color:#334155;word-break:break-word;">' . $settings['agreementHtml'] . '</div>'
+        . '<div style="font-size:14px;line-height:1.9;color:#334155;word-break:break-word;">' . $agreementHtml . '</div>'
         . '<p style="margin:28px 0 0;font-size:12px;color:#94a3b8;text-align:center;">以上内容由 ' . $site . ' 管理员配置</p>'
         . '</div></div></body></html>';
     exit;
@@ -2576,6 +2588,10 @@ function tc_api_admin_save_settings() {
         // 即使提交里带的是掩码或空值也要拦,避免「顺带清空既有配置」
         if (tc_is_demo_user($admin) && array_key_exists('smtp', $src)) {
             tc_fail(403, '演示管理员不能修改邮件(SMTP)配置');
+        }
+        // 协议正文会进公开页面。演示改动虽会回滚,回滚前所有访客都会看到,因此一并拦住。
+        if (tc_is_demo_user($admin) && (array_key_exists('agreementHtml', $src) || array_key_exists('agreementEnabled', $src))) {
+            tc_fail(403, '演示管理员不能修改用户协议');
         }
         if (array_key_exists('announcement', $src)) {
             if (!is_array($src['announcement'])) tc_fail(400, '公告设置格式不正确');
@@ -2670,7 +2686,7 @@ function tc_api_admin_update_check() {
     try {
         $result = tc_update_check(!empty($q['force']));
     } catch (Exception $e) {
-        tc_fail(400, '发送测试邮件时出错：' . $e->getMessage());
+        tc_fail(400, '检查更新时出错：' . $e->getMessage());
     }
     tc_json(200, $result);
 }
