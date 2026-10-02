@@ -1491,6 +1491,17 @@ assert_contains "统计总用户" "$SYS" '"total":'
 assert_contains "统计今日调用" "$SYS" '"today"'
 assert_contains "统计对话总数" "$SYS" '"chats"'
 assert_contains "返回版本号" "$SYS" '"version"'
+# 虚拟主机配额字段:开发机没有 cgroup 时各值为 null,但键必须在,前端才能按层兜底
+assert_has "系统接口返回配额字段" "$SYS" '"quota":{'
+assert_has "配额字段带来源" "$SYS" '"source":'
+assert_has "配额字段带内存上限" "$SYS" '"memLimitBytes":'
+assert_has "配额字段带 CPU 百分比" "$SYS" '"cpuPercent":'
+# 服务器状态块自带网速 / 运行时长 / 数据库体积(整机 /proc 取不到时为 null,键必须在)
+assert_has "系统接口返回网速字段" "$SYS" '"net":{'
+assert_has "网速含上下行速率" "$SYS" '"txBps":'
+assert_has "网速含累计流量" "$SYS" '"rxBytes":'
+assert_has "系统接口返回运行时长" "$SYS" '"uptime":{"systemSec":'
+assert_has "系统接口返回数据库体积" "$SYS" '"db":{"bytes":'
 # 非管理员不可访问
 assert_contains "非管理员访问系统接口被拒" "$(curl -s "$BASE/api/admin/system" -H "$UAUTH")" '需要管理员权限'
 assert_contains "非管理员访问存储接口被拒" "$(curl -s "$BASE/api/admin/storage" -H "$UAUTH")" '需要管理员权限'

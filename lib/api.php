@@ -1721,31 +1721,99 @@ function tc_sys_meminfo() {
     return $cache;
 }
 
-// CPU 使用率:取两次 /proc/stat 采样对比。单次采样要睡 120ms,
-// 用 5 秒结果缓存,避免每次打开后台看板都阻塞一个 PHP 进程
-function tc_sys_cpu_percent() {
-    if (!is_readable('/proc/stat')) return null;
-    static $cache = null;
-    if ($cache !== null && tc_now() - $cache['t'] < 5000) return $cache['v'];
-    $read = function () {
-        $line = (string) @file_get_contents('/proc/stat');
-        if (!preg_match('/^cpu\s+(.+)$/m', $line, $m)) return null;
-        $parts = preg_split('/\s+/', trim($m[1]));
-        $vals = array_map('intval', array_slice($parts, 0, 8));
-        $idle = ($vals[3] ?? 0) + ($vals[4] ?? 0);
-        return array('total' => array_sum($vals), 'idle' => $idle);
-    };
-    $a = $read();
-    if (!$a) return null;
-    usleep(120000);
-    $b = $read();
-    if (!$b) return null;
+// 解析 /proc/stat 首行累计值,返回 array(total, idle)
+function tc_sys_cpu_parse_stat($text) {
+    if ($text === null || !preg_match('/^cpu\s+(.+)$/m', (string) $text, $m)) return null;
+    $vals = array_map('intval', array_slice(preg_split('/\s+/', trim($m[1])), 0, 8));
+    return array('total' => array_sum($vals), 'idle' => ($vals[3] ?? 0) + ($vals[4] ?? 0));
+}
+
+// 两次 /proc/stat 采样之间的使用率
+function tc_sys_cpu_delta_percent($a, $b) {
+    if (!is_array($a) || !is_array($b)) return null;
     $dt = $b['total'] - $a['total'];
-    $di = $b['idle'] - $a['idle'];
     if ($dt <= 0) return null;
-    $v = max(0, min(100, (int) round(($dt - $di) * 100 / $dt)));
-    $cache = array('t' => tc_now(), 'v' => $v);
-    return $v;
+    return max(0, min(100, (int) round(($dt - ($b['idle'] - $a['idle'])) * 100 / $dt)));
+}
+
+// 解析 /proc/net/dev 文本:汇总非回环网卡的累计收(RX)发(TX)字节
+function tc_sys_net_parse_dev($text) {
+    $rx = 0; $tx = 0;
+    foreach (explode("\n", (string) $text) as $line) {
+        if (strpos($line, ':') === false) continue;   // 前两行是表头
+        $p = explode(':', $line, 2);
+        $if = trim($p[0]);
+        if ($if === '' || $if === 'lo') continue;     // 回环不计入,否则本机进程互访会算成站外流量
+        $f = preg_split('/\s+/', trim($p[1]));
+        if (!is_array($f) || count($f) < 9) continue;
+        $rx += (int) $f[0]; $tx += (int) $f[8];
+    }
+    return array($rx, $tx);
+}
+
+// 网卡累计字节数:优先 /proc/net/dev;部分 jail 只放行 sysfs,就逐个网卡读统计文件
+function tc_sys_net_totals() {
+    $dev = tc_sys_read_text('/proc/net/dev');
+    if ($dev !== null) return tc_sys_net_parse_dev($dev);
+    $rx = 0; $tx = 0; $any = false;
+    foreach ((array) @scandir('/sys/class/net') as $if) {
+        if ($if === '.' || $if === '..' || $if === 'lo') continue;
+        $r = tc_sys_read_text('/sys/class/net/' . $if . '/statistics/rx_bytes');
+        $t = tc_sys_read_text('/sys/class/net/' . $if . '/statistics/tx_bytes');
+        if ($r === null || $t === null) continue;
+        $rx += (int) $r; $tx += (int) $t; $any = true;
+    }
+    return $any ? array($rx, $tx) : null;
+}
+
+// 实时指标:CPU 使用率与上下行网速都靠两次采样求增量,合在一次采样里做完,只睡一次 120ms。
+// 结果缓存 5 秒,避免每次打开后台看板都阻塞一个 PHP 进程;全读不到时不睡,直接返回空值。
+function tc_sys_realtime() {
+    $cached = tc_sys_cache('rt');
+    if ($cached !== null && tc_now() - $cached['t'] < 5000) return $cached['v'];
+    $out = array('cpuPercent' => null, 'netRxBps' => null, 'netTxBps' => null, 'netRxBytes' => null, 'netTxBytes' => null);
+    $hasCpu = tc_sys_read_text('/proc/stat') !== null;
+    $hasNet = tc_sys_read_text('/proc/net/dev') !== null || is_dir('/sys/class/net');
+    if ($hasCpu || $hasNet) {
+        $t0 = microtime(true);
+        $cpuA = $hasCpu ? tc_sys_cpu_parse_stat(tc_sys_read_text('/proc/stat')) : null;
+        $netA = $hasNet ? tc_sys_net_totals() : null;
+        usleep(120000);
+        $elapsed = microtime(true) - $t0;
+        if ($hasCpu) $out['cpuPercent'] = tc_sys_cpu_delta_percent($cpuA, tc_sys_cpu_parse_stat(tc_sys_read_text('/proc/stat')));
+        if ($netA !== null) {
+            $netB = tc_sys_net_totals();
+            if (is_array($netB) && $elapsed > 0) {
+                $out['netRxBps'] = max(0, (int) round(($netB[0] - $netA[0]) / $elapsed));
+                $out['netTxBps'] = max(0, (int) round(($netB[1] - $netA[1]) / $elapsed));
+                $out['netRxBytes'] = (int) $netB[0];
+                $out['netTxBytes'] = (int) $netB[1];
+            }
+        }
+    }
+    return tc_sys_cache('rt', array('t' => tc_now(), 'v' => $out))['v'];
+}
+
+// 系统运行时长:/proc/uptime 第一列(秒);容器里读到的是宿主机时长,虚拟主机屏蔽 /proc 时为空
+function tc_sys_uptime_sec() {
+    $txt = tc_sys_read_text('/proc/uptime');
+    if ($txt === null) return null;
+    $parts = preg_split('/\s+/', trim($txt));
+    $sec = isset($parts[0]) ? (float) $parts[0] : 0;
+    return $sec > 0 ? (int) round($sec) : null;
+}
+
+// 数据库占用:SQLite 主文件 + WAL/SHM(WAL 未合并时可能比主文件还大)
+function tc_sys_db_bytes() {
+    $base = tc_data_dir() . '/tinychat.sqlite';
+    $bytes = 0; $any = false;
+    foreach (array('', '-wal', '-shm') as $suffix) {
+        if (!is_file($base . $suffix)) continue;
+        $sz = @filesize($base . $suffix);
+        if ($sz === false) continue;
+        $bytes += (int) $sz; $any = true;
+    }
+    return $any ? $bytes : null;
 }
 
 function tc_sys_loadavg() {
@@ -1753,6 +1821,184 @@ function tc_sys_loadavg() {
     $la = @sys_getloadavg();
     if (!is_array($la) || count($la) < 3) return null;
     return array(round($la[0], 2), round($la[1], 2), round($la[2], 2));
+}
+
+function tc_sys_cpu_cores() {
+    if (is_readable('/proc/cpuinfo')) {
+        $n = substr_count((string) @file_get_contents('/proc/cpuinfo'), 'processor');
+        if ($n > 0) return $n;
+    }
+    // Windows 没有 /proc,系统环境变量里有核心数
+    $env = getenv('NUMBER_OF_PROCESSORS');
+    if ($env !== false && (int) $env > 0) return (int) $env;
+    return null;
+}
+
+// ---- 虚拟主机/容器配额(cgroup v1 / v2) ----
+// 共享主机与容器常把 /proc/meminfo、/proc/stat 连同 open_basedir 一起屏蔽掉,但 cgroup 的
+// memory.current/max 与 cpu.stat 一般仍可读,给出的正是「本账户套餐」的用量与上限。
+// 只认「有明确上限、且小于整机」的配额:不限量(v1 哨兵值 / v2 的 "max")或与整机同级的读数
+// 一律当作没有配额,否则会把宿主机数字冒充成套餐值,比不显示更误导。
+
+// cgroup 读取根:生产环境始终为空(即文件系统根);单元测试传参换成一个假根
+// (内含 sys/fs/cgroup 与 proc/self/cgroup),用来在无 cgroup 的机器上验证路径选择与配额解析
+function tc_sys_cgroup_fsroot($set = null) {
+    static $root = '';
+    if ($set !== null) $root = (string) $set;
+    return $root;
+}
+
+// 指标采集结果的进程内缓存:$key 传 null 清空(切换假根的测试用),传值写入,不传读取
+function tc_sys_cache($key, $val = null) {
+    static $c = array();
+    if ($key === null) { $c = array(); return null; }
+    if ($val !== null) { $c[$key] = $val; return $val; }
+    return isset($c[$key]) ? $c[$key] : null;
+}
+
+// 清空采集缓存(切换假根/多次取数时用);假根本身由 tc_sys_cgroup_fsroot() 单独设置
+function tc_sys_reset_cache() {
+    tc_sys_cache(null);
+}
+
+// 当前进程在各控制器下的 cgroup 相对路径;$controller 传 '' 取 v2 统一层级
+function tc_sys_cgroup_rel($controller = '') {
+    $map = tc_sys_cache('rel');
+    if ($map === null) {
+        $map = array();
+        $selfCgroup = tc_sys_cgroup_fsroot() . '/proc/self/cgroup';
+        if (@is_readable($selfCgroup)) {
+            foreach (explode("\n", (string) @file_get_contents($selfCgroup)) as $line) {
+                // v1 形如 "5:cpu,cpuacct:/user.slice/x",v2 为 "0::/x"(控制器名为空)
+                if (preg_match('#^\d+:([^:]*):(\S*)$#', trim($line), $m)) {
+                    foreach (explode(',', $m[1]) as $c) $map[$c] = rtrim($m[2], '/');
+                }
+            }
+        }
+        tc_sys_cache('rel', $map);
+    }
+    return isset($map[$controller]) ? $map[$controller] : '';
+}
+
+function tc_sys_read_text($file) {
+    if (!@is_readable($file)) return null;
+    $v = @file_get_contents($file);
+    return $v === false ? null : trim((string) $v);
+}
+
+// 解析 cgroup 内存上限:返回字节数;不限量、读不到、与整机同级都返回 null
+function tc_sys_cgroup_mem_limit($limitRaw, $machineTotal = 0) {
+    if ($limitRaw === null || !ctype_digit($limitRaw)) return null;  // "max" 或文件不可读
+    $limit = (float) $limitRaw;
+    if ($limit <= 0 || $limit > 1e15) return null;                    // v1 用近 2^63 哨兵表示不限量
+    if ($machineTotal > 0 && $limit >= $machineTotal) return null;    // 与整机同级=宿主机上限,不是套餐
+    return (int) $limit;
+}
+
+// 解析 v2 的 cpu.max("quota period",quota 为 max 表示不限量)为核数
+function tc_sys_cgroup_cpu_max_cores($raw) {
+    if ($raw === null || !preg_match('#^(\d+)\s+(\d+)$#', trim($raw), $m)) return null;
+    $period = (int) $m[2];
+    if ($period <= 0) return null;
+    return ((int) $m[1]) / $period;
+}
+
+// 解析 v1 的 cfs 配额(cpu.cfs_quota_us / cpu.cfs_period_us,-1 表示不限量)为核数
+function tc_sys_cgroup_cfs_cores($quotaRaw, $periodRaw) {
+    if ($quotaRaw === null || $periodRaw === null) return null;
+    $q = (int) trim($quotaRaw); $p = (int) trim($periodRaw);
+    if ($q <= 0 || $p <= 0) return null;
+    return $q / $p;
+}
+
+// 从 v2 的 cpu.stat 文本取累计 CPU 时间(纳秒)
+function tc_sys_cgroup_usage_ns($statRaw) {
+    if ($statRaw === null || !preg_match('/^usage_usec\s+(\d+)$/m', $statRaw, $m)) return null;
+    return (float) $m[1] * 1000;
+}
+
+// 两次累计用量(纳秒)在 elapsed 秒内折算出的实际核数
+function tc_sys_cgroup_cores_used($aNs, $bNs, $elapsedSec) {
+    if ($aNs === null || $bNs === null || $bNs <= $aNs || $elapsedSec <= 0) return null;
+    return ($bNs - $aNs) / 1e9 / $elapsedSec;
+}
+
+// 本账户 cgroup 内存配额:array(version, usedBytes, limitBytes),没有配额返回空数组
+function tc_sys_cgroup_mem() {
+    $out = tc_sys_cache('mem');
+    if ($out !== null) return $out;
+    $out = array();
+    $meminfo = tc_sys_meminfo();
+    $machineTotal = isset($meminfo['MemTotal']) ? (int) $meminfo['MemTotal'] : 0;
+    $cands = array(
+        array('v2', tc_sys_cgroup_fsroot() . '/sys/fs/cgroup' . tc_sys_cgroup_rel(''), 'memory.current', 'memory.max'),
+        array('v1', tc_sys_cgroup_fsroot() . '/sys/fs/cgroup/memory' . tc_sys_cgroup_rel('memory'), 'memory.usage_in_bytes', 'memory.limit_in_bytes'),
+    );
+    foreach ($cands as $c) {
+        $used = tc_sys_read_text($c[1] . '/' . $c[2]);
+        if ($used === null || !ctype_digit($used)) continue;
+        $limit = tc_sys_cgroup_mem_limit(tc_sys_read_text($c[1] . '/' . $c[3]), $machineTotal);
+        if ($limit === null) continue;
+        $out = array('version' => $c[0], 'usedBytes' => (int) $used, 'limitBytes' => $limit);
+        break;
+    }
+    return tc_sys_cache('mem', $out);
+}
+
+// 由两次累计用量(纳秒)与配额折算看板数据:实际核数 + 相对配额的百分比。
+// 有配额按配额折算;配额不限量但知道整机核数时按整机折算(此时不回报 coreLimit,避免被当成套餐值)。
+function tc_sys_cgroup_cpu_result($version, $aNs, $bNs, $elapsedSec, $quotaCores, $machineCores) {
+    $cores = tc_sys_cgroup_cores_used($aNs, $bNs, $elapsedSec);
+    if ($cores === null) return array();
+    $out = array('version' => $version, 'coreUsage' => round($cores, 2));
+    if ($quotaCores !== null && $quotaCores > 0) {
+        $out['coreLimit'] = round($quotaCores, 2);
+        $out['percent'] = max(0, min(100, (int) round($cores * 100 / $quotaCores)));
+    } elseif ($machineCores !== null && $machineCores > 0) {
+        $out['percent'] = max(0, min(100, (int) round($cores * 100 / $machineCores)));
+    }
+    return $out;
+}
+
+// 本账户 cgroup CPU:两次采样得知实际核数,再对照配额给百分比。
+// 采样要睡 120ms(与 /proc/stat 同代价),结果缓存 5 秒,避免每次打开后台都阻塞一个 PHP 进程。
+function tc_sys_cgroup_cpu() {
+    $cached = tc_sys_cache('cpu');
+    if ($cached !== null && tc_now() - $cached['t'] < 5000) return $cached['v'];
+    $out = array();
+    $readUsage = null; $quotaCores = null; $version = '';
+    $cg = tc_sys_cgroup_fsroot() . '/sys/fs/cgroup';
+    $rel = tc_sys_cgroup_rel('');
+    $stat = tc_sys_read_text($cg . $rel . '/cpu.stat');
+    if ($stat !== null && tc_sys_cgroup_usage_ns($stat) !== null) {
+        $version = 'v2';
+        $readUsage = function () use ($cg, $rel) {
+            return tc_sys_cgroup_usage_ns(tc_sys_read_text($cg . $rel . '/cpu.stat'));
+        };
+        $quotaCores = tc_sys_cgroup_cpu_max_cores(tc_sys_read_text($cg . $rel . '/cpu.max'));
+    } else {
+        $relAcct = tc_sys_cgroup_rel('cpuacct');
+        $u = tc_sys_read_text($cg . '/cpuacct' . $relAcct . '/cpuacct.usage');
+        if ($u !== null && ctype_digit($u)) {
+            $version = 'v1';
+            $readUsage = function () use ($cg, $relAcct) {
+                $u = tc_sys_read_text($cg . '/cpuacct' . $relAcct . '/cpuacct.usage');
+                return ($u !== null && ctype_digit($u)) ? (float) $u : null;
+            };
+            $relCpu = tc_sys_cgroup_rel('cpu');
+            $quotaCores = tc_sys_cgroup_cfs_cores(
+                tc_sys_read_text($cg . '/cpu' . $relCpu . '/cpu.cfs_quota_us'),
+                tc_sys_read_text($cg . '/cpu' . $relCpu . '/cpu.cfs_period_us'));
+        }
+    }
+    if ($readUsage !== null) {
+        $t0 = microtime(true);
+        $a = $readUsage();
+        usleep(120000);
+        $b = $readUsage();
+        $out = tc_sys_cgroup_cpu_result($version, $a, $b, microtime(true) - $t0, $quotaCores, tc_sys_cpu_cores());
+    }
+    return tc_sys_cache('cpu', array('t' => tc_now(), 'v' => $out))['v'];
 }
 
 // 递归统计目录占用(带深度与文件数保护,避免超大目录拖慢后台)
@@ -1864,6 +2110,11 @@ function tc_api_admin_system() {
         $disk = tc_sys_disk();
         // PHP 进程自身内存(所有环境都有)
         $procMem = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : null;
+        // 实时指标(CPU + 网速)一次采完;虚拟主机取不到整机 CPU 时才退到 cgroup 配额
+        $rt = tc_sys_realtime();
+        $cpuPercent = $rt['cpuPercent'];
+        $cgMem = tc_sys_cgroup_mem();
+        $cgCpu = $cpuPercent === null ? tc_sys_cgroup_cpu() : array();
         $online = tc_online_users($db);
         // 今日调用与近 7 天
         $byDay = tc_assoc($db['stats']['callsByDay']);
@@ -1886,17 +2137,8 @@ function tc_api_admin_system() {
                 'timezone' => date_default_timezone_get(),
             ),
             'cpu' => array(
-                'cores' => (function () {
-                    if (is_readable('/proc/cpuinfo')) {
-                        $n = substr_count((string) @file_get_contents('/proc/cpuinfo'), 'processor');
-                        if ($n > 0) return $n;
-                    }
-                    // Windows 没有 /proc,系统环境变量里有核心数
-                    $env = getenv('NUMBER_OF_PROCESSORS');
-                    if ($env !== false && (int) $env > 0) return (int) $env;
-                    return null;
-                })(),
-                'percent' => tc_sys_cpu_percent(),
+                'cores' => tc_sys_cpu_cores(),
+                'percent' => $cpuPercent,
                 'loadavg' => tc_sys_loadavg(),
             ),
             'memory' => array(
@@ -1915,7 +2157,29 @@ function tc_api_admin_system() {
                 })(),
             ),
             'disk' => $disk,
+            // 账户配额(虚拟主机/容器):整机指标被屏蔽时前端用这一层兜底;source 为空表示两处都没读到
+            'quota' => array(
+                'source' => ($cgMem || $cgCpu)
+                    ? 'cgroup ' . (isset($cgMem['version']) ? $cgMem['version'] : $cgCpu['version']) : '',
+                'memUsedBytes' => isset($cgMem['usedBytes']) ? $cgMem['usedBytes'] : null,
+                'memLimitBytes' => isset($cgMem['limitBytes']) ? $cgMem['limitBytes'] : null,
+                'cpuPercent' => isset($cgCpu['percent']) ? $cgCpu['percent'] : null,
+                'cpuCores' => isset($cgCpu['coreLimit']) ? $cgCpu['coreLimit'] : null,
+                'cpuCoreUsage' => isset($cgCpu['coreUsage']) ? $cgCpu['coreUsage'] : null,
+            ),
             'storage' => tc_storage_categories(),
+            // 网速:下行=入站(rx,用户请求进来),上行=出站(tx,回复/图片发给用户)
+            'net' => array(
+                'rxBps' => $rt['netRxBps'],
+                'txBps' => $rt['netTxBps'],
+                'rxBytes' => $rt['netRxBytes'],
+                'txBytes' => $rt['netTxBytes'],
+            ),
+            'uptime' => array(
+                'systemSec' => tc_sys_uptime_sec(),
+                'appSec' => tc_uptime_sec(),
+            ),
+            'db' => array('bytes' => tc_sys_db_bytes()),
             'users' => array(
                 'total' => count($db['users']),
                 'online' => $online['online'],
@@ -1934,7 +2198,6 @@ function tc_api_admin_system() {
                 'groups' => count($db['userGroups']),
                 'assistants' => count($db['assistants']),
             ),
-            'uptimeSec' => tc_uptime_sec(),
             'version' => TC_VERSION,
         ));
     });
