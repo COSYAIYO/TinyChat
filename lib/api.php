@@ -657,6 +657,17 @@ function tc_seed_default_assistants(&$db) {
         }
         unset($existing);
     }
+    $keepIds = array();
+    foreach ((isset($cat['categories']) ? $cat['categories'] : array()) as $c) $keepIds[$c['id']] = true;
+    $kept = array();
+    foreach ($db['assistantCategories'] as $c) {
+        if (isset($c['scope']) && $c['scope'] === 'global' && empty($keepIds[$c['id']])) {
+            $changed = true;
+            continue;
+        }
+        $kept[] = $c;
+    }
+    $db['assistantCategories'] = $kept;
     $i = 0;
     foreach ((isset($cat['assistants']) ? $cat['assistants'] : array()) as $a) {
         $i++;
