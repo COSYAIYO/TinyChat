@@ -2005,6 +2005,8 @@ function tc_api_admin_test_model() {
         $body['max_tokens'] = 64;
     }
     $url = tc_upstream_path($ctx['baseUrl'], $ctx['format']);
+    // 连通性测试同样会带服务端身份出站,内网目标一律拒绝。
+    if (!tc_upstream_url_is_safe($url)) tc_fail(400, '不允许请求内网或保留地址');
     $headers = array('Content-Type' => 'application/json', 'Accept' => 'application/json');
     if ($ctx['format'] === 'anthropic') {
         $headers['x-api-key'] = $ctx['apiKey'];
@@ -2125,6 +2127,8 @@ function tc_api_user_test_model() {
     $baseUrl = rtrim(trim((string) (isset($ctx['provider']['baseUrl']) ? $ctx['provider']['baseUrl'] : '')), '/');
     if (!preg_match('/^https?:\/\//i', $baseUrl)) tc_fail(400, '供应商 Base URL 无效');
     $url = tc_upstream_path($baseUrl, $format);
+    // 该接口允许直接传 baseUrl 试探连通性,同样不能成为探内网的跳板。
+    if (!tc_upstream_url_is_safe($url)) tc_fail(400, '不允许请求内网或保留地址');
     $headers = array('Content-Type' => 'application/json', 'Accept' => 'application/json');
     if ($format === 'anthropic') {
         $headers['x-api-key'] = $ctx['apiKey'];
@@ -2272,11 +2276,17 @@ function tc_settle_stream_charge(&$db, $userId, $provider, $baseCost, $charged, 
 // ---- 流式转发的公共扣费/发头/结算块(原先 4 处近乎重复的实现收敛于此) ----
 
 // 扣费:取最新用户记录按实际用量计费,回写余量到 $GLOBALS['_tc_quota_after']
+// 额度已在请求前原子预扣(见 tc_quota_reserve),这里只按实际用量结算:
+// 原来在这里再调 tc_charge_user 会二次扣费,也会把并发窗口重新打开。
 function tc_stream_charge(&$db, $userId, $provider, $body, $cost, $streamUsage, $purpose, &$charged) {
     $fresh = null;
     foreach ($db['users'] as $u) if ((string) $u['id'] === (string) $userId) { $fresh = $u; break; }
     if (!$fresh) return;
-    $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $streamUsage), isset($body['model']) ? $body['model'] : '', $purpose);
+    $actual = tc_final_cost($provider, $cost, $streamUsage);
+    $charged = tc_quota_settle($db, $userId, $actual, isset($body['model']) ? (string) $body['model'] : '', $purpose);
+    tc_quota_clear_pending();
+    foreach ($db['users'] as $u) if ((string) $u['id'] === (string) $userId) { $fresh = $u; break; }
+    tc_charge_user_stats($db, $fresh, isset($body['model']) ? $body['model'] : '', $purpose);
     tc_touch_user($db, $userId);
     $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
 }
@@ -2400,18 +2410,28 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         if ($modHit !== '') tc_fail(400, '消息包含被禁止的内容，请修改后重试');
         // 用户自备供应商(自己的 Key):不扣站点次数,也不设额度门槛
         if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
-        // 过期赠送还留在账面额度里,真正能用的是扣掉这部分之后的余额
-        $quotaNow = tc_is_unlimited_quota($user) ? -1 : tc_quota_effective($user);
-        if ($quotaNow !== -1 && $quotaNow < $cost) {
+        // 额度预扣:检查与扣减放在同一个写事务里完成,避免并发请求都读到同一笔余额后全部放行。
+        // 实际费用要等上游返回才知道(按 token 计费),所以先按预估费用扣,结算时再多退少补。
+        $reserveOk = false;
+        $quotaNow = -1;
+        tc_with_db(true, function (&$db) use ($user, $cost, &$reserveOk, &$quotaNow) {
+            $reserveOk = tc_quota_reserve($db, $user['id'], $cost);
+            foreach ($db['users'] as $u) {
+                if ((string) $u['id'] === (string) $user['id']) { $quotaNow = tc_is_unlimited_quota($u) ? -1 : tc_quota_effective($u); break; }
+            }
+        });
+        if (!$reserveOk) {
             $msg = $cost > 1
-                ? '剩余次数不足（本次需要 ' . $cost . ' 次，当前 ' . $quotaNow . ' 次），请联系管理员充值'
-                : '剩余次数不足（当前 ' . $quotaNow . ' 次），请联系管理员充值';
+                ? '剩余次数不足（本次需要 ' . $cost . ' 次，当前 ' . max(0, (int) $quotaNow) . ' 次），请联系管理员充值'
+                : '剩余次数不足（当前 ' . max(0, (int) $quotaNow) . ' 次），请联系管理员充值';
             tc_json(402, array(
                 'error' => array('message' => $msg),
-                'quota' => $quotaNow,
+                'quota' => max(0, (int) $quotaNow),
                 'need' => $cost,
             ));
         }
+        // 预扣已落库:记下待结算,之后任何 tc_fail 退出都会自动退回(见 tc_quota_refund_pending)
+        tc_quota_mark_pending($user['id'], $cost);
         // 生图模型自动路由:调用对话接口但命中的是生图模型时,改走 images/generations。
         // 上游对这种请求会直接报错(如 "xxx is an image model. Use /v1/images/generations"),
         // 这里在发起对话请求前就分流,用户/客户端无需自己判断模型类型。
@@ -2546,6 +2566,9 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
     tc_apply_temperature($body, $format, isset($ctx['temperature']) ? $ctx['temperature'] : null);
     tc_apply_thinking_rules($body, isset($ctx['thinking']) ? $ctx['thinking'] : null);
     $url = tc_upstream_path(rtrim((string) $provider['baseUrl'], '/'), $format);
+    // 出站前的最后一道 SSRF 检查:写入时校验过的地址也要在这里再确认一次,
+    // 免得历史数据(或管理员导入的配置)带着内网目标发出去。
+    if (!tc_upstream_url_is_safe($url)) tc_fail(400, '供应商地址不可用:不允许请求内网或保留地址');
     $isStream = !empty($body['stream']);
     // 多 Key:按模型绑定的优先级取出一串密钥,失败时依次回退(见下方 keyFallback)
     $keyChain = tc_provider_key_chain($provider, isset($body['model']) ? (string) $body['model'] : '');
@@ -2769,7 +2792,12 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         $fresh = null;
         foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
         if (!$fresh) return;
-        $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $cost, $bodyUsage), isset($body['model']) ? $body['model'] : '', isset($ctx['purpose']) ? (string) $ctx['purpose'] : '');
+        // 额度已在请求前预扣:这里只做结算(按实际 token 费用多退少补),不再二次扣减。
+        $actual = tc_final_cost($provider, $cost, $bodyUsage);
+        $charged = tc_quota_settle($db, $user['id'], $actual, isset($body['model']) ? (string) $body['model'] : '', isset($ctx['purpose']) ? (string) $ctx['purpose'] : '');
+        tc_quota_clear_pending();
+        foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
+        tc_charge_user_stats($db, $fresh, isset($body['model']) ? $body['model'] : '', isset($ctx['purpose']) ? (string) $ctx['purpose'] : '');
         tc_touch_user($db, $user['id']);
         $quota = isset($fresh['quota']) ? $fresh['quota'] : 0;
         tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $charged, $bodyUsage['prompt'], $bodyUsage['completion']);
@@ -2962,10 +2990,16 @@ function tc_generate_images($apiKeyOwner = null) {
         }
         $cost = tc_model_cost($provider, $model);
         if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
-        $quotaNow = tc_is_unlimited_quota($user) ? -1 : tc_quota_effective($user);
-        if ($quotaNow !== -1 && $quotaNow < $cost) {
-            tc_fail(402, '剩余次数不足，请联系管理员充值');
-        }
+        // 原子预扣:与对话路径同一套(见 tc_quota_reserve),避免并发出图把额度刷穿
+        $reserveOk = false; $quotaNow = -1;
+        tc_with_db(true, function (&$db) use ($user, $cost, &$reserveOk, &$quotaNow) {
+            $reserveOk = tc_quota_reserve($db, $user['id'], $cost);
+            foreach ($db['users'] as $u) {
+                if ((string) $u['id'] === (string) $user['id']) { $quotaNow = tc_is_unlimited_quota($u) ? -1 : tc_quota_effective($u); break; }
+            }
+        });
+        if (!$reserveOk) tc_fail(402, '剩余次数不足，请联系管理员充值');
+        tc_quota_mark_pending($user['id'], $cost);
         // 透传常见可选参数(仅白名单键,避免污染上游请求)
         $extra = array();
         foreach (array('quality', 'style', 'response_format', 'background') as $k) {
@@ -3178,7 +3212,10 @@ function tc_generate_images($apiKeyOwner = null) {
         $fresh = null;
         foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
         if (!$fresh) return;
-        $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $ctx['cost'], $usage), $ctx['model'] . ' (图像)', 'image');
+        $charged = tc_quota_settle($db, $user['id'], tc_final_cost($provider, $ctx['cost'], $usage), $ctx['model'] . ' (图像)', 'image');
+        tc_quota_clear_pending();
+        foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
+        tc_charge_user_stats($db, $fresh, $ctx['model'] . ' (图像)', 'image');
         tc_touch_user($db, $user['id']);
         $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
         tc_record_usage_entry($db, $user['id'], $ctx['model'] . ' (图像)', $charged, 0, 0);
@@ -3336,10 +3373,48 @@ function tc_img_store_serve($id) {
     echo $body;
     return true;
 }
+// 反 DNS rebinding:校验时解析出的 IP 必须与实际连接用的 IP 一致。
+// 只做「先校验后连接」的话,攻击者可以让域名第一次解析到公网、第二次解析到 127.0.0.1,
+// 校验通过但真正的请求打到了内网。这里把解析结果固定进 curl,消除这个时间窗。
+// 返回 array(host, port, ip) 或 null(校验不通过)。
+function tc_public_resolve_pin($url) {
+    $p = @parse_url((string) $url);
+    if (!is_array($p) || empty($p['host'])) return null;
+    $scheme = strtolower(isset($p['scheme']) ? $p['scheme'] : '');
+    if ($scheme !== 'http' && $scheme !== 'https') return null;
+    $port = isset($p['port']) ? (int) $p['port'] : ($scheme === 'https' ? 443 : 80);
+    if (!in_array($port, array(80, 443, 8080, 8443), true)) return null;
+    $host = trim(strtolower((string) $p['host']), '[]');
+    if ($host === '' || $host === 'localhost') return null;
+    if (preg_match('/\.(local|internal|intranet|lan|home\.arpa|arpa)$/i', $host)) return null;
+    $ipOk = function ($ip) {
+        return is_string($ip) && $ip !== ''
+            && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+    };
+    $picked = '';
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        if (!$ipOk($host)) return null;
+        $picked = $host;
+    } else {
+        foreach ((array) @gethostbynamel($host) as $ip) {
+            if ($ipOk($ip)) { $picked = $ip; break; }
+        }
+        if ($picked === '' && function_exists('dns_get_record')) {
+            foreach ((array) @dns_get_record($host, DNS_AAAA) as $rec) {
+                if (!empty($rec['ipv6']) && $ipOk($rec['ipv6'])) { $picked = $rec['ipv6']; break; }
+            }
+        }
+    }
+    if ($picked === '') return null;
+    return array('host' => $host, 'port' => $port, 'ip' => $picked);
+}
+
 // 下载一张图片并落盘;成功返回 id(24位),失败返回 ''
 function tc_img_store_save($url, $maxBytes = 30 * 1024 * 1024) {
     $url = (string) $url;
-    if (!preg_match('#^https?://#i', $url) || !tc_url_is_public_http($url)) return '';
+    if (!preg_match('#^https?://#i', $url)) return '';
+    $pin = tc_public_resolve_pin($url);
+    if (!$pin) return '';
     $ch = curl_init($url);
     curl_setopt_array($ch, array(
         CURLOPT_RETURNTRANSFER => false,
@@ -3350,6 +3425,8 @@ function tc_img_store_save($url, $maxBytes = 30 * 1024 * 1024) {
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_SSL_VERIFYHOST => 2,
         CURLOPT_USERAGENT => 'TinyChat-ImageStore/1.0',
+        // 固定到校验过的那个 IP,堵住解析二次变化(DNS rebinding)
+        CURLOPT_RESOLVE => array($pin['host'] . ':' . $pin['port'] . ':' . $pin['ip']),
     ));
     $ca = tc_cacert_path();
     if ($ca) curl_setopt($ch, CURLOPT_CAINFO, $ca);
@@ -3768,10 +3845,16 @@ function tc_generate_video($apiKeyOwner = null) {
         }
         $cost = tc_model_cost($provider, $model);
         if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
-        $quotaNow = tc_is_unlimited_quota($user) ? -1 : tc_quota_effective($user);
-        if ($quotaNow !== -1 && $quotaNow < $cost) {
-            tc_fail(402, '剩余次数不足，请联系管理员充值');
-        }
+        // 原子预扣:与对话路径同一套(见 tc_quota_reserve),避免并发生视频把额度刷穿
+        $reserveOk = false; $quotaNow = -1;
+        tc_with_db(true, function (&$db) use ($user, $cost, &$reserveOk, &$quotaNow) {
+            $reserveOk = tc_quota_reserve($db, $user['id'], $cost);
+            foreach ($db['users'] as $u) {
+                if ((string) $u['id'] === (string) $user['id']) { $quotaNow = tc_is_unlimited_quota($u) ? -1 : tc_quota_effective($u); break; }
+            }
+        });
+        if (!$reserveOk) tc_fail(402, '剩余次数不足，请联系管理员充值');
+        tc_quota_mark_pending($user['id'], $cost);
         // 模式:文字生成 / 首尾帧 / 参考图
         $mode = isset($b['mode']) && in_array($b['mode'], array('text', 'keyframe', 'reference'), true) ? $b['mode'] : 'text';
         // 时长:4~12 秒(字符串)
@@ -3913,7 +3996,10 @@ function tc_generate_video($apiKeyOwner = null) {
         $fresh = null;
         foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
         if (!$fresh) return;
-        $charged = tc_charge_user($db, $fresh, tc_final_cost($provider, $ctx['cost'], $usage), $ctx['model'] . ' (视频)', 'video');
+        $charged = tc_quota_settle($db, $user['id'], tc_final_cost($provider, $ctx['cost'], $usage), $ctx['model'] . ' (视频)', 'video');
+        tc_quota_clear_pending();
+        foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
+        tc_charge_user_stats($db, $fresh, $ctx['model'] . ' (视频)', 'video');
         tc_touch_user($db, $user['id']);
         $GLOBALS['_tc_quota_after'] = isset($fresh['quota']) ? $fresh['quota'] : 0;
         tc_record_usage_entry($db, $user['id'], $ctx['model'] . ' (视频)', $charged, 0, 0);
