@@ -535,6 +535,63 @@ function tc_set_chats(&$db, $userId, $chats) {
     $db['userChatRevisions'] = tc_object_map($revisions);
 }
 
+// ============ 已删除对话留档(软删除) ============
+// 用户删除对话时云端不抹掉内容,而是移到 userDeletedChats:{chats:留档, tombs:{id:删除时间}}。
+// tombs 同时是跨设备删除的同步源:别的设备拉取时据此把本地副本一并删掉,
+// 旧设备用过期列表回推时也会被墓碑挡住,不会把对话"复活"。
+function tc_deleted_of($db, $userId) {
+    $map = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array());
+    $uid = (string) $userId;
+    $row = isset($map[$uid]) ? tc_assoc($map[$uid]) : array();
+    return array(
+        'chats' => isset($row['chats']) && is_array($row['chats']) ? array_values($row['chats']) : array(),
+        'tombs' => tc_assoc(isset($row['tombs']) ? $row['tombs'] : array()),
+    );
+}
+
+function tc_set_deleted_of(&$db, $userId, $row) {
+    $map = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array());
+    $uid = (string) $userId;
+    $clean = array(
+        'chats' => isset($row['chats']) && is_array($row['chats']) ? array_values($row['chats']) : array(),
+        'tombs' => tc_assoc(isset($row['tombs']) ? $row['tombs'] : array()),
+    );
+    if (!$clean['chats'] && !$clean['tombs']) unset($map[$uid]);
+    else $map[$uid] = $clean;
+    $db['userDeletedChats'] = tc_object_map($map);
+}
+
+// 墓碑上限:只保留最近 2000 条,防止极端账号把 id 清单撑爆
+function tc_deleted_cap_tombs($tombs, $limit = 2000) {
+    if (count($tombs) <= $limit) return $tombs;
+    arsort($tombs);
+    return array_slice($tombs, 0, $limit, true);
+}
+
+// 留档上限:保留最近 300 条已删除对话(与在线对话同量级),更早的整段丢弃
+function tc_deleted_cap_chats($chats, $limit = 300) {
+    if (count($chats) <= $limit) return $chats;
+    usort($chats, function ($a, $b) {
+        return (isset($b['updatedAt']) ? $b['updatedAt'] : 0) <=> (isset($a['updatedAt']) ? $a['updatedAt'] : 0);
+    });
+    return array_slice($chats, 0, $limit);
+}
+
+// 把一条对话放进留档:同 id 覆盖时保留内容较新的那份
+function tc_deleted_archive_put(&$archived, $chat) {
+    if (!is_array($chat) || empty($chat['id'])) return;
+    $id = (string) $chat['id'];
+    foreach ($archived as $i => $old) {
+        if (isset($old['id']) && (string) $old['id'] === $id) {
+            if ((isset($chat['updatedAt']) ? (float) $chat['updatedAt'] : 0) >= (isset($old['updatedAt']) ? (float) $old['updatedAt'] : 0)) {
+                $archived[$i] = $chat;
+            }
+            return;
+        }
+    }
+    $archived[] = $chat;
+}
+
 // 开放 API 的对话落库:把一次 /v1/chat/completions 调用记入该用户的对话列表。
 // 约定:同一段上下文归入同一对话——按「首条用户消息」生成稳定指纹,若这次请求带的
 // 历史里首条用户消息与某条已存 API 对话一致,说明客户端在续接同一段上下文,追加即可;
@@ -657,6 +714,17 @@ function tc_seed_default_assistants(&$db) {
         }
         unset($existing);
     }
+    $keepIds = array();
+    foreach ((isset($cat['categories']) ? $cat['categories'] : array()) as $c) $keepIds[$c['id']] = true;
+    $kept = array();
+    foreach ($db['assistantCategories'] as $c) {
+        if (isset($c['scope']) && $c['scope'] === 'global' && empty($keepIds[$c['id']])) {
+            $changed = true;
+            continue;
+        }
+        $kept[] = $c;
+    }
+    $db['assistantCategories'] = $kept;
     $i = 0;
     foreach ((isset($cat['assistants']) ? $cat['assistants'] : array()) as $a) {
         $i++;
@@ -1456,10 +1524,13 @@ function tc_api_get_global_provider() {
 function tc_api_sync_get_chats() {
     tc_with_db(false, function ($db) {
         $user = tc_require_auth($db);
+        $deleted = tc_deleted_of($db, $user['id']);
         tc_json(200, array(
             'chats' => tc_chats_of($db, $user['id']),
             'revision' => tc_chat_revision_of($db, $user['id']),
             'demoRevertedAt' => tc_demo_reverted_at($db, $user['id']),
+            // 已删除对话 id(墓碑):别的设备据此删除本地副本,A 删 B 也删
+            'deletedIds' => (object) tc_deleted_cap_tombs($deleted['tombs']),
         ));
     });
 }
@@ -1487,19 +1558,76 @@ function tc_api_sync_save_chats() {
         $current = tc_chat_revision_of($db, $user['id']);
         $base = isset($b['baseRevision']) ? (int) $b['baseRevision'] : $current;
         if ($base !== $current) {
+            $deleted = tc_deleted_of($db, $user['id']);
             tc_json(409, array(
                 'error' => array('message' => '聊天记录已在其他页面更新'),
                 'chats' => tc_chats_of($db, $user['id']),
                 'revision' => $current,
                 'demoRevertedAt' => tc_demo_reverted_at($db, $user['id']),
+                'deletedIds' => (object) tc_deleted_cap_tombs($deleted['tombs']),
             ));
         }
         $chats = tc_sanitize_chats(isset($b['chats']) ? $b['chats'] : array());
+        // 本端主动删除 id(墓碑):显式带上,保证「删除后本端列表已空」时服务端也能归档
+        $explicit = array();
+        if (isset($b['deletedIds']) && is_array($b['deletedIds'])) {
+            foreach (array_slice($b['deletedIds'], 0, 500) as $id) {
+                $id = substr((string) $id, 0, 64);
+                if ($id !== '') $explicit[$id] = true;
+            }
+        }
+        // 删除时客户端可把被删对话的完整副本带上来留档(本端副本通常比云端最后一次推送更新)
+        $provided = array();
+        if (isset($b['deletedChats']) && is_array($b['deletedChats'])) {
+            foreach (tc_sanitize_chats(array_slice($b['deletedChats'], 0, 20)) as $dc) $provided[$dc['id']] = $dc;
+        }
+        $deleted = tc_deleted_of($db, $user['id']);
+        $tombs = $deleted['tombs'];
+        $archived = $deleted['chats'];
+        $beforeChats = tc_chats_of($db, $user['id']);
+        $incomingIds = array();
+        foreach ($chats as $c) $incomingIds[$c['id']] = true;
+        $now = tc_now();
+        // 「新列表里没有」只能当作删除信号的前提是本包覆盖了完整列表。超过 300 条时
+        // tc_sanitize_chats 会截断,被截掉的对话并非用户删除——这类照旧只轮出活跃列表
+        // 并静默留档(不立墓碑),否则一次超量同步会把还能用的对话误删到所有设备上。
+        $rawIncoming = isset($b['chats']) && is_array($b['chats']) ? count($b['chats']) : 0;
+        $payloadComplete = $rawIncoming <= 300;
+        foreach ($beforeChats as $old) {
+            if (!is_array($old) || empty($old['id'])) continue;
+            $id = (string) $old['id'];
+            if (isset($incomingIds[$id]) && !isset($explicit[$id])) continue;
+            tc_deleted_archive_put($archived, $old);
+            // 显式声明的删除一定有墓碑;缺包(超量截断)时只留档,不向其它设备传播删除
+            if ($payloadComplete || isset($explicit[$id])) $tombs[$id] = $now;
+        }
+        // 客户端带来的被删副本:内容更新时覆盖留档
+        foreach ($provided as $id => $dc) {
+            tc_deleted_archive_put($archived, $dc);
+            $tombs[$id] = $now;
+        }
+        foreach ($explicit as $id => $_) {
+            if (!isset($tombs[$id])) $tombs[$id] = $now;
+        }
+        // 墓碑挡住复活:已删除的对话即使被旧设备回推,也不再进入在线列表。
+        // 被挡下的副本先进留档,保证「只要对话存在过,云端就有记录」。
+        $kept = array();
+        foreach ($chats as $c) {
+            if (isset($tombs[$c['id']])) { tc_deleted_archive_put($archived, $c); continue; }
+            $kept[] = $c;
+        }
+        $chats = $kept;
         tc_set_chats($db, $user['id'], $chats);
+        tc_set_deleted_of($db, $user['id'], array(
+            'chats' => tc_deleted_cap_chats($archived),
+            'tombs' => tc_deleted_cap_tombs($tombs),
+        ));
+        $deleted = tc_deleted_of($db, $user['id']);
         tc_json(200, array(
             'ok' => true,
             'count' => count($chats),
             'revision' => tc_chat_revision_of($db, $user['id']),
+            'deletedIds' => (object) tc_deleted_cap_tombs($deleted['tombs']),
         ));
     });
 }
@@ -1507,6 +1635,20 @@ function tc_api_sync_save_chats() {
 function tc_api_sync_clear_chats() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
+        // 「清空全部」同样按软删除处理:内容进留档、id 立墓碑,管理员仍可查看/清理
+        $deleted = tc_deleted_of($db, $user['id']);
+        $tombs = $deleted['tombs'];
+        $archived = $deleted['chats'];
+        $now = tc_now();
+        foreach (tc_chats_of($db, $user['id']) as $old) {
+            if (!is_array($old) || empty($old['id'])) continue;
+            tc_deleted_archive_put($archived, $old);
+            $tombs[(string) $old['id']] = $now;
+        }
+        tc_set_deleted_of($db, $user['id'], array(
+            'chats' => tc_deleted_cap_chats($archived),
+            'tombs' => tc_deleted_cap_tombs($tombs),
+        ));
         tc_set_chats($db, $user['id'], array());
         tc_json(200, array('ok' => true, 'revision' => tc_chat_revision_of($db, $user['id'])));
     });
@@ -1782,6 +1924,7 @@ function tc_api_admin_system() {
             ),
             'content' => array(
                 'chats' => tc_count_all_chats($db),
+                'deletedChats' => tc_count_deleted_chats($db),
                 'providers' => count($db['providers']),
                 'groups' => count($db['userGroups']),
                 'assistants' => count($db['assistants']),
@@ -1801,11 +1944,21 @@ function tc_count_all_chats($db) {
     return $n;
 }
 
+// 统计已删除对话留档条数(userDeletedChats 按用户分片)
+function tc_count_deleted_chats($db) {
+    $n = 0;
+    foreach (tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array()) as $row) {
+        $row = tc_assoc($row);
+        if (isset($row['chats']) && is_array($row['chats'])) $n += count($row['chats']);
+    }
+    return $n;
+}
+
 // ============ 存储管理 ============
 // action=list(默认) 分类占用 + 可清理项预览;action=clean 执行清理
 function tc_api_admin_storage() {
     tc_with_db(false, function ($db) {
-        tc_require_admin($db);
+        $admin = tc_require_admin($db);
         $data = tc_data_dir();
         $cats = tc_storage_categories();
         $total = 0;
@@ -1837,8 +1990,12 @@ function tc_api_admin_storage() {
         }
         $logCount = 0;
         foreach ((array) tc_list_logs(TC_LOG_LIMIT) as $l) $logCount++;
+        // 已删除对话留档:用户在会话里删除的对话仍保留在云端(软删除),这里给出汇总。
+        // 演示管理员只拿匿名汇总(不暴露「哪个用户删了什么」)。
+        $deletedSummary = tc_admin_deleted_summary($db, tc_is_demo_user($admin));
         tc_json(200, array(
             'categories' => $cats,
+            'deleted' => $deletedSummary,
             'totalBytes' => $total,
             'disk' => $disk,
             'dataDir' => $data,
@@ -2849,6 +3006,177 @@ function tc_api_admin_user_chats() {
     });
 }
 
+// ============ 已删除对话留档(后台查看/批量清理) ============
+// 用户删除的对话不抹除,集中在这里供管理员查看内容并批量清理。
+// 列表只回元信息(缩略),完整内容走 view 端点单条拉取,避免一次响应几十 MB。
+
+// 汇总:留档条数 / 估算占用 / 每用户计数(存储管理页用)
+// $anonymize=true 时不带用户名(演示管理员只看汇总,不看具体是谁)
+function tc_admin_deleted_summary($db, $anonymize = false) {
+    $names = array();
+    foreach ($db['users'] as $u) $names[(string) $u['id']] = isset($u['name']) ? (string) $u['name'] : '';
+    $users = array();
+    $count = 0; $bytes = 0;
+    foreach (tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array()) as $uid => $row) {
+        $row = tc_assoc($row);
+        $chats = isset($row['chats']) && is_array($row['chats']) ? $row['chats'] : array();
+        $tombs = tc_assoc(isset($row['tombs']) ? $row['tombs'] : array());
+        $ubytes = strlen(tc_json_encode(array('chats' => $chats, 'tombs' => $tombs)));
+        $count += count($chats);
+        $bytes += $ubytes;
+        $users[] = array(
+            'userId' => $anonymize ? 'demo-' . (count($users) + 1) : (string) $uid,
+            'name' => $anonymize
+                ? ('用户 ' . (count($users) + 1))
+                : (isset($names[(string) $uid]) ? $names[(string) $uid] : ('用户 ' . $uid)),
+            'count' => count($chats),
+            'tombstones' => count($tombs),
+            'bytes' => $ubytes,
+        );
+    }
+    usort($users, function ($a, $b) { return $b['count'] - $a['count']; });
+    return array('count' => $count, 'bytes' => $bytes, 'users' => $users);
+}
+
+function tc_api_admin_deleted_chats() {
+    tc_with_db(false, function ($db) {
+        tc_demo_guard(tc_require_admin($db), '演示管理员不能查看用户对话');
+        $q = tc_query();
+        $kw = strtolower(trim(isset($q['q']) ? (string) $q['q'] : ''));
+        $onlyUser = trim(isset($q['userId']) ? (string) $q['userId'] : '');
+        $page = max(1, (int) (isset($q['page']) ? $q['page'] : 1));
+        $pageSize = (int) (isset($q['pageSize']) ? $q['pageSize'] : 50);
+        if ($pageSize < 1) $pageSize = 50;
+        if ($pageSize > 200) $pageSize = 200;
+        $names = array();
+        foreach ($db['users'] as $u) $names[(string) $u['id']] = isset($u['name']) ? (string) $u['name'] : '';
+        $all = array();
+        foreach (tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array()) as $uid => $row) {
+            $uid = (string) $uid;
+            if ($onlyUser !== '' && $uid !== $onlyUser) continue;
+            $name = isset($names[$uid]) ? $names[$uid] : ('用户 ' . $uid);
+            $row = tc_assoc($row);
+            $chats = isset($row['chats']) && is_array($row['chats']) ? $row['chats'] : array();
+            $tombs = tc_assoc(isset($row['tombs']) ? $row['tombs'] : array());
+            foreach ($chats as $c) {
+                if (!is_array($c) || empty($c['id'])) continue;
+                $title = isset($c['title']) ? (string) $c['title'] : '新对话';
+                if ($kw !== '' && strpos(strtolower($title), $kw) === false && strpos(strtolower($name), $kw) === false) continue;
+                $msgs = isset($c['messages']) && is_array($c['messages']) ? $c['messages'] : array();
+                $preview = '';
+                foreach ($msgs as $m) {
+                    if (is_array($m) && isset($m['role']) && $m['role'] === 'user' && trim((string) (isset($m['content']) ? $m['content'] : '')) !== '') {
+                        $preview = trim(preg_replace('/\s+/u', ' ', (string) $m['content']));
+                        break;
+                    }
+                }
+                if (function_exists('mb_substr')) $preview = mb_substr($preview, 0, 80, 'UTF-8');
+                else $preview = substr($preview, 0, 80);
+                $id = (string) $c['id'];
+                $all[] = array(
+                    'userId' => $uid,
+                    'userName' => $name,
+                    'chatId' => $id,
+                    'title' => $title,
+                    'messageCount' => count($msgs),
+                    'updatedAt' => isset($c['updatedAt']) ? (float) $c['updatedAt'] : 0,
+                    'deletedAt' => isset($tombs[$id]) ? (float) $tombs[$id] : 0,
+                    'pinned' => !empty($c['pinned']),
+                    'preview' => $preview,
+                );
+            }
+        }
+        usort($all, function ($a, $b) {
+            return ($b['deletedAt'] ?: $b['updatedAt']) <=> ($a['deletedAt'] ?: $a['updatedAt']);
+        });
+        $total = count($all);
+        $items = array_slice($all, ($page - 1) * $pageSize, $pageSize);
+        tc_json(200, array(
+            'items' => $items,
+            'total' => $total,
+            'page' => $page,
+            'pageSize' => $pageSize,
+            'summary' => tc_admin_deleted_summary($db),
+        ));
+    });
+}
+
+// 单条查看:返回完整清洗后的对话(含版本/思维链,与前台一致)
+function tc_api_admin_deleted_chat_view() {
+    tc_with_db(false, function ($db) {
+        tc_demo_guard(tc_require_admin($db), '演示管理员不能查看用户对话');
+        $q = tc_query();
+        $uid = trim(isset($q['userId']) ? (string) $q['userId'] : '');
+        $chatId = trim(isset($q['chatId']) ? (string) $q['chatId'] : '');
+        if ($uid === '' || $chatId === '') tc_fail(400, '缺少参数');
+        $deleted = tc_deleted_of($db, $uid);
+        $found = null;
+        foreach ($deleted['chats'] as $c) {
+            if (is_array($c) && isset($c['id']) && (string) $c['id'] === $chatId) { $found = $c; break; }
+        }
+        if ($found === null) tc_fail(404, '该留档不存在或已被清理');
+        $clean = tc_sanitize_chats(array($found));
+        $userName = '';
+        foreach ($db['users'] as $u) if ((string) $u['id'] === $uid) { $userName = isset($u['name']) ? (string) $u['name'] : ''; break; }
+        tc_json(200, array(
+            'chat' => $clean ? $clean[0] : null,
+            'user' => array('id' => $uid, 'name' => $userName !== '' ? $userName : ('用户 ' . $uid)),
+            'deletedAt' => isset($deleted['tombs'][$chatId]) ? (float) $deleted['tombs'][$chatId] : 0,
+        ));
+    });
+}
+
+// 批量清理留档。两种用法:
+//   { items:[{userId, chatId}...] }  指定条目
+//   { all:true }                     清空全部留档
+// withTombstones=true 时连墓碑一起删(彻底清除);默认保留墓碑,防止旧设备把已删对话复活。
+function tc_api_admin_deleted_chats_purge() {
+    tc_with_db(true, function (&$db) {
+        $admin = tc_require_admin($db);
+        tc_demo_guard($admin, '演示管理员不能清理用户对话');
+        $b = tc_read_json_body();
+        $withTombs = !empty($b['withTombstones']);
+        $all = !empty($b['all']);
+        $items = array();
+        if (!$all && isset($b['items']) && is_array($b['items'])) {
+            foreach (array_slice($b['items'], 0, 500) as $it) {
+                if (!is_array($it)) continue;
+                $uid = trim((string) (isset($it['userId']) ? $it['userId'] : ''));
+                $cid = trim((string) (isset($it['chatId']) ? $it['chatId'] : ''));
+                if ($uid === '' || $cid === '') continue;
+                $items[$uid][$cid] = true;
+            }
+        }
+        if (!$all && !$items) tc_fail(400, '请先选择要清理的记录');
+        $removed = 0; $freed = 0;
+        $map = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array());
+        foreach ($map as $uid => $row) {
+            $uid = (string) $uid;
+            if (!$all && !isset($items[$uid])) continue;
+            $row = tc_assoc($row);
+            $chats = isset($row['chats']) && is_array($row['chats']) ? $row['chats'] : array();
+            $tombs = tc_assoc(isset($row['tombs']) ? $row['tombs'] : array());
+            $keep = array();
+            foreach ($chats as $c) {
+                if (!is_array($c) || empty($c['id'])) continue;
+                $cid = (string) $c['id'];
+                $hit = $all || isset($items[$uid][$cid]);
+                if (!$hit) { $keep[] = $c; continue; }
+                $removed++;
+                $freed += strlen(tc_json_encode($c));
+                if ($withTombs) unset($tombs[$cid]);
+            }
+            $row['chats'] = $keep;
+            $row['tombs'] = $tombs;
+            if (!$keep && !$tombs) unset($map[$uid]);
+            else $map[$uid] = $row;
+        }
+        $db['userDeletedChats'] = tc_object_map($map);
+        tc_log_auth_event('admin', isset($admin['name']) ? $admin['name'] : '', '清理已删除对话留档（' . $removed . ' 条 / ' . round($freed / 1048576, 2) . 'MB）', isset($admin['id']) ? $admin['id'] : '');
+        tc_json(200, array('ok' => true, 'removed' => $removed, 'freedBytes' => $freed, 'withTombstones' => $withTombs));
+    });
+}
+
 function tc_api_admin_users() {
     tc_with_db(false, function ($db) {
         $admin = tc_require_admin($db);
@@ -3043,6 +3371,10 @@ function tc_purge_user(&$db, $id) {
     $map = tc_assoc($db['userChats']);
     unset($map[$id]);
     $db['userChats'] = tc_object_map($map);
+    // 该用户的已删除对话留档一并清除(账号都没了,留档没有归属)
+    $delMap = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array());
+    unset($delMap[$id]);
+    $db['userDeletedChats'] = tc_object_map($delMap);
     $ownIds = array();
     foreach ($db['providers'] as $p) if (isset($p['ownerId']) && $p['ownerId'] === $id) $ownIds[] = $p['id'];
     foreach ($ownIds as $pid) tc_remove_provider($db, $pid);
@@ -3079,6 +3411,9 @@ function tc_soft_delete_user(&$db, $id) {
         $map = tc_assoc($db['userChats']);
         unset($map[$id]);
         $db['userChats'] = tc_object_map($map);
+        $delMap = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array());
+        unset($delMap[$id]);
+        $db['userDeletedChats'] = tc_object_map($delMap);
         $ownIds = array();
         foreach ($db['providers'] as $p) if (isset($p['ownerId']) && $p['ownerId'] === $id) $ownIds[] = $p['id'];
         foreach ($ownIds as $pid) tc_remove_provider($db, $pid);
@@ -3128,13 +3463,16 @@ function tc_api_admin_purge_guests() {
             $keep[] = $u;
         }
         $db['users'] = $keep;
-        // 清理游客的对话与自建供应商
+        // 清理游客的对话、删除留档与自建供应商
         $map = tc_assoc($db['userChats']);
         foreach ($removedIds as $id) unset($map[$id]);
         $db['userChats'] = tc_object_map($map);
         $revs = tc_assoc(isset($db['userChatRevisions']) ? $db['userChatRevisions'] : array());
         foreach ($removedIds as $id) unset($revs[$id]);
         $db['userChatRevisions'] = tc_object_map($revs);
+        $delMap = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array());
+        foreach ($removedIds as $id) unset($delMap[$id]);
+        $db['userDeletedChats'] = tc_object_map($delMap);
         $ownIds = array();
         foreach ($db['providers'] as $p) {
             if (isset($p['ownerId']) && in_array($p['ownerId'], $removedIds, true)) $ownIds[] = $p['id'];
@@ -3168,6 +3506,9 @@ function tc_api_admin_bulk_delete_users() {
             $revs = tc_assoc(isset($db['userChatRevisions']) ? $db['userChatRevisions'] : array());
             unset($revs[$id]);
             $db['userChatRevisions'] = tc_object_map($revs);
+            $delMap = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array());
+            unset($delMap[$id]);
+            $db['userDeletedChats'] = tc_object_map($delMap);
             $ownIds = array();
             foreach ($db['providers'] as $p) if (isset($p['ownerId']) && $p['ownerId'] === $id) $ownIds[] = $p['id'];
             foreach ($ownIds as $pid) tc_remove_provider($db, $pid);

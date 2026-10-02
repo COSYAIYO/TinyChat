@@ -736,6 +736,9 @@ function tc_empty_db() {
         'stats' => array('totalCalls' => 0, 'totalQuotaGiven' => 0, 'callsByDay' => new stdClass(), 'modelVotes' => new stdClass(), 'usageLedger' => new stdClass(), 'modelHealth' => new stdClass()),
         'settings' => tc_normalize_settings(null),
         'userChats' => new stdClass(),
+        // 已删除对话留档:{userId: {chats:[完整记录], tombs:{chatId: 删除时间}}}——用户端删除只打标记,
+        // 内容留在云端供管理员查看与批量清理;tombs 是墓碑,防止别的设备用旧副本把对话合并回来
+        'userDeletedChats' => new stdClass(),
         'shares' => new stdClass(),
         'userGroups' => array(),
         'accessRules' => array(),
@@ -815,6 +818,15 @@ function tc_demo_arm(&$db, $user, $force = false) {
         $snapshot['demoQuota'] = isset($user['quota']) ? $user['quota'] : 0;
         $snapshot['demoQuotaGrants'] = isset($user['quotaGrants']) && is_array($user['quotaGrants']) ? $user['quotaGrants'] : array();
     }
+    // 已删除对话留档同样定格:演示期间删掉的对话(含墓碑)在还原时一并回到当时的状态,
+    // 否则墓碑会把快照里恢复出来的对话再次过滤掉。
+    if ($prevBase !== null && array_key_exists('demoDeletedChats', $prevBase)) {
+        $snapshot['demoDeletedChats'] = $prevBase['demoDeletedChats'];
+    } else {
+        $delMap = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array());
+        $snapshot['demoDeletedChats'] = ($uid !== '' && isset($delMap[$uid]) && is_array($delMap[$uid]))
+            ? $delMap[$uid] : array('chats' => array(), 'tombs' => array());
+    }
     $revMap = tc_assoc(isset($db['userChatRevisions']) ? $db['userChatRevisions'] : array());
     $snapshot['demoChatRevision'] = isset($revMap[$uid]) ? (int) $revMap[$uid] : 0;
     $db['demoSnapshot'] = $snapshot;
@@ -853,6 +865,14 @@ function tc_demo_revert(&$db) {
                 $revMap[$uid] = (isset($revMap[$uid]) ? (int) $revMap[$uid] : 0) + 1;
                 $db['userChatRevisions'] = tc_object_map($revMap);
             }
+            // 删除留档/墓碑还原到快照时刻:演示期间的删除不再拦着被恢复的对话
+            $delMap = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array());
+            if (array_key_exists('demoDeletedChats', $snap) && is_array($snap['demoDeletedChats'])) {
+                $delMap[$uid] = $snap['demoDeletedChats'];
+            } else {
+                unset($delMap[$uid]);
+            }
+            $db['userDeletedChats'] = tc_object_map($delMap);
             foreach ($db['users'] as &$u) {
                 if (!isset($u['id']) || (string) $u['id'] !== $uid) continue;
                 if (array_key_exists('demoQuota', $snap)) $u['quota'] = $snap['demoQuota'];
@@ -870,6 +890,7 @@ function tc_demo_revert(&$db) {
         'demoChats' => array_key_exists('demoChats', $snap) ? $snap['demoChats'] : array(),
         'demoQuota' => array_key_exists('demoQuota', $snap) ? $snap['demoQuota'] : 0,
         'demoQuotaGrants' => array_key_exists('demoQuotaGrants', $snap) ? $snap['demoQuotaGrants'] : array(),
+        'demoDeletedChats' => array_key_exists('demoDeletedChats', $snap) ? $snap['demoDeletedChats'] : array('chats' => array(), 'tombs' => array()),
     );
     // 还原标记:客户端凭它识别「这是一次整体还原」,从而丢弃本地旧副本整体采纳云端。
     // 没有这个标记,浏览器里残留的旧对话会在下一次合并时把已还原的内容"复活"回服务端。
@@ -1104,6 +1125,17 @@ function tc_migrate_db($raw) {
     }
     tc_migrate_provider_keys($db);
     $db['userChats'] = tc_object_map(isset($db['userChats']) ? $db['userChats'] : array());
+    // 已删除对话留档:老库里没有这个键(默认空);逐用户规整为 {chats:[], tombs:{}} 形状,
+    // 避免半截数据(只有 chats 没有 tombs)在后续读写里取不到键而报错
+    $delMap = array();
+    foreach (tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array()) as $uid => $row) {
+        $row = tc_assoc($row);
+        $delMap[$uid] = array(
+            'chats' => isset($row['chats']) && is_array($row['chats']) ? array_values($row['chats']) : array(),
+            'tombs' => tc_assoc(isset($row['tombs']) ? $row['tombs'] : array()),
+        );
+    }
+    $db['userDeletedChats'] = tc_object_map($delMap);
     $db['shares'] = tc_object_map(isset($db['shares']) ? $db['shares'] : array());
     $stats = tc_assoc(isset($db['stats']) ? $db['stats'] : array());
     $votes = array();
@@ -1397,10 +1429,19 @@ function tc_db_load_with_baseline($pdo) {
     $db['userChats'] = new stdClass();
     $orig = array();
     $origChats = array();
+    $origDeleted = array();
     $rows = $pdo->query('SELECT k, v FROM store')->fetchAll();
     foreach ($rows as $row) {
         $k = (string) $row['k'];
         $raw = (string) $row['v'];
+        if (strncmp($k, 'chatdel:', 8) === 0) {
+            $origDeleted[substr($k, 8)] = $raw;
+            $val = json_decode($raw, true);
+            if (is_array($val)) {
+                $db['userDeletedChats']->{substr($k, 8)} = $val;
+            }
+            continue;
+        }
         if (strncmp($k, 'chat:', 5) === 0) {
             $origChats[substr($k, 5)] = $raw;
             $val = json_decode($raw, true);
@@ -1414,7 +1455,7 @@ function tc_db_load_with_baseline($pdo) {
         if ($val === null && $raw !== 'null') continue;
         $db[$k] = $val;
     }
-    return array(tc_migrate_db($db), $orig, $origChats);
+    return array(tc_migrate_db($db), $orig, $origChats, $origDeleted);
 }
 
 // 整库快照写入(迁移导入 / 恢复备份用):清空后按顶层键落行
@@ -1428,6 +1469,12 @@ function tc_db_write_snapshot($pdo, $db) {
             }
             continue;
         }
+        if ($k === 'userDeletedChats') {
+            foreach (tc_assoc($v) as $uid => $row) {
+                $ins->execute(array(':k' => 'chatdel:' . $uid, ':v' => tc_json_encode($row)));
+            }
+            continue;
+        }
         $ins->execute(array(':k' => $k, ':v' => tc_json_encode($v)));
     }
 }
@@ -1437,12 +1484,12 @@ function tc_with_db($write, $fn) {
     // 结果按请求缓存,不产生额外文件读取开销。
     tc_integrity_guard();
     $pdo = tc_db();
-    list($db, $orig, $origChats) = tc_db_load_with_baseline($pdo);
+    list($db, $orig, $origChats, $origDeleted) = tc_db_load_with_baseline($pdo);
     $GLOBALS['_tc_db'] = &$db;
     $GLOBALS['_tc_demo_before'] = null;
     $GLOBALS['_tc_db_ctx'] = array(
         'write' => $write, 'committed' => false, 'pdo' => $pdo,
-        'orig' => $orig, 'origChats' => $origChats,
+        'orig' => $orig, 'origChats' => $origChats, 'origDeleted' => $origDeleted,
     );
     try {
         if ($write) $pdo->exec('BEGIN IMMEDIATE');
@@ -1485,6 +1532,8 @@ function tc_db_commit() {
         $ups = $pdo->prepare('INSERT INTO store (k, v) VALUES (:k, :v) ON CONFLICT(k) DO UPDATE SET v = :v2');
         $del = $pdo->prepare('DELETE FROM store WHERE k = :k');
         $newChats = tc_assoc(isset($db['userChats']) ? $db['userChats'] : null);
+        $newDeleted = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : null);
+        $origDeleted = isset($ctx['origDeleted']) ? $ctx['origDeleted'] : array();
         foreach ($db as $k => $v) {
             if ($k === 'userChats') {
                 foreach ($newChats as $uid => $row) {
@@ -1494,6 +1543,17 @@ function tc_db_commit() {
                 }
                 foreach ($ctx['origChats'] as $uid => $json) {
                     if (!array_key_exists($uid, $newChats)) $del->execute(array(':k' => 'chat:' . $uid));
+                }
+                continue;
+            }
+            if ($k === 'userDeletedChats') {
+                foreach ($newDeleted as $uid => $row) {
+                    $json = tc_json_encode($row);
+                    if (isset($origDeleted[$uid]) && $origDeleted[$uid] === $json) continue;
+                    $ups->execute(array(':k' => 'chatdel:' . $uid, ':v' => $json, ':v2' => $json));
+                }
+                foreach ($origDeleted as $uid => $json) {
+                    if (!array_key_exists($uid, $newDeleted)) $del->execute(array(':k' => 'chatdel:' . $uid));
                 }
                 continue;
             }

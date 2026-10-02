@@ -712,6 +712,8 @@
       <div id="st-categories" class="admin-long-list"></div>
       <div class="section-title">可清理项</div>
       <div id="st-clean" class="admin-long-list"></div>
+      <div class="section-title">用户删除的对话（云端留档）</div>
+      <div id="st-deleted" class="admin-long-list"></div>
       <div class="section-title">生图留存文件</div>
       <div id="st-images" class="admin-long-list"></div>
       <div class="section-title">数据备份</div>
@@ -917,6 +919,50 @@
 </div>
 
 <!-- 用户对话历史查看弹窗 -->
+<div class="modal-mask hidden" id="deleted-chats-modal" role="dialog" aria-modal="true" aria-labelledby="deleted-chats-title">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3 id="deleted-chats-title">用户删除的对话（云端留档）</h3>
+      <button class="icon-btn" id="deleted-chats-close" type="button" aria-label="关闭">
+        <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <p class="muted small" style="margin:0 0 10px">用户在对话里删除的记录不会立即消失：内容保留在云端（所有设备同步移除），便于管理员查看与审计。在这里可以查看全文或批量清理；清理后不可恢复。</p>
+      <div class="admin-toolbar" style="margin-bottom:12px;flex-wrap:wrap;gap:8px">
+        <input type="search" id="dc-search" class="search-input" placeholder="搜索标题或用户…" style="flex:1;min-width:160px">
+        <button class="btn small" id="dc-reload" type="button">↻ 刷新</button>
+        <button class="btn small danger" id="dc-purge-selected" type="button" disabled>清理所选</button>
+        <button class="btn small danger" id="dc-purge-all" type="button">清空全部留档</button>
+      </div>
+      <label class="user-form-admin" style="margin:0 0 10px">
+        <span class="switch"><input type="checkbox" id="dc-with-tombs"><span class="slider"></span></span>
+        <span>清理时一并删除墓碑记录（默认保留墓碑可防止旧设备把已删对话恢复；仅在确认不再有旧设备回传时勾选）</span>
+      </label>
+      <div id="deleted-chats-content" class="admin-long-list"></div>
+      <div class="row-between" style="margin-top:10px">
+        <span class="muted small" id="dc-page-info"></span>
+        <span class="row-between" style="gap:8px">
+          <button class="btn small" id="dc-prev" type="button">上一页</button>
+          <button class="btn small" id="dc-next" type="button">下一页</button>
+        </span>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="modal-mask hidden" id="deleted-chat-view-modal" role="dialog" aria-modal="true" aria-labelledby="deleted-chat-view-title">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3 id="deleted-chat-view-title">对话详情</h3>
+      <button class="icon-btn" id="deleted-chat-view-close" type="button" aria-label="关闭">
+        <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div id="deleted-chat-view-content"></div>
+    </div>
+  </div>
+</div>
 <div class="modal-mask hidden" id="user-chats-modal" role="dialog" aria-modal="true" aria-labelledby="user-chats-title">
   <div class="modal modal-lg">
     <div class="modal-header">

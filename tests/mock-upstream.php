@@ -227,6 +227,25 @@ if ($echoSystem) {
     return;
 }
 if (is_array($body) && !empty($body['stream'])) {
+    $slowModel = isset($body['model']) ? (string) $body['model'] : '';
+    // 慢速流(mock-slow-stream):逐词输出并停顿,供「生成到一半刷新/中断」的回归测试。
+    // 每个词 250ms、共 8 个词,窗口足够手工点刷新;末尾仍带 usage 收尾帧。
+    if ($slowModel === 'mock-slow-stream') {
+        header('Content-Type: text/event-stream');
+        header('X-Accel-Buffering: no');
+        while (ob_get_level()) ob_end_flush();
+        $words = array('前半段', '已写入', '的内容', '会', '保留', '在', '刷新', '之后', '这', '是', '更', '长', '的', '流', '式', '输出', '用于', '测试');
+        $sent = 0;
+        foreach ($words as $w) {
+            echo "data: " . json_encode(array('id' => 'mock', 'object' => 'chat.completion.chunk', 'choices' => array(array('index' => 0, 'delta' => array('content' => $w))))) . "\n\n";
+            flush();
+            $sent++;
+            usleep(250000);
+        }
+        echo "data: " . json_encode(array('id' => 'mock', 'object' => 'chat.completion.chunk', 'choices' => array(array('index' => 0, 'delta' => array(), 'finish_reason' => 'stop')), 'usage' => array('prompt_tokens' => 1500, 'completion_tokens' => $sent * 10))) . "\n\n";
+        echo "data: [DONE]\n\n";
+        return;
+    }
     // SSE 流式:正文 chunk + 带 usage 的收尾 chunk(用量在最后一帧,复现真实时序)
     header('Content-Type: text/event-stream');
     echo "data: " . json_encode(array('id' => 'mock', 'object' => 'chat.completion.chunk', 'choices' => array(array('index' => 0, 'delta' => array('content' => 'MOCK-REPLY'))))) . "\n\n";

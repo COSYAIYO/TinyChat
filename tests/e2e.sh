@@ -474,6 +474,69 @@ chatsresp=$(curl -s "$BASE/api/admin/users/chats?userId=$CHATUID" -H "$AUTH")
 assert_contains "后台对话: 长正文未被截断(读到尾部标记)" "$chatsresp" 'TAILMARKER-完整尾部'
 assert_contains "后台对话: 带出思维链" "$chatsresp" '先想一下再回答'
 
+# ---------- 云同步软删除: A 删 B 也删, 云端留档, 管理员可查可清 ----------
+say "== 云同步软删除与留档 =="
+cat > "$TMP/sd1.json" <<EOF
+{"chats":[{"id":"sd-keep","title":"保留的对话","messages":[{"role":"user","content":"保留"}],"updatedAt":1791000000000},{"id":"sd-gone","title":"待删的对话","messages":[{"role":"user","content":"删除标记"}],"updatedAt":1791000000001}]}
+EOF
+curl -s -X POST "$BASE/api/sync/chats" -H "$UAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/sd1.json" > /dev/null
+assert_contains "软删除前两段对话都在" "$(curl -s "$BASE/api/sync/chats" -H "$UAUTH")" '"sd-gone"'
+# 设备 A 删除 sd-gone:带 deletedIds + 副本(deletedChats)
+cat > "$TMP/sd2.json" <<EOF
+{"chats":[{"id":"sd-keep","title":"保留的对话","messages":[{"role":"user","content":"保留"}],"updatedAt":1791000000000}],"deletedIds":["sd-gone"],"deletedChats":[{"id":"sd-gone","title":"待删的对话","messages":[{"role":"user","content":"删除标记"}],"updatedAt":1791000000002}]}
+EOF
+SDRESP=$(curl -s -X POST "$BASE/api/sync/chats" -H "$UAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/sd2.json")
+assert_contains "删除推送返回墓碑集合" "$SDRESP" '"deletedIds"'
+# 精确检查活跃列表(整段 grep 会把 deletedIds 里的墓碑键也匹配上)
+check_live() { # $1=响应 $2=id $3=want(present/absent)
+  printf '%s' "$1" | python -c "
+import sys,json
+d=json.load(sys.stdin)
+ids=[c.get('id') for c in d.get('chats',[])]
+want=sys.argv[1]=='present'
+got=('$2' in ids)
+print('OK' if got==want else ('FAIL ids=%s' % ids))
+" "$3"
+}
+GETA=$(curl -s "$BASE/api/sync/chats" -H "$UAUTH")
+assert_eq "删除后云端列表不再下发 sd-gone" "$(check_live "$GETA" sd-gone absent)" "OK"
+assert_eq "删除后 sd-keep 仍在活跃列表" "$(check_live "$GETA" sd-keep present)" "OK"
+assert_contains "删除后云端下发墓碑(A 删 B 也删)" "$GETA" '"sd-gone"'
+# 设备 B 拿着旧列表回推(deletedIds 没带):墓碑必须挡住复活,内容进留档
+cat > "$TMP/sd3.json" <<EOF
+{"chats":[{"id":"sd-keep","title":"保留的对话","messages":[{"role":"user","content":"保留"}],"updatedAt":1791000000000},{"id":"sd-gone","title":"待删的对话","messages":[{"role":"user","content":"旧设备回推"}],"updatedAt":1791000000009}]}
+EOF
+curl -s -X POST "$BASE/api/sync/chats" -H "$UAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/sd3.json" > /dev/null
+GETB=$(curl -s "$BASE/api/sync/chats" -H "$UAUTH")
+assert_eq "墓碑挡住旧设备回推,不复活" "$(check_live "$GETB" sd-gone absent)" "OK"
+DELRESP=$(curl -s "$BASE/api/admin/chats/deleted" -H "$AUTH")
+assert_contains "后台留档列表含已删对话" "$DELRESP" '待删的对话'
+assert_contains "后台留档带删除时间" "$DELRESP" '"deletedAt"'
+assert_contains "存续管理汇总含留档统计" "$(curl -s "$BASE/api/admin/storage" -H "$AUTH")" '"deleted"'
+VIEWRESP=$(curl -s "$BASE/api/admin/chats/deleted/view?userId=$CHATUID&chatId=sd-gone" -H "$AUTH")
+assert_contains "后台可查看留档全文" "$VIEWRESP" '旧设备回推'
+# 批量清理留档(保留墓碑):内容删除,删除依然对所有设备生效
+assert_contains "批量清理留档成功" "$(curl -s -X POST "$BASE/api/admin/chats/deleted/purge" -H "$AUTH" -H "Content-Type: application/json" -d '{"items":[{"userId":"'"$CHATUID"'","chatId":"sd-gone"}]}')" '"removed":1'
+check_archived() { # $1=响应 $2=id $3=want(present/absent)
+  printf '%s' "$1" | python -c "
+import sys,json
+d=json.load(sys.stdin)
+ids=[x.get('chatId') for x in d.get('items',[])]
+want=sys.argv[1]=='present'
+got=('$2' in ids)
+print('OK' if got==want else ('FAIL ids=%s' % ids))
+" "$3"
+}
+assert_eq "清理后留档列表不再含 sd-gone" "$(check_archived "$(curl -s "$BASE/api/admin/chats/deleted?userId=$CHATUID" -H "$AUTH")" sd-gone absent)" "OK"
+assert_eq "清理留档不影响删除(墓碑仍在,不复活)" "$(check_live "$(curl -s "$BASE/api/sync/chats" -H "$UAUTH")" sd-gone absent)" "OK"
+# 清空全部留档(带墓碑):彻底清除
+curl -s -X POST "$BASE/api/sync/chats" -H "$UAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/sd1.json" > /dev/null
+curl -s -X POST "$BASE/api/sync/chats" -H "$UAUTH" -H "Content-Type: application/json" -d '{"chats":[],"deletedIds":["sd-keep","sd-gone"]}' > /dev/null
+assert_contains "清空全部留档(带墓碑)成功" "$(curl -s -X POST "$BASE/api/admin/chats/deleted/purge" -H "$AUTH" -H "Content-Type: application/json" -d '{"all":true,"withTombstones":true}')" '"ok":true'
+GETC=$(curl -s "$BASE/api/sync/chats" -H "$UAUTH")
+assert_eq "清空留档带墓碑后活跃列表无 sd-keep" "$(check_live "$GETC" sd-keep absent)" "OK"
+assert_eq "清空留档带墓碑后墓碑也清空" "$(printf '%s' "$GETC" | python -c "import sys,json;print(len(json.load(sys.stdin).get('deletedIds',{})))")" "0"
+
 say "== 获取模型列表 ==" 
 # Git Bash 的 curl 会搅乱 UTF-8 字面量,掩码占位符用字节转义构造,确保后端收到真实的 ••••
 MASKEDKEY=$'sk-\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2'
@@ -1355,6 +1418,16 @@ assert_eq "快照在消费后自动重建" "$(demo_has_snapshot "$TMP/data")" "y
 demo_expire_now "$TMP/data"
 curl -s -o /dev/null "$BASE/"
 assert_eq "第二轮到期后新对话也被清除" "$(demo_chats "$TMP/data")" "0"
+# 留档汇总的隐私边界:真实管理员能看到归属,演示管理员只拿到匿名汇总,且不能翻列表
+cat > "$TMP/sd-demo.json" <<'EOF'
+{"chats":[{"id":"sd-demo","title":"匿名边界","messages":[{"role":"user","content":"x"}],"updatedAt":1791000000500}],"deletedIds":["sd-demo"],"deletedChats":[{"id":"sd-demo","title":"匿名边界","messages":[{"role":"user","content":"x"}],"updatedAt":1791000000501}]}
+EOF
+curl -s -X POST "$BASE/api/sync/chats" -H "$UAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/sd-demo.json" > /dev/null
+assert_contains "真实管理员留档汇总带用户名" "$(curl -s "$BASE/api/admin/storage" -H "$AUTH")" 'tester1'
+DEMOSTOR=$(curl -s "$BASE/api/admin/storage" -H "$CDA")
+assert_contains "演示管理员可见留档汇总" "$DEMOSTOR" '"deleted"'
+if printf '%s' "$DEMOSTOR" | grep -q 'tester1'; then bad "演示管理员留档汇总暴露了用户名"; else ok "演示管理员留档汇总匿名化"; fi
+assert_contains "演示管理员被拒访问留档列表" "$(curl -s "$BASE/api/admin/chats/deleted" -H "$CDA")" '演示管理员'
 CDID=$(demo_del "$TMP/data")
 [ -n "$CDID" ] && curl -s -X DELETE "$BASE/api/admin/users/$CDID" -H "$AUTH" > /dev/null
 say "== 账号注销 =="
