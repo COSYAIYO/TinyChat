@@ -36,6 +36,12 @@
     border: 1px solid var(--hairline-strong, rgba(0,0,0,.12)); background: var(--bg-input, #fff); color: var(--text, #1d1d1f); font-size: 15px; }
   .note-editor .row { display: flex; gap: 8px; margin: 10px 0 16px; align-items: center; flex-wrap: wrap; }
   .share-preview { border: 1px solid var(--hairline, rgba(0,0,0,.06)); border-radius: 14px; padding: 6px 18px; background: var(--bg-surface, #fff); }
+  /* 引用块:细线左缘,不用填充矩形 */
+  .share-preview .msg.assistant .md-prose blockquote {
+    background: transparent; border: 0; border-left: 2px solid var(--hairline-strong, rgba(0,0,0,.14));
+    border-radius: 0; padding: 2px 0 2px 13px; color: var(--text-secondary, #555);
+  }
+  .share-preview .msg.assistant .md-prose blockquote::before { display: none; }
 </style>
 </head>
 <body class="share-page">

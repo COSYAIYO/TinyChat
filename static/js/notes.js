@@ -31,7 +31,6 @@
       mode: 'split',
       expanded: {},
       selNoteId: null,
-      maximized: false,
     },
     els: {},
     editor: null, // {noteId, ta, preview, saveTimer, renderTimer, dirty}
@@ -85,22 +84,6 @@
     const wrapped = function () { clearTimeout(t); t = setTimeout(fn, ms); };
     wrapped.now = function () { clearTimeout(t); fn(); };
     return wrapped;
-  }
-  // 摘要:去掉 markdown 结构记号,取前 N 个字
-  function excerpt(md, n) {
-    let t = String(md || '');
-    t = t.replace(/```[\s\S]*?```/g, ' ');
-    t = t.replace(/`([^`]*)`/g, '$1');
-    t = t.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ');
-    t = t.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
-    t = t.replace(/^\s{0,3}#{1,6}\s+/gm, '');
-    t = t.replace(/^\s{0,3}>\s?/gm, '');
-    t = t.replace(/^\s*[-*+]\s+\[[ xX]\]\s*/gm, '');
-    t = t.replace(/^\s*[-*+]\s+/gm, '');
-    t = t.replace(/\|/g, ' ');
-    t = t.replace(/[*_~#]+/g, '');
-    t = t.replace(/\s+/g, ' ').trim();
-    return t.length > n ? t.slice(0, n) + '…' : t;
   }
   function apiUrlOf(path) {
     return window.apiUrl ? window.apiUrl(path) : path;
@@ -210,6 +193,8 @@
         N.dirty = false;
         persistLocal();
         syncDot('ok');
+        // 云同步落定:保存状态从「同步中」收敛为「已保存 HH:MM」
+        if (N.editor && !N.editor.dirty) setSaveState('saved');
       } else {
         syncDot('err');
       }
@@ -251,7 +236,6 @@
   function folderById(id) { return N.doc.folders.find((f) => f.id === id) || null; }
   function noteById(id) { return N.doc.notes.find((n) => n.id === id) || null; }
   function folderName(id) { const f = folderById(id); return f ? f.name : '未分类'; }
-  function noteCount(folderId) { return N.doc.notes.filter((n) => n.folderId === folderId).length; }
   function childFolders(pid) { return N.doc.folders.filter((f) => f.parentId === pid); }
   function folderDepth(id, guard) {
     guard = guard || 0;
@@ -262,13 +246,6 @@
       cur = folderById(cur.parentId);
     }
     return d;
-  }
-  function folderPath(id) {
-    const parts = [];
-    let cur = folderById(id);
-    let guard = 0;
-    while (cur && guard < 10) { parts.unshift(cur.name); cur = cur.parentId ? folderById(cur.parentId) : null; guard++; }
-    return parts.join(' / ') || '未分类';
   }
 
   function createFolder(name, parentId, opts) {
@@ -391,52 +368,61 @@
     return true;
   }
 
-  // ============ 弹窗骨架 ============
-  function buildModal() {
+  // ============ 全屏模块骨架 ============
+  function buildShell() {
     const mask = document.createElement('div');
-    mask.className = 'modal-mask notes-mask hidden';
+    mask.className = 'modal-mask notes-fs-mask hidden';
     mask.innerHTML =
-      '<div class="notes-modal" role="dialog" aria-modal="true" aria-label="AI 笔记">'
-      + '<header class="notes-head">'
-      + '<div class="notes-head-title">' + icon('notebook', 17) + '<span>AI 笔记</span>'
-      + '<span class="notes-sync" id="notes-sync-dot" data-tip="云同步状态"></span></div>'
+      '<div class="notes-fs" role="dialog" aria-modal="true" aria-label="AI 笔记">'
+      + '<header class="notes-fs-head" id="notes-fs-head">'
+      + '<button class="notes-icon-btn notes-side-toggle" id="notes-side-toggle" data-tip="文件夹面板">' + icon('panelLeft', 15) + '</button>'
+      + '<button class="notes-icon-btn" data-act="close" data-tip="返回对话（Esc）">' + icon('chevronLeft', 16) + '</button>'
+      + '<div class="notes-fs-title">' + icon('notebook', 16) + '<span>AI 笔记</span></div>'
       + '<div class="notes-search">'
       + '<span class="notes-search-icon">' + icon('search', 14) + '</span>'
-      + '<input id="notes-search-input" type="search" placeholder="搜索标题、内容或标签（当前文件夹之外也会搜到）" autocomplete="off" spellcheck="false">'
+      + '<input id="notes-search-input" type="search" placeholder="搜索标题、内容或标签" autocomplete="off" spellcheck="false">'
       + '</div>'
-      + '<div class="notes-head-actions">'
-      + '<button class="notes-icon-btn" data-act="maximize" data-tip="最大化 / 还原">' + icon('maximize', 15) + '</button>'
-      + '<button class="notes-icon-btn" data-act="close" data-tip="关闭（Esc）">' + icon('close', 16) + '</button>'
+      // 编辑器控件整块压缩在顶栏右上角(未选中笔记时隐藏)
+      + '<div class="notes-editor-bar hidden" id="notes-editor-bar">'
+      + '<input class="neb-title" id="ne-title" placeholder="无标题笔记" maxlength="200" spellcheck="false">'
+      + '<div class="neb-tags" id="ne-tags"></div>'
+      + '<button class="neb-folder" id="ne-folder" data-tip="移动到其他文件夹"><span id="ne-folder-name"></span>' + icon('chevronDown', 11) + '</button>'
+      + '<span class="neb-time" id="ne-time">更新于 --</span>'
+      + '<span class="neb-sep">·</span>'
+      + '<span class="ne-save-state" id="ne-save-state">已保存</span>'
+      + '<div class="notes-mode-switch" id="ne-mode-switch">'
+      + '<button data-mode="edit">编辑</button>'
+      + '<button data-mode="split">分屏</button>'
+      + '<button data-mode="preview">预览</button>'
       + '</div>'
+      + '<div class="notes-editor-toolbar">'
+      + '<button class="notes-icon-btn" data-act="image" data-tip="插入图片（也可直接粘贴 / 拖拽）">' + icon('image', 15) + '</button>'
+      + '<button class="notes-icon-btn" data-act="attach" data-tip="添加附件">' + icon('paperclip', 15) + '</button>'
+      + '<button class="notes-icon-btn" data-act="share" data-tip="分享设置">' + icon('link', 15) + '</button>'
+      + '<button class="notes-icon-btn" data-act="export" data-tip="导出 .md">' + icon('download', 15) + '</button>'
+      + '<button class="notes-icon-btn" data-act="delete" data-tip="删除笔记">' + icon('trash', 15) + '</button>'
+      + '</div>'
+      + '</div>'
+      + '<span class="notes-sync" id="notes-sync-dot" data-tip="云同步状态"></span>'
       + '</header>'
-      + '<div class="notes-body">'
+      + '<div class="notes-fs-body">'
       + '<aside class="notes-side" id="notes-side">'
       + '<div class="notes-side-tools">'
-      + '<button class="notes-mini-btn" id="notes-folder-new">' + icon('folderPlus', 14) + '新建文件夹</button>'
+      + '<button class="notes-new-btn" id="notes-new-btn">' + icon('plus', 13) + '新建笔记</button>'
+      + '<button class="notes-mini-btn" id="notes-folder-new">' + icon('folderPlus', 14) + '新文件夹</button>'
+      + '<button class="notes-icon-btn" id="notes-sort-btn" data-tip="排序">' + icon('menu', 15) + '</button>'
       + '</div>'
       + '<div class="notes-tree" id="notes-tree"></div>'
       + '</aside>'
-      + '<section class="notes-list-pane">'
-      + '<div class="notes-list-head">'
-      + '<button class="notes-icon-btn notes-side-toggle" id="notes-side-toggle" data-tip="文件夹">' + icon('panelLeft', 15) + '</button>'
-      + '<div class="notes-list-title" id="notes-list-title">未分类</div>'
-      + '<span class="notes-list-count" id="notes-list-count"></span>'
-      + '<span class="flex-sp"></span>'
-      + '<button class="notes-icon-btn" id="notes-sort-btn" data-tip="排序">' + icon('menu', 15) + '</button>'
-      + '<button class="notes-new-btn" id="notes-new-btn">' + icon('plus', 14) + '新建笔记</button>'
-      + '</div>'
-      + '<div class="notes-list" id="notes-list"></div>'
-      + '</section>'
       + '<section class="notes-editor-pane" id="notes-editor-pane"></section>'
       + '</div>'
       + '<div class="notes-upload-bar hidden" id="notes-upload-bar"></div>'
       + '</div>';
     document.body.appendChild(mask);
     N.els.mask = mask;
+    N.els.head = mask.querySelector('#notes-fs-head');
+    N.els.bar = mask.querySelector('#notes-editor-bar');
     N.els.tree = mask.querySelector('#notes-tree');
-    N.els.list = mask.querySelector('#notes-list');
-    N.els.listTitle = mask.querySelector('#notes-list-title');
-    N.els.listCount = mask.querySelector('#notes-list-count');
     N.els.editorPane = mask.querySelector('#notes-editor-pane');
     N.els.searchInput = mask.querySelector('#notes-search-input');
     N.els.syncDot = mask.querySelector('#notes-sync-dot');
@@ -446,8 +432,11 @@
       if (e.target === mask) flushEditor();
     });
     mask.querySelector('[data-act="close"]').addEventListener('click', close);
-    mask.querySelector('[data-act="maximize"]').addEventListener('click', toggleMaximize);
-    mask.querySelector('#notes-folder-new').addEventListener('click', () => promptNewFolder(null));
+    mask.querySelector('#notes-folder-new').addEventListener('click', () => {
+      // 选中普通文件夹时在其内部新建子文件夹;未分类/根保持顶层
+      const sel = folderById(N.ui.folderId);
+      promptNewFolder(sel && sel.id !== UNCATA ? sel.id : null);
+    });
     mask.querySelector('#notes-sort-btn').addEventListener('click', (e) => {
       const items = [
         { value: 'updated', label: '按更新时间（新→旧）' },
@@ -456,16 +445,16 @@
       ];
       window.OC.openSelect(e.currentTarget, items, {
         selected: N.ui.sort,
-        onSelect: (v) => { N.ui.sort = v; persistUi(); renderList(); },
+        onSelect: (v) => { N.ui.sort = v; persistUi(); renderTree(); },
       });
     });
     mask.querySelector('#notes-new-btn').addEventListener('click', (e) => openNewNoteDialog(e.currentTarget));
     mask.querySelector('#notes-side-toggle').addEventListener('click', () => {
-      N.els.tree.parentElement.classList.toggle('collapsed');
+      N.els.tree.closest('.notes-side').classList.toggle('collapsed');
     });
     N.els.searchInput.addEventListener('input', debounce(() => {
       N.ui.search = N.els.searchInput.value.trim();
-      renderList();
+      renderTree();
     }, 160));
     // Esc 已由 modal 栈接管;Ctrl+S 手动保存
     mask.addEventListener('keydown', (e) => {
@@ -485,15 +474,12 @@
     dot.dataset.tip = state === 'err' ? '云同步失败，稍后自动重试' : (state === 'ok' ? '已同步到云端' : '云同步中');
   }
 
-  function toggleMaximize() {
-    N.ui.maximized = !N.ui.maximized;
-    if (N.els.mask) N.els.mask.classList.toggle('maximized', N.ui.maximized);
-  }
-
   async function open() {
     if (!(await ensureLoaded())) { toast('请先登录后再使用 AI 笔记', true); return; }
-    if (!N.els.mask) buildModal();
+    if (!N.els.mask) buildShell();
     flushEditor();
+    N.ui.search = '';
+    N.els.searchInput.value = '';
     renderAll();
     if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(N.els.mask);
     else N.els.mask.classList.add('show');
@@ -507,43 +493,95 @@
   // ============ 渲染 ============
   function renderAll() {
     renderTree();
-    renderList();
     renderEditor();
     alignShareState();
   }
 
+  function sortCmp(a, b) {
+    if (N.ui.sort === 'created') return (b.createdAt || 0) - (a.createdAt || 0);
+    if (N.ui.sort === 'title') return String(a.title).localeCompare(String(b.title), 'zh-Hans-CN');
+    return (b.updatedAt || 0) - (a.updatedAt || 0);
+  }
+  function folderNotes(folderId) {
+    return N.doc.notes
+      .filter((n) => n.folderId === folderId)
+      .sort((a, b) => ((b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0)) || sortCmp(a, b));
+  }
+
+  // 左栏:文件夹(可折叠)与笔记的同一棵树。文件夹行点击=选中并展开;箭头=折叠/展开。
   function renderTree() {
     const tree = N.els.tree;
     if (!tree) return;
     tree.innerHTML = '';
-    tree.appendChild(folderRow(folderById(UNCATA) || { id: UNCATA, name: '未分类' }, 0));
+    const q = N.ui.search.toLowerCase();
+    if (q) {
+      const matches = visibleNotes();
+      const head = document.createElement('div');
+      head.className = 'nt-search-head';
+      head.textContent = '搜索「' + N.ui.search + '」· ' + matches.length + ' 篇';
+      tree.appendChild(head);
+      if (!matches.length) {
+        const empty = document.createElement('div');
+        empty.className = 'nt-none';
+        empty.textContent = '没有匹配的笔记';
+        tree.appendChild(empty);
+      }
+      matches.forEach((n) => tree.appendChild(noteRow(n, true)));
+      return;
+    }
+    tree.appendChild(folderBlock(folderById(UNCATA) || { id: UNCATA, name: '未分类' }, 0));
     const build = (pid, depth, host) => {
       if (N.ui.expanded[pid] === false) return;
       childFolders(pid).forEach((f) => {
-        if (f.id === UNCATA) return; // 未分类已固定在顶部,不再作为普通根节点出现
-        host.appendChild(folderRow(f, depth));
-        if (childFolders(f.id).length) build(f.id, depth + 1, host);
+        if (f.id === UNCATA) return; // 未分类已固定在顶部
+        host.appendChild(folderBlock(f, depth));
+        build(f.id, depth + 1, host);
       });
     };
-    build(null, 1, tree);
+    build(null, 0, tree);
+  }
+
+  // 一个文件夹块 = 文件夹行 + (展开时的)笔记列表与子文件夹块
+  function folderBlock(f, depth) {
+    const wrap = document.createElement('div');
+    wrap.className = 'nt-block';
+    wrap.appendChild(folderRow(f, depth));
+    if (N.ui.expanded[f.id] !== false) {
+      const notes = folderNotes(f.id);
+      if (notes.length) {
+        const list = document.createElement('div');
+        list.className = 'nt-notes';
+        list.style.paddingLeft = (26 + depth * 14) + 'px';
+        notes.forEach((n) => list.appendChild(noteRow(n, false)));
+        wrap.appendChild(list);
+      }
+      childFolders(f.id).forEach((sub) => {
+        if (sub.id === UNCATA) return;
+        wrap.appendChild(folderBlock(sub, depth + 1));
+      });
+    }
+    return wrap;
   }
 
   function folderRow(f, depth) {
     const row = document.createElement('div');
     row.className = 'notes-folder-row' + (N.ui.folderId === f.id && !N.ui.search ? ' active' : '');
     row.dataset.folderId = f.id;
-    row.style.paddingLeft = (10 + depth * 16) + 'px';
+    row.style.paddingLeft = (8 + depth * 14) + 'px';
+    const open = N.ui.expanded[f.id] !== false;
     const kids = childFolders(f.id);
+    const notes = folderNotes(f.id);
+    const expandable = kids.length > 0 || notes.length > 0;
     const chev = document.createElement('button');
-    chev.className = 'notes-chev' + (kids.length ? '' : ' leaf');
-    chev.innerHTML = icon('chevronRight', 13);
-    chev.dataset.tip = (N.ui.expanded[f.id] === false ? '展开' : '收起');
-    if (kids.length) {
+    chev.className = 'notes-chev' + (expandable ? '' : ' leaf');
+    chev.innerHTML = icon('chevronRight', 12);
+    chev.dataset.tip = open ? '折叠' : '展开';
+    if (expandable) {
       row.classList.add('has-kids');
-      if (N.ui.expanded[f.id] === false) row.classList.add('collapsed-row');
+      row.classList.toggle('open-row', open);
       chev.addEventListener('click', (e) => {
         e.stopPropagation();
-        N.ui.expanded[f.id] = N.ui.expanded[f.id] === false ? true : false;
+        N.ui.expanded[f.id] = !open;
         persistUi();
         renderTree();
       });
@@ -558,44 +596,27 @@
     name.textContent = f.name;
     const count = document.createElement('span');
     count.className = 'notes-folder-count';
-    count.textContent = noteCount(f.id) || '';
+    count.textContent = notes.length || '';
     const more = document.createElement('button');
     more.className = 'notes-row-more';
     more.innerHTML = icon('more', 14);
     more.dataset.tip = '文件夹操作';
     more.addEventListener('click', (e) => {
       e.stopPropagation();
-      const items = [];
-      if (f.id !== UNCATA) items.push({ value: 'sub', label: '新建子文件夹' });
-      if (f.id !== UNCATA) items.push({ value: 'rename', label: '重命名' });
-      if (f.id !== UNCATA) items.push({ value: 'delete', label: '删除文件夹' });
-      window.OC.openSelect(more, items, {
-        onSelect: async (v) => {
-          if (v === 'sub') promptNewFolder(f.id);
-          else if (v === 'rename') {
-            const name = await window.OCUI.prompt({ title: '重命名文件夹', value: f.name, maxlength: 80, confirmText: '保存' });
-            if (name && name.trim()) renameFolder(f.id, name.trim());
-          } else if (v === 'delete') {
-            const cnt = noteCount(f.id);
-            const ok = await window.OCUI.confirm({
-              title: '删除文件夹「' + f.name + '」？',
-              message: cnt ? ('其中 ' + cnt + ' 篇笔记将移动到「未分类」，子文件夹上提一级。') : '空文件夹将被删除。',
-              danger: true, confirmText: '删除',
-            });
-            if (ok) deleteFolder(f.id);
-          }
-        },
-      });
+      folderMenu(more, f);
     });
     row.appendChild(chev); row.appendChild(ic); row.appendChild(name); row.appendChild(count); row.appendChild(more);
     row.addEventListener('click', () => {
+      // 点击 = 选中该文件夹并切换折叠/展开(箭头是精确的独立切换)
       N.ui.folderId = f.id;
-      N.ui.search = '';
-      if (N.els.searchInput) N.els.searchInput.value = '';
+      if (expandable) N.ui.expanded[f.id] = N.ui.expanded[f.id] === false;
       persistUi();
-      renderAll();
+      renderTree();
     });
-    // 拖拽笔记进文件夹
+    // 双击直接重命名
+    row.addEventListener('dblclick', () => {
+      if (f.id !== UNCATA) renameFolderFlow(f);
+    });
     row.addEventListener('dragover', (e) => { e.preventDefault(); row.classList.add('drag-over'); });
     row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
     row.addEventListener('drop', (e) => {
@@ -605,6 +626,37 @@
       if (id) moveNote(id, f.id);
     });
     return row;
+  }
+
+  function folderMenu(more, f) {
+    const items = [];
+    if (f.id !== UNCATA) items.push({ value: 'sub', label: '新建子文件夹' });
+    if (f.id !== UNCATA) items.push({ value: 'rename', label: '重命名' });
+    if (f.id !== UNCATA) items.push({ value: 'delete', label: '删除文件夹' });
+    window.OC.openSelect(more, items, {
+      onSelect: async (v) => {
+        if (v === 'sub') promptNewFolder(f.id);
+        else if (v === 'rename') renameFolderFlow(f);
+        else if (v === 'delete') {
+          const cnt = folderNotes(f.id).length;
+          const ok = await window.OCUI.confirm({
+            title: '删除文件夹「' + f.name + '」？',
+            message: cnt ? ('其中 ' + cnt + ' 篇笔记将移动到「未分类」，子文件夹上提一级。') : '空文件夹将被删除。',
+            danger: true, confirmText: '删除',
+          });
+          if (ok) deleteFolder(f.id);
+        }
+      },
+    });
+  }
+
+  function renameFolderFlow(f) {
+    window.OCUI.prompt({
+      title: '重命名文件夹',
+      value: f.name, maxlength: 80, confirmText: '保存',
+    }).then((name) => {
+      if (name && name.trim() && name.trim() !== f.name) renameFolder(f.id, name.trim());
+    });
   }
 
   function promptNewFolder(parentId) {
@@ -624,6 +676,63 @@
     });
   }
 
+  function noteRow(n, searching) {
+    const item = document.createElement('div');
+    item.className = 'nt-note' + (N.ui.selNoteId === n.id ? ' active' : '') + (n.isPinned ? ' pinned' : '');
+    item.draggable = true;
+    item.dataset.noteId = n.id;
+    item.title = n.title || '无标题笔记';
+    item.innerHTML =
+      (n.isPinned
+        ? '<span class="nt-pin">' + icon('pin', 11) + '</span>'
+        : '<span class="nt-doc">' + icon('notebook', 12) + '</span>')
+      + '<span class="nt-note-title">' + esc(n.title || '无标题笔记') + '</span>'
+      + (searching ? '<span class="nt-folder-badge">' + icon('folder', 10) + esc(folderName(n.folderId)) + '</span>' : '')
+      + '<span class="nt-time">' + esc(fmtTime(n.updatedAt)) + '</span>';
+    const more = document.createElement('button');
+    more.className = 'notes-row-more';
+    more.innerHTML = icon('more', 13);
+    more.dataset.tip = '笔记操作';
+    more.addEventListener('click', (e) => {
+      e.stopPropagation();
+      noteMenu(more, n);
+    });
+    item.appendChild(more);
+    item.addEventListener('click', () => openNote(n.id));
+    item.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/oc-note-id', n.id);
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    return item;
+  }
+
+  function noteMenu(more, n) {
+    const s = shareOf(n.id);
+    const items = [
+      { value: 'pin', label: n.isPinned ? '取消置顶' : '置顶' },
+      { value: 'move', label: '移动到…' },
+      { value: 'rename', label: '重命名' },
+      { value: 'share', label: s ? '分享（已开启）' : '分享…' },
+      { value: 'export', label: '导出 .md' },
+      { value: 'delete', label: '删除笔记' },
+    ];
+    window.OC.openSelect(more, items, {
+      onSelect: async (v) => {
+        if (v === 'pin') togglePin(n.id);
+        else if (v === 'move') pickFolder((f) => moveNote(n.id, f));
+        else if (v === 'rename') {
+          const t = await window.OCUI.prompt({ title: '重命名笔记', value: n.title, maxlength: 200, confirmText: '保存' });
+          if (t && t.trim()) updateNote(n.id, { title: t.trim() });
+        } else if (v === 'share') openShareDialog(n.id);
+        else if (v === 'export') exportNote(n);
+        else if (v === 'delete') {
+          const ok = await window.OCUI.confirm({ title: '删除笔记「' + n.title + '」？', message: '删除后其他设备也会同步删除。', danger: true, confirmText: '删除' });
+          if (ok) deleteNote(n.id);
+        }
+      },
+    });
+  }
+
   function visibleNotes() {
     const q = N.ui.search.toLowerCase();
     let notes = N.doc.notes.filter((n) => !(n.id in (N.doc.tombs || {})));
@@ -635,98 +744,7 @@
     } else {
       notes = notes.filter((n) => n.folderId === N.ui.folderId);
     }
-    const cmp = {
-      updated: (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0),
-      created: (a, b) => (b.createdAt || 0) - (a.createdAt || 0),
-      title: (a, b) => String(a.title).localeCompare(String(b.title), 'zh-Hans-CN'),
-    }[N.ui.sort] || ((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-    return notes.sort((a, b) => ((b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0)) || cmp(a, b));
-  }
-
-  function renderList() {
-    const list = N.els.list;
-    if (!list) return;
-    const notes = visibleNotes();
-    if (N.ui.search) {
-      N.els.listTitle.textContent = '搜索：' + N.ui.search;
-      N.els.listCount.textContent = notes.length + ' 篇';
-    } else {
-      N.els.listTitle.textContent = folderName(N.ui.folderId);
-      N.els.listCount.textContent = notes.length ? notes.length + ' 篇' : '';
-    }
-    list.innerHTML = '';
-    if (!notes.length) {
-      list.innerHTML = '<div class="notes-empty">'
-        + icon('notebook', 26)
-        + '<p>' + (N.ui.search ? '没有匹配的笔记' : '这个文件夹还没有笔记') + '</p>'
-        + (N.ui.search ? '' : '<button class="notes-mini-btn" id="notes-empty-new">' + icon('plus', 13) + '新建一篇</button>')
-        + '</div>';
-      const btn = list.querySelector('#notes-empty-new');
-      if (btn) btn.addEventListener('click', () => openNewNoteDialog(N.els.mask.querySelector('#notes-new-btn')));
-      return;
-    }
-    notes.forEach((n) => list.appendChild(noteItem(n)));
-  }
-
-  function noteItem(n) {
-    const item = document.createElement('div');
-    item.className = 'notes-item' + (N.ui.selNoteId === n.id ? ' active' : '') + (n.isPinned ? ' pinned' : '');
-    item.draggable = true;
-    const cover = attachmentImageOf(n);
-    item.innerHTML =
-      (cover ? '<div class="ni-cover" style="background-image:url(' + esc(cover) + ')"></div>' : '')
-      + '<div class="ni-main">'
-      + '<div class="ni-title">' + (n.isPinned ? '<span class="ni-pin">' + icon('pin', 12) + '</span>' : '') + esc(n.title || '无标题笔记') + '</div>'
-      + '<div class="ni-excerpt">' + esc(excerpt(n.content, 72) || '（空笔记）') + '</div>'
-      + '<div class="ni-meta">'
-      + '<span class="ni-time">' + icon('clock', 11) + esc(fmtTime(n.updatedAt)) + '</span>'
-      + (N.ui.search ? '<span class="ni-folder">' + icon('folder', 11) + esc(folderName(n.folderId)) + '</span>' : '')
-      + (n.tags || []).slice(0, 3).map((t) => '<span class="ni-tag">#' + esc(t) + '</span>').join('')
-      + ((n.tags || []).length > 3 ? '<span class="ni-tag">…</span>' : '')
-      + '</div></div>';
-    const more = document.createElement('button');
-    more.className = 'notes-row-more ni-more';
-    more.innerHTML = icon('more', 14);
-    more.dataset.tip = '笔记操作';
-    more.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const s = shareOf(n.id);
-      const items = [
-        { value: 'pin', label: n.isPinned ? '取消置顶' : '置顶' },
-        { value: 'move', label: '移动到…' },
-        { value: 'rename', label: '重命名' },
-        { value: 'share', label: s ? '分享（已开启）' : '分享…' },
-        { value: 'export', label: '导出 .md' },
-        { value: 'delete', label: '删除笔记' },
-      ];
-      window.OC.openSelect(more, items, {
-        onSelect: async (v) => {
-          if (v === 'pin') togglePin(n.id);
-          else if (v === 'move') pickFolder((f) => moveNote(n.id, f));
-          else if (v === 'rename') {
-            const t = await window.OCUI.prompt({ title: '重命名笔记', value: n.title, maxlength: 200, confirmText: '保存' });
-            if (t && t.trim()) updateNote(n.id, { title: t.trim() });
-          } else if (v === 'share') openShareDialog(n.id);
-          else if (v === 'export') exportNote(n);
-          else if (v === 'delete') {
-            const ok = await window.OCUI.confirm({ title: '删除笔记「' + n.title + '」？', message: '删除后其他设备也会同步删除。', danger: true, confirmText: '删除' });
-            if (ok) deleteNote(n.id);
-          }
-        },
-      });
-    });
-    item.appendChild(more);
-    item.addEventListener('click', () => openNote(n.id));
-    item.addEventListener('dragstart', (e) => {
-      e.dataTransfer.setData('text/oc-note-id', n.id);
-      e.dataTransfer.effectAllowed = 'move';
-    });
-    return item;
-  }
-
-  function attachmentImageOf(n) {
-    const a = (n.attachments || []).find((x) => x && x.mimeType && x.mimeType.indexOf('image/') === 0);
-    return a ? a.url : '';
+    return notes.sort((a, b) => ((b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0)) || sortCmp(a, b));
   }
 
   function pickFolder(cb, excludeId) {
@@ -735,7 +753,7 @@
       .filter((f) => f.id !== excludeId)
       .sort((a, b) => folderDepth(a.id) - folderDepth(b.id))
       .map((f) => ({ value: f.id, label: '　'.repeat(folderDepth(f.id)) + f.name }));
-    const anchor = N.els.mask.querySelector('.notes-list-head') || N.els.mask;
+    const anchor = N.els.mask.querySelector('.notes-side') || N.els.mask;
     window.OC.openSelect(anchor, items, { searchable: true, searchPlaceholder: '搜索文件夹…', onSelect: cb });
   }
 
@@ -754,48 +772,41 @@
     flushEditor();
     N.ui.selNoteId = id;
     persistUi();
-    renderList();
+    renderTree();
     renderEditor();
   }
 
   function renderEditor() {
     const pane = N.els.editorPane;
-    if (!pane) return;
+    const bar = N.els.bar;
+    const head = N.els.head;
+    if (!pane || !bar || !head) return;
     const n = N.ui.selNoteId ? noteById(N.ui.selNoteId) : null;
     if (!n) {
       N.editor = null;
+      bar.classList.add('hidden');
+      head.classList.remove('has-editor');
       pane.innerHTML = '<div class="notes-editor-empty">'
         + icon('notebook', 34)
         + '<h3>选择或新建一篇笔记</h3>'
-        + '<p>左侧选文件夹，中间选笔记；支持 Markdown、代码高亮、公式与 Mermaid 图表。</p>'
+        + '<p>左侧选文件夹、点笔记打开；支持 Markdown、代码高亮、公式与 Mermaid 图表。</p>'
+        + '<button class="notes-new-btn" id="notes-empty-new">' + icon('plus', 13) + '新建笔记</button>'
         + '</div>';
+      const btn = pane.querySelector('#notes-empty-new');
+      if (btn) btn.addEventListener('click', () => openNewNoteDialog(btn));
       return;
     }
     const mode = N.ui.mode;
+    bar.classList.remove('hidden');
+    head.classList.add('has-editor');
+    // 顶栏右上角:标题 / 标签 / 分类 / 时间 / 模式 / 工具
+    bar.querySelector('#ne-title').value = n.title || '';
+    bar.querySelector('#ne-folder-name').textContent = folderName(n.folderId);
+    bar.querySelector('#ne-time').textContent = '更新于 ' + fmtTime(n.updatedAt);
+    bar.querySelector('#ne-time').dataset.tip = '创建于 ' + fmtFull(n.createdAt);
+    bar.querySelectorAll('#ne-mode-switch button').forEach((x) => x.classList.toggle('active', x.dataset.mode === mode));
     pane.innerHTML =
       '<div class="notes-editor">'
-      + '<div class="notes-editor-head">'
-      + '<input class="notes-title-input" id="ne-title" value="' + esc(n.title) + '" placeholder="无标题笔记" maxlength="200" spellcheck="false">'
-      + '<div class="notes-editor-meta">'
-      + '<button class="notes-crumb" id="ne-folder" data-tip="移动到其他文件夹">' + icon('folder', 12) + esc(folderPath(n.folderId)) + icon('chevronDown', 12) + '</button>'
-      + '<span class="ne-time">' + icon('clock', 12) + '更新于 ' + esc(fmtFull(n.updatedAt)) + '</span>'
-      + '<span class="ne-save-state" id="ne-save-state">已保存</span>'
-      + '</div>'
-      + '<div class="notes-tag-row" id="ne-tags"></div>'
-      + '<div class="notes-editor-toolbar">'
-      + '<div class="notes-mode-switch" id="ne-mode-switch">'
-      + '<button data-mode="edit" class="' + (mode === 'edit' ? 'active' : '') + '">编辑</button>'
-      + '<button data-mode="split" class="' + (mode === 'split' ? 'active' : '') + '">分屏</button>'
-      + '<button data-mode="preview" class="' + (mode === 'preview' ? 'active' : '') + '">预览</button>'
-      + '</div>'
-      + '<span class="flex-sp"></span>'
-      + '<button class="notes-icon-btn" data-act="image" data-tip="插入图片（也可直接粘贴 / 拖拽）">' + icon('image', 15) + '</button>'
-      + '<button class="notes-icon-btn" data-act="attach" data-tip="添加附件">' + icon('paperclip', 15) + '</button>'
-      + '<button class="notes-icon-btn" data-act="share" data-tip="分享设置">' + icon('link', 15) + '</button>'
-      + '<button class="notes-icon-btn" data-act="export" data-tip="导出 .md">' + icon('download', 15) + '</button>'
-      + '<button class="notes-icon-btn" data-act="delete" data-tip="删除笔记">' + icon('trash', 15) + '</button>'
-      + '</div>'
-      + '</div>'
       + '<div class="notes-editor-panes mode-' + mode + '">'
       + '<textarea class="notes-ta" id="ne-ta" spellcheck="false" placeholder="用 Markdown 书写…粘贴图片或拖入文件可直接上传。"></textarea>'
       + '<div class="notes-preview-wrap"><div class="notes-preview msg assistant"><div class="msg-content" id="ne-preview"></div></div></div>'
@@ -808,26 +819,26 @@
     renderTagsRow(n);
     renderPreview(n.content || '');
 
-    pane.querySelector('#ne-mode-switch').addEventListener('click', (e) => {
+    bar.querySelector('#ne-mode-switch').addEventListener('click', (e) => {
       const b = e.target.closest('button[data-mode]');
       if (!b) return;
       N.ui.mode = b.dataset.mode;
       persistUi();
       const panes = pane.querySelector('.notes-editor-panes');
       ['edit', 'split', 'preview'].forEach((m) => panes.classList.toggle('mode-' + m, m === N.ui.mode));
-      pane.querySelectorAll('#ne-mode-switch button').forEach((x) => x.classList.toggle('active', x.dataset.mode === N.ui.mode));
+      bar.querySelectorAll('#ne-mode-switch button').forEach((x) => x.classList.toggle('active', x.dataset.mode === N.ui.mode));
       if (N.ui.mode !== 'edit') renderPreview(ta.value);
     });
-    pane.querySelector('#ne-folder').addEventListener('click', () => pickFolder((f) => moveNote(n.id, f), n.folderId));
-    pane.querySelector('[data-act="share"]').addEventListener('click', () => openShareDialog(n.id));
-    pane.querySelector('[data-act="export"]').addEventListener('click', () => exportNote(noteById(n.id) || n));
-    pane.querySelector('[data-act="delete"]').addEventListener('click', async () => {
+    bar.querySelector('#ne-folder').addEventListener('click', () => pickFolder((f) => moveNote(n.id, f), n.folderId));
+    bar.querySelector('[data-act="share"]').addEventListener('click', () => openShareDialog(n.id));
+    bar.querySelector('[data-act="export"]').addEventListener('click', () => exportNote(noteById(n.id) || n));
+    bar.querySelector('[data-act="delete"]').addEventListener('click', async () => {
       const cur = noteById(n.id);
       const ok = await window.OCUI.confirm({ title: '删除笔记「' + (cur ? cur.title : '') + '」？', message: '删除后其他设备也会同步删除。', danger: true, confirmText: '删除' });
       if (ok) deleteNote(n.id);
     });
-    pane.querySelector('[data-act="image"]').addEventListener('click', () => pickFiles(true));
-    pane.querySelector('[data-act="attach"]').addEventListener('click', () => pickFiles(false));
+    bar.querySelector('[data-act="image"]').addEventListener('click', () => pickFiles(true));
+    bar.querySelector('[data-act="attach"]').addEventListener('click', () => pickFiles(false));
 
     ta.addEventListener('input', () => {
       N.editor.dirty = true;
@@ -885,7 +896,7 @@
   }
 
   function setSaveState(state) {
-    const el = N.els.editorPane && N.els.editorPane.querySelector('#ne-save-state');
+    const el = N.els.bar && N.els.bar.querySelector('#ne-save-state');
     if (!el) return;
     el.dataset.state = state;
     if (state === 'editing') el.textContent = '正在编辑…';
@@ -900,7 +911,7 @@
     if (!n) return;
     setSaveState('saving');
     const ta = N.editor.ta;
-    const titleInput = N.els.editorPane.querySelector('#ne-title');
+    const titleInput = N.els.bar.querySelector('#ne-title');
     n.content = ta.value;
     if (titleInput && titleInput.value.trim()) n.title = titleInput.value.trim();
     n.updatedAt = Date.now();
@@ -908,7 +919,13 @@
     persistLocal();
     schedulePush();
     setSaveState('syncing');
-    renderList();
+    // 树行时间与头部「更新于」同步刷新(不整体重绘,避免打断输入)
+    const timeEl = N.els.bar.querySelector('#ne-time');
+    if (timeEl) timeEl.textContent = '更新于 ' + fmtTime(n.updatedAt);
+    const row = N.els.tree && N.els.tree.querySelector('.nt-note[data-note-id="' + n.id + '"] .nt-time');
+    if (row) row.textContent = fmtTime(n.updatedAt);
+    const titleRow = N.els.tree && N.els.tree.querySelector('.nt-note[data-note-id="' + n.id + '"] .nt-note-title');
+    if (titleRow) titleRow.textContent = n.title;
   }
   function flushEditor() {
     if (N.editor && N.editor.dirty) saveEditor();
@@ -925,7 +942,7 @@
   }
 
   function renderTagsRow(n) {
-    const row = N.els.editorPane.querySelector('#ne-tags');
+    const row = N.els.bar.querySelector('#ne-tags');
     if (!row) return;
     row.innerHTML = (n.tags || []).map((t, i) =>
       '<span class="ne-tag" data-i="' + i + '">#' + esc(t) + '<button class="ne-tag-x" data-tip="移除标签">×</button></span>').join('')
@@ -1001,15 +1018,16 @@
         const t = TEMPLATES.find((x) => x.key === key);
         const title = await window.OCUI.prompt({
           title: '新建' + (t ? t.name : '笔记'),
-          message: '标题要可检索;标签用逗号分隔。创建时间会自动写进笔记开头。',
+          message: '标题要可检索;标签用逗号分隔。创建/更新时间在编辑器右上角展示。',
           value: '', maxlength: 200, confirmText: '创建',
         });
         if (title === null) return;
         const name = String(title || '').trim() || (t ? t.name : '无标题笔记');
         const tags = name.match(/#(\S+)/g) ? [] : [];
-        const created = '> 🕒 创建于 ' + fmtFull(Date.now()) + '\n';
-        const content = created + (t && t.body ? '\n' + t.body : '');
+        const content = t && t.body ? t.body : '';
         const n = createNote(folderId, { title: name, content, tags });
+        N.ui.expanded[folderId] = true;
+        persistUi();
         openNote(n.id);
         toast('已创建「' + n.title + '」');
       },
@@ -1226,7 +1244,7 @@
         toast(e.message || '操作失败', true);
       } finally {
         applyBtn.disabled = false;
-        renderList();
+        renderTree();
       }
     });
     regenBtn.addEventListener('click', async () => {
@@ -1262,12 +1280,12 @@
           closeDlg();
         } catch (e) {
           toast(e.message || '操作失败', true);
-        } finally { closeShareBtn.disabled = false; renderList(); }
+        } finally { closeShareBtn.disabled = false; renderTree(); }
       });
     }
     if (window.OCUI) window.OCUI.openModal(mask);
     else mask.classList.add('show');
-    renderList();
+    renderTree();
   }
 
   // ============ AI 归档:保存到 AI 笔记 ============
