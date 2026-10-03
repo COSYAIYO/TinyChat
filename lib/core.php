@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.115');
+define('TC_VERSION', '2.0.116');
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -810,6 +810,13 @@ function tc_empty_db() {
         // 已删除对话留档:{userId: {chats:[完整记录], tombs:{chatId: 删除时间}}}——用户端删除只打标记,
         // 内容留在云端供管理员查看与批量清理;tombs 是墓碑,防止别的设备用旧副本把对话合并回来
         'userDeletedChats' => new stdClass(),
+        // AI 笔记:按用户拆成 note:{uid} 行(与 userChats 同一套省写放大机制),
+        // 值为 {folders:[], notes:[], tombs:{id:删除时间}} 整份文档,由客户端驱动同步
+        'userNotes' => new stdClass(),
+        // 笔记文档乐观并发修订号:{userId: int},语义与 userChatRevisions 一致
+        'userNoteRevisions' => new stdClass(),
+        // 笔记分享:{token: {token, ownerId, noteId, mode, createdAt}},内容不快照、读取时按属主实时取
+        'noteShares' => new stdClass(),
         'shares' => new stdClass(),
         'userGroups' => array(),
         'accessRules' => array(),
@@ -1208,6 +1215,10 @@ function tc_migrate_db($raw) {
     }
     $db['userDeletedChats'] = tc_object_map($delMap);
     $db['shares'] = tc_object_map(isset($db['shares']) ? $db['shares'] : array());
+    // AI 笔记:老库没有这些键(默认空);文档本体按用户拆行存储,这里只规整映射形状
+    $db['userNotes'] = tc_object_map(isset($db['userNotes']) ? $db['userNotes'] : array());
+    $db['userNoteRevisions'] = tc_object_map(isset($db['userNoteRevisions']) ? $db['userNoteRevisions'] : array());
+    $db['noteShares'] = tc_object_map(isset($db['noteShares']) ? $db['noteShares'] : array());
     $stats = tc_assoc(isset($db['stats']) ? $db['stats'] : array());
     $votes = array();
     foreach (tc_assoc(isset($stats['modelVotes']) ? $stats['modelVotes'] : array()) as $model => $row) {
@@ -1498,9 +1509,11 @@ function tc_db_load_all($pdo) {
 function tc_db_load_with_baseline($pdo) {
     $db = tc_empty_db();
     $db['userChats'] = new stdClass();
+    $db['userNotes'] = new stdClass();
     $orig = array();
     $origChats = array();
     $origDeleted = array();
+    $origNotes = array();
     $rows = $pdo->query('SELECT k, v FROM store')->fetchAll();
     foreach ($rows as $row) {
         $k = (string) $row['k'];
@@ -1521,12 +1534,20 @@ function tc_db_load_with_baseline($pdo) {
             }
             continue;
         }
+        if (strncmp($k, 'note:', 5) === 0) {
+            $origNotes[substr($k, 5)] = $raw;
+            $val = json_decode($raw, true);
+            if (is_array($val)) {
+                $db['userNotes']->{substr($k, 5)} = $val;
+            }
+            continue;
+        }
         $orig[$k] = $raw;
         $val = json_decode($raw, true);
         if ($val === null && $raw !== 'null') continue;
         $db[$k] = $val;
     }
-    return array(tc_migrate_db($db), $orig, $origChats, $origDeleted);
+    return array(tc_migrate_db($db), $orig, $origChats, $origDeleted, $origNotes);
 }
 
 // 整库快照写入(迁移导入 / 恢复备份用):清空后按顶层键落行
@@ -1537,6 +1558,12 @@ function tc_db_write_snapshot($pdo, $db) {
         if ($k === 'userChats') {
             foreach (tc_assoc($v) as $uid => $row) {
                 $ins->execute(array(':k' => 'chat:' . $uid, ':v' => tc_json_encode($row)));
+            }
+            continue;
+        }
+        if ($k === 'userNotes') {
+            foreach (tc_assoc($v) as $uid => $row) {
+                $ins->execute(array(':k' => 'note:' . $uid, ':v' => tc_json_encode($row)));
             }
             continue;
         }
@@ -1555,12 +1582,13 @@ function tc_with_db($write, $fn) {
     // 结果按请求缓存,不产生额外文件读取开销。
     tc_integrity_guard();
     $pdo = tc_db();
-    list($db, $orig, $origChats, $origDeleted) = tc_db_load_with_baseline($pdo);
+    list($db, $orig, $origChats, $origDeleted, $origNotes) = tc_db_load_with_baseline($pdo);
     $GLOBALS['_tc_db'] = &$db;
     $GLOBALS['_tc_demo_before'] = null;
     $GLOBALS['_tc_db_ctx'] = array(
         'write' => $write, 'committed' => false, 'pdo' => $pdo,
         'orig' => $orig, 'origChats' => $origChats, 'origDeleted' => $origDeleted,
+        'origNotes' => $origNotes,
     );
     try {
         if ($write) $pdo->exec('BEGIN IMMEDIATE');
@@ -1604,7 +1632,9 @@ function tc_db_commit() {
         $del = $pdo->prepare('DELETE FROM store WHERE k = :k');
         $newChats = tc_assoc(isset($db['userChats']) ? $db['userChats'] : null);
         $newDeleted = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : null);
+        $newNotes = tc_assoc(isset($db['userNotes']) ? $db['userNotes'] : null);
         $origDeleted = isset($ctx['origDeleted']) ? $ctx['origDeleted'] : array();
+        $origNotes = isset($ctx['origNotes']) ? $ctx['origNotes'] : array();
         foreach ($db as $k => $v) {
             if ($k === 'userChats') {
                 foreach ($newChats as $uid => $row) {
@@ -1614,6 +1644,17 @@ function tc_db_commit() {
                 }
                 foreach ($ctx['origChats'] as $uid => $json) {
                     if (!array_key_exists($uid, $newChats)) $del->execute(array(':k' => 'chat:' . $uid));
+                }
+                continue;
+            }
+            if ($k === 'userNotes') {
+                foreach ($newNotes as $uid => $row) {
+                    $json = tc_json_encode($row);
+                    if (isset($origNotes[$uid]) && $origNotes[$uid] === $json) continue;
+                    $ups->execute(array(':k' => 'note:' . $uid, ':v' => $json, ':v2' => $json));
+                }
+                foreach ($origNotes as $uid => $json) {
+                    if (!array_key_exists($uid, $newNotes)) $del->execute(array(':k' => 'note:' . $uid));
                 }
                 continue;
             }

@@ -51,7 +51,7 @@ for (const f of minified) {
 
 // 2) 重写 HTML 引用:<body> 前的脚本保持同步执行(主题预置/性能门控),
 //    <body> 后的业务脚本与全部 CSS 统一 .min + ?v=;vendor 引用补 ?v=(资源已长缓存)
-const pages = ['index.html', 'admin.html', 'login.html', 'share.html'];
+const pages = ['index.html', 'admin.html', 'login.html', 'share.html', 'note-share.html'];
 const assetRe = /((?:\.\/|\/)?static\/(?:js|css)\/[A-Za-z0-9_-]+)(?:\.min)?\.(js|css)(?:\?v=[A-Za-z0-9._-]+)?/g;
 const vendorRe = /((?:\.\/|\/)?vendor\/[A-Za-z0-9_./-]+\.(?:js|css))(\?v=[A-Za-z0-9._-]+)?/g;
 for (const page of pages) {

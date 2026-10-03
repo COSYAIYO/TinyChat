@@ -1587,6 +1587,84 @@ assert_contains "图片缓存(含子目录)清理成功" "$CL4" '"ok":true'
 assert_contains "图片缓存递归删到 1 个文件" "$CL4" '"removed":1'
 # 系统接口在清理后依然可用(不因日志/缓存被清而 500)
 assert_contains "清理后系统接口仍正常" "$(curl -s "$BASE/api/admin/system" -H "$AUTH")" '"server"'
+
+# ---------- AI 笔记 ----------
+say "== AI 笔记:文档同步 =="
+# 初始为空:folders/notes 都是空数组,tombs 是空对象
+NOTES0=$(curl -s "$BASE/api/sync/notes" -H "$AUTH")
+assert_has "初始笔记文档为空" "$NOTES0" '"notes":[]'
+assert_contains "初始修订号为 0" "$NOTES0" '"revision":0'
+# 未登录访问被拒
+assert_contains "笔记同步需要登录" "$(curl -s "$BASE/api/sync/notes")" '未登录'
+# 推送一份文档(一个文件夹 + 一篇笔记)
+cat > "$TMP/notes1.json" <<'EOF'
+{"baseRevision":0,"doc":{"folders":[{"id":"f1","parentId":null,"name":"技术","createdAt":1000,"updatedAt":1000}],"notes":[{"id":"n1","folderId":"f1","title":"SQLite 要点","content":"# 要点\n\n- WAL 模式\n- 单表快照","tags":["php","sqlite"],"isPinned":true,"shareMode":"private","createdAt":1000,"updatedAt":1000}],"tombs":{}}}
+EOF
+NS1=$(curl -s -X POST "$BASE/api/sync/notes" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/notes1.json")
+assert_contains "笔记文档推送成功" "$NS1" '"revision":1'
+# baseRevision 过期 → 409 并带回云端文档
+cat > "$TMP/notes-stale.json" <<'EOF'
+{"baseRevision":0,"doc":{"folders":[],"notes":[],"tombs":{}}}
+EOF
+STALE=$(curl -s -X POST "$BASE/api/sync/notes" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/notes-stale.json")
+assert_contains "过期修订号冲突返回 409" "$STALE" '笔记已在其他页面更新'
+assert_contains "冲突响应带回云端文档" "$STALE" 'SQLite 要点'
+# 拉取可见推送内容
+NOTES1=$(curl -s "$BASE/api/sync/notes" -H "$AUTH")
+assert_contains "云端文档含文件夹" "$NOTES1" '技术'
+assert_contains "云端文档含笔记" "$NOTES1" 'SQLite 要点'
+# 分享状态列表随同步返回
+assert_has "同步返回分享状态字段" "$NOTES1" '"shares":[]'
+
+say "== AI 笔记:附件上传与签名输出 =="
+python -c "import base64,sys; open(sys.argv[1],'wb').write(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='))" "$TMP/pixel.png"
+printf 'not really' > "$TMP/evil.exe"
+# 原生 curl 读不了 -F 里 MSYS 风格的 /tmp 路径:与文档解析用例一致,进 $TMP 用相对路径发起
+UP=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@pixel.png;type=image/png" ) )
+assert_contains "图片上传成功返回签名 URL" "$UP" '/api/notes/file?id='
+FURL=$(printf '%s' "$UP" | jget url | sed 's#\\/#/#g')
+assert_contains "签名 URL 可匿名读取" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE$FURL")" "200"
+assert_contains "附件 Content-Type 正确" "$(curl -s -D - -o /dev/null "$BASE$FURL")" "image/png"
+# 签名被篡改 → 403(替换的字符必须与原字符不同:末位本来就是 0 时换 1,否则换 0)
+LASTC="${FURL: -1}"
+if [ "$LASTC" = "0" ]; then REPL="1"; else REPL="0"; fi
+BADURL="${FURL%?}$REPL"
+if curl -s -o /dev/null -w '%{http_code}' "$BASE$BADURL" | grep -q '403'; then ok "签名被篡改返回 403"; else bad "签名被篡改返回 403"; fi
+# 不支持的类型被拒
+EV=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@evil.exe;type=application/octet-stream" ) )
+assert_contains "不支持的扩展名被拒" "$EV" '不支持的文件类型'
+
+say "== AI 笔记:分享链接 =="
+# view-link:创建分享 → 匿名可读 → 页面路由可达 → edit 被拒 → 关闭后失效
+SH1=$(curl -s -X POST "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"n1","mode":"view-link"}')
+assert_contains "创建 view-link 分享" "$SH1" '"url":"\/n\/'
+NTOK=$(printf '%s' "$SH1" | jget token)
+assert_contains "分享链接匿名可读" "$(curl -s "$BASE/api/notes/shared/$NTOK")" 'SQLite 要点'
+assert_contains "分享响应标记不可编辑" "$(curl -s "$BASE/api/notes/shared/$NTOK")" '"editable":false'
+assert_contains "分享页 /n/ 路由可达" "$(curl -s "$BASE/n/$NTOK")" '笔记分享'
+assert_contains "view-link 拒绝在线编辑" "$(curl -s -X POST "$BASE/api/notes/shared/$NTOK" -H "Content-Type: application/json" -d '{"title":"黑掉这篇"}')" '只允许查看'
+# 重新生成 → 旧链接失效
+SH2=$(curl -s -X POST "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"n1","mode":"view-link"}')
+NTOK2=$(printf '%s' "$SH2" | jget token)
+if [ "$NTOK" != "$NTOK2" ]; then ok "重新生成产生新令牌"; else bad "重新生成产生新令牌"; fi
+if curl -s "$BASE/api/notes/shared/$NTOK" | grep -q '分享不存在'; then ok "旧令牌已失效"; else bad "旧令牌已失效"; fi
+# edit-link:匿名可编辑属主笔记(最后写入胜出);中文体走 heredoc,避免控制台码页问题
+SH3=$(curl -s -X POST "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"n1","mode":"edit-link"}')
+NTOK3=$(printf '%s' "$SH3" | jget token)
+cat > "$TMP/note-edit.json" <<'EOF'
+{"title":"SQLite 要点(修订)","content":"# 要点(经分享链接修订)"}
+EOF
+ED1=$(curl -s -X POST "$BASE/api/notes/shared/$NTOK3" -H "Content-Type: application/json" --data-binary @"$TMP/note-edit.json")
+assert_contains "edit-link 匿名编辑成功" "$ED1" 'SQLite 要点(修订)'
+assert_contains "编辑响应标记可编辑" "$ED1" '"editable":true'
+assert_contains "属主侧读到修订后内容" "$(curl -s "$BASE/api/sync/notes" -H "$AUTH")" '经分享链接修订'
+# 关闭分享 → 链接失效,笔记回到 private
+assert_contains "关闭分享成功" "$(curl -s -X DELETE "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"n1"}')" '"ok":true'
+if curl -s "$BASE/api/notes/shared/$NTOK3" | grep -q '分享不存在'; then ok "关闭后链接失效"; else bad "关闭后链接失效"; fi
+assert_contains "笔记分享状态复位" "$(curl -s "$BASE/api/sync/notes" -H "$AUTH")" '"shareMode":"private"'
+# 不存在的笔记分享被拒
+assert_contains "分享不存在的笔记被拒" "$(curl -s -X POST "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"ghost","mode":"view-link"}')" '笔记不存在'
+
 say ""
 say "结果: $PASS 通过, $FAIL 失败"
 [ "$FAIL" -eq 0 ]

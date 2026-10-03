@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#ffffff">
+<title>笔记分享 · TinyChat</title>
+<meta name="description" content="TinyChat AI 笔记分享页：公开的 Markdown 笔记，支持代码高亮、公式、Mermaid 图表与图片。">
+<meta name="robots" content="noindex">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="TinyChat">
+<meta property="og:title" content="笔记分享 · TinyChat">
+<meta property="og:description" content="公开分享的 AI 笔记。">
+<meta name="twitter:card" content="summary">
+<link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
+<link rel="apple-touch-icon" href="./logo-icon.svg">
+<link rel="stylesheet" href="/static/css/style.min.css?v=2.0.116">
+<link rel="stylesheet" href="/vendor/highlight/github.min.css?v=2.0.116" id="hljs-theme">
+<link rel="stylesheet" href="/vendor/katex/katex.min.css?v=2.0.116">
+<link rel="stylesheet" href="/static/css/enhanced.min.css?v=2.0.116">
+<link rel="stylesheet" href="/static/css/refine.min.css?v=2.0.116">
+<link rel="stylesheet" href="/static/css/redesign.min.css?v=2.0.116">
+<link rel="stylesheet" href="/static/css/polish.min.css?v=2.0.116">
+<link rel="stylesheet" href="/static/css/markdown.min.css?v=2.0.116">
+<link rel="stylesheet" href="/static/css/chrome.min.css?v=2.0.116">
+<script src="/static/js/theme-boot.min.js?v=2.0.116"></script>
+<script src="/static/js/perf.min.js?v=2.0.116"></script>
+<style>
+  .note-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .note-tag { font-size: 12px; padding: 2px 10px; border-radius: 999px; background: var(--bg-code, rgba(0,0,0,.05)); color: var(--text-secondary, #666); }
+  .note-editor textarea { width: 100%; min-height: 46vh; resize: vertical; padding: 14px; border-radius: 12px;
+    border: 1px solid var(--hairline-strong, rgba(0,0,0,.12)); background: var(--bg-input, #fff); color: var(--text, #1d1d1f);
+    font: 13px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; }
+  .note-editor input.note-title-input { width: 100%; margin-bottom: 10px; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid var(--hairline-strong, rgba(0,0,0,.12)); background: var(--bg-input, #fff); color: var(--text, #1d1d1f); font-size: 15px; }
+  .note-editor .row { display: flex; gap: 8px; margin: 10px 0 16px; align-items: center; flex-wrap: wrap; }
+  .share-preview { border: 1px solid var(--hairline, rgba(0,0,0,.06)); border-radius: 14px; padding: 6px 18px; background: var(--bg-surface, #fff); }
+</style>
+</head>
+<body class="share-page">
+  <header class="share-top">
+    <a class="share-brand" href="/">
+      <img src="/logo.svg" class="brand-logo-light" alt="TinyChat">
+      <img src="/logo-dark.svg" class="brand-logo-dark" alt="TinyChat">
+    </a>
+    <a class="btn small" href="/">打开应用</a>
+  </header>
+  <main class="share-main" id="note-root">
+    <p class="muted">正在加载笔记…</p>
+  </main>
+  <script defer src="/static/js/config.min.js?v=2.0.116"></script>
+  <script defer src="/static/js/icons.min.js?v=2.0.116"></script>
+  <script defer src="/static/js/renderer.min.js?v=2.0.116"></script>
+  <script defer src="/static/js/office-formula-copy.min.js?v=2.0.116"></script>
+  <script>
+    (function () {
+      const root = document.getElementById('note-root');
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      }
+      function showError(title, detail) {
+        document.title = title;
+        root.innerHTML = '<div class="share-error"><h1>' + escapeHtml(title) + '</h1><p>' + escapeHtml(detail || '') + '</p>'
+          + '<a class="btn small" href="/">返回应用</a></div>';
+      }
+      function fmtTime(ts) {
+        const d = new Date(Number(ts) || Date.now());
+        if (Number.isNaN(d.getTime())) return '';
+        const p = (n) => String(n).padStart(2, '0');
+        return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+      }
+
+      const token = (location.pathname.match(/^\/n\/([A-Za-z0-9]+)/) || [])[1];
+      if (!token) return showError('分享不存在', '链接无效。');
+
+      function whenReady(fn) {
+        if (window.OCRenderer || document.readyState === 'complete') return fn();
+        window.addEventListener('load', fn, { once: true });
+      }
+      const base = window.apiUrl ? window.apiUrl('') : '';
+      function api(path) { return (window.apiUrl ? window.apiUrl(path) : path); }
+
+      function renderView(note) {
+        document.title = (note.title || '笔记分享') + ' · TinyChat';
+        const ogTitle = document.querySelector('meta[property="og:title"]');
+        if (ogTitle) ogTitle.setAttribute('content', document.title);
+        const tags = Array.isArray(note.tags) ? note.tags : [];
+        let html = '<h1 class="share-title">' + escapeHtml(note.title || '无标题') + '</h1>'
+          + '<p class="share-meta">笔记分享 · 更新于 ' + escapeHtml(fmtTime(note.updatedAt)) + (note.editable ? ' · 持链接可编辑' : '') + '</p>';
+        if (tags.length) html += '<div class="note-tags">' + tags.map((t) => '<span class="note-tag">#' + escapeHtml(t) + '</span>').join('') + '</div>';
+        html += '<div class="share-preview"><div class="messages" id="note-body"></div></div>';
+        if (note.editable) html += '<div style="margin-top:14px"><button class="btn small" id="note-edit-btn">编辑笔记</button></div>';
+        root.innerHTML = html;
+        const body = document.getElementById('note-body');
+        if (window.OCRenderer) window.OCRenderer.renderInto(body, note.content || '');
+        else body.textContent = note.content || '';
+        if (note.editable) document.getElementById('note-edit-btn').addEventListener('click', () => renderEditor(note));
+      }
+
+      function renderEditor(note) {
+        root.innerHTML = '<div class="note-editor">'
+          + '<input class="note-title-input" id="ne-title" value="' + escapeHtml(note.title || '') + '" maxlength="200" placeholder="笔记标题">'
+          + '<textarea id="ne-content" spellcheck="false">' + escapeHtml(note.content || '') + '</textarea>'
+          + '<div class="row">'
+          + '<button class="btn small primary" id="ne-save">保存</button>'
+          + '<button class="btn small" id="ne-preview">预览</button>'
+          + '<button class="btn small" id="ne-cancel">取消</button>'
+          + '<span class="muted" id="ne-status"></span>'
+          + '</div>'
+          + '<div class="share-preview hidden" id="ne-preview-box"><div class="messages" id="ne-preview-body"></div></div>'
+          + '</div>';
+        const ta = document.getElementById('ne-content');
+        const box = document.getElementById('ne-preview-box');
+        document.getElementById('ne-preview').addEventListener('click', () => {
+          if (box.classList.contains('hidden')) {
+            box.classList.remove('hidden');
+            const pv = document.getElementById('ne-preview-body');
+            if (window.OCRenderer) window.OCRenderer.renderInto(pv, ta.value);
+            else pv.textContent = ta.value;
+            document.getElementById('ne-preview').textContent = '继续编辑';
+            ta.classList.add('hidden');
+          } else {
+            box.classList.add('hidden');
+            document.getElementById('ne-preview').textContent = '预览';
+            ta.classList.remove('hidden');
+          }
+        });
+        document.getElementById('ne-cancel').addEventListener('click', () => renderView(note));
+        document.getElementById('ne-save').addEventListener('click', async () => {
+          const status = document.getElementById('ne-status');
+          const btn = document.getElementById('ne-save');
+          btn.disabled = true;
+          status.textContent = '保存中…';
+          try {
+            const r = await fetch(api('/api/notes/shared/' + token), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ title: document.getElementById('ne-title').value, content: ta.value }),
+            });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error((data.error && data.error.message) || '保存失败');
+            status.textContent = '已保存';
+            renderView(data.note);
+          } catch (e) {
+            status.textContent = '';
+            btn.disabled = false;
+            showError('保存失败', e.message || '请稍后重试');
+          }
+        });
+      }
+
+      function start() {
+        fetch(api('/api/notes/shared/' + token))
+          .then(async (r) => {
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error((data.error && data.error.message) || '分享不存在或已失效');
+            return data.note;
+          })
+          .then((note) => whenReady(() => renderView(note)))
+          .catch((e) => showError('无法打开笔记', e.message || '分享不存在或已失效'));
+      }
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+      else start();
+    })();
+  </script>
+</body>
+</html>
