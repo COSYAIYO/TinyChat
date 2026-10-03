@@ -375,21 +375,22 @@
     mask.innerHTML =
       '<div class="notes-fs" role="dialog" aria-modal="true" aria-label="AI 笔记">'
       + '<header class="notes-fs-head" id="notes-fs-head">'
-      + '<button class="notes-icon-btn notes-side-toggle" id="notes-side-toggle" data-tip="文件夹面板">' + icon('panelLeft', 15) + '</button>'
-      + '<button class="notes-icon-btn" data-act="close" data-tip="返回对话（Esc）">' + icon('chevronLeft', 16) + '</button>'
-      + '<div class="notes-fs-title">' + icon('notebook', 16) + '<span>AI 笔记</span></div>'
-      + '<div class="notes-search">'
-      + '<span class="notes-search-icon">' + icon('search', 14) + '</span>'
-      + '<input id="notes-search-input" type="search" placeholder="搜索标题、内容或标签" autocomplete="off" spellcheck="false">'
+      + '<div class="nfh-left">'
+      + '<button class="nf-brand" id="notes-brand" data-tip="返回对话首页" aria-label="返回对话首页">'
+      + '<img src="./logo.svg" class="brand-logo-light" alt="TinyChat">'
+      + '<img src="./logo-dark.svg" class="brand-logo-dark" alt="TinyChat">'
+      + '</button>'
+      + '<button class="notes-back-btn" data-act="close" data-tip="返回对话（Esc）">' + icon('chevronLeft', 14) + '<span>返回</span></button>'
       + '</div>'
-      // 编辑器控件整块压缩在顶栏右上角(未选中笔记时隐藏)
+      + '<div class="nfh-right">'
+      // 编辑器控件压缩在顶栏(标题与下方输入区左对齐);未选中笔记时隐藏
       + '<div class="notes-editor-bar hidden" id="notes-editor-bar">'
       + '<input class="neb-title" id="ne-title" placeholder="无标题笔记" maxlength="200" spellcheck="false">'
-      + '<div class="neb-tags" id="ne-tags"></div>'
       + '<button class="neb-folder" id="ne-folder" data-tip="移动到其他文件夹"><span id="ne-folder-name"></span>' + icon('chevronDown', 11) + '</button>'
       + '<span class="neb-time" id="ne-time">更新于 --</span>'
       + '<span class="neb-sep">·</span>'
       + '<span class="ne-save-state" id="ne-save-state">已保存</span>'
+      + '<button class="neb-tags-btn" id="ne-tags-btn" data-tip="编辑标签">' + icon('tag', 13) + '<span>标签</span></button>'
       + '<div class="notes-mode-switch" id="ne-mode-switch">'
       + '<button data-mode="edit">编辑</button>'
       + '<button data-mode="split">分屏</button>'
@@ -404,13 +405,20 @@
       + '</div>'
       + '</div>'
       + '<span class="notes-sync" id="notes-sync-dot" data-tip="云同步状态"></span>'
+      + '</div>'
       + '</header>'
-      + '<div class="notes-fs-body">'
+      + '<button class="notes-side-float hidden" id="notes-side-float" data-tip="展开文件夹面板">' + icon('panelLeft', 15) + '</button>'
+      + '<div class="notes-fs-body" id="notes-fs-body">'
       + '<aside class="notes-side" id="notes-side">'
       + '<div class="notes-side-tools">'
       + '<button class="notes-new-btn" id="notes-new-btn">' + icon('plus', 13) + '新建笔记</button>'
-      + '<button class="notes-mini-btn" id="notes-folder-new">' + icon('folderPlus', 14) + '新文件夹</button>'
-      + '<button class="notes-icon-btn" id="notes-sort-btn" data-tip="排序">' + icon('menu', 15) + '</button>'
+      + '<button class="notes-new-btn" id="notes-folder-new">' + icon('folderPlus', 14) + '新文件夹</button>'
+      + '<button class="notes-icon-btn" id="notes-sort-btn" data-tip="排序">' + icon('sort', 15) + '</button>'
+      + '<button class="notes-icon-btn" id="notes-side-collapse" data-tip="收起面板">' + icon('panelLeft', 15) + '</button>'
+      + '</div>'
+      + '<div class="notes-search">'
+      + '<span class="notes-search-icon">' + icon('search', 14) + '</span>'
+      + '<input id="notes-search-input" type="search" placeholder="搜索标题、内容或标签" autocomplete="off" spellcheck="false">'
       + '</div>'
       + '<div class="notes-tree" id="notes-tree"></div>'
       + '</aside>'
@@ -432,6 +440,8 @@
       if (e.target === mask) flushEditor();
     });
     mask.querySelector('[data-act="close"]').addEventListener('click', close);
+    // Logo 与返回按钮一致:关闭笔记模块回到对话首页
+    mask.querySelector('#notes-brand').addEventListener('click', close);
     mask.querySelector('#notes-folder-new').addEventListener('click', () => {
       // 选中普通文件夹时在其内部新建子文件夹;未分类/根保持顶层
       const sel = folderById(N.ui.folderId);
@@ -449,9 +459,9 @@
       });
     });
     mask.querySelector('#notes-new-btn').addEventListener('click', (e) => openNewNoteDialog(e.currentTarget));
-    mask.querySelector('#notes-side-toggle').addEventListener('click', () => {
-      N.els.tree.closest('.notes-side').classList.toggle('collapsed');
-    });
+    // 仿对话首页的整栏侧栏折叠
+    mask.querySelector('#notes-side-collapse').addEventListener('click', toggleSide);
+    mask.querySelector('#notes-side-float').addEventListener('click', toggleSide);
     N.els.searchInput.addEventListener('input', debounce(() => {
       N.ui.search = N.els.searchInput.value.trim();
       renderTree();
@@ -465,6 +475,132 @@
         toast('已保存' + (N.dirty ? '（待同步）' : ''));
       }
     });
+    applySideState();
+  }
+
+  // 侧栏整栏折叠/展开(状态持久化,浮标恢复)
+  function toggleSide() {
+    N.ui.sideCollapsed = !N.ui.sideCollapsed;
+    persistUi();
+    applySideState();
+  }
+  function applySideState() {
+    const fs = N.els.mask && N.els.mask.querySelector('.notes-fs');
+    if (!fs) return;
+    fs.classList.toggle('side-collapsed', !!N.ui.sideCollapsed);
+    const float = N.els.mask.querySelector('#notes-side-float');
+    if (float) float.classList.toggle('hidden', !N.ui.sideCollapsed);
+  }
+
+  // 模块内的输入弹窗:圆角输入框、聚焦不做蓝色高亮(替代全局 OCUI.prompt)
+  function notesPrompt(opts) {
+    opts = opts || {};
+    return new Promise((resolve) => {
+      const mask = document.createElement('div');
+      mask.className = 'modal-mask notes-prompt-mask hidden';
+      mask.innerHTML =
+        '<div class="modal notes-prompt-modal" role="dialog" aria-modal="true">'
+        + '<div class="modal-header"><h3>' + esc(opts.title || '请输入') + '</h3></div>'
+        + '<div class="modal-body">'
+        + (opts.message ? '<p class="confirm-message">' + esc(opts.message) + '</p>' : '')
+        + '<input type="text" class="notes-prompt-input" maxlength="' + (opts.maxlength || 60) + '" spellcheck="false">'
+        + '</div>'
+        + '<div class="modal-footer">'
+        + '<button class="btn" data-act="cancel">' + esc(opts.cancelText || '取消') + '</button>'
+        + '<button class="btn primary" data-act="ok">' + esc(opts.confirmText || '确定') + '</button>'
+        + '</div></div>';
+      document.body.appendChild(mask);
+      const input = mask.querySelector('.notes-prompt-input');
+      input.value = opts.value || '';
+      // settled 守卫:closeModal 会触发 _onClose,不能再进入关闭流程(否则无限递归)
+      let settled = false;
+      const finish = (v) => {
+        if (settled) return;
+        settled = true;
+        resolve(v);
+        window.OCUI.closeModal(mask);
+        setTimeout(() => mask.remove(), 340);
+      };
+      mask._onClose = () => finish(null);
+      mask.addEventListener('click', (e) => {
+        if (e.target === mask) return finish(null);
+        const act = e.target.closest('[data-act]');
+        if (!act) return;
+        finish(act.dataset.act === 'ok' ? String(input.value).trim() : null);
+      });
+      mask.addEventListener('keydown', (e) => {
+        if (e.isComposing || e.keyCode === 229) return;
+        if (e.key === 'Enter') { e.preventDefault(); finish(String(input.value).trim()); }
+      });
+      if (window.OCUI) window.OCUI.openModal(mask);
+      else mask.classList.add('show');
+      setTimeout(() => { input.focus(); input.select(); }, 60);
+    });
+  }
+
+  // 标签编辑弹窗:增删即时保存
+  function openTagsDialog(n) {
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask notes-tags-mask hidden';
+    mask.innerHTML =
+      '<div class="modal notes-tags-modal" role="dialog" aria-modal="true">'
+      + '<div class="modal-header"><h3>标签</h3>'
+      + '<button class="notes-icon-btn" data-close>' + icon('close', 15) + '</button></div>'
+      + '<div class="modal-body">'
+      + '<div class="ntags-list" id="ntags-list"></div>'
+      + '<input type="text" class="notes-prompt-input" id="ntags-input" placeholder="输入标签，回车添加" maxlength="24" spellcheck="false">'
+      + '</div>'
+      + '<div class="modal-footer"><button class="btn primary" data-close>完成</button></div>'
+      + '</div>';
+    document.body.appendChild(mask);
+    let tagSettled = false;
+    const closeDlg = () => {
+      if (tagSettled) return;
+      tagSettled = true;
+      window.OCUI.closeModal(mask);
+      setTimeout(() => mask.remove(), 340);
+    };
+    mask._onClose = closeDlg;
+    mask.querySelector('[data-close]').addEventListener('click', closeDlg);
+    mask.addEventListener('mousedown', (e) => { if (e.target === mask) closeDlg(); });
+    const renderList = () => {
+      const cur = noteById(n.id);
+      const tags = cur ? (cur.tags || []) : [];
+      const list = mask.querySelector('#ntags-list');
+      list.innerHTML = tags.length
+        ? tags.map((t, i) => '<span class="ne-tag" data-i="' + i + '">#' + esc(t) + '<button class="ne-tag-x" data-tip="移除标签">×</button></span>').join('')
+        : '<span class="nt-none">还没有标签，回车即可添加。</span>';
+      list.querySelectorAll('.ne-tag-x').forEach((x) => {
+        x.addEventListener('click', () => {
+          const i = Number(x.closest('.ne-tag').dataset.i);
+          const c = noteById(n.id);
+          if (!c) return;
+          const tags = (c.tags || []).slice();
+          tags.splice(i, 1);
+          updateNote(n.id, { tags });
+          renderList();
+        });
+      });
+    };
+    const input = mask.querySelector('#ntags-input');
+    input.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const v = input.value.trim();
+      if (!v) return;
+      const c = noteById(n.id);
+      if (!c) return;
+      const tags = (c.tags || []).slice();
+      if (tags.indexOf(v) < 0) tags.push(v);
+      updateNote(n.id, { tags });
+      input.value = '';
+      renderList();
+    });
+    renderList();
+    if (window.OCUI) window.OCUI.openModal(mask);
+    else mask.classList.add('show');
+    setTimeout(() => { input.focus(); }, 60);
   }
 
   function syncDot(state) {
@@ -651,7 +787,7 @@
   }
 
   function renameFolderFlow(f) {
-    window.OCUI.prompt({
+    notesPrompt({
       title: '重命名文件夹',
       value: f.name, maxlength: 80, confirmText: '保存',
     }).then((name) => {
@@ -660,7 +796,7 @@
   }
 
   function promptNewFolder(parentId) {
-    window.OCUI.prompt({
+    notesPrompt({
       title: parentId ? '新建子文件夹' : '新建文件夹',
       message: '名称要语义明确、可长期使用，避免「其他」「杂项」这类泛化名称。',
       value: '', maxlength: 80, confirmText: '创建',
@@ -721,7 +857,7 @@
         if (v === 'pin') togglePin(n.id);
         else if (v === 'move') pickFolder((f) => moveNote(n.id, f));
         else if (v === 'rename') {
-          const t = await window.OCUI.prompt({ title: '重命名笔记', value: n.title, maxlength: 200, confirmText: '保存' });
+          const t = await notesPrompt({ title: '重命名笔记', value: n.title, maxlength: 200, confirmText: '保存' });
           if (t && t.trim()) updateNote(n.id, { title: t.trim() });
         } else if (v === 'share') openShareDialog(n.id);
         else if (v === 'export') exportNote(n);
@@ -816,8 +952,11 @@
     const preview = pane.querySelector('#ne-preview');
     ta.value = n.content || '';
     N.editor = { noteId: n.id, ta, preview, dirty: false, saveTimer: null, renderTimer: null };
-    renderTagsRow(n);
     renderPreview(n.content || '');
+    bar.querySelector('#ne-tags-btn').addEventListener('click', () => {
+      const cur = noteById(n.id);
+      if (cur) openTagsDialog(cur);
+    });
 
     bar.querySelector('#ne-mode-switch').addEventListener('click', (e) => {
       const b = e.target.closest('button[data-mode]');
@@ -941,41 +1080,6 @@
     }
   }
 
-  function renderTagsRow(n) {
-    const row = N.els.bar.querySelector('#ne-tags');
-    if (!row) return;
-    row.innerHTML = (n.tags || []).map((t, i) =>
-      '<span class="ne-tag" data-i="' + i + '">#' + esc(t) + '<button class="ne-tag-x" data-tip="移除标签">×</button></span>').join('')
-      + '<input id="ne-tag-input" placeholder="添加标签，回车确认" maxlength="24">';
-    row.querySelectorAll('.ne-tag-x').forEach((x) => {
-      x.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const i = Number(e.target.closest('.ne-tag').dataset.i);
-        const cur = noteById(n.id);
-        if (!cur) return;
-        const tags = (cur.tags || []).slice();
-        tags.splice(i, 1);
-        updateNote(n.id, { tags });
-        const fresh = noteById(n.id);
-        if (fresh) renderTagsRow(fresh);
-      });
-    });
-    const input = row.querySelector('#ne-tag-input');
-    input.addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter') return;
-      e.preventDefault();
-      const v = input.value.trim();
-      if (!v) return;
-      const cur = noteById(n.id);
-      if (!cur) return;
-      const tags = (cur.tags || []).slice();
-      if (tags.indexOf(v) < 0) tags.push(v);
-      updateNote(n.id, { tags });
-      const fresh = noteById(n.id);
-      if (fresh) renderTagsRow(fresh);
-    });
-  }
-
   // 标题输入单独挂(input 委托,编辑器重建间不丢)
   document.addEventListener('input', (e) => {
     if (!N.editor || !N.els.editorPane) return;
@@ -1016,7 +1120,7 @@
       fitWidth: true,
       onSelect: async (key) => {
         const t = TEMPLATES.find((x) => x.key === key);
-        const title = await window.OCUI.prompt({
+        const title = await notesPrompt({
           title: '新建' + (t ? t.name : '笔记'),
           message: '标题要可检索;标签用逗号分隔。创建/更新时间在编辑器右上角展示。',
           value: '', maxlength: 200, confirmText: '创建',

@@ -72,6 +72,7 @@
     maximize: '<path d="M9 4.5H6A1.5 1.5 0 004.5 6v3M15 4.5h3A1.5 1.5 0 0119.5 6v3M19.5 15v3a1.5 1.5 0 01-1.5 1.5h-3M4.5 15v3A1.5 1.5 0 006 19.5h3"/>',
     upload: '<path d="M12 15.5V4.8M7.6 9.2L12 4.8l4.4 4.4"/><path d="M5 18.5h14"/>',
     link: '<path d="M10.2 13.8a4.2 4.2 0 006 0l3-3a4.2 4.2 0 10-6-6l-1.3 1.3"/><path d="M13.8 10.2a4.2 4.2 0 00-6 0l-3 3a4.2 4.2 0 106 6l1.3-1.3"/>',
+    sort: '<path d="M4 6.5h9M4 12h6.5M4 17.5h4"/><path d="M16.5 6.5v11M16.5 17.5l3.2-3.2M16.5 17.5l-3.2-3.2"/>',
   };
 
   const FILLED = { more: true, stop: true, healthBad: true, healthIdle: true };

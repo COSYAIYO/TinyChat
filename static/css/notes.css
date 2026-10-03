@@ -12,37 +12,70 @@
 
 .notes-fs {
   background: var(--bg-app);
-  width: 100vw;
-  height: 100vh;
-  max-height: 100vh;
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  position: relative;
 }
 
 /* ---------- 顶部工具条 ---------- */
 .notes-fs-head {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(252px, 304px) 1fr;
   align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
+  padding: 6px 14px 6px 10px;
   border-bottom: 1px solid var(--hairline);
   background: var(--bg-surface);
   flex-shrink: 0;
 }
-.notes-fs-title {
+.nfh-left {
   display: flex;
   align-items: center;
-  gap: 7px;
-  font-size: 13.5px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
-  color: var(--text);
-  white-space: nowrap;
-  margin-right: 4px;
+  gap: 4px;
+  min-width: 0;
 }
-.notes-fs-title .oc-icon { color: var(--accent); }
+.nf-brand {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  padding: 3px 6px;
+  border-radius: 8px;
+  transition: background .13s;
+}
+.nf-brand:hover { background: var(--bg-hover); }
+.nf-brand img { height: 21px; width: auto; display: block; }
+.nf-brand .brand-logo-dark { display: none; }
+[data-theme="dark"] .nf-brand .brand-logo-light { display: none; }
+[data-theme="dark"] .nf-brand .brand-logo-dark { display: block; }
+.notes-back-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  white-space: nowrap;
+  transition: background .13s, color .13s;
+}
+.notes-back-btn:hover { background: var(--bg-hover); color: var(--text); }
+.nfh-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding-left: 22px; /* 与下方笔记输入区左缘对齐 */
+}
+.nfh-right .notes-sync { margin-left: 6px; flex-shrink: 0; }
 .notes-sync {
   width: 7px; height: 7px;
   border-radius: 50%;
@@ -55,18 +88,18 @@
 .notes-sync[data-state="err"] { background: var(--danger); opacity: 1; }
 
 .notes-search {
-  flex: 1 1 220px;
-  max-width: 420px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 8px;
-  background: var(--bg-input);
-  border: 1px solid var(--hairline);
+  margin: 0 10px 6px;
+  background: var(--bg-code);
+  border: none;
   border-radius: 10px;
-  padding: 6px 12px;
-  transition: border-color .15s, box-shadow .15s;
+  padding: 7px 12px;
+  transition: background .15s;
 }
-.notes-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent); }
+.notes-search:focus-within { background: var(--bg-active); box-shadow: none; }
 .notes-search-icon { color: var(--text-tertiary); display: flex; }
 .notes-search input {
   flex: 1;
@@ -79,8 +112,6 @@
   font-family: inherit;
 }
 .notes-search input::placeholder { color: var(--text-tertiary); }
-/* 有打开的笔记时:搜索收窄,右侧让位给编辑器控件条 */
-.notes-fs-head.has-editor .notes-search { flex: 0 1 300px; }
 
 /* ---------- 顶栏右上角:编辑器控件条 ---------- */
 .notes-editor-bar {
@@ -89,8 +120,8 @@
   gap: 4px;
   flex: 1 1 auto;
   min-width: 0;
-  justify-content: flex-end;
 }
+.neb-folder { margin-left: auto; }
 .notes-editor-bar.hidden { display: none; }
 .neb-title {
   width: 168px;
@@ -139,6 +170,24 @@
 .neb-folder:hover { background: var(--bg-hover); color: var(--text); }
 .neb-folder .oc-icon { color: var(--text-tertiary); }
 #ne-folder-name { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+.neb-tags-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background .13s, color .13s;
+}
+.neb-tags-btn:hover { background: var(--bg-hover); color: var(--text); }
+.neb-tags-btn .oc-icon { color: var(--text-tertiary); }
 .neb-time {
   font-size: 12px;
   color: var(--text-tertiary);
@@ -218,13 +267,34 @@
 .notes-side-tools {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 9px 10px 7px;
+  gap: 2px;
+  padding: 8px 8px 8px;
   flex-shrink: 0;
+  flex-wrap: wrap;
 }
-.notes-side-tools .notes-new-btn { padding: 6px 11px; }
-.notes-side-toggle { display: none; }
 .notes-tree { flex: 1; overflow-y: auto; padding: 4px 8px 20px; }
+/* 整栏折叠:收起目录树列,浮标恢复 */
+.notes-fs.side-collapsed .notes-fs-body { grid-template-columns: 0 1fr; }
+.notes-fs.side-collapsed .notes-side { display: none; }
+.notes-side-float {
+  position: absolute;
+  top: 50px;
+  left: 10px;
+  z-index: 25;
+  border: none;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  width: 30px; height: 30px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow-sm);
+  transition: background .13s, color .13s;
+}
+.notes-side-float:hover { background: var(--bg-hover); color: var(--text); }
+.notes-side-float.hidden { display: none; }
 .nt-block { min-width: 0; }
 .notes-folder-row {
   display: flex;
@@ -581,6 +651,26 @@
 }
 .ns-hint { font-size: 11.5px; color: var(--text-tertiary); margin: 10px 0 0; }
 
+/* ---------- 模块内输入弹窗 / 标签弹窗:圆角输入框、聚焦中性色 ---------- */
+.notes-prompt-mask, .notes-tags-mask { z-index: 1660; }
+.notes-prompt-modal { width: min(400px, 92vw); }
+.notes-tags-modal { width: min(380px, 92vw); }
+.notes-prompt-input {
+  width: 100%;
+  padding: 10px 13px;
+  border-radius: 12px;
+  border: 1px solid var(--hairline-strong);
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  box-shadow: none;
+  transition: border-color .15s, background .15s;
+}
+.notes-prompt-input:focus { border-color: var(--text-tertiary); background: var(--bg-surface-2); outline: none; box-shadow: none; }
+.ntags-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+
 /* ---------- AI 整理预览弹窗 ---------- */
 .notes-ai-mask { z-index: 1660; }
 .notes-ai-modal { width: min(760px, 94vw); }
@@ -629,7 +719,7 @@
   outline: none;
   transition: border-color .13s;
 }
-.nai-field input:focus, .nai-field select:focus { border-color: var(--accent); }
+.nai-field input:focus, .nai-field select:focus { border-color: var(--hairline-strong); box-shadow: none; }
 .nai-folder-row { display: flex; flex-direction: column; gap: 8px; }
 .nai-content-head {
   display: flex;
@@ -657,7 +747,12 @@
 .nai-tip { font-size: 11.5px; color: var(--text-tertiary); margin: 10px 0 0; }
 
 /* ---------- 响应式 ---------- */
+@media (max-width: 1200px) {
+  .neb-time, .neb-sep { display: none; }
+  .neb-title { width: 120px; }
+}
 @media (max-width: 760px) {
+  .notes-fs-head { grid-template-columns: auto 1fr; }
   .notes-fs-body { grid-template-columns: 1fr; position: relative; }
   .notes-side {
     position: absolute;
@@ -669,17 +764,12 @@
     box-shadow: var(--shadow-lg);
     background: var(--bg-surface);
   }
-  .notes-side.collapsed { transform: translateX(0); }
-  .notes-side-toggle { display: inline-flex; }
+  .notes-fs.side-collapsed .notes-side { display: block; transform: translateX(-100%); }
+  .notes-fs.side-collapsed .notes-fs-body { grid-template-columns: 1fr; }
   .notes-editor-panes.mode-split, .notes-editor-panes.mode-preview { grid-template-columns: 1fr; }
   .notes-editor-panes.mode-split .notes-ta { display: none; }
   .notes-editor-panes.mode-split .notes-preview-wrap { display: block; }
-  .notes-search { max-width: none; }
-  .neb-time, .neb-sep, .neb-tags { display: none; }
+  .neb-save-state { display: none; }
   .neb-title { width: 110px; }
-}
-
-@media (max-width: 1080px) {
-  .neb-tags { display: none; }
-  .neb-title { width: 120px; }
+  .nfh-right { padding-left: 12px; }
 }
