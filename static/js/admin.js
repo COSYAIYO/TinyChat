@@ -60,79 +60,13 @@ function escapeHtml(s) {
 // 长选项还会把整行撑满。这里保持原来的 .value / change 语义不变,
 // 所以调用方(读取 $('x').value、监听 change、直接赋值)一句都不用改。
 // 用法:enhanceNativeSelect('th-mode') —— 在 DOM 就绪后调用一次。
+// 复用 components.js 的通用实现(全站同一套观感)
 function enhanceNativeSelect(id, opts = {}) {
   const sel = $(id);
-  if (!sel || sel.tagName !== 'SELECT' || sel.dataset.enhanced === '1') return null;
-  if (!window.OC || typeof window.OC.openSelect !== 'function') return null;
-  sel.dataset.enhanced = '1';
-  sel.style.display = 'none';
-
-  const box = document.createElement('div');
-  box.className = 'select-box';
-  box.id = id + '-box';
-  box.setAttribute('role', 'button');
-  box.setAttribute('tabindex', '0');
-  box.setAttribute('aria-haspopup', 'listbox');
-  box.setAttribute('aria-expanded', 'false');
-  box.dataset.value = sel.value;
-  // 原 select 上的内联布局样式(如工具栏里的 flex:1;min-width)要挪到新控件上,
-  // 否则换完控件这一行会塌掉。只搬运布局相关的属性,视觉样式交给 .select-box。
-  ['flex', 'flex-grow', 'flex-shrink', 'flex-basis', 'min-width', 'max-width', 'width', 'margin'].forEach((prop) => {
-    const v = sel.style.getPropertyValue(prop);
-    if (v) box.style.setProperty(prop, v);
-  });
-  if (sel.classList.contains('search-input')) box.classList.add('search-input');
-  const label = document.createElement('span');
-  label.className = 'sb-label';
-  const arrow = document.createElement('span');
-  arrow.className = 'sb-arrow';
-  // 与 admin.html 里其它 .select-box 保持完全一致的箭头(内联 SVG)
-  arrow.innerHTML = '<svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg>';
-  box.appendChild(label);
-  box.appendChild(arrow);
-  sel.parentNode.insertBefore(box, sel);
-
-  const items = () => Array.prototype.map.call(sel.options, (o) => ({ value: o.value, label: o.textContent }));
-  const sync = (v) => {
-    const hit = items().find((o) => o.value === String(v));
-    label.textContent = hit ? hit.label : String(v == null ? '' : v);
-    box.dataset.value = sel.value;
-  };
-  // 选项是动态填充的(如「选择套餐」),数据变化后要重新同步显示文字
-  box.syncLabel = () => sync(sel.value);
-  sync(sel.value);
-
-  box.addEventListener('click', () => {
-    box.setAttribute('aria-expanded', 'true');
-    window.OC.openSelect(box, items(), {
-      selected: sel.value,
-      onSelect: (val) => {
-        box.setAttribute('aria-expanded', 'false');
-        if (sel.value === val) { sync(val); return; }
-        sel.value = val;
-        sync(val);
-        // 沿用原生 select 的 change 语义,现有监听器照常触发
-        sel.dispatchEvent(new Event('change', { bubbles: true }));
-      },
-    });
-  });
-  box.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); box.click(); }
-  });
-  // 外部直接给 select 赋值时,把显示文字同步过来
-  const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
-  if (desc && !sel.dataset.valuePatched) {
-    sel.dataset.valuePatched = '1';
-    Object.defineProperty(sel, 'value', {
-      get() { return desc.get.call(sel); },
-      set(v) { desc.set.call(sel, v); sync(v); },
-      configurable: true,
-    });
-  }
-  return box;
+  if (!sel || !window.OC || typeof window.OC.enhanceSelect !== 'function') return null;
+  return window.OC.enhanceSelect(sel, opts);
 }
 
-// 页面里所有原生下拉一次性替换(在 DOM 就绪后调用)
 function enhanceAllNativeSelects(ids) {
   ids.forEach((id) => enhanceNativeSelect(id));
 }
@@ -159,14 +93,19 @@ function fmtUptime(sec) {
   if (h > 0) return h + ' 小时 ' + m + ' 分';
   return m + ' 分';
 }
-function sysRing(label, sub, pct, color) {
+// 环形指标卡:标签(单行省略) + 主值(大字) + 副值(小字省略)。
+// 主/副分离是为了让「2.61 GB / 5.79 GB」这类长串不再挤成两行乱折。
+function sysRing(label, value, pct, color, sub) {
   const has = (pct !== null && pct !== undefined);
   const p = has ? Math.max(0, Math.min(100, Math.round(pct))) : 0;
   return '<div class="sys-meter">'
     + '<div class="sys-ring"' + (has ? ' style="--ring-color:' + color + ';--pct:' + p + '"' : ' style="--ring-color:#cbd5e1"') + '>'
     + '<span>' + (has ? p + '%' : '—') + '</span></div>'
-    + '<div class="sys-meter-meta"><div class="k">' + escapeHtml(label) + '</div><div class="v">' + escapeHtml(sub) + '</div></div>'
-    + '</div>';
+    + '<div class="sys-meter-meta">'
+    + '<div class="k">' + escapeHtml(label) + '</div>'
+    + '<div class="v">' + escapeHtml(value) + '</div>'
+    + (sub ? '<div class="sub">' + escapeHtml(sub) + '</div>' : '')
+    + '</div></div>';
 }
 function sysRingColor(pct) { return pct >= 85 ? '#dc2626' : (pct >= 60 ? '#f59e0b' : '#16a34a'); }
 // 无环数值卡片:网速、运行时长、体积这类没有百分比可言的指标用大字直接显示
@@ -199,11 +138,12 @@ async function loadSystemBoard() {
     const sub = [];
     if (quota.cpuCores) sub.push('配额 ' + fmtCores(quota.cpuCores));
     if (quota.cpuCoreUsage !== null && quota.cpuCoreUsage !== undefined) sub.push('现用 ' + fmtCores(quota.cpuCoreUsage));
-    meters.push(sysRing(quota.cpuCores ? 'CPU（配额）' : 'CPU（账户用量）', sub.join(' · ') || '—',
-      quota.cpuPercent, sysRingColor(quota.cpuPercent || 0)));
+    meters.push(sysRing(quota.cpuCores ? 'CPU 配额' : 'CPU 用量',
+      quota.cpuCoreUsage !== null && quota.cpuCoreUsage !== undefined ? fmtCores(quota.cpuCoreUsage) : '—',
+      quota.cpuPercent, sysRingColor(quota.cpuPercent || 0), sub.join(' · ')));
   } else if (cpu.percent !== null && cpu.percent !== undefined) {
-    const la = (cpu.loadavg && cpu.loadavg.length) ? '负载 ' + cpu.loadavg.join(' / ') : (cpu.cores ? cpu.cores + ' 核' : '—');
-    meters.push(sysRing('CPU 使用率', la, cpu.percent, sysRingColor(cpu.percent)));
+    const la = (cpu.loadavg && cpu.loadavg.length) ? '负载 ' + cpu.loadavg.join(' / ') : '';
+    meters.push(sysRing('CPU 使用率', cpu.cores ? cpu.cores + ' 核' : '—', cpu.percent, sysRingColor(cpu.percent), la));
   } else if (cpu.cores) {
     meters.push(sysRing('CPU', cpu.cores + ' 核', null, '#cbd5e1'));
   }
@@ -213,20 +153,21 @@ async function loadSystemBoard() {
   const phpRing = () => {
     if (!mem.phpBytes) return;
     const lim = mem.phpLimitBytes;
-    meters.push(sysRing('PHP 进程内存', fmtBytesBig(mem.phpBytes) + (lim ? ' / ' + fmtBytesBig(lim) : ''),
-      lim ? mem.phpBytes * 100 / lim : null, sysRingColor(lim ? mem.phpBytes * 100 / lim : 0)));
+    meters.push(sysRing('PHP 进程内存', fmtBytesBig(mem.phpBytes),
+      lim ? mem.phpBytes * 100 / lim : null, sysRingColor(lim ? mem.phpBytes * 100 / lim : 0),
+      lim ? '上限 ' + fmtBytesBig(lim) : ''));
   };
   if (hasQuotaMem) {
     const pct = quota.memUsedBytes * 100 / quota.memLimitBytes;
-    meters.push(sysRing('内存（配额）', fmtBytesBig(quota.memUsedBytes) + ' / ' + fmtBytesBig(quota.memLimitBytes), pct, sysRingColor(pct)));
+    meters.push(sysRing('内存配额', fmtBytesBig(quota.memUsedBytes), pct, sysRingColor(pct), '共 ' + fmtBytesBig(quota.memLimitBytes)));
   } else if (mem.totalBytes) {
     const pct = mem.usedBytes * 100 / mem.totalBytes;
-    meters.push(sysRing('内存', fmtBytesBig(mem.usedBytes) + ' / ' + fmtBytesBig(mem.totalBytes), pct, sysRingColor(pct)));
+    meters.push(sysRing('内存', fmtBytesBig(mem.usedBytes), pct, sysRingColor(pct), '共 ' + fmtBytesBig(mem.totalBytes)));
   }
   if (disk.totalBytes && disk.freeBytes !== null && disk.freeBytes !== undefined) {
     const used = disk.totalBytes - disk.freeBytes;
     const pct = used * 100 / disk.totalBytes;
-    meters.push(sysRing('磁盘', fmtBytesBig(used) + ' / ' + fmtBytesBig(disk.totalBytes), pct, sysRingColor(pct)));
+    meters.push(sysRing('磁盘', fmtBytesBig(used), pct, sysRingColor(pct), '共 ' + fmtBytesBig(disk.totalBytes)));
   }
   // 网速:上行=出站(回复与图片发给用户),下行=入站(用户请求进来)
   if (net.txBps !== null && net.txBps !== undefined) {
@@ -248,10 +189,16 @@ async function loadSystemBoard() {
   metersEl.innerHTML = meters.join('') || '<p class="muted small" style="margin:0">当前环境未提供 CPU / 内存指标。</p>';
   const hostEl = $('sys-host');
   if (hostEl) {
-    hostEl.textContent = [
+    const parts = [
       'v' + (d.version || '?'), srv.phpVersion ? 'PHP ' + srv.phpVersion : '', srv.sapi, srv.os,
       srv.arch, srv.sqliteVersion ? 'SQLite ' + srv.sqliteVersion : '', srv.host, srv.timezone,
-    ].filter(Boolean).join(' · ');
+    ].filter(Boolean);
+    // 环境信息很长(内核版本 + 主机名等),单行显示会挤压右侧按钮:
+    // 只显示前若干项,剩余折成 +N,完整内容放 title 里悬停可见。
+    const shown = parts.slice(0, 4).join(' · ');
+    const rest = parts.length > 4 ? parts.slice(4) : [];
+    hostEl.textContent = rest.length ? (shown + ' +' + rest.length) : shown;
+    hostEl.title = parts.join(' · ');
   }
   const upEl = $('sys-updated');
   if (upEl) upEl.textContent = '更新于 ' + fmtTime(Date.now()).replace(/^.*\s/, '').replace(/:\d\d$/, '');

@@ -1831,6 +1831,30 @@ if [ -n "$PUP" ]; then
   LED=$(curl -s "$BASE/api/me/quota/ledger?limit=5" -H "Authorization: Bearer $NMT2")
   assert_contains "笔记 AI 调用写入余量明细" "$LED" 'AI 笔记编辑'
   assert_contains "明细含扣费金额" "$LED" '"amount":-3'
+
+say "== AI 笔记:分享管理(保留令牌改设置) =="
+# 建一篇带分享的笔记
+PMREV=$(curl -s "$BASE/api/sync/notes" -H "$AUTH" | python -c "import sys,json;print(json.load(sys.stdin)['revision'])")
+cat > "$TMP/notes-shm.json" <<EOF
+{"baseRevision":$PMREV,"doc":{"folders":[{"id":"fshm","parentId":null,"name":"分享管理","createdAt":1,"updatedAt":1}],"notes":[{"id":"nshm","folderId":"fshm","title":"分享管理笔记","content":"正文内容","tags":[],"isPinned":false,"shareMode":"private","createdAt":1,"updatedAt":1}],"tombs":{}}}
+EOF
+curl -s -X POST "$BASE/api/sync/notes" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/notes-shm.json" > /dev/null
+SH1=$(curl -s -X POST "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"nshm","mode":"view-link","expireDays":7}')
+TOK1=$(printf '%s' "$SH1" | jget token)
+assert_contains "创建分享返回有效期" "$SH1" '"expireAt":'
+assert_contains "新建分享 kept=false" "$SH1" '"kept":false'
+# keepToken 修改设置:令牌应保持不变
+SH2=$(curl -s -X POST "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"nshm","mode":"edit-link","expireDays":30,"keepToken":true}')
+TOK2=$(printf '%s' "$SH2" | jget token)
+assert_contains "keepToken 返回 kept=true" "$SH2" '"kept":true'
+if [ "$TOK1" = "$TOK2" ]; then ok "修改设置后链接不变($TOK1)"; else bad "修改设置后链接被更换"; fi
+assert_contains "权限已改为可编辑" "$SH2" '"mode":"edit-link"'
+assert_contains "旧链接仍可访问" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/notes/shared/$TOK1")" "200"
+# 分享列表带有效期(供管理界面展示)
+assert_contains "分享列表含有效期字段" "$(curl -s "$BASE/api/sync/notes" -H "$AUTH")" '"expireAt":'
+# 取消分享
+curl -s -X DELETE "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"nshm"}' > /dev/null
+assert_contains "取消后链接失效" "$(curl -s "$BASE/api/notes/shared/$TOK1")" '分享不存在'
   curl -s -X DELETE "$BASE/api/providers/$PUP" -H "$AUTH" > /dev/null
 else bad "建测试供应商失败"; fi
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesAiDailyLimit":50}' > /dev/null
