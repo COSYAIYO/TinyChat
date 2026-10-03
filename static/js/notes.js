@@ -392,6 +392,8 @@
       + '<span class="neb-sep">·</span>'
       + '<span class="ne-save-state" id="ne-save-state">已保存</span>'
       + '<button class="neb-tags-btn" id="ne-tags-btn" data-tip="编辑标签">' + icon('tag', 13) + '<span>标签</span></button>'
+      + '<button class="notes-icon-btn" id="ne-undo" data-tip="上一步（Ctrl+Z）" aria-label="上一步">' + icon('undo', 15) + '</button>'
+      + '<button class="notes-icon-btn" id="ne-redo" data-tip="下一步（Ctrl+Shift+Z）" aria-label="下一步">' + icon('redo', 15) + '</button>'
       + '<div class="notes-mode-switch" id="ne-mode-switch">'
       + '<button data-mode="edit">编辑</button>'
       + '<button data-mode="split">分屏</button>'
@@ -1007,6 +1009,9 @@
     ta.value = n.content || '';
     N.editor = { noteId: n.id, ta, preview, dirty: false, saveTimer: null, renderTimer: null };
     renderPreview(n.content || '');
+    resetHistory(n.id);
+    bar.querySelector('#ne-undo').addEventListener('click', undo);
+    bar.querySelector('#ne-redo').addEventListener('click', redo);
     bar.querySelector('#ne-tags-btn').addEventListener('click', () => {
       const cur = noteById(n.id);
       if (cur) openTagsDialog(cur);
@@ -1035,6 +1040,7 @@
 
     ta.addEventListener('input', () => {
       N.editor.dirty = true;
+      pushHistory();
       setSaveState('editing');
       clearTimeout(N.editor.saveTimer);
       N.editor.saveTimer = setTimeout(saveEditor, 900);
@@ -1042,6 +1048,17 @@
       N.editor.renderTimer = setTimeout(() => renderPreview(ta.value), 450);
     });
     ta.addEventListener('keydown', (e) => {
+      // 撤销 / 重做:自建历史栈(原生 undo 在重渲染后会失效)
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) redo(); else undo();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        redo();
+        return;
+      }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
         saveEditor();
@@ -1124,9 +1141,92 @@
     if (N.editor && N.editor.dirty) saveEditor();
   }
 
+  // ============ 撤销 / 重做 ============
+  // 自建历史栈(不依赖浏览器原生 undo:重渲染后原生栈会丢失)。
+  // 快照 = {content, title};连续输入按时间窗合并成一步,上限 120 步。
+  const HISTORY_LIMIT = 120;
+  const HISTORY_MERGE_MS = 700;
+  let hist = { noteId: '', stack: [], index: -1, lastAt: 0 };
+
+  function editorSnapshot() {
+    if (!N.editor) return null;
+    const ti = N.els.bar && N.els.bar.querySelector('#ne-title');
+    return { content: N.editor.ta ? N.editor.ta.value : '', title: ti ? ti.value : '' };
+  }
+  function sameSnapshot(a, b) {
+    return !!a && !!b && a.content === b.content && a.title === b.title;
+  }
+  function resetHistory(noteId) {
+    hist = { noteId: noteId || '', stack: [], index: -1, lastAt: 0 };
+    const snap = editorSnapshot();
+    if (snap) { hist.stack = [snap]; hist.index = 0; }
+    syncUndoButtons();
+  }
+  function pushHistory(opts) {
+    opts = opts || {};
+    if (!N.editor) return;
+    const snap = editorSnapshot();
+    if (!snap) return;
+    if (hist.noteId !== N.editor.noteId) { resetHistory(N.editor.noteId); return; }
+    const cur = hist.stack[hist.index];
+    if (sameSnapshot(cur, snap)) return;
+    const now = Date.now();
+    const mergeable = !opts.force && (now - hist.lastAt) < HISTORY_MERGE_MS && hist.index === hist.stack.length - 1;
+    if (mergeable && hist.index > 0) {
+      // 连续输入:覆盖栈顶,而不是每敲一个字就记一步
+      hist.stack[hist.index] = snap;
+    } else {
+      hist.stack = hist.stack.slice(0, hist.index + 1);
+      hist.stack.push(snap);
+      if (hist.stack.length > HISTORY_LIMIT) hist.stack.shift();
+      hist.index = hist.stack.length - 1;
+    }
+    hist.lastAt = now;
+    syncUndoButtons();
+  }
+  function applySnapshot(snap) {
+    if (!snap || !N.editor) return;
+    const ta = N.editor.ta;
+    const ti = N.els.bar && N.els.bar.querySelector('#ne-title');
+    if (ta && ta.value !== snap.content) ta.value = snap.content;
+    if (ti && ti.value !== snap.title) ti.value = snap.title;
+    N.editor.dirty = true;
+    setSaveState('editing');
+    clearTimeout(N.editor.saveTimer);
+    N.editor.saveTimer = setTimeout(saveEditor, 700);
+    renderPreview(ta ? ta.value : '');
+  }
+  function undo() {
+    if (!N.editor) return;
+    // 先把「尚未入栈的当前输入」记进去,保证第一次 Ctrl+Z 能回到编辑前一刻
+    pushHistory();
+    if (hist.index <= 0) { toast('已经是最早一步'); return; }
+    hist.index--;
+    hist.lastAt = 0;
+    applySnapshot(hist.stack[hist.index]);
+    syncUndoButtons();
+  }
+  function redo() {
+    if (!N.editor) return;
+    if (hist.index >= hist.stack.length - 1) { toast('已经是最新一步'); return; }
+    hist.index++;
+    hist.lastAt = 0;
+    applySnapshot(hist.stack[hist.index]);
+    syncUndoButtons();
+  }
+  function syncUndoButtons() {
+    const bar = N.els.bar;
+    if (!bar) return;
+    const u = bar.querySelector('#ne-undo');
+    const r = bar.querySelector('#ne-redo');
+    if (u) u.disabled = !N.editor || hist.index <= 0;
+    if (r) r.disabled = !N.editor || hist.index >= hist.stack.length - 1;
+  }
+
   function renderPreview(md) {
     const preview = N.editor && N.editor.preview;
     if (!preview) return;
+    // 附件走签名 URL 且需身份鉴权:属主本人由浏览器携带登录态即可取用
     if (window.OCRenderer && window.OCRenderer.renderInto) {
       window.OCRenderer.renderInto(preview, md);
     } else {
@@ -1139,6 +1239,7 @@
     if (!N.editor || !N.els.editorPane) return;
     if (e.target && e.target.id === 'ne-title') {
       N.editor.dirty = true;
+      pushHistory();
       setSaveState('editing');
       clearTimeout(N.editor.saveTimer);
       N.editor.saveTimer = setTimeout(saveEditor, 900);
@@ -1275,6 +1376,8 @@
     const doUpload = () => {
       const fd = new FormData();
       fd.append('file', file, file.name);
+      // 绑定归属笔记:附件鉴权与「通过分享下载」据此判定
+      if (noteId) fd.append('noteId', noteId);
       const xhr = new XMLHttpRequest();
       xhr.open('POST', apiUrlOf('/api/notes/upload'));
       xhr.setRequestHeader('Authorization', 'Bearer ' + bearerToken());

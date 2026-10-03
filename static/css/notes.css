@@ -123,6 +123,8 @@
   height: 34px;
 }
 .notes-editor-bar .notes-icon-btn { width: 28px; height: 28px; }
+/* 撤销/重做:不可用时降低存在感,不隐藏(保持工具栏稳定) */
+.notes-editor-bar .notes-icon-btn:disabled { opacity: .35; cursor: default; background: transparent; color: var(--text-tertiary); }
 .neb-tags-btn { height: 28px; }
 .nfh-right { align-items: center; }
 .nfh-right { min-height: 34px; }

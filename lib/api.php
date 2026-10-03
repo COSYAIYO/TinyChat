@@ -4526,21 +4526,56 @@ function tc_note_file_dir_for($id) {
     if ($uid === '') return '';
     return tc_note_user_dir($uid, false);
 }
-// 归属指纹 → 用户 ID 索引(data/notes/index.json,由上传时维护)
-function tc_notes_owner_index() {
+// 附件索引(data/notes/index.json):owners 为归属指纹→用户 ID,files 为附件 id→笔记 id。
+// files 用于附件鉴权:读取时判定「该附件属于哪篇笔记」,据此决定谁能下载。
+function tc_notes_index_read() {
     static $cache = null;
     if ($cache !== null) return $cache;
     $f = tc_note_root_dir() . '/index.json';
     $j = json_decode((string) @file_get_contents($f), true);
-    $cache = (is_array($j) && isset($j['owners']) && is_array($j['owners'])) ? $j['owners'] : array();
+    $cache = array(
+        'owners' => (is_array($j) && isset($j['owners']) && is_array($j['owners'])) ? $j['owners'] : array(),
+        'files' => (is_array($j) && isset($j['files']) && is_array($j['files'])) ? $j['files'] : array(),
+    );
     return $cache;
 }
-function tc_notes_owner_index_add($userId) {
+function tc_notes_owner_index() { $i = tc_notes_index_read(); return $i['owners']; }
+function tc_notes_index_write($idx) {
+    $cache = null; // 让下次读取拿到新值
+    @file_put_contents(tc_note_root_dir() . '/index.json', tc_json_encode(array(
+        'owners' => isset($idx['owners']) ? $idx['owners'] : array(),
+        'files' => isset($idx['files']) ? $idx['files'] : array(),
+    )), LOCK_EX);
+}
+// 记录归属(用户指纹)与附件→笔记映射
+function tc_notes_index_add($userId, $fileId, $noteId) {
+    $idx = tc_notes_index_read();
     $tag = tc_note_file_owner_tag($userId);
-    $idx = tc_notes_owner_index();
-    if (isset($idx[$tag]) && (string) $idx[$tag] === (string) $userId) return;
-    $idx[$tag] = (string) $userId;
-    @file_put_contents(tc_note_root_dir() . '/index.json', tc_json_encode(array('owners' => $idx)), LOCK_EX);
+    $changed = false;
+    if (!isset($idx['owners'][$tag]) || (string) $idx['owners'][$tag] !== (string) $userId) {
+        $idx['owners'][$tag] = (string) $userId;
+        $changed = true;
+    }
+    if ($fileId !== '' && $noteId !== '' && (!isset($idx['files'][$fileId]) || (string) $idx['files'][$fileId] !== (string) $noteId)) {
+        $idx['files'][$fileId] = (string) $noteId;
+        $changed = true;
+    }
+    if ($changed) tc_notes_index_write($idx);
+}
+function tc_notes_index_remove_file($fileId) {
+    $idx = tc_notes_index_read();
+    if (!isset($idx['files'][$fileId])) return;
+    unset($idx['files'][$fileId]);
+    tc_notes_index_write($idx);
+}
+function tc_note_file_owner($fileId) {
+    $idx = tc_notes_index_read();
+    $tag = substr((string) $fileId, 0, 13);
+    return isset($idx['owners'][$tag]) ? (string) $idx['owners'][$tag] : '';
+}
+function tc_note_file_bound_note($fileId) {
+    $idx = tc_notes_index_read();
+    return isset($idx['files'][$fileId]) ? (string) $idx['files'][$fileId] : '';
 }
 function tc_note_file_token($id) {
     return substr(hash_hmac('sha256', 'noteattach:' . (string) $id, tc_secret()), 0, 24);
@@ -4837,9 +4872,12 @@ function tc_api_note_attachment_upload() {
         if (strlen($body) === 0 || strlen($body) !== $size) tc_fail(400, '文件读取不完整');
         $dir = tc_note_user_dir($user['id']);
         if ($dir === '' || !is_dir($dir) || !is_writable($dir)) tc_fail(500, '附件目录不可写，请检查 data/ 目录权限');
-        tc_notes_owner_index_add($user['id']);
+        // 归属声明:前端上传时带上目标笔记 id(未带则视为未绑定,只能属主本人访问)
+        $boundNoteId = substr(trim((string) (isset($_POST['noteId']) ? $_POST['noteId'] : '')), 0, 64);
+        tc_notes_index_add($user['id'], '', '');
         // id = 用户指纹(13) + 随机段:serve 时据指纹定位目录,实现归属隔离
         $id = tc_note_file_owner_tag($user['id']) . tc_uid(11);
+        tc_notes_index_add($user['id'], $id, $boundNoteId);
         $ct = $mime;
         $head = chr(strlen($ct)) . $ct;
         if (@file_put_contents($dir . '/' . $id . '.bin', $head . $body, LOCK_EX) === false) {
@@ -4870,6 +4908,32 @@ function tc_api_note_attachment_serve() {
         http_response_code(403);
         header('Content-Type: text/plain; charset=utf-8');
         echo '签名无效';
+        exit;
+    }
+    // ---- 身份鉴权:签名只证明「链接格式正确」,不代表「有权访问」----
+    // 默认只有附件所属人本人可下载(复制链接给他人、未登录访问一律 404,不暴露存在性)。
+    // 唯一例外:该附件所属笔记已开启分享,且管理员关闭了「分享仅包含正文」时,
+    // 持该笔记分享令牌(share 参数)者可下载——即「通过分享的笔记下载」。
+    $ownerId = tc_note_file_owner($id);
+    $boundNote = tc_note_file_bound_note($id);
+    $shareToken = (string) (isset($q['share']) ? $q['share'] : '');
+    $allowed = false;
+    if ($ownerId !== '') {
+        tc_with_db(false, function ($db) use (&$allowed, $ownerId, $boundNote, $shareToken) {
+            $me = tc_auth_user($db);
+            if ($me && (string) $me['id'] === $ownerId) { $allowed = true; return; }
+            if ($shareToken === '' || $boundNote === '') return;
+            $share = tc_note_share_find($db, $shareToken);
+            if (!$share || (string) $share['ownerId'] !== $ownerId) return;
+            if ((string) $share['noteId'] !== $boundNote) return;
+            $bodyOnly = !array_key_exists('notesShareBodyOnly', $db['settings']) || !empty($db['settings']['notesShareBodyOnly']);
+            if (!$bodyOnly) $allowed = true;
+        });
+    }
+    if (!$allowed) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '附件不存在';
         exit;
     }
     $dir = tc_note_file_dir_for($id);
@@ -5007,7 +5071,7 @@ function tc_note_strip_file_links($md) {
     return $md;
 }
 
-function tc_public_shared_note($note, $mode, $bodyOnly = true) {
+function tc_public_shared_note($note, $mode, $bodyOnly = true, $shareToken = '') {
     $content = (string) ($note['content'] ?? '');
     $out = array(
         'id' => (string) ($note['id'] ?? ''),
@@ -5021,6 +5085,15 @@ function tc_public_shared_note($note, $mode, $bodyOnly = true) {
         'bodyOnly' => (bool) $bodyOnly,
     );
     if (!$bodyOnly) {
+        // 关闭「仅正文」时,让分享页能取到正文里引用的附件:
+        // 给本站附件链接补上 share 令牌(服务端校验该令牌确属本篇笔记)
+        $content = (string) ($note['content'] ?? '');
+        if ($shareToken !== '' && strpos($content, '/api/notes/file') !== false) {
+            $content = preg_replace_callback('/\/api\/notes\/file\?([^)\s]*)/', function ($m) use ($shareToken) {
+                return '/api/notes/file?' . $m[1] . '&share=' . rawurlencode($shareToken);
+            }, $content);
+        }
+        $out['content'] = $content;
         $atts = array();
         foreach ((array) ($note['attachments'] ?? array()) as $at) {
             if (!is_array($at) || empty($at['url'])) continue;
@@ -5045,7 +5118,7 @@ function tc_api_note_shared_get($token) {
         list($idx, $note) = tc_note_find_in_doc($doc, $share['noteId']);
         if ($idx < 0) tc_fail(404, '笔记不存在或已被删除');
         $bodyOnly = !array_key_exists('notesShareBodyOnly', $db['settings']) || !empty($db['settings']['notesShareBodyOnly']);
-        tc_json(200, array('note' => tc_public_shared_note($note, (string) $share['mode'], $bodyOnly)));
+        tc_json(200, array('note' => tc_public_shared_note($note, (string) $share['mode'], $bodyOnly, (string) $token)));
     });
 }
 
@@ -5179,6 +5252,6 @@ function tc_api_note_shared_edit($token) {
         $db['userNotes'] = tc_object_map($noteMap);
         tc_bump_notes_revision($db, $share['ownerId']);
         $bodyOnly2 = !array_key_exists('notesShareBodyOnly', $db['settings']) || !empty($db['settings']['notesShareBodyOnly']);
-        tc_json(200, array('note' => tc_public_shared_note($doc['notes'][$idx], 'edit-link', $bodyOnly2)));
+        tc_json(200, array('note' => tc_public_shared_note($doc['notes'][$idx], 'edit-link', $bodyOnly2, (string) $token)));
     });
 }

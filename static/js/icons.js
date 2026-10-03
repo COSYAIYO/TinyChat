@@ -73,6 +73,8 @@
     upload: '<path d="M12 15.5V4.8M7.6 9.2L12 4.8l4.4 4.4"/><path d="M5 18.5h14"/>',
     link: '<path d="M10.2 13.8a4.2 4.2 0 006 0l3-3a4.2 4.2 0 10-6-6l-1.3 1.3"/><path d="M13.8 10.2a4.2 4.2 0 00-6 0l-3 3a4.2 4.2 0 106 6l1.3-1.3"/>',
     sort: '<path d="M4 6.5h9M4 12h6.5M4 17.5h4"/><path d="M16.5 6.5v11M16.5 17.5l3.2-3.2M16.5 17.5l-3.2-3.2"/>',
+    undo: '<path d="M9.5 5.5L5 10l4.5 4.5"/><path d="M5 10h8.5a5.5 5.5 0 010 11H10"/>',
+    redo: '<path d="M14.5 5.5L19 10l-4.5 4.5"/><path d="M19 10h-8.5a5.5 5.5 0 000 11H14"/>',
   };
 
   const FILLED = { more: true, stop: true, healthBad: true, healthIdle: true };

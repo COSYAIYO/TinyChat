@@ -1623,10 +1623,10 @@ printf 'PK\003\004fake-zip' > "$TMP/archive.zip"
 UP=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@pixel.png;type=image/png" ) )
 assert_contains "图片上传成功返回签名 URL" "$UP" '/api/notes/file?id='
 FURL=$(printf '%s' "$UP" | jget url | sed 's#\\/#/#g')
-assert_contains "签名 URL 可匿名读取" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE$FURL")" "200"
-assert_contains "图片内联输出正确 Content-Type" "$(curl -s -D - -o /dev/null "$BASE$FURL")" "image/png"
+assert_contains "属主可读取附件" "$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" "$BASE$FURL")" "200"
+assert_contains "图片内联输出正确 Content-Type" "$(curl -s -D - -o /dev/null -H "$AUTH" "$BASE$FURL")" "image/png"
 # 图片不得带 attachment(预览要能直接显示)
-if curl -s -D - -o /dev/null "$BASE$FURL" | grep -qi 'content-disposition: attachment'; then bad "图片不应强制下载"; else ok "图片为内联输出(可直接预览)"; fi
+if curl -s -D - -o /dev/null -H "$AUTH" "$BASE$FURL" | grep -qi 'content-disposition: attachment'; then bad "图片不应强制下载"; else ok "图片为内联输出(可直接预览)"; fi
 # 签名被篡改 → 403(把签名首字符翻转成必然不同的值,避免与原签名恰好相同)
 SIG="${FURL##*&s=}"; SIG="${SIG%%&*}"
 FLIP="0"; [ "${SIG:0:1}" = "0" ] && FLIP="1"
@@ -1637,8 +1637,16 @@ if curl -s -o /dev/null -w '%{http_code}' "$BASE$BADURL" | grep -q '403'; then o
 UZ=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@archive.zip" ) )
 assert_has "通用文件上传成功" "$UZ" '/api/notes/file?id='
 ZURL=$(printf '%s' "$UZ" | jget url | sed 's#\\/#/#g')
-assert_contains "非图片强制附件下载" "$(curl -s -D - -o /dev/null "$BASE$ZURL")" "Content-Disposition: attachment"
-assert_contains "非图片类型标注正确" "$(curl -s -D - -o /dev/null "$BASE$ZURL")" "application/zip"
+assert_contains "非图片强制附件下载" "$(curl -s -D - -o /dev/null -H "$AUTH" "$BASE$ZURL")" "Content-Disposition: attachment"
+assert_contains "非图片类型标注正确" "$(curl -s -D - -o /dev/null -H "$AUTH" "$BASE$ZURL")" "application/zip"
+# 附件身份鉴权:复制链接给他人 / 未登录访问一律 404(不暴露存在性)
+assert_contains "未登录访问附件被拒" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE$FURL")" "404"
+assert_contains "未登录访问附件不暴露内容" "$(curl -s "$BASE$FURL")" '附件不存在'
+# 另一个已登录用户同样被拒
+curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"notemate","password":"notemate123","quota":10}' > /dev/null
+NMT=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"notemate","password":"notemate123"}' | jget token)
+assert_contains "其他已登录用户访问附件被拒" "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $NMT" "$BASE$FURL")" "404"
+
 # 附件按用户 ID 分目录存储(不再堆在单一目录)
 NSDIR=$(ls "$TMP/data/notes" 2>/dev/null | grep -v '^index.json$' | head -1)
 if [ -n "$NSDIR" ]; then ok "附件按用户 ID 分目录存储($NSDIR)"; else bad "附件按用户 ID 分目录存储"; fi
@@ -1721,6 +1729,27 @@ curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: applicat
 SB2=$(curl -s "$BASE/api/notes/shared/$SHT")
 assert_contains "关闭后分享标记 bodyOnly=false" "$SB2" '"bodyOnly":false'
 assert_contains "关闭后正文保留附件引用" "$SB2" '/api/notes/file'
+# 附件通过分享下载:仅在「已分享 + 管理员关闭仅正文」时放行,其余一律 404
+AUIDX=$(curl -s "$BASE/api/auth/me" -H "$AUTH" | jget id)
+SPZ=$(printf '%s' "$UZ" | jget url | sed 's#\\/#/#g')
+cat > "$TMP/notes-share-att.json" <<EOF
+{"baseRevision":$(curl -s "$BASE/api/sync/notes" -H "$AUTH" | python -c "import sys,json;print(json.load(sys.stdin)['revision'])"),"doc":{"folders":[{"id":"fsa","parentId":null,"name":"附件分享","createdAt":1,"updatedAt":1}],"notes":[{"id":"nsa","folderId":"fsa","title":"带附件笔记","content":"附件：[文件]($SPZ)\n","tags":[],"isPinned":false,"shareMode":"private","createdAt":1,"updatedAt":1}],"tombs":{}}}
+EOF
+curl -s -X POST "$BASE/api/sync/notes" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/notes-share-att.json" > /dev/null
+# 上传时声明所属笔记(前端上传会带 noteId)
+UZ2=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@archive.zip" -F "noteId=nsa" ) )
+Z2=$(printf '%s' "$UZ2" | jget url | sed 's#\\/#/#g')
+SAT=$(curl -s -X POST "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"nsa","mode":"view-link"}' | python -c "import sys,json;print(json.load(sys.stdin)['share']['token'])")
+# 仅正文=开:分享页带令牌也不放行
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":true}' > /dev/null
+assert_contains "仅正文时分享页也取不到附件" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE$Z2&share=$SAT")" "404"
+# 关闭仅正文:分享页凭令牌可取
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":false}' > /dev/null
+assert_contains "关闭仅正文后分享页可下载附件" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE$Z2&share=$SAT")" "200"
+assert_contains "伪造分享令牌仍被拒" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE$Z2&share=deadbeef")" "404"
+# 非属主即使拿到链接与真实令牌之外的信息也取不到(无令牌)
+assert_contains "无令牌的其他用户仍被拒" "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $NMT" "$BASE$Z2")" "404"
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":true}' > /dev/null
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":true}' > /dev/null
 
 

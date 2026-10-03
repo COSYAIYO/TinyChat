@@ -98,12 +98,15 @@
           + '<p class="share-meta">笔记分享 · 更新于 ' + escapeHtml(fmtTime(note.updatedAt)) + (note.editable ? ' · 持链接可编辑' : '') + '</p>';
         if (tags.length) html += '<div class="note-tags">' + tags.map((t) => '<span class="note-tag">#' + escapeHtml(t) + '</span>').join('') + '</div>';
         if (note.bodyOnly !== false) html += '<p class="share-note-hint muted">本页仅分享笔记正文，图片与附件不随分享显示。</p>';
+        else html += '<p class="share-note-hint muted">本页已开放笔记附件，可直接查看与下载。</p>';
         html += '<div class="share-preview"><div class="messages" id="note-body"></div></div>';
         if (note.editable) html += '<div style="margin-top:14px"><button class="btn small" id="note-edit-btn">编辑笔记</button></div>';
         root.innerHTML = html;
         const body = document.getElementById('note-body');
         if (window.OCRenderer) window.OCRenderer.renderInto(body, note.content || '');
         else body.textContent = note.content || '';
+        // 附件鉴权:关闭「分享仅包含正文」时服务端已把 share 令牌写进链接;
+        // 否则正文里的附件引用会被替换为提示文字,不会发起无效请求。
         if (note.editable) document.getElementById('note-edit-btn').addEventListener('click', () => renderEditor(note));
       }
 
