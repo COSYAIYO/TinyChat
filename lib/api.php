@@ -1000,6 +1000,7 @@ function tc_api_public_config($db) {
         // AI 笔记:前台据此决定入口是否显示(关闭时隐藏)
         'notesEnabled' => !empty($s['notesEnabled']),
         'notesAllowFiles' => !isset($s['notesAllowFiles']) || !empty($s['notesAllowFiles']),
+        'notesShareBodyOnly' => !array_key_exists('notesShareBodyOnly', $s) || !empty($s['notesShareBodyOnly']),
         // 性能优化:前台据此决定是否加载内置字体 / KaTeX / 代码高亮 / Mermaid
         'perf' => array(
             'noWebfonts' => !empty($s['perfNoWebfonts']),
@@ -4995,17 +4996,44 @@ function tc_api_note_share_close() {
 }
 
 // 笔记的公开投影:不泄露属主与分享令牌以外的内部字段
-function tc_public_shared_note($note, $mode) {
-    return array(
+// 把正文里的本站附件引用(图片/文件链接)替换为提示文字。
+// 用于「分享仅包含正文」:分享出去的只是文字,不连带把附件文件也公开。
+function tc_note_strip_file_links($md) {
+    $md = (string) $md;
+    // ![alt](/api/notes/file?...)
+    $md = preg_replace('/!\[[^\]]*\]\(\/api\/notes\/file\?[^)\s]*\)/', '（图片未在分享中显示）', $md);
+    // [text](/api/notes/file?...)
+    $md = preg_replace('/\[([^\]]*)\]\(\/api\/notes\/file\?[^)\s]*\)/', '（附件《$1》未在分享中显示）', $md);
+    return $md;
+}
+
+function tc_public_shared_note($note, $mode, $bodyOnly = true) {
+    $content = (string) ($note['content'] ?? '');
+    $out = array(
         'id' => (string) ($note['id'] ?? ''),
         'title' => (string) ($note['title'] ?? ''),
-        'content' => (string) ($note['content'] ?? ''),
+        'content' => $bodyOnly ? tc_note_strip_file_links($content) : $content,
         'tags' => array_values((array) ($note['tags'] ?? array())),
         'createdAt' => (float) ($note['createdAt'] ?? 0),
         'updatedAt' => (float) ($note['updatedAt'] ?? 0),
         'mode' => (string) $mode,
         'editable' => $mode === 'edit-link',
+        'bodyOnly' => (bool) $bodyOnly,
     );
+    if (!$bodyOnly) {
+        $atts = array();
+        foreach ((array) ($note['attachments'] ?? array()) as $at) {
+            if (!is_array($at) || empty($at['url'])) continue;
+            $atts[] = array(
+                'name' => (string) ($at['name'] ?? 'file'),
+                'url' => (string) $at['url'],
+                'mimeType' => (string) ($at['mimeType'] ?? ''),
+                'size' => (int) ($at['size'] ?? 0),
+            );
+        }
+        $out['attachments'] = $atts;
+    }
+    return $out;
 }
 
 // GET /api/notes/shared/{token}:公开读取(实时取属主笔记,关闭分享即失效)
@@ -5016,7 +5044,8 @@ function tc_api_note_shared_get($token) {
         $doc = tc_notes_of($db, $share['ownerId']);
         list($idx, $note) = tc_note_find_in_doc($doc, $share['noteId']);
         if ($idx < 0) tc_fail(404, '笔记不存在或已被删除');
-        tc_json(200, array('note' => tc_public_shared_note($note, (string) $share['mode'])));
+        $bodyOnly = !array_key_exists('notesShareBodyOnly', $db['settings']) || !empty($db['settings']['notesShareBodyOnly']);
+        tc_json(200, array('note' => tc_public_shared_note($note, (string) $share['mode'], $bodyOnly)));
     });
 }
 
@@ -5149,6 +5178,7 @@ function tc_api_note_shared_edit($token) {
         $noteMap[$share['ownerId']] = $doc;
         $db['userNotes'] = tc_object_map($noteMap);
         tc_bump_notes_revision($db, $share['ownerId']);
-        tc_json(200, array('note' => tc_public_shared_note($doc['notes'][$idx], 'edit-link')));
+        $bodyOnly2 = !array_key_exists('notesShareBodyOnly', $db['settings']) || !empty($db['settings']['notesShareBodyOnly']);
+        tc_json(200, array('note' => tc_public_shared_note($doc['notes'][$idx], 'edit-link', $bodyOnly2)));
     });
 }

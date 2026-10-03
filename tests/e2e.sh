@@ -1702,6 +1702,26 @@ curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: applicat
 assert_contains "关闭后同步接口被拒" "$(curl -s "$BASE/api/sync/notes" -H "$AUTH")" '未开放 AI 笔记功能'
 assert_contains "关闭后公开配置同步" "$(curl -s "$BASE/api/config")" '"notesEnabled":false'
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesEnabled":true}' > /dev/null
+# (恢复功能后再验证分享策略,否则同步接口仍被总开关拒绝)
+# 分享策略:仅正文时,正文里的附件引用被裁剪,附件不随分享暴露
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":true}' > /dev/null
+AUID2=$(curl -s "$BASE/api/auth/me" -H "$AUTH" | jget id)
+IMGREF=$(printf '%s' "$UP" | jget url | sed 's#\\/#/#g')
+cat > "$TMP/notes-bodyonly.json" <<EOF
+{"baseRevision":$(curl -s "$BASE/api/sync/notes" -H "$AUTH" | python -c "import sys,json;print(json.load(sys.stdin)['revision'])"),"doc":{"folders":[{"id":"fb","parentId":null,"name":"分享测试","createdAt":1,"updatedAt":1}],"notes":[{"id":"nb","folderId":"fb","title":"含图笔记","content":"正文。\n\n![图]($IMGREF)\n\n结尾。","tags":[],"isPinned":false,"shareMode":"private","createdAt":1,"updatedAt":1}],"tombs":{}}}
+EOF
+curl -s -X POST "$BASE/api/sync/notes" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/notes-bodyonly.json" > /dev/null
+SHT=$(curl -s -X POST "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"nb","mode":"view-link"}' | python -c "import sys,json;print(json.load(sys.stdin)['share']['token'])")
+SB=$(curl -s "$BASE/api/notes/shared/$SHT")
+assert_contains "仅正文:分享标记 bodyOnly" "$SB" '"bodyOnly":true'
+if printf '%s' "$SB" | grep -qF '/api/notes/file'; then bad "仅正文时正文内不应残留附件链接"; else ok "仅正文:正文内附件链接已裁剪"; fi
+assert_contains "仅正文:给出未显示提示" "$SB" '未在分享中显示'
+# 关闭该策略后,引用与附件随分享可见
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":false}' > /dev/null
+SB2=$(curl -s "$BASE/api/notes/shared/$SHT")
+assert_contains "关闭后分享标记 bodyOnly=false" "$SB2" '"bodyOnly":false'
+assert_contains "关闭后正文保留附件引用" "$SB2" '/api/notes/file'
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":true}' > /dev/null
 
 
 say ""

@@ -172,6 +172,10 @@ $TC_SETTINGS_DEFAULTS = array(
     'notesMaxFileMb' => 50,
     // 允许普通用户上传非图片附件(关闭后仅图片可传)
     'notesAllowFiles' => true,
+    // 分享链接仅包含正文(默认开启):分享出去的内容只有标题、正文与标签,
+    // 正文里的图片/附件引用会被移除,附件也不随分享暴露。
+    // 关闭后分享页同样能看正文内引用的图片与附件。
+    'notesShareBodyOnly' => true,
 );
 $TC_SETTINGS_DEFAULTS['mailTemplates'] = tc_mail_default_templates();
 
@@ -583,6 +587,7 @@ function tc_normalize_settings($raw) {
     $s['notesQuotaMb'] = min(102400, max(0, (int) (isset($s['notesQuotaMb']) ? $s['notesQuotaMb'] : 200)));
     $s['notesMaxFileMb'] = min(2048, max(1, (int) (isset($s['notesMaxFileMb']) ? $s['notesMaxFileMb'] : 50)));
     $s['notesAllowFiles'] = !array_key_exists('notesAllowFiles', $s) || !empty($s['notesAllowFiles']);
+    $s['notesShareBodyOnly'] = !array_key_exists('notesShareBodyOnly', $s) || !empty($s['notesShareBodyOnly']);
     $s['perfNoWebfonts'] = !empty($s['perfNoWebfonts']);
     $s['perfNoKatex'] = !empty($s['perfNoKatex']);
     $s['perfNoHighlight'] = !empty($s['perfNoHighlight']);

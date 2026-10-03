@@ -29,6 +29,7 @@
 <style>
   .note-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
   .note-tag { font-size: 12px; padding: 2px 10px; border-radius: 999px; background: var(--bg-code, rgba(0,0,0,.05)); color: var(--text-secondary, #666); }
+  .share-note-hint { font-size: 12px; margin: 8px 0 2px; }
   .note-editor textarea { width: 100%; min-height: 46vh; resize: vertical; padding: 14px; border-radius: 12px;
     border: 1px solid var(--hairline-strong, rgba(0,0,0,.12)); background: var(--bg-input, #fff); color: var(--text, #1d1d1f);
     font: 13px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; }
@@ -96,6 +97,7 @@
         let html = '<h1 class="share-title">' + escapeHtml(note.title || '无标题') + '</h1>'
           + '<p class="share-meta">笔记分享 · 更新于 ' + escapeHtml(fmtTime(note.updatedAt)) + (note.editable ? ' · 持链接可编辑' : '') + '</p>';
         if (tags.length) html += '<div class="note-tags">' + tags.map((t) => '<span class="note-tag">#' + escapeHtml(t) + '</span>').join('') + '</div>';
+        if (note.bodyOnly !== false) html += '<p class="share-note-hint muted">本页仅分享笔记正文，图片与附件不随分享显示。</p>';
         html += '<div class="share-preview"><div class="messages" id="note-body"></div></div>';
         if (note.editable) html += '<div style="margin-top:14px"><button class="btn small" id="note-edit-btn">编辑笔记</button></div>';
         root.innerHTML = html;

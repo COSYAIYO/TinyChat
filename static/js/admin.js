@@ -4421,7 +4421,10 @@ async function loadNotesSettings() {
   if ($('notes-allow-files')) $('notes-allow-files').checked = s.notesAllowFiles !== false;
   if ($('notes-quota')) $('notes-quota').value = Number(s.notesQuotaMb != null ? s.notesQuotaMb : 200);
   if ($('notes-max-file')) $('notes-max-file').value = Number(s.notesMaxFileMb != null ? s.notesMaxFileMb : 50);
-  await loadNotesUsers();
+  if ($('notes-share-body-only')) $('notes-share-body-only').checked = s.notesShareBodyOnly !== false;
+  // 用户列表默认折叠:仅在展开时才拉取,避免打开页面就发请求
+  const body = $('notes-users-body');
+  if (body && !body.hidden) await loadNotesUsers();
 }
 async function loadNotesUsers() {
   const q = ($('notes-user-search') && $('notes-user-search').value.trim()) || '';
@@ -4519,6 +4522,15 @@ function showAdminTab(name, { load = true } = {}) {
 }
 
 document.addEventListener('click', async (e) => {
+  const toggle = e.target.closest('#notes-users-toggle');
+  if (toggle) {
+    const body = $('notes-users-body');
+    const open = body.hidden;
+    body.hidden = !open;
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) loadNotesUsers().catch((err) => toast('加载失败: ' + err.message, true));
+    return;
+  }
   const save = e.target.closest('#notes-settings-save');
   if (save) {
     save.disabled = true;
@@ -4528,6 +4540,7 @@ document.addEventListener('click', async (e) => {
         notesAllowFiles: $('notes-allow-files').checked,
         notesQuotaMb: Number($('notes-quota').value || 0),
         notesMaxFileMb: Number($('notes-max-file').value || 50),
+        notesShareBodyOnly: $('notes-share-body-only').checked,
       };
       const r = await api('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const d = await r.json().catch(() => ({}));
@@ -4539,6 +4552,11 @@ document.addEventListener('click', async (e) => {
     } finally { save.disabled = false; }
     return;
   }
+});
+document.addEventListener('keydown', (e) => {
+  const toggle = e.target.closest && e.target.closest('#notes-users-toggle');
+  if (!toggle) return;
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle.click(); }
 });
 let notesSearchTimer = null;
 document.addEventListener('input', (e) => {
