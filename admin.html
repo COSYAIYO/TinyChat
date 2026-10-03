@@ -166,6 +166,57 @@
     </div>
   </div>
 
+  <style>
+    /* 笔记面板:折叠标题行 + 简洁搜索框(浅灰无边框圆角) */
+    .notes-users-head { display:flex; align-items:center; justify-content:space-between; gap:10px; cursor:pointer; user-select:none; }
+    .notes-users-head h2 { margin:0; }
+    .notes-users-head:focus-visible { outline:none; }
+    .notes-users-head .nuh-title { display:flex; align-items:baseline; gap:10px; min-width:0; flex-wrap:wrap; }
+    .notes-users-head .nuh-chevron { color:var(--text-tertiary); font-size:18px; line-height:1; transition:transform .18s ease; transform:rotate(90deg); }
+    .notes-users-head[aria-expanded="false"] .nuh-chevron { transform:rotate(0deg); }
+    .notes-users-body { margin-top:12px; }
+    .notes-search-mini { width:min(280px,100%); box-sizing:border-box; border:none; outline:none; box-shadow:none;
+      background:var(--bg-hover); color:var(--text); font-size:13px; font-family:inherit;
+      padding:8px 12px; border-radius:10px; margin:2px 0 12px; transition:background .15s; }
+    .notes-search-mini:focus { background:var(--bg-active); box-shadow:none; outline:none; }
+    .notes-search-mini::placeholder { color:var(--text-tertiary); }
+  </style>
+
+  <!-- AI 笔记 -->
+  <div class="admin-panel" id="panel-notes">
+    <div class="admin-card">
+      <h2>AI 笔记</h2>
+      <p class="muted small">用户可在对话侧栏「AI 笔记」中写作 Markdown 笔记，支持图片/附件上传、分享链接与「把 AI 回答保存为笔记」。附件保存在 <code>data/notes/用户ID/</code>，只对笔记所属人可读；分享链接仅包含正文。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="notes-enabled" checked><span class="slider"></span></span><span>开启 AI 笔记功能（关闭后前台入口隐藏、接口拒绝写入）</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="notes-allow-files" checked><span class="slider"></span></span><span>允许上传非图片附件（关闭后仅允许图片；非图片附件一律强制下载，不作为网页外链托管）</span></label>
+      <div class="pkg-form-grid">
+        <label class="field"><span>每用户空间上限（MB，0 = 不限；用户侧边栏左下角显示剩余）</span>
+          <input id="notes-quota" type="number" min="0" max="102400" step="50" value="200"></label>
+        <label class="field"><span>单个附件大小上限（MB；图片固定 10MB）</span>
+          <input id="notes-max-file" type="number" min="1" max="2048" step="1" value="50"></label>
+      </div>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="notes-share-body-only" checked><span class="slider"></span></span><span>分享链接仅包含正文（图片/附件不随分享公开；关闭后分享页也能看到正文里引用的图片与附件）</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="notes-ai-customizable" checked><span class="slider"></span></span><span>允许用户自定义右键菜单动作（关闭后用户只能使用内置动作，齿轮弹窗只读）</span></label>
+      <div class="pkg-form-grid">
+        <label class="field"><span>笔记 AI 每日次数上限（每用户，0 = 不限；单次调用仍按额度计费）</span>
+          <input id="notes-ai-limit" type="number" min="0" max="10000" step="1" value="50"></label>
+      </div>
+      <button class="btn primary" id="notes-settings-save" type="button">保存笔记设置</button>
+    </div>
+
+    <div class="admin-card" style="margin-top:16px">
+      <div class="notes-users-head" id="notes-users-toggle" role="button" tabindex="0" aria-expanded="false">
+        <span class="nuh-title"><h2>使用笔记的用户</h2><span class="muted small" id="notes-overview"></span></span>
+        <span class="nuh-chevron" aria-hidden="true">›</span>
+      </div>
+      <div class="notes-users-body" id="notes-users-body" hidden>
+        <p class="muted small">按最近更新排序；可搜索用户名或 ID，点「查看」审阅该用户的笔记内容（管理员操作会记入日志）。</p>
+        <input id="notes-user-search" class="notes-search-mini" type="search" placeholder="搜索用户名或 ID" autocomplete="off" spellcheck="false">
+        <div id="notes-users" class="pkg-cards"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- 用户管理 -->
   <div class="admin-panel" id="panel-thinking">
     <div class="admin-card">
