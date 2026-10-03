@@ -1249,12 +1249,14 @@ function updateAssistantChip() {
     chip.textContent = '';
     chip.removeAttribute('data-tip');
     chip.removeAttribute('title');
+    if (typeof syncComposerIndent === 'function') syncComposerIndent();
     return;
   }
   chip.classList.remove('hidden');
   chip.textContent = '@' + name;
   chip.setAttribute('data-tip', '当前助手：' + name + '（再按两下 Backspace 可取消）');
   chip.removeAttribute('title');
+  if (typeof syncComposerIndent === 'function') syncComposerIndent();
 }
 function renderEmptyState() {
   const empty = $('empty-state');
@@ -7859,12 +7861,33 @@ function removeNoteMention(id) {
   state.noteMentions = (state.noteMentions || []).filter((x) => x.id !== id);
   renderNoteMentions();
 }
+// 首行缩进:让正文第一行从 @ 行之后开始,折行后回到最左侧(悬挂缩进)。
+// 宽度取 @ 行实际渲染宽度,并在 @ 行变化时同步。
+window.addEventListener('resize', () => {
+  if (typeof syncComposerIndent === 'function') syncComposerIndent();
+});
+function syncComposerIndent() {
+  const row = $('composer-at-row');
+  const inp = $('input');
+  if (!row || !inp) return;
+  const hasAt = (row.querySelector('#composer-assistant') && !row.querySelector('#composer-assistant').classList.contains('hidden'))
+    || (row.querySelector('#note-mention-row') && !row.querySelector('#note-mention-row').classList.contains('hidden'));
+  if (!hasAt) { inp.style.textIndent = ''; return; }
+  const w = Math.ceil(row.getBoundingClientRect().width);
+  inp.style.textIndent = (w + 6) + 'px';
+}
+
 function renderNoteMentions() {
   const box = $('note-mention-row');
   if (!box) return;
   const list = state.noteMentions || [];
   const folders = state.noteFolderMentions || [];
-  if (!list.length && !folders.length) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  if (!list.length && !folders.length) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    syncComposerIndent();
+    return;
+  }
   box.classList.remove('hidden');
   // 顺序:@助手 在前,随后是 @文件夹 与 @笔记,连读为「@助手 @笔记 提问内容」
   const folderHtml = folders.map((f) => ''

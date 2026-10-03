@@ -411,7 +411,7 @@
   background: transparent;
   color: var(--brand);
   font: inherit;
-  font-size: var(--composer-at-fs, 14.5px);
+  font-size: var(--composer-at-fs, 14px);
   font-weight: 650;
   line-height: 1.5;
   letter-spacing: 0.01em;
@@ -4322,11 +4322,10 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  flex: 0 1 auto;
-  flex-wrap: wrap;          /* 多个 @ 时自然折行,而不是挤压 */
-  align-self: center;
+  flex-wrap: nowrap;        /* 覆盖层内单行;过长由 JS 截断缩进量 */
   min-width: 0;
   max-width: 100%;
+  overflow: hidden;
 }
 .note-mention-row.hidden { display: none; }
 /* 与 .composer-at 完全同款观感(同字号/粗细/基线),不加背景与边框 */
@@ -4337,12 +4336,13 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   padding: 0;
   border: none;
   background: transparent;
-  /* 红色表示「已选中的笔记引用」;字号与行高严格对齐 .composer-at,保证等高 */
+  /* 红色表示「已选中的笔记引用」;字号与 @助手 严格一致(此前用 font:inherit
+     会继承 textarea 字号,视觉上比 @助手 大一号) */
   color: #dc2626;
-  font: inherit;
-  font-size: inherit;
+  font-family: inherit;
+  font-size: var(--composer-at-fs, 14px);
   font-weight: 650;
-  line-height: inherit;
+  line-height: 1.5;
   letter-spacing: 0.01em;
   white-space: nowrap;
   cursor: pointer;
@@ -4521,40 +4521,43 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 [data-theme="dark"] .note-answer-hint { color: #fca5a5; background: rgba(248, 113, 113, .14); }
 
 
-/* ---------- 输入流容器:@助手 / @笔记 / 正文 在同一行内自然流动 ----------
-   composer-flow 是 flex-wrap 容器:内容够宽时三者并排,
-   正文过长时 textarea 换到下一行,@ 留在第一行 —— 而不是互相挤压。 */
+/* ---------- @助手 / @笔记:悬浮覆盖层 + 首行缩进(悬挂缩进)----------
+   目标效果:第一行内容是「@助手 @笔记 提问文字…」,第一行放不下时自动折行,
+   第二行从最左侧(@助手 正下方)继续 —— 而不是整块挪到下一行或缩在 @ 右边。
+   实现:@ 行绝对定位覆盖在 textarea 左上角,textarea 用 text-indent 只让
+   首行缩进(其宽度由 JS 动态测量 @ 行宽度后写入),后续行自然回到左边缘。 */
 .composer-flow {
   flex: 1 1 auto;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0 2px;
+  position: relative;
   min-width: 0;
   align-self: center;
 }
-.composer-flow .composer-at,
-.composer-flow .note-mention-row { flex: 0 0 auto; order: 0; }
+.composer-at-row {
+  position: absolute;
+  top: 10px;          /* 对齐 textarea 首行文字(padding-top 10px) */
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  max-width: 100%;
+  z-index: 2;         /* 覆盖在 textarea 之上,保证 @ 与 × 可点 */
+  pointer-events: none;   /* 行本身不挡点击,内部元素恢复 */
+}
+.composer-at-row > * { pointer-events: auto; }
+.composer-at-row .composer-at,
+.composer-at-row .note-mention-row { flex: 0 0 auto; margin: 0; }
+/* textarea 占满整宽,首行缩进由 JS 写 text-indent */
 .composer-flow textarea {
-  flex: 1 1 60px;    /* 最小 60px:装不下就换到下一行 */
-  min-width: 60px;
-  order: 1;
+  width: 100%;
+  flex: 1 1 auto;
+  padding-top: 10px;
 }
-/* @ 与正文首行严格对齐:composer-flow 顶部对齐 + @ 补上 textarea 的上内边距,
-   这样 @ 与第一行文字同高,文字换行时 @ 自然留在第一行左侧。 */
-.composer-flow { align-items: flex-start; }
+/* @笔记 chip 与 @助手 完全等高:统一高度(14.5 * 1.5),避免一个偏高一个偏低 */
 .composer-flow .composer-at,
-.composer-flow .note-mention-row {
-  align-self: flex-start;
-  margin-top: 10px;   /* 抵消 textarea 的 padding-top,与首行文字基线对齐 */
-}
-.composer-flow textarea { padding-top: 10px; }
-/* @笔记 chip 与 @助手 完全等高(同字号、同 line-height、同 vertical-align) */
-.composer-at,
-.note-mention-chip {
-  font-size: 14.5px;
+.composer-flow .note-mention-chip {
+  font-size: var(--composer-at-fs, 14px);
   line-height: 1.5;
-  height: 21.75px;   /* 14.5 * 1.5:锁定高度,避免一个偏高一个偏低 */
+  height: 21px;
   display: inline-flex;
   align-items: center;
 }
