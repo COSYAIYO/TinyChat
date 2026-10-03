@@ -35,7 +35,7 @@ const state = {
   webSearchAvailable: false,
   tools: null,
   mineru: { enabled: true, mode: 'lite' },
-  chatLimits: { contextMessages: 12, maxContextMessages: 200, maxOutputTokens: 8192 },
+  chatLimits: { contextMessages: 12, maxContextMessages: 200, maxOutputTokens: 32000 },
 };
 
 window.OCState = state;
@@ -1989,7 +1989,7 @@ async function loadProviders() {
     state.chatLimits = {
       contextMessages: Math.min(500, Math.max(2, Number(data.chatLimits.contextMessages) || 12)),
       maxContextMessages: Math.min(500, Math.max(2, Number(data.chatLimits.maxContextMessages) || 200)),
-      maxOutputTokens: Math.min(128000, Math.max(256, Number(data.chatLimits.maxOutputTokens) || 8192)),
+      maxOutputTokens: Math.min(128000, Math.max(256, Number(data.chatLimits.maxOutputTokens) || 32000)),
     };
   }
   if (!state.tools) {
@@ -2326,7 +2326,7 @@ function outgoingMessages(chatMessages, chat) {
   const spec = currentModelSpec();
   const maxCtx = spec && parseInt(spec.maxContext, 10) > 0 ? parseInt(spec.maxContext, 10) : 0;
   if (maxCtx > 0 && kept.length) {
-    const outCap = spec && parseInt(spec.maxTokens, 10) > 0 ? parseInt(spec.maxTokens, 10) : (Number((state.chatLimits || {}).maxOutputTokens) || 8192);
+    const outCap = spec && parseInt(spec.maxTokens, 10) > 0 ? parseInt(spec.maxTokens, 10) : (Number((state.chatLimits || {}).maxOutputTokens) || 32000);
     const reserve = Math.min(outCap, Math.max(256, Math.floor(maxCtx / 2)));
     const budget = maxCtx - reserve;
     const sysTokens = estimateTextTokens(chatSystemPrompt(chat));
@@ -2441,7 +2441,7 @@ function reserveThinkingHeadroom(body, effort) {
 }
 function buildRequestBody(chatMessages, format, chat, extra) {
   const msgs = outgoingMessages(chatMessages, chat);
-  const cap = Math.min(128000, Math.max(256, Number((state.chatLimits || {}).maxOutputTokens) || 8192));
+  const cap = Math.min(128000, Math.max(256, Number((state.chatLimits || {}).maxOutputTokens) || 32000));
   const system = chatSystemPrompt(chat);
   if (format === 'anthropic') {
     const body = {

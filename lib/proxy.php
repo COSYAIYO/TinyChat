@@ -695,6 +695,14 @@ function tc_http_request($url, $method, $headers, $body, $timeoutMs, $stream = f
     );
     $ca = tc_cacert_path();
     if ($ca) $opts[CURLOPT_CAINFO] = $ca;
+    // 出站代理:管理员在「对话设置」配置后,所有出站请求(含拉取模型价格表)统一走它。
+    // 直连 raw.githubusercontent.com 在国内网络常下到一半卡死,代理能稳定完成。
+    $proxy = tc_outbound_proxy();
+    if ($proxy !== '') {
+        $opts[CURLOPT_PROXY] = $proxy;
+        // socks5h 表示由代理解析域名,避免本地 DNS 污染
+        if (stripos($proxy, 'socks5') === 0) $opts[CURLOPT_PROXYTYPE] = CURLPROXY_SOCKS5_HOSTNAME;
+    }
     curl_setopt_array($ch, $opts);
     if ($body !== null) curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
     if (!$sendExpect) curl_setopt($ch, CURLOPT_HTTPHEADER, array_merge($hdrs, array('Expect:', 'Content-Type:')));
@@ -2454,7 +2462,10 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             'timeout' => $db['settings']['proxyTimeoutMs'],
             'wantSearch' => (!empty($b['webSearch']) && $b['webSearch'] !== 'off' && $b['webSearch'] !== false) ? (string) $b['webSearch'] : '',
             'settings' => tc_user_search_settings($user, $db['settings']),
-            'maxOutputTokens' => isset($db['settings']['maxOutputTokens']) ? (int) $db['settings']['maxOutputTokens'] : 8192,
+            'maxOutputTokens' => isset($db['settings']['maxOutputTokens']) ? (int) $db['settings']['maxOutputTokens'] : 32000,
+            // 模型元数据(上下文窗口)在这里取出:tc_with_db 结束后 $db 即释放,
+            // 而钳制逻辑在事务之外执行,拿不到库,只能提前带出来。
+            'modelMeta' => tc_model_meta_get($db, isset($b['model']) ? (string) $b['model'] : ''),
             'temperature' => isset($db['settings']['temperature']) ? $db['settings']['temperature'] : null,
             'thinking' => tc_normalize_thinking(isset($db['settings']['thinking']) ? $db['settings']['thinking'] : null),
             'imageGen' => $isImageModel,
@@ -2546,23 +2557,65 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             }
         }
     }
-    // 模型级 max_tokens / 最大上下文优先于全局输出上限;未配置时沿用全局钳制。
-    // 配置了最大上下文时,先粗估输入 token,输出上限压到「窗口 − 预估输入」内,避免总量超窗
-    $modelMaxTokens = 0;
-    $modelMaxContext = 0;
+    // 输出/上下文上限的三级优先:
+    //   1) 供应商模型项上手填的 maxTokens / maxContext —— 管理员针对具体渠道的显式声明;
+    //   2) 模型元数据表(后台「模型元数据」,可手工维护或从 litellm 同步)—— 按模型名全局复用;
+    //   3) 全局设置 maxOutputTokens。
+    // 配置了最大上下文时,先粗估输入 token,输出上限压到「窗口 − 预估输入」内,避免总量超窗。
+    $providerMaxTokens = 0;
+    $providerMaxContext = 0;
     $reqModel = isset($body['model']) ? (string) $body['model'] : '';
     foreach ((isset($provider['models']) ? $provider['models'] : array()) as $m) {
         if (!is_array($m) || !isset($m['id']) || (string) $m['id'] !== $reqModel) continue;
-        if (!empty($m['maxTokens'])) $modelMaxTokens = (int) $m['maxTokens'];
-        if (!empty($m['maxContext'])) $modelMaxContext = (int) $m['maxContext'];
+        if (!empty($m['maxTokens'])) $providerMaxTokens = (int) $m['maxTokens'];
+        if (!empty($m['maxContext'])) $providerMaxContext = (int) $m['maxContext'];
         break;
     }
-    $outCap = $modelMaxTokens > 0 ? $modelMaxTokens : (isset($ctx['maxOutputTokens']) ? (int) $ctx['maxOutputTokens'] : 8192);
+    // 模型元数据只作为「兜底上限」,与供应商手填的语义不同:前者是全站参考值,
+    // 后者是该渠道的硬约束。因此元数据值单独存放,不参与 $force,免得把用户
+    // 主动调小的 max_tokens(省钱/要短回答)强行抬高回上限。
+    $modelMaxTokens = $providerMaxTokens;
+    $modelMaxContext = $providerMaxContext;
+    if ($modelMaxTokens <= 0 || $modelMaxContext <= 0) {
+        $meta = isset($ctx['modelMeta']) ? $ctx['modelMeta'] : null;
+        if ($meta !== null) {
+            // litellm 的 max_output_tokens 是「单次输出」上限,对应本项目的 maxTokens;
+            // max_input_tokens 描述的是输入窗口,但它与输出共用一个总窗口,
+            // 这里作为 maxContext 的近似(与 litellm 自身的 usage 口径一致)。
+            if ($modelMaxTokens <= 0 && !empty($meta['maxOutputTokens'])) $modelMaxTokens = (int) $meta['maxOutputTokens'];
+            if ($modelMaxContext <= 0 && !empty($meta['maxInputTokens'])) $modelMaxContext = (int) $meta['maxInputTokens'];
+        }
+    }
+    $outCap = $modelMaxTokens > 0 ? $modelMaxTokens : (isset($ctx['maxOutputTokens']) ? (int) $ctx['maxOutputTokens'] : 32000);
+    // 推理模型:开启思考时,输出上限必须同时容纳思维链与正文。
+    // 这里只在全局上限之上补足「思考预算 + 正文预留」,不放宽模型级/上下文窗的硬约束
+    // (那两者是用户对模型能力的显式声明,优先于本处的兜底)。
+    // 前端各格式的开启标志不统一:anthropic/部分网关用 thinking,OpenAI 兼容网关
+    // 直接发 reasoning_effort(不带 thinking),因此两者都要认。
+    $thinkingOn = (!empty($body['thinking']) && is_array($body['thinking'])
+        && (!isset($body['thinking']['type']) || $body['thinking']['type'] !== 'disabled'))
+        || (!empty($body['reasoning_effort']) && strtolower((string) $body['reasoning_effort']) !== 'none')
+        || (!empty($body['output_config']['effort']) && strtolower((string) $body['output_config']['effort']) !== 'none');
+    if ($thinkingOn && $modelMaxTokens <= 0) {
+        $budget = 0;
+        if (!empty($body['thinking']['budget_tokens'])) $budget = (int) $body['thinking']['budget_tokens'];
+        elseif (!empty($body['thinking']['effort'])) $eff = strtolower((string) $body['thinking']['effort']);
+        elseif (!empty($body['reasoning_effort'])) $eff = strtolower((string) $body['reasoning_effort']);
+        elseif (!empty($body['output_config']['effort'])) $eff = strtolower((string) $body['output_config']['effort']);
+        else $eff = '';
+        if ($budget <= 0 && $eff !== '') {
+            $budget = $eff === 'high' ? 16000 : ($eff === 'low' ? 2048 : 8000);
+        }
+        if ($budget > 0) $outCap = max($outCap, $budget + 2048);
+    }
     if ($modelMaxContext > 0) {
         $promptEst = tc_estimate_body_tokens($body);
         $outCap = min($outCap, max(256, $modelMaxContext - $promptEst));
     }
-    tc_clamp_output_tokens($body, $format, $outCap, $modelMaxTokens > 0 || $modelMaxContext > 0);
+    // 供应商手填的 maxTokens/maxContext 是该渠道的硬约束($force:覆盖请求值);
+    // 若只是来自模型元数据的兜底值,则只做「压回上限」,保留用户主动调小的请求值。
+    $providerCap = $providerMaxTokens > 0 || $providerMaxContext > 0;
+    tc_clamp_output_tokens($body, $format, $outCap, $providerCap);
     tc_apply_temperature($body, $format, isset($ctx['temperature']) ? $ctx['temperature'] : null);
     tc_apply_thinking_rules($body, isset($ctx['thinking']) ? $ctx['thinking'] : null);
     $url = tc_upstream_path(rtrim((string) $provider['baseUrl'], '/'), $format);

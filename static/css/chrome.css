@@ -4636,3 +4636,40 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   margin: 6px 0 0;
 }
 [data-theme="dark"] .note-answer-hint { color: #fca5a5; background: rgba(248, 113, 113, .14); }
+
+/* ---- 模型元数据面板 ---- */
+.mm-table { font-size: 0.92em; }
+.mm-table th, .mm-table td { white-space: nowrap; padding: 8px 10px; }
+/* 模型名可能很长，允许换行，但操作列固定不换行 */
+.mm-table td:first-child { white-space: normal; word-break: break-word; min-width: 180px; }
+.mm-table .mm-ops { white-space: nowrap; }
+.mm-table .mm-ops .btn { margin-right: 6px; }
+.mm-table .mm-ops .btn:last-child { margin-right: 0; }
+/* 正在被供应商使用的模型：整行加一层淡色底，便于一眼看出该先维护哪些 */
+.mm-table tr.mm-inuse td { background: var(--bg-hover, rgba(59, 130, 246, .06)); }
+.mm-table code { font-size: 0.94em; }
+#panel-modelmeta .pkg-form-grid { margin-bottom: 6px; }
+
+/* 面板顶部说明区:全站有 * { margin:0 } 重置,<p> 默认零间距,
+   所以这里必须显式给纵向留白,否则相邻的高亮块会黏在一起。 */
+.mm-intro > p { margin: 0 0 10px; }
+.mm-intro > p:last-child { margin-bottom: 0; }
+.mm-intro > details { margin: 12px 0 14px; }
+/* 重点提示块(推理模型 / 计费):左侧色条 + 淡底 */
+.mm-note { padding: 8px 12px; border-radius: 6px; border-left: 3px solid var(--primary, #3b82f6); background: var(--bg-hover, rgba(59, 130, 246, .08)); }
+.mm-note.warn { border-left-color: #f59e0b; background: var(--bg-hover, rgba(245, 158, 11, .1)); }
+
+/* 新手向的折叠说明:收起时只占一行,点开才铺开长文,避免面板顶部堆一大段字 */
+.mm-help { border: 1px solid var(--border, rgba(148, 163, 184, .28)); border-radius: 8px; background: var(--bg-subtle, rgba(148, 163, 184, .06)); }
+.mm-help > summary { cursor: pointer; padding: 10px 14px; font-size: 0.929em; color: var(--text-secondary, #64748b); user-select: none; list-style: none; }
+/* 收起原生三角:各浏览器的私名不同 —— WebKit/Blink 用 ::-webkit-details-marker,
+   Firefox/Safari 用 ::marker。只写前者会在 Firefox 里留下原生小三角,
+   于是和下面的自绘 ▸ 同时出现,变成两个图标。三个都要写。 */
+.mm-help > summary::-webkit-details-marker { display: none; }
+.mm-help > summary::marker { content: ''; }
+/* 自绘小三角:原生 marker 各浏览器样子不一,且很难对齐 */
+.mm-help > summary::before { content: '▸'; display: inline-block; margin-right: 8px; transition: transform .15s ease; }
+.mm-help[open] > summary::before { transform: rotate(90deg); }
+.mm-help > summary:hover { color: var(--primary, #3b82f6); }
+/* 展开后正文与标题之间留白,并与四周内边距对齐 */
+.mm-help > div { padding: 0 14px 12px; }

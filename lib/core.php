@@ -76,6 +76,10 @@ $TC_SETTINGS_DEFAULTS = array(
     'mailTemplates' => null, // 下面统一赋值,避免默认数组里塞大段 HTML
     'packages' => array(),
     'proxyTimeoutMs' => 120000,
+    // 出站 HTTP 代理(如 http://127.0.0.1:2080)。留空=直连。
+    // 拉取 litellm 价格表等外部资源时用;国内网络直连 raw.githubusercontent.com
+    // 常在中途卡死(下到约 1MB 就停滞),走代理可稳定完成。
+    'outboundProxy' => '',
     'loginMaxFails' => 5,
     'loginLockMs' => 60000,
     // 第三方一键登录:每个提供商的开关与凭据;开启且填全后前台登录页出现对应图标
@@ -104,7 +108,10 @@ $TC_SETTINGS_DEFAULTS = array(
     'defaultGroupId' => '',
     'contextMessages' => 12,
     'maxContextMessages' => 200,
-    'maxOutputTokens' => 8192,
+    // 单次输出上限。推理模型(思维链)的思考过程与正文共用这个额度,
+    // 8192 常被思维链吃光导致正文为空(实测 deepseek-v4.1-flash 8192 全用于 reasoning)。
+    // 默认抬到 32000,给思考留出余量;上限仍受「模型元数据/渠道 maxTokens」约束。
+    'maxOutputTokens' => 32000,
     // 全局采样温度: null = 不发送该参数(用模型默认);设置后 0-2
     'temperature' => null,
     // 数据备份:每日自动备份整库快照到 data/backup/,保留最近 N 份
@@ -239,6 +246,21 @@ function tc_cacert_path() {
     }
     $path = '';
     return $path;
+}
+
+// 出站代理地址。优先级:环境变量 TC_OUTBOUND_PROXY > 显式设置的值(由 tc_with_db 内取好)。
+// 之所以不做成「这里直接查库」:tc_with_db 结束会释放全局 db,而同步流程里网络请求
+// 刻意放在事务之外(不占写锁),那时已经没有 db 可读,必须提前把值带出来。
+function tc_outbound_proxy() {
+    static $proxy = null;
+    if ($proxy !== null) return $proxy;
+    $env = trim((string) getenv('TC_OUTBOUND_PROXY'));
+    if ($env !== '' && preg_match('#^(https?|socks5h?)://[^\s]{1,300}$#i', $env)) { $proxy = $env; return $proxy; }
+    $proxy = '';
+    if (!isset($GLOBALS['_tc_outbound_proxy'])) return $proxy;
+    $v = trim((string) $GLOBALS['_tc_outbound_proxy']);
+    if ($v !== '' && preg_match('#^(https?|socks5h?)://[^\s]{1,300}$#i', $v)) $proxy = $v;
+    return $proxy;
 }
 
 function tc_now() {
@@ -481,6 +503,231 @@ function tc_apply_thinking_rules(&$body, $thinking) {
     }
 }
 
+// ---- 模型元数据:上下文窗口与价格 ----
+// litellm 维护的公开价格表:一份 JSON 覆盖数千模型,字段含窗口与各类单价。
+define('TC_LITELLM_PRICES_URL', 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json');
+
+// 把 litellm 的原始条目映射成本项目的字段;无任何有效数值则返回 null
+function tc_litellm_map_item($row) {
+    if (!is_array($row)) return null;
+    $pick = function ($key) use ($row) {
+        if (!isset($row[$key]) || !is_numeric($row[$key])) return 0;
+        $n = (float) $row[$key];
+        return $n > 0 ? $n : 0;
+    };
+    // max_output_tokens 是较新字段;旧条目只有 max_tokens(语义为"单次输出上限")
+    $maxIn = (int) $pick('max_input_tokens');
+    $maxOut = (int) $pick('max_output_tokens');
+    if ($maxOut <= 0) $maxOut = (int) $pick('max_tokens');
+    $pIn = $pick('input_cost_per_token');
+    $pOut = $pick('output_cost_per_token');
+    $cRead = $pick('cache_read_input_token_cost');
+    $cWrite = $pick('cache_creation_input_token_cost');
+    if ($maxIn <= 0 && $maxOut <= 0 && $pIn <= 0 && $pOut <= 0 && $cRead <= 0 && $cWrite <= 0) return null;
+    return array(
+        'maxInputTokens' => $maxIn,
+        'maxOutputTokens' => $maxOut,
+        'inputCostPerToken' => $pIn,
+        'outputCostPerToken' => $pOut,
+        'cacheReadCostPerToken' => $cRead,
+        'cacheWriteCostPerToken' => $cWrite,
+        'provider' => (string) (isset($row['litellm_provider']) ? $row['litellm_provider'] : ''),
+        'mode' => (string) (isset($row['mode']) ? $row['mode'] : ''),
+        'source' => 'litellm',
+        'enabled' => true,
+        'updatedAt' => tc_now(),
+    );
+}
+
+// 一组数值里取众数(出现次数最多的值)。用于合并同一模型在各平台的价格:
+// 多数平台报同一个价时,它比「取第一条」可靠得多 —— 例如 deepseek-v4.1-flash
+// 有 8 个来源,5 家报 0.30/1.20,只有 sail 报 0.15/0.60,取众数即得主流价。
+// 数值先按有效位归一(避免浮点尾差被当成两个值)。
+//
+// 众数并列时(600 个多来源模型里有 136 个是各方报价两两不同,根本没有众数)
+// 退化为「最近邻聚类」:在报价里找一个簇,使 25% 相对误差内的邻居最多,取该簇均值。
+// 这比取最小值稳 —— claude-4-opus 三家报 1.65E-5 / 1.5E-5 / 5E-6(促销价),
+// 取最小会落到 5E-6 的促销价,聚类则落在前两家的 1.575E-5 上。
+// 开权重模型(llama/mixtral)各家报价本就相近,聚类均值同样合理。
+function tc_mode_number($values) {
+    $counts = array();
+    $raw = array();
+    $vals = array();
+    foreach ($values as $v) {
+        if (!is_numeric($v)) continue;
+        $n = (float) $v;
+        if ($n <= 0) continue; // 0 表示未配置,不参与投票
+        $key = sprintf('%.10g', $n);
+        $counts[$key] = (isset($counts[$key]) ? $counts[$key] : 0) + 1;
+        $raw[$key] = $n;
+        $vals[] = $n;
+    }
+    if (!$counts) return 0;
+    $best = null; $bestN = -1;
+    foreach ($counts as $key => $n) {
+        if ($n > $bestN) { $best = $raw[$key]; $bestN = $n; }
+    }
+    if ($bestN > 1) return (float) $best; // 有唯一众数,直接采用
+    // 全体并列(每个值只出现一次):最近邻聚类,取最大簇的均值
+    sort($vals);
+    $pick = null; $pickSize = 0;
+    foreach ($vals as $c) {
+        $size = 0; $sum = 0;
+        foreach ($vals as $x) {
+            if (abs($x - $c) <= 0.25 * max($c, $x)) { $size++; $sum += $x; }
+        }
+        if ($size > $pickSize || ($size === $pickSize && $pick !== null && $c > $pick)) {
+            $pickSize = $size; $pick = $sum / $size;
+        }
+    }
+    return $pick === null ? (float) $best : (float) $pick;
+}
+
+// 文本字段取众数(如 mode):同名字段里出现最多的值,并列时取字典序最小的,保证可复现
+function tc_mode_string($values) {
+    $counts = array();
+    foreach ($values as $v) {
+        $v = (string) $v;
+        if ($v === '') continue;
+        $counts[$v] = (isset($counts[$v]) ? $counts[$v] : 0) + 1;
+    }
+    if (!$counts) return '';
+    $best = ''; $bestN = -1;
+    foreach ($counts as $v => $n) {
+        if ($n > $bestN || ($n === $bestN && strcmp($v, $best) < 0)) { $best = $v; $bestN = $n; }
+    }
+    return $best;
+}
+
+// 把 litellm 的整份 JSON 压成「短名 -> 条目」表。
+// 键有三类形态:裸名(gpt-4o)、单前缀(azure/gpt-4o)、多前缀(openrouter/openai/gpt-4o)。
+// 用户填的模型名通常不带前缀,故取最后一段做短名。
+//
+// 同名合并策略 —— 逐字段取众数,而不是挑某一条:
+// 上游价格表的同一个模型会挂在各家平台上(deepseek-v4.1-flash 有 8 个来源),
+// 各平台报价未必一致(渠道加价、批量价、汇率)。早期实现「优先裸名、否则取第一条」
+// 会撞上离群便宜的那条(实测取到了 sail 的半价,而 5 家主流平台都是另一个价)。
+// 按字段投票能稳定落在多数平台一致的值上,单个离群来源无法左右结果。
+// 每个数值字段各自投票 —— 某平台缺某个价格时不会拖累其它字段,缺的字段自动由其他来源补。
+// 各方报价两两不同(无众数)时,以裸名条目兜底,见 tc_mode_number。
+function tc_litellm_index($raw) {
+    $groups = array();
+    foreach ((array) $raw as $name => $row) {
+        $name = (string) $name;
+        if ($name === '') continue;
+        $mapped = tc_litellm_map_item($row);
+        if ($mapped === null) continue;
+        $pos = strrpos($name, '/');
+        $short = tc_model_meta_key($pos === false ? $name : substr($name, $pos + 1));
+        if ($short === '' || strlen($short) > 200) continue;
+        if (!isset($groups[$short])) $groups[$short] = array();
+        $mapped['provider'] = (string) $mapped['provider'];
+        $groups[$short][] = $mapped;
+    }
+    $out = array();
+    foreach ($groups as $short => $items) {
+        if (count($items) === 1) { $out[$short] = $items[0]; continue; }
+        $col = function ($field) use ($items) {
+            $v = array();
+            foreach ($items as $it) $v[] = isset($it[$field]) ? $it[$field] : 0;
+            return $v;
+        };
+        // 窗口与价格逐字段取众数
+        $maxIn = (int) round(tc_mode_number($col('maxInputTokens')));
+        $maxOut = (int) round(tc_mode_number($col('maxOutputTokens')));
+        $pIn = tc_mode_number($col('inputCostPerToken'));
+        $pOut = tc_mode_number($col('outputCostPerToken'));
+        $cRead = tc_mode_number($col('cacheReadCostPerToken'));
+        $cWrite = tc_mode_number($col('cacheWriteCostPerToken'));
+        // provider 只是溯源信息,取票数最多的那个;mode 同理
+        $providers = array(); $modes = array();
+        foreach ($items as $it) { $providers[] = $it['provider']; $modes[] = $it['mode']; }
+        $out[$short] = array(
+            'maxInputTokens' => $maxIn,
+            'maxOutputTokens' => $maxOut,
+            'inputCostPerToken' => $pIn,
+            'outputCostPerToken' => $pOut,
+            'cacheReadCostPerToken' => $cRead,
+            'cacheWriteCostPerToken' => $cWrite,
+            'provider' => tc_mode_string($providers),
+            'mode' => tc_mode_string($modes),
+            'source' => 'litellm',
+            'enabled' => true,
+            'updatedAt' => tc_now(),
+        );
+    }
+    return $out;
+}
+
+// 与 litellm 的 model_prices_and_context_window.json 字段对照:
+//   max_input_tokens -> maxInputTokens, max_output_tokens -> maxOutputTokens,
+//   input_cost_per_token -> inputCostPerToken, output_cost_per_token -> outputCostPerToken,
+//   cache_read_input_token_cost -> cacheReadCostPerToken,
+//   cache_creation_input_token_cost -> cacheWriteCostPerToken。
+// 价格统一按「每 token」存(与 litellm 一致),展示时由前端换算成百万 token。
+// 三个 token 上限为 0 表示「未配置」,交由调用方回退到全局设置。
+function tc_model_meta_key($name) {
+    return strtolower(trim((string) $name));
+}
+
+// 归一化单条模型元数据;无有效字段时返回 null(调用方据此剔除该条)
+function tc_normalize_model_meta_item($raw) {
+    if (!is_array($raw)) return null;
+    $num = function ($v, $min, $max) {
+        if ($v === null || $v === '' || !is_numeric($v)) return 0;
+        $n = (float) $v;
+        if ($n < 0) return 0;
+        return min($max, max($min, $n));
+    };
+    $input = (int) round($num(isset($raw['maxInputTokens']) ? $raw['maxInputTokens'] : null, 0, 200000000));
+    $output = (int) round($num(isset($raw['maxOutputTokens']) ? $raw['maxOutputTokens'] : null, 0, 200000000));
+    $pIn = $num(isset($raw['inputCostPerToken']) ? $raw['inputCostPerToken'] : null, 0, 1000);
+    $pOut = $num(isset($raw['outputCostPerToken']) ? $raw['outputCostPerToken'] : null, 0, 1000);
+    $cRead = $num(isset($raw['cacheReadCostPerToken']) ? $raw['cacheReadCostPerToken'] : null, 0, 1000);
+    $cWrite = $num(isset($raw['cacheWriteCostPerToken']) ? $raw['cacheWriteCostPerToken'] : null, 0, 1000);
+    if ($input === 0 && $output === 0 && $pIn <= 0 && $pOut <= 0 && $cRead <= 0 && $cWrite <= 0) return null;
+    $source = (isset($raw['source']) && $raw['source'] === 'manual') ? 'manual' : 'litellm';
+    return array(
+        'maxInputTokens' => $input,
+        'maxOutputTokens' => $output,
+        'inputCostPerToken' => $pIn,
+        'outputCostPerToken' => $pOut,
+        'cacheReadCostPerToken' => $cRead,
+        'cacheWriteCostPerToken' => $cWrite,
+        // litellm_provider:上游托管平台标识(bedrock/azure/openrouter…),不是模型厂商。
+        // 同一模型常同时出现在多个平台下,仅作数据溯源保留,不对外当「公司」展示。
+        'provider' => substr((string) (isset($raw['provider']) ? $raw['provider'] : ''), 0, 60),
+        'mode' => substr((string) (isset($raw['mode']) ? $raw['mode'] : ''), 0, 40),
+        'source' => $source,
+        // 是否启用:停用的条目不参与窗口计算,但保留数据便于复查
+        'enabled' => !array_key_exists('enabled', $raw) || !empty($raw['enabled']),
+        'updatedAt' => isset($raw['updatedAt']) && is_numeric($raw['updatedAt']) ? (int) $raw['updatedAt'] : tc_now(),
+    );
+}
+
+function tc_normalize_model_meta($raw) {
+    $out = array();
+    foreach (tc_assoc($raw) as $name => $item) {
+        $key = tc_model_meta_key($name);
+        if ($key === '' || strlen($key) > 200) continue;
+        $norm = tc_normalize_model_meta_item($item);
+        if ($norm === null) continue;
+        $out[$key] = $norm;
+        if (count($out) >= 20000) break;
+    }
+    return $out;
+}
+
+// 取某模型的元数据;找不到返回 null。$onlyEnabled=true 时忽略已停用条目。
+function tc_model_meta_get($db, $model, $onlyEnabled = true) {
+    if (!isset($db['modelMeta']) || !is_array($db['modelMeta'])) return null;
+    $key = tc_model_meta_key($model);
+    if ($key === '' || !isset($db['modelMeta'][$key])) return null;
+    $item = $db['modelMeta'][$key];
+    if ($onlyEnabled && empty($item['enabled'])) return null;
+    return $item;
+}
+
 function tc_normalize_settings($raw) {
     global $TC_SETTINGS_DEFAULTS;
     $s = array_merge($TC_SETTINGS_DEFAULTS, is_array($raw) ? $raw : array());
@@ -510,6 +757,9 @@ function tc_normalize_settings($raw) {
     $s['smtpKeyRevealable'] = !empty($s['smtpKeyRevealable']);
     $timeout = isset($s['proxyTimeoutMs']) ? (int) $s['proxyTimeoutMs'] : $TC_SETTINGS_DEFAULTS['proxyTimeoutMs'];
     $s['proxyTimeoutMs'] = min(600000, max(5000, $timeout ?: $TC_SETTINGS_DEFAULTS['proxyTimeoutMs']));
+    // 出站代理:只接受 http/https/socks5 形态,避免把任意字符串塞进 curl 选项
+    $outProxy = trim((string) (isset($s['outboundProxy']) ? $s['outboundProxy'] : ''));
+    $s['outboundProxy'] = preg_match('#^(https?|socks5h?)://[^\s]{1,300}$#i', $outProxy) ? $outProxy : '';
     $s['loginMaxFails'] = min(50, max(0, (int) $s['loginMaxFails']));
     // 第三方登录配置归一化:只接受注册表里的提供商与字段,凭据截断长度。
     // 注册表在 lib/oauth.php;单独加载 core 的场景(如 CI 自检)没有它,
@@ -853,6 +1103,10 @@ function tc_empty_db() {
         'redemptionCodes' => array(),
         'quotaLedger' => array(),
         'inviteCodes' => array(),
+        // 模型元数据(上下文窗口/价格):按模型名索引的全局表,与供应商解耦。
+        // 后台可手工维护,也可从 litellm 的 model_prices_and_context_window.json 同步。
+        // 同一模型在多个供应商下复用时只需维护一份;source=manual 的条目不会被同步覆盖。
+        'modelMeta' => new stdClass(),
         // 演示模式快照:演示管理员改动前的站点状态,到期后由 tc_demo_revert 还原
         'demoSnapshot' => null,
         // 演示还原标记:{userId: 时间戳},客户端据此整体采纳云端(见 tc_demo_revert)
@@ -1268,6 +1522,7 @@ function tc_migrate_db($raw) {
         'modelHealth' => tc_object_map(tc_assoc(isset($stats['modelHealth']) ? $stats['modelHealth'] : array())),
     );
     $db['settings'] = tc_normalize_settings(isset($db['settings']) ? $db['settings'] : null);
+    $db['modelMeta'] = tc_normalize_model_meta(isset($db['modelMeta']) ? $db['modelMeta'] : array());
     unset($db['sessions']);
     foreach ($db['users'] as &$u) {
         if (!isset($u['tv']) || !is_numeric($u['tv'])) $u['tv'] = 0;
@@ -1611,6 +1866,8 @@ function tc_with_db($write, $fn) {
     $pdo = tc_db();
     list($db, $orig, $origChats, $origDeleted, $origNotes) = tc_db_load_with_baseline($pdo);
     $GLOBALS['_tc_db'] = &$db;
+    // 出站代理随库一起带出来:网络请求可能在事务释放之后才发,那时读不到 db 了
+    $GLOBALS['_tc_outbound_proxy'] = isset($db['settings']['outboundProxy']) ? (string) $db['settings']['outboundProxy'] : '';
     $GLOBALS['_tc_demo_before'] = null;
     $GLOBALS['_tc_db_ctx'] = array(
         'write' => $write, 'committed' => false, 'pdo' => $pdo,
