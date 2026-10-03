@@ -402,6 +402,7 @@
       + '<button data-mode="preview">预览</button>'
       + '</div>'
       + '<div class="notes-editor-toolbar">'
+      + '<button class="notes-icon-btn" data-act="mdbar" data-tip="Markdown 工具栏（可拖动）">' + icon('markdown', 15) + '</button>'
       + '<button class="notes-icon-btn" data-act="image" data-tip="插入图片（也可直接粘贴 / 拖拽）">' + icon('image', 15) + '</button>'
       + '<button class="notes-icon-btn" data-act="attach" data-tip="添加附件">' + icon('paperclip', 15) + '</button>'
       + '<button class="notes-icon-btn" data-act="share" data-tip="分享设置">' + icon('link', 15) + '</button>'
@@ -454,6 +455,52 @@
 
     mask.addEventListener('mousedown', (e) => {
       if (e.target === mask) flushEditor();
+    });
+    // 编辑器工具栏:统一事件委托(工具栏按钮由 renderEditor 重建,委托可避免监听丢失/重复)
+    const head = mask.querySelector('#notes-fs-head');
+    head.addEventListener('click', (e) => {
+      const b = e.target.closest('#notes-editor-bar [data-act]');
+      if (!b) return;
+      const act = b.dataset.act;
+      const n = N.ui.selNoteId ? noteById(N.ui.selNoteId) : null;
+      if (act === 'mdbar') { toggleMdBar(b); return; }
+      if (act === 'image') { pickFiles(true); return; }
+      if (act === 'attach') { pickFiles(false); return; }
+      if (!n) return;
+      if (act === 'share') openShareDialog(n.id);
+      else if (act === 'export') exportNote(noteById(n.id) || n);
+      else if (act === 'delete') {
+        window.OCUI.confirm({ title: '删除笔记「' + (n.title || '') + '」？', message: '删除后其他设备也会同步删除。', danger: true, confirmText: '删除' })
+          .then((ok) => { if (ok) deleteNote(n.id); });
+      }
+    });
+    // 模式切换(同样委托)
+    head.addEventListener('click', (e) => {
+      const b = e.target.closest('#ne-mode-switch button[data-mode]');
+      if (!b) return;
+      N.ui.mode = b.dataset.mode;
+      persistUi();
+      const panes = N.els.editorPane.querySelector('.notes-editor-panes');
+      if (panes) ['edit', 'split', 'preview'].forEach((m) => panes.classList.toggle('mode-' + m, m === N.ui.mode));
+      head.querySelectorAll('#ne-mode-switch button').forEach((x) => x.classList.toggle('active', x.dataset.mode === N.ui.mode));
+      if (N.ui.mode !== 'edit' && N.editor) renderPreview(N.editor.ta.value);
+    });
+    head.addEventListener('click', (e) => {
+      const b = e.target.closest('#ne-tags-btn');
+      if (!b) return;
+      const n = N.ui.selNoteId ? noteById(N.ui.selNoteId) : null;
+      if (n) openTagsDialog(n);
+    });
+    head.addEventListener('click', (e) => {
+      if (e.target.closest('#ne-undo')) { undo(); return; }
+      if (e.target.closest('#ne-redo')) { redo(); return; }
+      if (e.target.closest('#ne-ai')) { openDocAiMenu(e.target.closest('#ne-ai')); return; }
+      if (e.target.closest('#ne-ask')) { openAskNotes(); return; }
+      const f = e.target.closest('#ne-folder');
+      if (f) {
+        const n = N.ui.selNoteId ? noteById(N.ui.selNoteId) : null;
+        if (n) pickFolder((ff) => moveNote(n.id, ff), n.folderId);
+      }
     });
     // 右键菜单的全局收起(只注册一次;模块重开也不再重复挂)
     document.addEventListener('mousedown', (e) => {
@@ -743,6 +790,201 @@
     if (body.indexOf('{{text}}') >= 0) return body.replace('{{text}}', text) + tail;
     return body + tail + '\n\n' + text;
   }
+  // ============ Markdown 工具栏(可拖动悬浮窗) ============
+  // 语法动作:对选中文字加标记;无选中时插入占位文字并把占位选中,便于直接改。
+  const MD_TOOLS = [
+    { key: 'bold', label: '加粗', tip: '加粗 **文字**', icon: 'bold' },
+    { key: 'italic', label: '倾斜', tip: '倾斜 *文字*', icon: 'italic' },
+    { key: 'strike', label: '删除线', tip: '删除线 ~~文字~~', icon: 'strike' },
+    { key: 'code', label: '行内代码', tip: '行内代码 `代码`', icon: 'code' },
+    { key: 'h1', label: 'H1', tip: '一级标题', icon: null, textOnly: 'H1' },
+    { key: 'h2', label: 'H2', tip: '二级标题', icon: null, textOnly: 'H2' },
+    { key: 'h3', label: 'H3', tip: '三级标题', icon: null, textOnly: 'H3' },
+    { key: 'h4', label: 'H4', tip: '四级标题', icon: null, textOnly: 'H4' },
+    { key: 'h5', label: 'H5', tip: '五级标题', icon: null, textOnly: 'H5' },
+    { key: 'quote', label: '引用', tip: '引用块', icon: 'quote' },
+    { key: 'ul', label: '无序列表', tip: '无序列表', icon: 'listUl' },
+    { key: 'ol', label: '有序列表', tip: '有序列表', icon: 'listOl' },
+    { key: 'task', label: '任务列表', tip: '任务列表 - [ ]', icon: 'listTask' },
+    { key: 'table', label: '表格', tip: '插入表格', icon: 'table' },
+    { key: 'link', label: '链接', tip: '插入链接', icon: 'link' },
+    { key: 'image', label: '图片', tip: '插入图片语法', icon: 'image' },
+    { key: 'hr', label: '分隔线', tip: '插入分隔线', icon: 'minus' },
+    { key: 'codeblock', label: '代码块', tip: '插入代码块', icon: 'codeBlock' },
+    { key: 'formula', label: '公式', tip: '插入数学公式', icon: 'sigma' },
+    { key: 'mermaid', label: '图表', tip: '插入 Mermaid 图表', icon: 'graph' },
+  ];
+
+  let mdBarEl = null;
+  function mdBarPos() {
+    try {
+      const j = JSON.parse(localStorage.getItem('oc_notes_mdbar_pos') || 'null');
+      if (j && typeof j.x === 'number' && typeof j.y === 'number') return j;
+    } catch (e) {}
+    return null;
+  }
+  function toggleMdBar(anchor) {
+    if (mdBarEl) { closeMdBar(); return; }
+    const el = document.createElement('div');
+    el.className = 'notes-mdbar';
+    el.innerHTML =
+      '<div class="mdbar-head" id="mdbar-drag">'
+      + icon('markdown', 13) + '<span>Markdown</span>'
+      + '<span class="mdbar-hint">拖动可移动</span>'
+      + '<button class="mdbar-close" data-close data-tip="关闭">' + icon('close', 13) + '</button>'
+      + '</div>'
+      + '<div class="mdbar-body">'
+      + MD_TOOLS.map((t) => '<button class="mdbar-btn" data-md="' + t.key + '" data-tip="' + esc(t.tip) + '">'
+          + (t.textOnly ? esc(t.textOnly) : icon(t.icon, 15)) + '</button>').join('')
+      + '</div>';
+    document.body.appendChild(el);
+    // 位置:记忆优先,否则放在编辑区右上角附近
+    const saved = mdBarPos();
+    const r = el.getBoundingClientRect();
+    let x = saved ? saved.x : (window.innerWidth - r.width - 40);
+    let y = saved ? saved.y : 120;
+    x = Math.max(8, Math.min(x, window.innerWidth - r.width - 8));
+    y = Math.max(8, Math.min(y, window.innerHeight - r.height - 8));
+    el.style.left = x + 'px';
+    el.style.top = y + 'px';
+    mdBarEl = el;
+
+    el.querySelector('[data-close]').addEventListener('click', (e) => { e.stopPropagation(); closeMdBar(); });
+    el.querySelectorAll('[data-md]').forEach((b) => {
+      b.addEventListener('mousedown', (e) => e.preventDefault()); // 保住 textarea 焦点与选区
+      b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); applyMdTool(b.dataset.md); });
+    });
+    initMdBarDrag(el);
+    if (anchor) anchor.classList.add('active');
+  }
+  function closeMdBar() {
+    if (!mdBarEl) return;
+    mdBarEl.remove();
+    mdBarEl = null;
+    if (N.els.bar) {
+      const b = N.els.bar.querySelector('[data-act="mdbar"]');
+      if (b) b.classList.remove('active');
+    }
+  }
+  // 拖动:按住标题区移动,松手记忆位置
+  function initMdBarDrag(el) {
+    const handle = el.querySelector('#mdbar-drag');
+    let dragging = false, offX = 0, offY = 0;
+    handle.addEventListener('mousedown', (e) => {
+      if (e.target.closest('[data-close]')) return;
+      dragging = true;
+      const r = el.getBoundingClientRect();
+      offX = e.clientX - r.left;
+      offY = e.clientY - r.top;
+      el.classList.add('dragging');
+      e.preventDefault();
+    });
+    const move = (e) => {
+      if (!dragging) return;
+      const r = el.getBoundingClientRect();
+      const x = Math.max(4, Math.min(e.clientX - offX, window.innerWidth - r.width - 4));
+      const y = Math.max(4, Math.min(e.clientY - offY, window.innerHeight - r.height - 4));
+      el.style.left = x + 'px';
+      el.style.top = y + 'px';
+    };
+    const up = () => {
+      if (!dragging) return;
+      dragging = false;
+      el.classList.remove('dragging');
+      try {
+        localStorage.setItem('oc_notes_mdbar_pos', JSON.stringify({
+          x: Math.round(el.getBoundingClientRect().left),
+          y: Math.round(el.getBoundingClientRect().top),
+        }));
+      } catch (err) {}
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+    el._cleanupDrag = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+    };
+  }
+
+  // 应用一个 Markdown 语法动作到当前选区
+  function applyMdTool(key) {
+    const ta = N.editor && N.editor.ta;
+    if (!ta) { toast('先打开一篇笔记', true); return; }
+    ta.focus();
+    const a = typeof ta.selectionStart === 'number' ? ta.selectionStart : ta.value.length;
+    const b = typeof ta.selectionEnd === 'number' ? ta.selectionEnd : a;
+    const sel = ta.value.slice(a, b);
+    const lineStart = ta.value.lastIndexOf('\n', a - 1) + 1;
+    const lineEndIdx = ta.value.indexOf('\n', b);
+    const lineEnd = lineEndIdx < 0 ? ta.value.length : lineEndIdx;
+
+    // 工具:包住选区 / 前缀行 / 插入模板
+    const wrap = (before, after, placeholder) => {
+      const body = sel || (placeholder || '文字');
+      setValue(ta.value.slice(0, a) + before + body + after + ta.value.slice(b), a + before.length, a + before.length + body.length);
+    };
+    const prefixLines = (prefix, placeholder) => {
+      // 无选区时以当前行为目标;有选区则逐行加前缀
+      const s0 = sel ? lineStart : lineStart;
+      const s1 = sel ? lineEnd : lineEnd;
+      const block = ta.value.slice(s0, s1) || (placeholder || '');
+      const out = block.split('\n').map((ln) => prefix + ln).join('\n');
+      const caret = s0 + prefix.length;
+      setValue(ta.value.slice(0, s0) + out + ta.value.slice(s1), caret, caret + (block.length || 0));
+    };
+    const insertBlock = (text, caretOffset) => {
+      const needPre = a > 0 && ta.value[a - 1] !== '\n' ? '\n\n' : '';
+      const needPost = ta.value[b] && ta.value[b] !== '\n' ? '\n\n' : '\n';
+      const ins = needPre + text + needPost;
+      const pos = a + needPre.length + (caretOffset == null ? text.length : caretOffset);
+      setValue(ta.value.slice(0, a) + ins + ta.value.slice(b), pos, pos);
+    };
+    const setValue = (v, selStart, selEnd) => {
+      ta.value = v;
+      ta.selectionStart = selStart;
+      ta.selectionEnd = selEnd;
+      N.editor.dirty = true;
+      pushHistory({ force: true });
+      renderPreview(v);
+      setSaveState('editing');
+      clearTimeout(N.editor.saveTimer);
+      N.editor.saveTimer = setTimeout(saveEditor, 600);
+    };
+
+    if (key === 'bold') return wrap('**', '**', '加粗文字');
+    if (key === 'italic') return wrap('*', '*', '倾斜文字');
+    if (key === 'strike') return wrap('~~', '~~', '删除文字');
+    if (key === 'code') return wrap('`', '`', 'code');
+    if (/^h[1-5]$/.test(key)) {
+      const lvl = Number(key.slice(1));
+      const prefix = '#'.repeat(lvl) + ' ';
+      // 已有标题级别则先剥掉,避免叠加
+      const s0 = lineStart, s1 = lineEnd;
+      const block = (ta.value.slice(s0, s1) || '标题').replace(/^#{1,6}\s*/, '');
+      const out = prefix + block;
+      const caret = s0 + out.length;
+      return setValue(ta.value.slice(0, s0) + out + ta.value.slice(s1), caret, caret);
+    }
+    if (key === 'quote') return prefixLines('> ', '引用内容');
+    if (key === 'ul') return prefixLines('- ', '列表项');
+    if (key === 'ol') return prefixLines('1. ', '列表项');
+    if (key === 'task') return prefixLines('- [ ] ', '待办事项');
+    if (key === 'table') {
+      return insertBlock('| 列 1 | 列 2 | 列 3 |\n| --- | --- | --- |\n| 内容 | 内容 | 内容 |', 2);
+    }
+    if (key === 'link') return wrap('[', '](https://)', sel ? '链接文字' : '链接文字');
+    if (key === 'image') return insertBlock('![图片说明](图片地址)', 2);
+    if (key === 'hr') return insertBlock('---', 3);
+    if (key === 'codeblock') {
+      const body = sel || '代码';
+      return insertBlock('```\n' + body + '\n```', 3);
+    }
+    if (key === 'formula') return wrap('$', '$', 'x^2');
+    if (key === 'mermaid') {
+      return insertBlock('```mermaid\ngraph LR\n  A[开始] --> B[结束]\n```', 8);
+    }
+  }
+
   // ============ 正文选区右键:AI 编辑 ============
   // 结果插到选中文字之后(前后各留一个换行),原选中内容保持不变。
   let aiCtxMenu = null;
@@ -1465,6 +1707,7 @@
   }
   function close() {
     closeAiCtxMenu();
+    closeMdBar();
     flushEditor();
     if (window.OCUI && window.OCUI.closeModal) window.OCUI.closeModal(N.els.mask);
     else N.els.mask.classList.remove('show');
@@ -1811,35 +2054,7 @@
     N.editor = { noteId: n.id, ta, preview, dirty: false, saveTimer: null, renderTimer: null };
     renderPreview(n.content || '');
     resetHistory(n.id);
-    bar.querySelector('#ne-ai').addEventListener('click', (e) => openDocAiMenu(e.currentTarget));
-    bar.querySelector('#ne-ask').addEventListener('click', openAskNotes);
-    bar.querySelector('#ne-undo').addEventListener('click', undo);
-    bar.querySelector('#ne-redo').addEventListener('click', redo);
-    bar.querySelector('#ne-tags-btn').addEventListener('click', () => {
-      const cur = noteById(n.id);
-      if (cur) openTagsDialog(cur);
-    });
 
-    bar.querySelector('#ne-mode-switch').addEventListener('click', (e) => {
-      const b = e.target.closest('button[data-mode]');
-      if (!b) return;
-      N.ui.mode = b.dataset.mode;
-      persistUi();
-      const panes = pane.querySelector('.notes-editor-panes');
-      ['edit', 'split', 'preview'].forEach((m) => panes.classList.toggle('mode-' + m, m === N.ui.mode));
-      bar.querySelectorAll('#ne-mode-switch button').forEach((x) => x.classList.toggle('active', x.dataset.mode === N.ui.mode));
-      if (N.ui.mode !== 'edit') renderPreview(ta.value);
-    });
-    bar.querySelector('#ne-folder').addEventListener('click', () => pickFolder((f) => moveNote(n.id, f), n.folderId));
-    bar.querySelector('[data-act="share"]').addEventListener('click', () => openShareDialog(n.id));
-    bar.querySelector('[data-act="export"]').addEventListener('click', () => exportNote(noteById(n.id) || n));
-    bar.querySelector('[data-act="delete"]').addEventListener('click', async () => {
-      const cur = noteById(n.id);
-      const ok = await window.OCUI.confirm({ title: '删除笔记「' + (cur ? cur.title : '') + '」？', message: '删除后其他设备也会同步删除。', danger: true, confirmText: '删除' });
-      if (ok) deleteNote(n.id);
-    });
-    bar.querySelector('[data-act="image"]').addEventListener('click', () => pickFiles(true));
-    bar.querySelector('[data-act="attach"]').addEventListener('click', () => pickFiles(false));
 
     ta.addEventListener('input', () => {
       N.editor.dirty = true;
