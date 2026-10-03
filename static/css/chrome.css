@@ -2074,9 +2074,9 @@ body.share-page {
   background: var(--bg-hover);
 }
 
-/* 多模型对比 */
+/* 多模型对比(入口只选模型,回答以消息顶部的标签页呈现) */
 .compare-modal .compare-model-list {
-  max-height: 200px;
+  max-height: 260px;
   overflow: auto;
   border: 1px solid var(--hairline);
   border-radius: 10px;
@@ -2092,46 +2092,16 @@ body.share-page {
   cursor: pointer;
 }
 .compare-model-opt:hover { background: var(--bg-surface); }
-.compare-results {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 10px;
-  margin-top: 14px;
+.compare-model-opt .compare-model-logo {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border-radius: 4px;
 }
-.compare-card {
-  border: 1px solid var(--hairline);
-  border-radius: 12px;
-  padding: 10px 12px;
-  background: var(--bg-surface);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-.compare-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 0.893rem;
-}
-.compare-card-head b {
+.compare-model-opt span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.compare-card-body {
-  font-size: 0.929rem;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 320px;
-  overflow: auto;
-}
-.compare-card-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
 }
 
 /* 全站公告已改为居中弹窗,样式见文件末尾 .announce-modal */
@@ -4588,10 +4558,15 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 }
 .composer-at-row {
   position: absolute;
-  /* 与 textarea 首行文字对齐:padding-top(10px) + 首行行高的一半差,
-     这里直接用 calc 跟随字号 --fs(行高 1.5 → 首行中心在 10px + 0.75*fs 处) */
-  top: calc(10px + 0.06 * var(--fs, 14px));
+  /* 与 textarea 首行文字严格对齐。
+     textarea 的 padding-top 与首行行高都由 .composer-flow textarea 给定(见下),
+     这里让 @ 行占据同样的「首行行盒」:top = 上内边距、height = 行高,
+     行内文字再垂直居中 —— 两侧用的是同一套行高,因此墨迹自然落在同一基线,
+     不需要任何按字号凑出来的经验偏移(此前 0.06*fs 在 14px 下偏高约 0.8px,
+     字号越大偏得越多)。 */
+  top: 10px;
   left: 0;
+  height: 1.5em;      /* 与 textarea 首行行高一致 */
   display: flex;
   align-items: center;
   gap: 2px;
@@ -4612,8 +4587,9 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   flex: 1 1 auto;
   padding-top: 10px;
   font-size: var(--fs, 14px);   /* 输入字号跟随外观设置 */
+  line-height: 1.5;             /* 与 @ 行 height:1.5em 同一基准 */
 }
-/* @笔记 chip 与 @助手 完全等高:统一高度(14.5 * 1.5),避免一个偏高一个偏低 */
+/* @笔记 chip 与 @助手 完全等高:统一高度(1.5 行高),避免一个偏高一个偏低 */
 .composer-flow .composer-at,
 .composer-flow .note-mention-chip {
   font-size: var(--fs, 14px);
@@ -4660,52 +4636,3 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   margin: 6px 0 0;
 }
 [data-theme="dark"] .note-answer-hint { color: #fca5a5; background: rgba(248, 113, 113, .14); }
-
-
-/* ---------- @助手 / @笔记:悬浮覆盖层 + 首行缩进(悬挂缩进)----------
-   目标效果:第一行内容是「@助手 @笔记 提问文字…」,第一行放不下时自动折行,
-   第二行从最左侧(@助手 正下方)继续 —— 而不是整块挪到下一行或缩在 @ 右边。
-   实现:@ 行绝对定位覆盖在 textarea 左上角,textarea 用 text-indent 只让
-   首行缩进(其宽度由 JS 动态测量 @ 行宽度后写入),后续行自然回到左边缘。 */
-.composer-flow {
-  flex: 1 1 auto;
-  position: relative;
-  min-width: 0;
-  align-self: center;
-}
-.composer-at-row {
-  position: absolute;
-  /* 与 textarea 首行文字对齐:padding-top(10px) + 首行行高的一半差,
-     这里直接用 calc 跟随字号 --fs(行高 1.5 → 首行中心在 10px + 0.75*fs 处) */
-  top: calc(10px + 0.06 * var(--fs, 14px));
-  left: 0;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  z-index: 2;         /* 覆盖在 textarea 之上,保证 @ 与 × 可点 */
-  pointer-events: none;   /* 行本身不挡点击,内部元素恢复 */
-  white-space: nowrap;
-}
-.composer-at-row > * { pointer-events: auto; }
-.composer-at-row .composer-at,
-.composer-at-row .note-mention-row {
-  flex: 0 0 auto;     /* 关键:不收缩、不被压缩,避免两个 @ 重叠 */
-  margin: 0;
-  min-width: 0;
-}
-/* textarea 占满整宽,首行缩进由 JS 写 text-indent */
-.composer-flow textarea {
-  width: 100%;
-  flex: 1 1 auto;
-  padding-top: 10px;
-  font-size: var(--fs, 14px);   /* 输入字号跟随外观设置 */
-}
-/* @笔记 chip 与 @助手 完全等高:统一高度(14.5 * 1.5),避免一个偏高一个偏低 */
-.composer-flow .composer-at,
-.composer-flow .note-mention-chip {
-  font-size: var(--fs, 14px);
-  line-height: 1.5;
-  height: 1.5em;      /* 高度随字号自动缩放(1.5 行高) */
-  display: inline-flex;
-  align-items: center;
-}
