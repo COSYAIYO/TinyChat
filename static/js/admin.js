@@ -159,14 +159,19 @@ function fmtUptime(sec) {
   if (h > 0) return h + ' 小时 ' + m + ' 分';
   return m + ' 分';
 }
-function sysRing(label, sub, pct, color) {
+// 环形指标卡:标签(单行省略) + 主值(大字) + 副值(小字省略)。
+// 主/副分离是为了让「2.61 GB / 5.79 GB」这类长串不再挤成两行乱折。
+function sysRing(label, value, pct, color, sub) {
   const has = (pct !== null && pct !== undefined);
   const p = has ? Math.max(0, Math.min(100, Math.round(pct))) : 0;
   return '<div class="sys-meter">'
     + '<div class="sys-ring"' + (has ? ' style="--ring-color:' + color + ';--pct:' + p + '"' : ' style="--ring-color:#cbd5e1"') + '>'
     + '<span>' + (has ? p + '%' : '—') + '</span></div>'
-    + '<div class="sys-meter-meta"><div class="k">' + escapeHtml(label) + '</div><div class="v">' + escapeHtml(sub) + '</div></div>'
-    + '</div>';
+    + '<div class="sys-meter-meta">'
+    + '<div class="k">' + escapeHtml(label) + '</div>'
+    + '<div class="v">' + escapeHtml(value) + '</div>'
+    + (sub ? '<div class="sub">' + escapeHtml(sub) + '</div>' : '')
+    + '</div></div>';
 }
 function sysRingColor(pct) { return pct >= 85 ? '#dc2626' : (pct >= 60 ? '#f59e0b' : '#16a34a'); }
 // 无环数值卡片:网速、运行时长、体积这类没有百分比可言的指标用大字直接显示
@@ -199,11 +204,12 @@ async function loadSystemBoard() {
     const sub = [];
     if (quota.cpuCores) sub.push('配额 ' + fmtCores(quota.cpuCores));
     if (quota.cpuCoreUsage !== null && quota.cpuCoreUsage !== undefined) sub.push('现用 ' + fmtCores(quota.cpuCoreUsage));
-    meters.push(sysRing(quota.cpuCores ? 'CPU（配额）' : 'CPU（账户用量）', sub.join(' · ') || '—',
-      quota.cpuPercent, sysRingColor(quota.cpuPercent || 0)));
+    meters.push(sysRing(quota.cpuCores ? 'CPU 配额' : 'CPU 用量',
+      quota.cpuCoreUsage !== null && quota.cpuCoreUsage !== undefined ? fmtCores(quota.cpuCoreUsage) : '—',
+      quota.cpuPercent, sysRingColor(quota.cpuPercent || 0), sub.join(' · ')));
   } else if (cpu.percent !== null && cpu.percent !== undefined) {
-    const la = (cpu.loadavg && cpu.loadavg.length) ? '负载 ' + cpu.loadavg.join(' / ') : (cpu.cores ? cpu.cores + ' 核' : '—');
-    meters.push(sysRing('CPU 使用率', la, cpu.percent, sysRingColor(cpu.percent)));
+    const la = (cpu.loadavg && cpu.loadavg.length) ? '负载 ' + cpu.loadavg.join(' / ') : '';
+    meters.push(sysRing('CPU 使用率', cpu.cores ? cpu.cores + ' 核' : '—', cpu.percent, sysRingColor(cpu.percent), la));
   } else if (cpu.cores) {
     meters.push(sysRing('CPU', cpu.cores + ' 核', null, '#cbd5e1'));
   }
@@ -213,20 +219,21 @@ async function loadSystemBoard() {
   const phpRing = () => {
     if (!mem.phpBytes) return;
     const lim = mem.phpLimitBytes;
-    meters.push(sysRing('PHP 进程内存', fmtBytesBig(mem.phpBytes) + (lim ? ' / ' + fmtBytesBig(lim) : ''),
-      lim ? mem.phpBytes * 100 / lim : null, sysRingColor(lim ? mem.phpBytes * 100 / lim : 0)));
+    meters.push(sysRing('PHP 进程内存', fmtBytesBig(mem.phpBytes),
+      lim ? mem.phpBytes * 100 / lim : null, sysRingColor(lim ? mem.phpBytes * 100 / lim : 0),
+      lim ? '上限 ' + fmtBytesBig(lim) : ''));
   };
   if (hasQuotaMem) {
     const pct = quota.memUsedBytes * 100 / quota.memLimitBytes;
-    meters.push(sysRing('内存（配额）', fmtBytesBig(quota.memUsedBytes) + ' / ' + fmtBytesBig(quota.memLimitBytes), pct, sysRingColor(pct)));
+    meters.push(sysRing('内存配额', fmtBytesBig(quota.memUsedBytes), pct, sysRingColor(pct), '共 ' + fmtBytesBig(quota.memLimitBytes)));
   } else if (mem.totalBytes) {
     const pct = mem.usedBytes * 100 / mem.totalBytes;
-    meters.push(sysRing('内存', fmtBytesBig(mem.usedBytes) + ' / ' + fmtBytesBig(mem.totalBytes), pct, sysRingColor(pct)));
+    meters.push(sysRing('内存', fmtBytesBig(mem.usedBytes), pct, sysRingColor(pct), '共 ' + fmtBytesBig(mem.totalBytes)));
   }
   if (disk.totalBytes && disk.freeBytes !== null && disk.freeBytes !== undefined) {
     const used = disk.totalBytes - disk.freeBytes;
     const pct = used * 100 / disk.totalBytes;
-    meters.push(sysRing('磁盘', fmtBytesBig(used) + ' / ' + fmtBytesBig(disk.totalBytes), pct, sysRingColor(pct)));
+    meters.push(sysRing('磁盘', fmtBytesBig(used), pct, sysRingColor(pct), '共 ' + fmtBytesBig(disk.totalBytes)));
   }
   // 网速:上行=出站(回复与图片发给用户),下行=入站(用户请求进来)
   if (net.txBps !== null && net.txBps !== undefined) {
@@ -248,10 +255,16 @@ async function loadSystemBoard() {
   metersEl.innerHTML = meters.join('') || '<p class="muted small" style="margin:0">当前环境未提供 CPU / 内存指标。</p>';
   const hostEl = $('sys-host');
   if (hostEl) {
-    hostEl.textContent = [
+    const parts = [
       'v' + (d.version || '?'), srv.phpVersion ? 'PHP ' + srv.phpVersion : '', srv.sapi, srv.os,
       srv.arch, srv.sqliteVersion ? 'SQLite ' + srv.sqliteVersion : '', srv.host, srv.timezone,
-    ].filter(Boolean).join(' · ');
+    ].filter(Boolean);
+    // 环境信息很长(内核版本 + 主机名等),单行显示会挤压右侧按钮:
+    // 只显示前若干项,剩余折成 +N,完整内容放 title 里悬停可见。
+    const shown = parts.slice(0, 4).join(' · ');
+    const rest = parts.length > 4 ? parts.slice(4) : [];
+    hostEl.textContent = rest.length ? (shown + ' +' + rest.length) : shown;
+    hostEl.title = parts.join(' · ');
   }
   const upEl = $('sys-updated');
   if (upEl) upEl.textContent = '更新于 ' + fmtTime(Date.now()).replace(/^.*\s/, '').replace(/:\d\d$/, '');

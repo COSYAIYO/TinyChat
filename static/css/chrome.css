@@ -4041,7 +4041,9 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   border: 1px solid var(--hairline, #e5e7eb); border-radius: 16px; padding: 16px 18px; margin-bottom: 16px;
   box-shadow: 0 1px 3px rgba(15,23,42,.05);
 }
-.sys-board-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.sys-board-head { display: flex; justify-content: space-between; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin-bottom: 14px; }
+/* 环境信息(v2.0.117 · PHP · SAPI · 内核...)过长时整段换行,不把右侧「刷新」挤变形 */
+.sys-board-actions .muted.small { word-break: break-word; line-height: 1.5; }
 .sys-board-title { display: flex; align-items: center; gap: 8px; font-size: 15px; }
 .sys-board-actions { display: flex; align-items: center; gap: 10px; }
 /* 呼吸点:暗示这是一块实时状态区 */
@@ -4052,21 +4054,49 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   100% { box-shadow: 0 0 0 0 rgba(22,163,74,0); }
 }
 /* 环形指标:用 conic-gradient 画进度环 */
-.sys-meters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+/* 卡片最小宽度按「环形 54px + 文字最短可读宽度」定,避免中文标签被逐字折行 */
+.sys-meters { display: grid; grid-template-columns: repeat(auto-fit, minmax(178px, 1fr)); gap: 12px; }
 .sys-meters .sys-note { grid-column: 1 / -1; margin: 0; }
 .sys-meter { display: flex; align-items: center; gap: 12px; background: var(--bg-surface,#fff); border: 1px solid var(--hairline,#eef2f7);
-  border-radius: 12px; padding: 12px 14px; min-width: 0; }
+  border-radius: 12px; padding: 12px 14px; min-width: 0; min-height: 78px; box-sizing: border-box; }
 .sys-ring { position: relative; width: 54px; height: 54px; border-radius: 50%; flex: 0 0 auto;
   background: conic-gradient(var(--ring-color, var(--brand,#3b82f6)) calc(var(--pct,0) * 1%), var(--ring-track, var(--hairline,#eef2f7)) 0);
   display: grid; place-items: center; }
 .sys-ring::after { content: ''; position: absolute; inset: 6px; border-radius: 50%; background: var(--bg-surface,#fff); }
 .sys-ring span { position: relative; z-index: 1; font-size: 13px; font-weight: 650; letter-spacing: -0.02em; }
-.sys-meter-meta { min-width: 0; }
-.sys-meter-meta .k { font-size: 12.5px; color: var(--text-tertiary,#6b7280); }
-.sys-meter-meta .v { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
-.sys-meter-meta .sub { font-size: 11.5px; color: var(--text-tertiary,#9ca3af); margin-top: 2px; }
-/* 无环数值卡片(网速 / 运行时长 / 体积):没有百分比可言,直接把数值放大 */
-.sys-meter.sys-stat .sys-meter-meta .v { font-size: 19px; }
+/* 文本区:占满剩余宽度;标签/数值都按「整词换行 + 超长省略」处理,
+   避免中文在窄卡里被逐字拆成竖排(此前 CPU 使用率 / 数据库大小 会一字一行)。 */
+.sys-meter-meta { flex: 1 1 auto; min-width: 0; }
+.sys-meter-meta .k {
+  font-size: 12.5px;
+  color: var(--text-tertiary,#6b7280);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.35;
+}
+.sys-meter-meta .v {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  margin-top: 1px;
+  overflow-wrap: break-word;
+  word-break: keep-all;      /* 中文不逐字断行 */
+}
+.sys-meter-meta .sub {
+  font-size: 11.5px;
+  color: var(--text-tertiary,#9ca3af);
+  margin-top: 2px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 无环数值卡片(网速 / 运行时长 / 体积):没有百分比可言,直接把数值放大。
+   word-break 保持 keep-all,「4.8 KB/s」这类整体不会被拆开。 */
+.sys-meter.sys-stat .sys-meter-meta .v { font-size: 19px; line-height: 1.25; }
+.sys-meter.sys-stat { align-items: center; }
 /* 概览格子的补充说明(在线窗口、近 7 天等) */
 .stat-card .stat-sub { font-size: 11.5px; color: var(--text-tertiary,#9ca3af); margin-top: 2px; }
 /* 存储管理:条形占用 */
