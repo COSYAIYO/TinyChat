@@ -181,6 +181,8 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/sync/notes$#', 'tc_api_notes_save'),
         array('POST', '#^/api/notes/upload$#', 'tc_api_note_attachment_upload'),
         array('GET', '#^/api/notes/file$#', 'tc_api_note_attachment_serve'),
+        array('DELETE', '#^/api/notes/file$#', 'tc_api_note_attachment_delete'),
+        array('POST', '#^/api/notes/files/gc$#', 'tc_api_note_attachments_gc'),
         array('GET', '#^/api/notes/usage$#', 'tc_api_notes_usage'),
         array('POST', '#^/api/notes/ai/consume$#', 'tc_api_notes_ai_consume'),
         // 管理端笔记:用户用量列表 / 审阅某用户笔记 / 清理

@@ -112,10 +112,41 @@
       createdAt: now, updatedAt: now, system: true,
     });
   }
+  let localFullWarned = false;
   function persistLocal() {
+    const payload = { doc: N.doc, revision: N.revision, shares: N.shares };
     try {
-      localStorage.setItem(lsDocKey(), JSON.stringify({ doc: N.doc, revision: N.revision, shares: N.shares }));
-    } catch (e) { /* 容量满时静默:下次同步会以云端为准 */ }
+      localStorage.setItem(lsDocKey(), JSON.stringify(payload));
+      localFullWarned = false;
+      return;
+    } catch (e) { /* 容量满:降级重试 + 明确告知用户 */ }
+    // 降级:本地只留索引(正文不落本地),避免完全失去离线副本;
+    // 同时必须提示——否则用户以为改动安全,刷新后却回退到旧版本。
+    try {
+      const slim = {
+        doc: {
+          folders: N.doc.folders,
+          tombs: N.doc.tombs,
+          notes: N.doc.notes.map((n) => Object.assign({}, n, {
+            content: '', // 正文不落本地(云端仍是权威副本)
+            _localSlim: true,
+          })),
+        },
+        revision: N.revision,
+        shares: N.shares,
+        _slim: true,
+      };
+      localStorage.setItem(lsDocKey(), JSON.stringify(slim));
+      if (!localFullWarned) {
+        localFullWarned = true;
+        toast('浏览器本地缓存已满：内容已保存到云端，但本机不再缓存笔记正文', true);
+      }
+    } catch (e2) {
+      if (!localFullWarned) {
+        localFullWarned = true;
+        toast('浏览器本地缓存已满，且无法写入索引；请清理站点数据后重试', true);
+      }
+    }
   }
   function persistUi() {
     try { localStorage.setItem(lsUiKey(), JSON.stringify(N.ui)); } catch (e) {}
@@ -127,6 +158,8 @@
       const j = JSON.parse(raw);
       if (!j || !j.doc || !Array.isArray(j.doc.notes)) return false;
       N.doc = { folders: j.doc.folders || [], notes: j.doc.notes || [], tombs: j.doc.tombs || {} };
+      // 本地瘦身副本(正文为空)不能当作有效内容:只保留结构,等云端拉回正文
+      if (j._slim) N._localSlim = true;
       N.revision = Number(j.revision) || 0;
       N.shares = Array.isArray(j.shares) ? j.shares : [];
       ensureUncat();
@@ -179,6 +212,9 @@
       });
       if (r.status === 409) {
         const data = await r.json().catch(() => ({}));
+        // 冲突不再静默:提示用户「已自动合并」(按条目更新时间取新)
+        syncDot('conflict');
+        toast('检测到其他设备的改动，已自动合并（较新的版本保留）');
         const remote = (data && data.doc) || { folders: [], notes: [], tombs: {} };
         N.doc = mergeDocs(N.doc, remote);
         N.revision = Number(data && data.revision) || N.revision;
@@ -228,6 +264,7 @@
   // 所有变更经由 mutate:立即落本地 + 防抖推云端 + 重绘
   function mutate(fn, opts) {
     fn();
+    invalidateSearchIndex();
     persistLocal();
     schedulePush();
     if (N.ready && !(opts && opts.noRender)) renderAll();
@@ -310,12 +347,44 @@
   function deleteNote(id) {
     const n = noteById(id);
     if (!n) return;
+    // 先回收该笔记的附件(否则文件会永久占用空间配额)
+    const atts = (n.attachments || []).map((a) => a && a.id).filter(Boolean);
     const now = Date.now();
     N.doc.tombs[id] = now;
     N.doc.notes = N.doc.notes.filter((x) => x.id !== id);
     if (N.ui.selNoteId === id) { N.ui.selNoteId = null; N.editor = null; }
     mutate(() => {});
     persistUi();
+    if (atts.length) deleteAttachments(atts);
+  }
+
+  // 删除附件文件(逐个;失败不阻塞删除,留给 GC 回收)
+  function deleteAttachments(ids) {
+    let done = 0;
+    const total = ids.length;
+    ids.forEach((fid) => {
+      apiFetch('/api/notes/file?id=' + encodeURIComponent(fid), { method: 'DELETE' })
+        .then((r) => { if (r.ok) done++; })
+        .catch(() => {})
+        .finally(() => {
+          if (done === total) refreshUsage();
+        });
+    });
+  }
+
+  // 孤儿附件回收:把云端现存笔记的附件集合与服务端文件对账,清掉无主文件。
+  // 节流:每 6 小时最多一次(回收本身有服务端限流)。
+  function maybeGcAttachments() {
+    let last = 0;
+    try { last = Number(localStorage.getItem('oc_notes_gc_at') || 0); } catch (e) {}
+    if (Date.now() - last < 6 * 3600 * 1000) return;
+    try { localStorage.setItem('oc_notes_gc_at', String(Date.now())); } catch (e) {}
+    apiFetch('/api/notes/files/gc', { method: 'POST' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d && d.removed > 0) { refreshUsage(); }
+      })
+      .catch(() => {});
   }
   function togglePin(id) {
     const n = noteById(id);
@@ -558,7 +627,9 @@
     // 只折叠左侧面板:编辑器区域占满剩余宽度
     fs.classList.toggle('side-collapsed', !!N.ui.sideCollapsed);
     const float = N.els.mask.querySelector('#notes-side-float');
-    if (float) float.classList.toggle('hidden', !N.ui.sideCollapsed);
+    // 窄屏(抽屉式侧栏)时浮标常显,否则用户找不到目录入口
+    const narrow = window.innerWidth <= 760;
+    if (float) float.classList.toggle('hidden', !N.ui.sideCollapsed && !narrow);
   }
 
   // 模块内的输入弹窗:圆角输入框、聚焦不做蓝色高亮(替代全局 OCUI.prompt)
@@ -1083,7 +1154,9 @@
 
   function openAiCtxMenu(x, y, text, start, end) {
     closeAiCtxMenu();
-    const acts = aiActions().filter((a) => a.enabled);
+    // 预览区选中但无法回定位到源文时:只提供常用编辑,AI 项禁用并说明原因
+    const acts = (end === 'preview-only') ? [] : aiActions().filter((a) => a.enabled);
+    const previewOnly = end === 'preview-only';
     const menu = document.createElement('div');
     menu.className = 'notes-ctx-menu';
     menu.innerHTML = ctxToolbarHtml()
@@ -1091,7 +1164,9 @@
       + (acts.length
         ? '<div class="ncm-head">AI 编辑</div>'
           + acts.map((a) => '<button class="ncm-item" data-ai="' + a.key + '"><span>' + esc(a.label) + '</span><i>' + esc(a.desc) + '</i></button>').join('')
-        : '<div class="ncm-empty">没有启用的动作。点左下角齿轮添加或启用。</div>');
+        : '<div class="ncm-empty">' + (previewOnly
+            ? '这段文字未能在源码中定位（可能跨了格式标记），请在编辑区选中后使用 AI 编辑。'
+            : '没有启用的动作。点左下角齿轮添加或启用。') + '</div>');
     document.body.appendChild(menu);
     menu.querySelectorAll('[data-tool]').forEach((b) => {
       b.addEventListener('mousedown', (e) => e.preventDefault()); // 保住输入框焦点与选区
@@ -1210,6 +1285,7 @@
       { value: 'tidy', label: '自动整理 · 重排结构（预览后应用）' },
       { value: 'links', label: '双链图谱 · 生成 Mermaid 关系图' },
       { value: 'digest', label: '生成日报 · 汇总近 24 小时更新的笔记' },
+      { value: 'versions', label: '历史版本 · 查看并恢复本机留档' },
     ];
     window.OC.openSelect(anchor, items, {
       fitWidth: true,
@@ -1218,6 +1294,11 @@
   }
   async function runDocAi(kind) {
     if (kind === 'digest') { void runDailyDigest(); return; }
+    if (kind === 'versions') {
+      const noteForVer = noteById(N.ui.selNoteId);
+      if (noteForVer) openVersionHistory(noteForVer);
+      return;
+    }
     const n = noteById(N.ui.selNoteId);
     if (!n || !N.editor) return;
     const text = N.editor.ta.value || '';
@@ -1532,6 +1613,48 @@
     else mask.classList.add('show');
   }
 
+  // 把预览区选中的文本回定位到 Markdown 源文。
+  // 预览与源码存在差异(行内标记、软换行),所以先直接找,再退一步做归一化查找。
+  function locateInSource(src, picked) {
+    if (!src || !picked) return null;
+    const direct = src.indexOf(picked);
+    if (direct >= 0) return { start: direct, end: direct + picked.length };
+    // 归一化:去掉 Markdown 行内标记后再比对,用累计偏移映射回原文
+    const strip = (t) => t.replace(/[*_`~]/g, '');
+    const flat = strip(src);
+    const target = strip(picked.replace(/\s+/g, ' ')).replace(/\s+/g, ' ').trim();
+    if (!target) return null;
+    const flatIdx = flat.indexOf(target);
+    if (flatIdx < 0) {
+      // 再退一步:用前 12 个字符做锚点
+      const anchor = target.slice(0, Math.min(12, target.length));
+      const ai = flat.indexOf(anchor);
+      if (ai < 0) return null;
+      const map = mapFlatToSource(src, strip);
+      if (!map) return null;
+      const start = map[ai];
+      const endIdx = Math.min(target.length, flat.length - ai);
+      const end = map[Math.min(ai + endIdx, map.length - 1)];
+      return (start == null || end == null) ? null : { start: start, end: end + 1 };
+    }
+    const map = mapFlatToSource(src, strip);
+    if (!map) return null;
+    const start = map[flatIdx];
+    const end = map[Math.min(flatIdx + target.length, map.length - 1)];
+    return (start == null || end == null) ? null : { start: start, end: end + 1 };
+  }
+  // 建立「归一化后字符串下标 → 原文字符下标」的映射表
+  function mapFlatToSource(src, stripFn) {
+    const map = [];
+    let flatLen = 0;
+    for (let i = 0; i < src.length; i++) {
+      const before = stripFn(src[i]);
+      const keep = before.length > 0;
+      if (keep) { map[flatLen] = i; flatLen += before.length; }
+    }
+    return map.length ? map : null;
+  }
+
   // 处理中的浮标(右下角,不遮挡编辑)
   function showAiBusy(label) {
     const el = document.createElement('div');
@@ -1673,7 +1796,7 @@
         el.innerHTML = icon('upload', 12) + '<span>剩余 ' + fmtBytes(left) + ' / ' + fmtBytes(quota) + '</span>';
         el.title = '笔记附件空间已用 ' + fmtBytes(d.used) + '（' + pct + '%），上限 ' + fmtBytes(quota);
       }
-      if (aiLimit > 0) el.title += ' · 今日 AI 已用 ' + aiUsed + '/' + aiLimit + ' 次';
+      if (aiLimit > 0) el.title += ' · 今日 AI 已用 ' + aiUsed + '/' + aiLimit + ' 次（按服务器时区计日）';
     } catch (e) { el.textContent = ''; }
   }
 
@@ -1681,7 +1804,9 @@
     const dot = N.els.syncDot;
     if (!dot) return;
     dot.dataset.state = state || '';
-    dot.dataset.tip = state === 'err' ? '云同步失败，稍后自动重试' : (state === 'ok' ? '已同步到云端' : '云同步中');
+    dot.dataset.tip = state === 'err' ? '云同步失败，稍后自动重试'
+      : (state === 'conflict' ? '检测到其他设备的改动，已自动合并'
+      : (state === 'ok' ? '已同步到云端' : '云同步中'));
   }
 
   function isNotesPath() {
@@ -1693,6 +1818,7 @@
     if (!N.els.mask) buildShell();
     flushEditor();
     refreshUsage();
+    maybeGcAttachments();
     N.ui.search = '';
     N.els.searchInput.value = '';
     renderAll();
@@ -1960,14 +2086,32 @@
     });
   }
 
+  // 搜索索引:为每篇笔记缓存「小写化 + 去 Markdown 标记」的搜索文本,按 updatedAt 增量重建。
+  // 原先每次输入都对全文做 includes(大笔记 + 多笔记会卡),这里把重活摊到笔记变更时。
+  const searchIndex = { map: {}, rev: 0 };
+  function noteSearchText(n) {
+    const raw = (n.title || '') + '\n' + (n.content || '') + '\n' + (n.tags || []).join(' ');
+    // 去代码块与链接外壳,降低体积;保留正文关键词
+    return raw
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .toLowerCase();
+  }
+  function searchTextOf(n) {
+    const hit = searchIndex.map[n.id];
+    if (hit && hit.t === n.updatedAt && hit.r === searchIndex.rev) return hit.s;
+    const text = noteSearchText(n);
+    searchIndex.map[n.id] = { t: n.updatedAt, r: searchIndex.rev, s: text };
+    return text;
+  }
+  function invalidateSearchIndex() { searchIndex.rev++; }
+
   function visibleNotes() {
     const q = N.ui.search.toLowerCase();
     let notes = N.doc.notes.filter((n) => !(n.id in (N.doc.tombs || {})));
     if (q) {
-      notes = notes.filter((n) =>
-        (n.title || '').toLowerCase().includes(q)
-        || (n.content || '').toLowerCase().includes(q)
-        || (n.tags || []).some((t) => String(t).toLowerCase().includes(q)));
+      notes = notes.filter((n) => searchTextOf(n).indexOf(q) >= 0);
     } else {
       notes = notes.filter((n) => n.folderId === N.ui.folderId);
     }
@@ -2053,6 +2197,7 @@
     ta.value = n.content || '';
     N.editor = { noteId: n.id, ta, preview, dirty: false, saveTimer: null, renderTimer: null };
     renderPreview(n.content || '');
+    renderAttachCards();
     resetHistory(n.id);
 
 
@@ -2100,18 +2245,25 @@
     const ctxTargets = [ta, pane.querySelector('.notes-preview-wrap')];
     ctxTargets.forEach((zone) => {
       zone.addEventListener('contextmenu', (e) => {
-        const sel = window.getSelection ? String(window.getSelection().toString() || '') : '';
-        let picked = sel.trim();
-        let from = null, to = null;
         if (zone === ta) {
-          // 编辑区优先用 textarea 自身的选区
-          from = ta.selectionStart; to = ta.selectionEnd;
-          if (from !== to) picked = ta.value.slice(from, to).trim();
+          // 编辑区:直接用 textarea 选区与位置
+          const from = ta.selectionStart, to = ta.selectionEnd;
+          if (from === to) return; // 没选文字,保留系统菜单
+          e.preventDefault();
+          openAiCtxMenu(e.clientX, e.clientY, ta.value.slice(from, to), to, 'edit');
+          return;
         }
-        if (!picked) return; // 未选中文字时保留系统菜单
+        // 预览区:把选中的渲染文本回定位到 Markdown 源文,避免结果插到错误位置
+        const picked = (window.getSelection ? String(window.getSelection().toString() || '') : '').trim();
+        if (!picked) return;
+        const hit = locateInSource(ta.value, picked);
+        if (!hit) {
+          e.preventDefault();
+          openAiCtxMenu(e.clientX, e.clientY, picked, null, 'preview-only');
+          return;
+        }
         e.preventDefault();
-        const src = zone === ta ? ta.value.slice(from, to) : picked;
-        openAiCtxMenu(e.clientX, e.clientY, src, zone === ta ? to : null, null);
+        openAiCtxMenu(e.clientX, e.clientY, ta.value.slice(hit.start, hit.end), hit.end, 'preview');
       });
     });
     // 点空白 / 滚动时收起右键菜单(document 级监听在 buildShell 里只挂一次)
@@ -2170,6 +2322,7 @@
     if (titleInput && titleInput.value.trim()) n.title = titleInput.value.trim();
     n.updatedAt = Date.now();
     N.editor.dirty = false;
+    pushVersion(n.id, n.content, n.title);
     persistLocal();
     schedulePush();
     setSaveState('syncing');
@@ -2183,6 +2336,84 @@
   }
   function flushEditor() {
     if (N.editor && N.editor.dirty) saveEditor();
+  }
+
+  // ============ 版本历史(本地) ============
+  // 每次「实质保存」留一份快照,保留最近 N 版;刷新/重开页面后仍可回看,
+  // 补上「撤销栈只在会话内有效」的空档。存 localStorage,超限时自动裁剪。
+  const VER_KEEP = 20;
+  const VER_MIN_GAP_MS = 60 * 1000; // 1 分钟内多次保存只留最后一版,避免刷屏
+  function verKey(noteId) { return 'oc_notes_ver_' + (N.userId || 'anon') + '_' + noteId; }
+  function readVersions(noteId) {
+    try {
+      const j = JSON.parse(localStorage.getItem(verKey(noteId)) || '[]');
+      return Array.isArray(j) ? j : [];
+    } catch (e) { return []; }
+  }
+  function pushVersion(noteId, content, title) {
+    if (!noteId) return;
+    const list = readVersions(noteId);
+    const last = list[list.length - 1];
+    const now = Date.now();
+    if (last && now - last.at < VER_MIN_GAP_MS && last.content === content) return;
+    // 内容未变则不记(避免重复快照)
+    if (last && last.content === content && last.title === title) return;
+    list.push({ at: now, content: content, title: title, len: content.length });
+    while (list.length > VER_KEEP) list.shift();
+    try {
+      localStorage.setItem(verKey(noteId), JSON.stringify(list));
+    } catch (e) {
+      // 空间不足:砍掉一半旧版本再试一次
+      try {
+        const half = list.slice(Math.floor(list.length / 2));
+        localStorage.setItem(verKey(noteId), JSON.stringify(half));
+      } catch (e2) { /* 放弃记录历史,不影响正文保存 */ }
+    }
+  }
+  function openVersionHistory(n) {
+    const list = readVersions(n.id).slice().reverse();
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask notes-ver-mask hidden';
+    mask.innerHTML =
+      '<div class="modal notes-ver-modal" role="dialog" aria-modal="true">'
+      + '<div class="modal-header"><h3>' + icon('clock', 15) + ' 历史版本</h3>'
+      + '<button class="notes-icon-btn" data-close>' + icon('close', 15) + '</button></div>'
+      + '<div class="modal-body">'
+      + (list.length
+        ? '<p class="muted small">本机保留的最近 ' + list.length + ' 个版本（最多 ' + VER_KEEP + ' 个）。恢复会覆盖当前内容，可用 Ctrl+Z 撤销。</p>'
+          + '<div class="ver-list">' + list.map((v, i) => ''
+            + '<div class="ver-item"><span class="ver-time">' + esc(fmtFull(v.at)) + '</span>'
+            + '<span class="ver-len">' + v.len + ' 字符</span>'
+            + '<button class="btn small" data-ver="' + i + '">预览并恢复</button></div>').join('') + '</div>'
+        : '<p class="muted small">还没有历史版本。编辑保存后会自动留档（本机保留，最多 ' + VER_KEEP + ' 个）。</p>')
+      + '</div>'
+      + '<div class="modal-footer"><button class="btn" data-close>关闭</button></div>'
+      + '</div>';
+    document.body.appendChild(mask);
+    const done = () => { window.OCUI.closeModal(mask); setTimeout(() => mask.remove(), 340); };
+    mask._onClose = done;
+    mask.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', done));
+    mask.addEventListener('mousedown', (e) => { if (e.target === mask) done(); });
+    mask.querySelectorAll('[data-ver]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const v = list[Number(b.dataset.ver)];
+        const ok = await window.OCUI.confirm({
+          title: '恢复到 ' + fmtFull(v.at) + ' 的版本？',
+          message: '当前内容会被替换（可 Ctrl+Z 撤销）。',
+          confirmText: '恢复',
+        });
+        if (!ok) return;
+        const cur = noteById(n.id);
+        if (!cur) return;
+        pushVersion(n.id, cur.content || '', cur.title || ''); // 先存当前,便于回退
+        updateNote(n.id, { content: v.content, title: v.title || cur.title });
+        saveEditorSoon(n.id);
+        done();
+        toast('已恢复历史版本');
+      });
+    });
+    if (window.OCUI) window.OCUI.openModal(mask);
+    else mask.classList.add('show');
   }
 
   // ============ 撤销 / 重做 ============
@@ -2265,6 +2496,27 @@
     const r = bar.querySelector('#ne-redo');
     if (u) u.disabled = !N.editor || hist.index <= 0;
     if (r) r.disabled = !N.editor || hist.index >= hist.stack.length - 1;
+  }
+
+  // 非图片附件:在预览区底部渲染为可下载的文件卡片(而不是只有一行 md 链接)
+  function renderAttachCards() {
+    const pane = N.els.editorPane;
+    const n = noteById(N.ui.selNoteId);
+    if (!pane || !n) return;
+    const old = pane.querySelector('.notes-attach-cards');
+    if (old) old.remove();
+    const files = (n.attachments || []).filter((a) => a && a.mimeType && a.mimeType.indexOf('image/') !== 0);
+    if (!files.length) return;
+    const box = document.createElement('div');
+    box.className = 'notes-attach-cards';
+    box.innerHTML = '<div class="nac-head">附件（' + files.length + '）</div>' + files.map((a) => ''
+      + '<a class="nac-item" href="' + esc(a.url) + '" target="_blank" rel="noopener" download>'
+      + '<span class="nac-icon">' + icon('file', 15) + '</span>'
+      + '<span class="nac-main"><b>' + esc(a.name || 'file') + '</b><i>' + fmtBytes(a.size) + '</i></span>'
+      + '<span class="nac-dl">' + icon('download', 14) + '</span>'
+      + '</a>').join('');
+    const panes = pane.querySelector('.notes-editor-panes');
+    if (panes) panes.parentNode.insertBefore(box, panes.nextSibling);
   }
 
   function renderPreview(md) {
@@ -2467,6 +2719,7 @@
     setSaveState('editing');
     saveEditor();
     renderPreview(ta.value);
+    renderAttachCards();
   }
 
   // ============ 分享 ============
@@ -2490,6 +2743,14 @@
       + '<input readonly id="ns-link" value="' + esc(s ? location.origin + '/n/' + s.token : '') + '">'
       + '<button class="notes-mini-btn" id="ns-copy">' + icon('copy', 13) + '复制</button>'
       + '</div>'
+      + '<label class="ns-expire">链接有效期'
+      + '<select id="ns-expire">'
+      + '<option value="0">永久有效</option>'
+      + '<option value="1">1 天</option>'
+      + '<option value="7">7 天</option>'
+      + '<option value="30">30 天</option>'
+      + '<option value="90">90 天</option>'
+      + '</select></label>'
       + '<p class="ns-hint" id="ns-hint">' + (s ? '链接实时显示笔记最新内容;重新生成会使旧链接立即失效。' : '开启后可随时关闭或重新生成链接。') + '</p>'
       + '</div>'
       + '<div class="modal-footer">'
@@ -2526,6 +2787,7 @@
       const mode = currentMode();
       applyBtn.disabled = true;
       try {
+        const expireDays = Number((mask.querySelector('#ns-expire') || {}).value || 0);
         if (mode === 'private') {
           if (!s) { toast('已保持仅自己可见'); closeDlg(); return; }
           const r = await apiFetch('/api/notes/share', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ noteId }) });
@@ -2536,7 +2798,7 @@
           toast('分享已关闭,旧链接全部失效');
           closeDlg();
         } else {
-          const r = await apiFetch('/api/notes/share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ noteId, mode }) });
+          const r = await apiFetch('/api/notes/share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ noteId, mode, expireDays }) });
           const data = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error((data.error && data.error.message) || '生成分享链接失败');
           const share = data.share;
@@ -2954,6 +3216,7 @@
       boot();
     }
     // 浏览器前进/后退:地址与模块状态保持一致
+    window.addEventListener('resize', () => { if (N.ready) applySideState(); });
     window.addEventListener('popstate', () => {
       const shown = N.els.mask && N.els.mask.classList.contains('show');
       if (isNotesPath() && !shown) open();

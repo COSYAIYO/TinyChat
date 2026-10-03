@@ -1637,6 +1637,7 @@ if curl -s -o /dev/null -w '%{http_code}' "$BASE$BADURL" | grep -q '403'; then o
 UZ=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@archive.zip" ) )
 assert_has "通用文件上传成功" "$UZ" '/api/notes/file?id='
 ZURL=$(printf '%s' "$UZ" | jget url | sed 's#\\/#/#g')
+ZURLID=$(printf '%s' "$UZ" | jget id)
 assert_contains "非图片强制附件下载" "$(curl -s -D - -o /dev/null -H "$AUTH" "$BASE$ZURL")" "Content-Disposition: attachment"
 assert_contains "非图片类型标注正确" "$(curl -s -D - -o /dev/null -H "$AUTH" "$BASE$ZURL")" "application/zip"
 # 附件身份鉴权:复制链接给他人 / 未登录访问一律 404(不暴露存在性)
@@ -1749,6 +1750,52 @@ assert_contains "关闭仅正文后分享页可下载附件" "$(curl -s -o /dev/
 assert_contains "伪造分享令牌仍被拒" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE$Z2&share=deadbeef")" "404"
 # 非属主即使拿到链接与真实令牌之外的信息也取不到(无令牌)
 assert_contains "无令牌的其他用户仍被拒" "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $NMT" "$BASE$Z2")" "404"
+
+say "== AI 笔记:附件删除/回收、魔数校验、超长与分享有效期 =="
+# 伪造图片:HTML 内容配 .png 扩展名,应被魔数校验拒绝
+printf '<html><script>alert(1)</script></html>' > "$TMP/fake.png"
+FAKE=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@fake.png;type=image/png" ) )
+assert_contains "伪装成图片的 HTML 被拒" "$FAKE" '文件内容与图片格式不符'
+# 真实 PNG 仍可上传(regression)
+OKP=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@pixel.png;type=image/png" ) )
+assert_has "真实图片仍可上传" "$OKP" '/api/notes/file?id='
+OKID=$(printf '%s' "$OKP" | jget id)
+# 删除自己的附件:成功且配额回落
+DELB=$(curl -s "$BASE/api/notes/usage" -H "$AUTH" | python -c "import sys,json;print(json.load(sys.stdin)['used'])")
+assert_contains "删除自己的附件成功" "$(curl -s -X DELETE "$BASE/api/notes/file?id=$OKID" -H "$AUTH")" '"ok":true'
+DELA=$(curl -s "$BASE/api/notes/usage" -H "$AUTH" | python -c "import sys,json;print(json.load(sys.stdin)['used'])")
+if [ "$DELA" -lt "$DELB" ]; then ok "删除附件后已用配额下降($DELB→$DELA)"; else bad "删除附件后配额未下降"; fi
+# 删除后不可再读,且他人无法删除
+assert_contains "删除后附件不可读" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/notes/file?id=$OKID&s=deadbeef")" "403"
+assert_contains "他人不能删除他人附件" "$(curl -s -X DELETE "$BASE/api/notes/file?id=$ZURLID" -H "Authorization: Bearer $NMT")" '附件不存在'
+# 孤儿回收:再传一个不绑定笔记的附件,GC 后应被清掉
+ORPH=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@pixel.png;type=image/png" ) )
+ORPHID=$(printf '%s' "$ORPH" | jget id)
+GC=$(curl -s -X POST "$BASE/api/notes/files/gc" -H "$AUTH")
+assert_contains "孤儿附件回收成功" "$GC" '"ok":true'
+assert_contains "回收释放了字节数" "$GC" '"freed":'
+assert_contains "孤儿附件已被清理" "$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" "$BASE/api/notes/file?id=$ORPHID&s=$(python -c "import hashlib,hmac;print('x')")")" "403"
+# 超长笔记:明确报错而不是静默截断
+python -c "import json,sys; print(json.dumps({'baseRevision':0,'doc':{'folders':[],'notes':[{'id':'big1','folderId':'uncat','title':'超大','content':'x'*500001,'tags':[],'isPinned':False,'shareMode':'private','createdAt':1,'updatedAt':1}],'tombs':{}}}))" > "$TMP/huge.json"
+BIGREV=$(curl -s "$BASE/api/sync/notes" -H "$AUTH" | python -c "import sys,json;print(json.load(sys.stdin)['revision'])")
+sed -i "s/\"baseRevision\": *0/\"baseRevision\": $BIGREV/" "$TMP/huge.json"
+assert_contains "超长笔记明确报错" "$(curl -s -X POST "$BASE/api/sync/notes" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/huge.json")" '字符上限'
+# 分享有效期:1 天
+EXPREV=$(curl -s "$BASE/api/sync/notes" -H "$AUTH" | python -c "import sys,json;print(json.load(sys.stdin)['revision'])")
+python -c "
+import json, io
+d = json.load(io.open('$TMP/notes-bodyonly.json')) if False else None
+"
+cat > "$TMP/notes-exp.json" <<EOF
+{"baseRevision":$EXPREV,"doc":{"folders":[{"id":"fexp","parentId":null,"name":"有效期","createdAt":1,"updatedAt":1}],"notes":[{"id":"nexp","folderId":"fexp","title":"有效期笔记","content":"用于验证分享有效期。","tags":[],"isPinned":false,"shareMode":"private","createdAt":1,"updatedAt":1}],"tombs":{}}}
+EOF
+curl -s -X POST "$BASE/api/sync/notes" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/notes-exp.json" > /dev/null
+SHX=$(curl -s -X POST "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"nexp","mode":"view-link","expireDays":1}')
+assert_contains "分享返回有效期" "$SHX" '"expireAt":'
+XT=$(printf '%s' "$SHX" | jget token)
+assert_contains "带有效期的分享可正常访问" "$(curl -s "$BASE/api/notes/shared/$XT")" '用于验证分享有效期'
+assert_contains "分享列表带有效期" "$(curl -s "$BASE/api/sync/notes" -H "$AUTH")" '"expireAt":'
+curl -s -X DELETE "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"nexp"}' > /dev/null
 
 # 演示管理员:不可查看用户笔记列表 / 审阅 / 清理
 curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"demoa1","password":"demoa12345","quota":50,"admin":true,"demo":true}' > /dev/null
