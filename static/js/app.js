@@ -29,6 +29,7 @@ const state = {
   assistantCategories: [],
   defaultAssistant: null,
   mention: { open: false, q: '', index: 0, start: -1 },
+  noteMentions: [], // @笔记:待发送的笔记引用(发送后清空并挂到该条消息上)
   clearAssistantAt: 0,
   webSearchAvailable: false,
   tools: null,
@@ -948,6 +949,13 @@ function mergeChatLists(cloudChats, localChats) {
   return merged;
 }
 
+// 切换对话时清空待发送的 @笔记(不同对话不应共享引用)
+function resetNoteMentions() {
+  if ((state.noteMentions || []).length) {
+    state.noteMentions = [];
+    renderNoteMentions();
+  }
+}
 function currentChat() {
   return state.chats.find((c) => c.id === state.currentChatId) || null;
 }
@@ -990,6 +998,7 @@ function renderChatList() {
     onSelect: (c) => {
       if (state.streaming) { stopStreaming(); }
       state.currentChatId = c.id;
+      resetNoteMentions();
       state._scrollHistoryToBottom = true;
       if (c._visibleCount != null) delete c._visibleCount;
       renderChatList(); renderMessages(); resetComposer(); updateAssistantChip();
@@ -1180,6 +1189,7 @@ function newChat(opts) {
   applyAssistantToChat(chat, assistant);
   state.chats.unshift(chat);
   state.currentChatId = chat.id;
+      resetNoteMentions();
   saveChats(); renderChatList(); renderMessages(); renderEmptyState(); resetComposer();
   updateAssistantChip();
   autosizeInput();
@@ -1860,9 +1870,23 @@ function buildMsgNode(m, chat, idx) {
     }
   } else {
     // 用户消息：走渲染管线以支持附件（图片/文件卡片），但限制富文本能力
+    // @笔记 引用只用于注入上下文,展示时从正文里剥掉,改在气泡下方以 chip 呈现
+    const shown = String(m.content || '').split(NOTE_CTX_SEP)[0];
     const root = document.createElement('div');
     contentDiv.appendChild(root);
-    window.OCRenderer.renderInto(root, m.content || '');
+    window.OCRenderer.renderInto(root, shown);
+    if (Array.isArray(m.noteRefs) && m.noteRefs.length) {
+      const refs = document.createElement('div');
+      refs.className = 'note-ref-row';
+      refs.innerHTML = m.noteRefs.map((r) => '<span class="note-mention-chip" data-id="' + escapeHtml(r.id) + '">'
+        + '<b>@</b>' + escapeHtml(r.title || '无标题笔记') + '</span>').join('');
+      refs.querySelectorAll('.note-mention-chip').forEach((chip) => {
+        chip.addEventListener('click', () => {
+          if (window.OCNotes) window.OCNotes.open();
+        });
+      });
+      contentDiv.appendChild(refs);
+    }
   }
   div.appendChild(contentDiv);
 
@@ -2630,7 +2654,7 @@ async function aiJudgeTools(text, ctx) {
 async function sendMessage() {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
   const input = $('input');
-  const text = input.value.trim();
+  let text = input.value.trim();
   const attachments = (state.pendingAttachments || []).slice();
   if (attachments.some((a) => a && a.parsing)) {
     toast('文档还在解析，请稍候', true);
@@ -2657,6 +2681,16 @@ async function sendMessage() {
       toast('剩余次数不足，请联系管理员', true);
     }
     return;
+  }
+
+  // @笔记:把被提及笔记的正文拼进本轮提问,让 AI 基于笔记回答。
+  // 注入原文而不是「让 AI 自己去查」——单轮请求无法访问本地笔记。
+  const noteCtx = noteMentionsContext(4000);
+  let noteRefs = [];
+  if (noteCtx) {
+    noteRefs = noteCtx.notes.map((n) => ({ id: n.id, title: n.title || '无标题' }));
+    text = (text || '请总结这些笔记的内容。') + '\n\n---\n'
+      + noteCtx.instruction + '\n\n' + noteCtx.text;
   }
 
   // 群聊模式:交给群聊管线(多成员按对话模式顺序发言),不走单模型/生图/视频意图
@@ -2805,6 +2839,13 @@ async function sendMessage() {
 
   // 消息立刻进对话(判定阶段已发过就复用),输入框随即清空;进展写在 AI 回复气泡里。
   const turn = postUserTurn(text, attachments, posted);
+  // @笔记:把提及记录到该条用户消息上(气泡下方显示来源 chip),并清空输入区的待发 chip
+  if (noteRefs.length && turn && turn.userMsg) {
+    turn.userMsg.noteRefs = noteRefs;
+    state.noteMentions = [];
+    renderNoteMentions();
+    renderMessages();
+  }
   const searching = state._toolSearch === true || webSearchMode() === 'on';
   setReplyPhase(turn.assistantMsg, searching ? '正在联网检索' : '思考中');
   try {
@@ -7593,7 +7634,47 @@ function mentionCandidates(q) {
     if (ap !== bp) return ap - bp;
     return (a.sort - b.sort) || an.localeCompare(bn, 'zh');
   });
-  return [none].concat(ranked.slice(0, 12));
+  // @笔记:从本地笔记文档里按标题/标签/正文匹配,作为候选一并列出
+  const notes = noteMentionCandidates(kw).slice(0, 8);
+  return [none].concat(ranked.slice(0, notes.length ? 8 : 12), notes);
+}
+// 笔记候选(@笔记):标题命中优先,其次标签,最后正文。
+// 用户可能没打开过笔记模块,这里静默预热一次数据(仅一次)。
+function noteMentionCandidates(kw) {
+  if (!window.OCNotes) return [];
+  if (!window.OCNotes.isReady() && !state._notesWarming) {
+    state._notesWarming = true;
+    Promise.resolve(window.OCNotes.warmUp()).then(() => {
+      state._notesWarming = false;
+      // 数据到位后若候选面板还开着,刷新一次
+      if (state.mention && state.mention.open) renderMention();
+    }).catch(() => { state._notesWarming = false; });
+    return [];
+  }
+  const dbg = window.OCNotes._debug;
+  if (!dbg || !dbg.doc || !Array.isArray(dbg.doc.notes)) return [];
+  const score = (n) => {
+    const t = String(n.title || '').toLowerCase();
+    const tags = (n.tags || []).join(' ').toLowerCase();
+    const body = String(n.content || '').toLowerCase();
+    if (!kw) return 1;
+    if (t.includes(kw)) return 0;
+    if (tags.includes(kw)) return 1;
+    if (body.includes(kw)) return 2;
+    return -1;
+  };
+  return dbg.doc.notes
+    .map((n) => ({ n: n, sc: score(n) }))
+    .filter((x) => x.sc >= 0)
+    .sort((a, b) => a.sc - b.sc || (b.n.updatedAt || 0) - (a.n.updatedAt || 0))
+    .map((x) => ({
+      id: x.n.id,
+      name: x.n.title || '无标题笔记',
+      desc: '来自 AI 笔记 · ' + (x.n.tags || []).slice(0, 3).map((t) => '#' + t).join(' ') || '来自 AI 笔记',
+      icon: '📒',
+      _note: true,
+      _noteId: x.n.id,
+    }));
 }
 function closeMention() {
   state.mention = { open: false, q: '', index: 0, start: -1 };
@@ -7619,8 +7700,9 @@ function renderMention() {
   }
   if (state.mention.index < 0) state.mention.index = 0;
   if (state.mention.index >= items.length) state.mention.index = items.length - 1;
-  pop.innerHTML = '<div class="mention-head"><b>选择助手</b><span>↑↓ 回车 · Esc</span></div>' + items.map((a, i) =>
-    '<button type="button" class="mention-item' + (i === state.mention.index ? ' active' : '') + '" data-idx="' + i + '" role="option" aria-selected="' + (i === state.mention.index ? 'true' : 'false') + '">'
+  const hasNote = items.some((x) => x._note);
+  pop.innerHTML = '<div class="mention-head"><b>选择' + (hasNote ? '助手或笔记' : '助手') + '</b><span>↑↓ 回车 · Esc</span></div>' + items.map((a, i) =>
+    '<button type="button" class="mention-item' + (i === state.mention.index ? ' active' : '') + (a._note ? ' mention-note' : '') + '" data-idx="' + i + '" role="option" aria-selected="' + (i === state.mention.index ? 'true' : 'false') + '">'
     + '<span class="mention-ico">' + escapeHtml(a.icon || '✨') + '</span>'
     + '<span class="mention-text"><span class="mention-name">' + escapeHtml(a.name || '') + '</span>'
     + '<span class="mention-desc">' + escapeHtml(a.desc || assistantCatName(a.categoryId) || '') + '</span></span></button>'
@@ -7648,6 +7730,20 @@ function syncMentionFromInput() {
 function pickMention(item) {
   const el = inputEl;
   const start = state.mention.start;
+  if (item && item._note) {
+    // @笔记:把提及文本删掉,改在输入区上方显示浅红色 chip(可多个,可移除)
+    if (el && start >= 0) {
+      const pos = typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length;
+      el.value = (el.value.slice(0, start) + el.value.slice(pos)).replace(/^\s+/, '');
+      el.selectionStart = el.selectionEnd = Math.max(0, start);
+    }
+    closeMention();
+    addNoteMention(item._noteId, item.name);
+    autosizeInput();
+    updateSendBtn();
+    if (el) el.focus();
+    return;
+  }
   if (el && start >= 0) {
     const pos = typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length;
     el.value = el.value.slice(0, start) + el.value.slice(pos);
@@ -7659,6 +7755,62 @@ function pickMention(item) {
   autosizeInput();
   updateSendBtn();
   if (el) el.focus();
+}
+
+// ============ @笔记:提及的笔记集合与 chip ============
+// 注入上下文与正文的分隔标记(展示时据此剥离,只留用户原本写的问题)
+const NOTE_CTX_SEP = String.fromCharCode(10, 10, 45, 45, 45, 10);
+// 与「保存到 AI 笔记」共用笔记文档;这里只记录 id,发送时检索正文注入上下文。
+function addNoteMention(id, title) {
+  if (!id) return;
+  state.noteMentions = state.noteMentions || [];
+  if (state.noteMentions.some((x) => x.id === id)) { toast('已经 @ 过这篇笔记了'); return; }
+  state.noteMentions.push({ id: id, title: title || '无标题笔记' });
+  renderNoteMentions();
+}
+function removeNoteMention(id) {
+  state.noteMentions = (state.noteMentions || []).filter((x) => x.id !== id);
+  renderNoteMentions();
+}
+function renderNoteMentions() {
+  const box = $('note-mention-row');
+  if (!box) return;
+  const list = state.noteMentions || [];
+  if (!list.length) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  box.classList.remove('hidden');
+  box.innerHTML = list.map((x) => ''
+    + '<span class="note-mention-chip" data-id="' + escapeHtml(x.id) + '" title="基于这篇笔记提问，点 × 移除">'
+    + '<b>@</b>' + escapeHtml(x.title || '无标题笔记')
+    + '<button type="button" class="nmc-x" aria-label="移除">×</button></span>').join('');
+  box.querySelectorAll('.nmc-x').forEach((b) => {
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      const chip = e.target.closest('.note-mention-chip');
+      if (chip) removeNoteMention(chip.dataset.id);
+      updateSendBtn();
+    });
+  });
+}
+// 发送前把 @笔记 的内容拼成上下文(供 AI 引用);返回 null 表示没有 @笔记
+function noteMentionsContext(limitPerNote) {
+  const list = state.noteMentions || [];
+  if (!list.length) return null;
+  const dbg = window.OCNotes && window.OCNotes._debug;
+  const found = [];
+  list.forEach((m) => {
+    const n = dbg && dbg.doc ? dbg.doc.notes.find((x) => x.id === m.id) : null;
+    if (n) found.push(n);
+  });
+  if (!found.length) return null;
+  const cap = limitPerNote || 4000;
+  const parts = found.map((n, i) => '【笔记' + (i + 1) + '】' + (n.title || '无标题') + '\n'
+    + String(n.content || '').slice(0, cap));
+  return {
+    notes: found,
+    text: parts.join('\n\n'),
+    instruction: '用户 @ 了 ' + found.length + ' 篇笔记，请只根据下面提供的笔记内容回答；'
+      + '笔记里没有的信息要明确说明「笔记里没有相关内容」，不要编造。回答后不要自行编造引用编号。',
+  };
 }
 function ensureAssistantsLoaded() {
   if ((state.assistants || []).length) return Promise.resolve();

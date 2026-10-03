@@ -5114,11 +5114,16 @@ function tc_api_note_share_create() {
             uasort($mine, function ($x, $y) { return ((int) ($x['createdAt'] ?? 0)) <=> ((int) ($y['createdAt'] ?? 0)); });
             unset($shares[array_key_first($mine)]);
         }
-        // 同笔记旧令牌全部作废(重新生成即失效)
+        // 已有同笔记分享时:默认作废旧令牌(重新生成);
+        // 前端传 keepToken=1 时保留令牌只更新权限与有效期(「已分享管理」里改设置用)
+        $keepToken = !empty($b['keepToken']);
+        $existToken = '';
         foreach ($mine as $t => $s) {
-            if ((string) ($s['noteId'] ?? '') === $noteId) unset($shares[$t]);
+            if ((string) ($s['noteId'] ?? '') !== $noteId) continue;
+            if ($keepToken) { $existToken = (string) $t; continue; }
+            unset($shares[$t]);
         }
-        $token = tc_uid(9);
+        $token = $existToken !== '' ? $existToken : tc_uid(9);
         $share = array(
             'token' => $token,
             'ownerId' => $user['id'],
@@ -5137,7 +5142,11 @@ function tc_api_note_share_create() {
         $noteMap[$user['id']] = $doc;
         $db['userNotes'] = tc_object_map($noteMap);
         tc_json(200, array(
-            'share' => array('noteId' => $noteId, 'token' => $token, 'mode' => $mode, 'createdAt' => $share['createdAt'], 'expireAt' => $expireAt),
+            'share' => array(
+                'noteId' => $noteId, 'token' => $token, 'mode' => $mode,
+                'createdAt' => (float) (isset($shares[$token]['createdAt']) ? $shares[$token]['createdAt'] : $share['createdAt']),
+                'expireAt' => $expireAt, 'kept' => $existToken !== '',
+            ),
             'url' => '/n/' . $token,
         ));
     });

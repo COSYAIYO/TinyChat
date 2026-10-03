@@ -1285,3 +1285,25 @@
   outline: none;
   cursor: pointer;
 }
+
+
+/* ---------- 已分享管理 ---------- */
+.notes-shm-mask { z-index: 1670; }
+.notes-shm-modal { width: min(620px, 94vw); }
+.notes-shm-modal .modal-header h3 { display: flex; align-items: center; gap: 7px; }
+.shm-list { display: flex; flex-direction: column; gap: 8px; }
+.shm-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 11px;
+}
+.shm-main { flex: 1; min-width: 0; }
+.shm-main b { font-size: 13px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shm-meta { font-size: 11.5px; color: var(--text-tertiary); margin-top: 2px; }
+.shm-warn { color: var(--danger); }
+.shm-ops { display: flex; gap: 5px; flex-shrink: 0; }
+.shm-ops .btn { white-space: nowrap; }
+.notes-shm-edit-mask { z-index: 1680; }

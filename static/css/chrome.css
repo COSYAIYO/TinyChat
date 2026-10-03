@@ -4314,3 +4314,65 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 .model-stale-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .model-stale-title { font-weight: 600; font-size: 13px; color: #b45309; }
 .model-stale-hint { margin: 6px 0 8px; font-size: 12.5px; color: var(--text-secondary); line-height: 1.5; }
+
+
+/* ---------- @笔记(浅红色 chip 与候选高亮) ---------- */
+/* 输入区上方的待发送笔记引用 */
+.note-mention-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 2px 2px;
+}
+.note-mention-row.hidden { display: none; }
+.note-mention-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 8px 3px 7px;
+  border-radius: 999px;
+  background: rgba(220, 38, 38, .10);
+  color: #b91c1c;
+  border: 1px solid rgba(220, 38, 38, .18);
+  font-size: 12px;
+  line-height: 1.6;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.note-mention-chip b { font-weight: 700; opacity: .85; }
+[data-theme="dark"] .note-mention-chip {
+  background: rgba(248, 113, 113, .16);
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, .28);
+}
+.note-mention-chip .nmc-x {
+  border: none;
+  background: transparent;
+  color: inherit;
+  opacity: .6;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 0 0 3px;
+}
+.note-mention-chip .nmc-x:hover { opacity: 1; }
+/* 消息气泡下方的来源引用(可点开笔记) */
+.note-ref-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.note-ref-row .note-mention-chip { cursor: pointer; font-size: 11.5px; padding: 2px 8px; }
+/* @ 候选里的笔记项:淡红底以示区分 */
+.mention-item.mention-note { background: rgba(220, 38, 38, .05); }
+.mention-item.mention-note:hover,
+.mention-item.mention-note.active { background: rgba(220, 38, 38, .12); }
+.mention-item.mention-note .mention-name { color: #b91c1c; }
+[data-theme="dark"] .mention-item.mention-note { background: rgba(248, 113, 113, .10); }
+[data-theme="dark"] .mention-item.mention-note:hover,
+[data-theme="dark"] .mention-item.mention-note.active { background: rgba(248, 113, 113, .18); }
+[data-theme="dark"] .mention-item.mention-note .mention-name { color: #fca5a5; }

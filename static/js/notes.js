@@ -16,6 +16,7 @@
   const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'];
   const DOC_EXT = ['pdf', 'txt', 'md', 'csv', 'json', 'zip', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
 
+  let resolvedWarm = false;
   const N = {
     ready: false,
     doc: { folders: [], notes: [], tombs: {} },
@@ -420,6 +421,7 @@
     if (N.userId !== id) {
       N.userId = id;
       N.ready = false;
+      resolvedWarm = false;
       N.doc = { folders: [], notes: [], tombs: {} };
       N.revision = 0;
       N.shares = [];
@@ -1683,6 +1685,7 @@
       + '</details>'
       + '</div>'
       + '<div class="modal-footer">'
+      + '<button class="btn" id="aimgr-shares" type="button">' + icon('share', 13) + '已分享管理</button>'
       + '<button class="btn" id="aimgr-guide" type="button">重新查看使用导航</button>'
       + '<button class="btn primary" data-close>完成</button></div>'
       + '</div>';
@@ -1691,6 +1694,10 @@
     mask._onClose = closeDlg;
     mask.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', closeDlg));
     mask.addEventListener('mousedown', (e) => { if (e.target === mask) closeDlg(); });
+    mask.querySelector('#aimgr-shares').addEventListener('click', () => {
+      closeDlg();
+      setTimeout(openShareManager, 380);
+    });
     mask.querySelector('#aimgr-guide').addEventListener('click', () => {
       closeDlg();
       try { localStorage.removeItem('oc_notes_guide_seen'); } catch (e) {}
@@ -2416,6 +2423,168 @@
     else mask.classList.add('show');
   }
 
+  // ============ 已分享管理 ============
+  // 一处集中管理全部笔记分享链接:改权限/有效期、取消分享。
+  async function openShareManager() {
+    // 拉一次服务端分享状态(权威),避免本地副本过期
+    try {
+      const r = await apiFetch('/api/sync/notes');
+      if (r.ok) {
+        const d = await r.json().catch(() => ({}));
+        if (Array.isArray(d.shares)) { N.shares = d.shares; alignShareState(); }
+      }
+    } catch (e) { /* 离线时用本地副本 */ }
+
+    const render = () => {
+      const rows = N.shares.slice().sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      if (!rows.length) return '<p class="muted small">还没有分享中的笔记。在笔记里点「分享」即可生成链接。</p>';
+      return '<div class="shm-list">' + rows.map((sh) => {
+        const n = noteById(sh.noteId);
+        const title = n ? (n.title || '无标题') : '（笔记已删除）';
+        const exp = Number(sh.expireAt) || 0;
+        const left = exp ? Math.max(0, Math.ceil((exp - Date.now()) / 86400000)) : 0;
+        const expText = exp ? (left > 0 ? '剩余 ' + left + ' 天' : '已过期') : '永久有效';
+        const modeText = sh.mode === 'edit-link' ? '持链接可编辑' : '持链接可查看';
+        return '<div class="shm-item" data-token="' + esc(sh.token) + '" data-note="' + esc(sh.noteId) + '">'
+          + '<div class="shm-main">'
+          + '<b>' + esc(title) + '</b>'
+          + '<div class="shm-meta">' + esc(modeText) + ' · ' + esc(expText)
+          + (n ? '' : ' · <span class="shm-warn">笔记已删除</span>') + '</div>'
+          + '</div>'
+          + '<div class="shm-ops">'
+          + '<button class="btn small" data-act="copy">复制链接</button>'
+          + '<button class="btn small" data-act="edit"' + (n ? '' : ' disabled') + '>修改设置</button>'
+          + '<button class="btn small danger" data-act="close">取消分享</button>'
+          + '</div></div>';
+      }).join('') + '</div>';
+    };
+
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask notes-shm-mask hidden';
+    mask.innerHTML =
+      '<div class="modal notes-shm-modal" role="dialog" aria-modal="true">'
+      + '<div class="modal-header"><h3>' + icon('share', 15) + ' 已分享管理</h3>'
+      + '<button class="notes-icon-btn" data-close>' + icon('close', 15) + '</button></div>'
+      + '<div class="modal-body">'
+      + '<p class="muted small">这里汇总所有分享中的笔记链接。可修改权限与有效期（链接不变），或取消分享（链接立即失效）。</p>'
+      + '<div id="shm-body">' + render() + '</div>'
+      + '</div>'
+      + '<div class="modal-footer"><button class="btn" data-close>关闭</button></div>'
+      + '</div>';
+    document.body.appendChild(mask);
+    const done = () => { window.OCUI.closeModal(mask); setTimeout(() => mask.remove(), 340); };
+    mask._onClose = done;
+    mask.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', done));
+    mask.addEventListener('mousedown', (e) => { if (e.target === mask) done(); });
+
+    const refresh = () => { mask.querySelector('#shm-body').innerHTML = render(); bind(); };
+    const bind = () => {
+      mask.querySelectorAll('.shm-item').forEach((item) => {
+        const token = item.dataset.token;
+        const noteId = item.dataset.note;
+        const sh = N.shares.find((x) => x.token === token);
+        item.querySelector('[data-act="copy"]').addEventListener('click', async () => {
+          const url = location.origin + '/n/' + token;
+          let ok = false;
+          if (window.OCUI && window.OCUI.copyText) ok = await window.OCUI.copyText(url);
+          else { try { await navigator.clipboard.writeText(url); ok = true; } catch (e) {} }
+          toast(ok ? '链接已复制' : '复制失败，请手动复制', !ok);
+        });
+        item.querySelector('[data-act="edit"]').addEventListener('click', () => {
+          if (!sh) return;
+          openShareSettings(sh, noteId, refresh);
+        });
+        item.querySelector('[data-act="close"]').addEventListener('click', async () => {
+          const n = noteById(noteId);
+          const ok = await window.OCUI.confirm({
+            title: '取消分享「' + (n ? n.title : '该笔记') + '」？',
+            message: '链接会立即失效，已发出的链接将无法访问。',
+            danger: true, confirmText: '取消分享',
+          });
+          if (!ok) return;
+          try {
+            const r2 = await apiFetch('/api/notes/share', {
+              method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ noteId }),
+            });
+            if (!r2.ok) throw new Error('取消失败');
+            N.shares = N.shares.filter((x) => x.noteId !== noteId);
+            alignShareState();
+            persistLocal();
+            toast('已取消分享');
+            refresh();
+            renderTree();
+          } catch (e) {
+            toast(e.message || '取消失败', true);
+          }
+        });
+      });
+    };
+    bind();
+    if (window.OCUI) window.OCUI.openModal(mask);
+    else mask.classList.add('show');
+  }
+
+  // 修改某条分享的设置:权限与有效期(keepToken 保留原链接)
+  function openShareSettings(sh, noteId, onSaved) {
+    const n = noteById(noteId);
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask notes-shm-edit-mask hidden';
+    mask.innerHTML =
+      '<div class="modal notes-shm-modal" role="dialog" aria-modal="true">'
+      + '<div class="modal-header"><h3>修改分享设置</h3>'
+      + '<button class="notes-icon-btn" data-close>' + icon('close', 15) + '</button></div>'
+      + '<div class="modal-body">'
+      + '<p class="muted small">' + esc(n ? (n.title || '无标题') : '（笔记已删除）') + '</p>'
+      + '<div class="ns-modes">'
+      + '<label class="ns-mode"><input type="radio" name="shm-mode" value="view-link" ' + (sh.mode !== 'edit-link' ? 'checked' : '') + '><div><b>持链接可查看</b><span>任何人拿到链接都能阅读这篇笔记</span></div></label>'
+      + '<label class="ns-mode"><input type="radio" name="shm-mode" value="edit-link" ' + (sh.mode === 'edit-link' ? 'checked' : '') + '><div><b>持链接可编辑</b><span>拿到链接的人可以直接修改笔记内容</span></div></label>'
+      + '</div>'
+      + '<label class="ns-expire">链接有效期'
+      + '<select id="shm-expire">'
+      + '<option value="0">永久有效</option>'
+      + '<option value="1">1 天</option>'
+      + '<option value="7">7 天</option>'
+      + '<option value="30">30 天</option>'
+      + '<option value="90">90 天</option>'
+      + '</select></label>'
+      + '<p class="ns-hint">修改后链接保持不变，旧链接继续可用直到你取消分享。</p>'
+      + '</div>'
+      + '<div class="modal-footer">'
+      + '<button class="btn" data-close>取消</button>'
+      + '<button class="btn primary" id="shm-save">保存</button>'
+      + '</div></div>';
+    document.body.appendChild(mask);
+    const done = () => { window.OCUI.closeModal(mask); setTimeout(() => mask.remove(), 340); };
+    mask._onClose = done;
+    mask.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', done));
+    mask.addEventListener('mousedown', (e) => { if (e.target === mask) done(); });
+    if (window.OC && window.OC.enhanceSelects) window.OC.enhanceSelects(mask);
+    mask.querySelector('#shm-save').addEventListener('click', async () => {
+      const mode = (mask.querySelector('input[name="shm-mode"]:checked') || {}).value || 'view-link';
+      const expireDays = Number((mask.querySelector('#shm-expire') || {}).value || 0);
+      try {
+        const r = await apiFetch('/api/notes/share', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ noteId, mode, expireDays, keepToken: true }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error((d.error && d.error.message) || '保存失败');
+        const share = d.share;
+        N.shares = N.shares.filter((x) => x.noteId !== noteId).concat([share]);
+        alignShareState();
+        persistLocal();
+        toast('分享设置已更新（链接不变）');
+        done();
+        if (typeof onSaved === 'function') onSaved();
+      } catch (e) {
+        toast(e.message || '保存失败', true);
+      }
+    });
+    if (window.OCUI) window.OCUI.openModal(mask);
+    else mask.classList.add('show');
+  }
+
   // ============ 撤销 / 重做 ============
   // 自建历史栈(不依赖浏览器原生 undo:重渲染后原生栈会丢失)。
   // 快照 = {content, title};连续输入按时间窗合并成一步,上限 120 步。
@@ -2734,9 +2903,10 @@
       + '<div class="modal-header"><h3>分享「' + esc(n.title) + '」</h3>'
       + '<button class="notes-icon-btn" data-close>' + icon('close', 15) + '</button></div>'
       + '<div class="modal-body">'
+      // 未分享时不需要「仅自己可见」这一项——不生成链接即是私密;
+      // 已分享时用底部「关闭分享」取消,语义更直接。
       + '<div class="ns-modes">'
-      + '<label class="ns-mode"><input type="radio" name="ns-mode" value="private" ' + (!s ? 'checked' : '') + '><div><b>仅自己可见</b><span>不生成任何链接</span></div></label>'
-      + '<label class="ns-mode"><input type="radio" name="ns-mode" value="view-link" ' + (s && s.mode === 'view-link' ? 'checked' : '') + '><div><b>持链接可查看</b><span>任何人拿到链接都能阅读这篇笔记</span></div></label>'
+      + '<label class="ns-mode"><input type="radio" name="ns-mode" value="view-link" ' + (!s || s.mode === 'view-link' ? 'checked' : '') + '><div><b>持链接可查看</b><span>任何人拿到链接都能阅读这篇笔记</span></div></label>'
       + '<label class="ns-mode"><input type="radio" name="ns-mode" value="edit-link" ' + (s && s.mode === 'edit-link' ? 'checked' : '') + '><div><b>持链接可编辑</b><span>拿到链接的人可以直接修改笔记内容</span></div></label>'
       + '</div>'
       + '<div class="ns-link-row' + (s ? '' : ' hidden') + '" id="ns-link-row">'
@@ -2754,7 +2924,7 @@
       + '<p class="ns-hint" id="ns-hint">' + (s ? '链接实时显示笔记最新内容;重新生成会使旧链接立即失效。' : '开启后可随时关闭或重新生成链接。') + '</p>'
       + '</div>'
       + '<div class="modal-footer">'
-      + (s ? '<button class="btn danger" id="ns-close-share">关闭分享</button>' : '')
+      + (s ? '<button class="btn danger" id="ns-close-share">' + icon('close', 13) + '关闭分享</button>' : '')
       + '<button class="btn' + (s ? '' : ' hidden') + '" id="ns-regen">重新生成链接</button>'
       + '<button class="btn primary" id="ns-apply">' + (s ? '保存设置' : '生成链接') + '</button>'
       + '</div></div>';
@@ -2763,6 +2933,14 @@
     mask.querySelector('[data-close]').addEventListener('click', closeDlg);
     mask.addEventListener('mousedown', (e) => { if (e.target === mask) closeDlg(); });
     const linkRow = mask.querySelector('#ns-link-row');
+    // 回填当前有效期(距到期剩余天数就近映射到预设档位)
+    if (s && s.expireAt) {
+      const leftMs = Number(s.expireAt) - Date.now();
+      const leftDays = Math.max(1, Math.round(leftMs / 86400000));
+      const selEl = mask.querySelector('#ns-expire');
+      const preset = [1, 7, 30, 90].find((d) => leftDays <= d) || 90;
+      if (selEl) selEl.value = String(preset);
+    }
     const regenBtn = mask.querySelector('#ns-regen');
     const applyBtn = mask.querySelector('#ns-apply');
     const hint = mask.querySelector('#ns-hint');
@@ -2788,16 +2966,7 @@
       applyBtn.disabled = true;
       try {
         const expireDays = Number((mask.querySelector('#ns-expire') || {}).value || 0);
-        if (mode === 'private') {
-          if (!s) { toast('已保持仅自己可见'); closeDlg(); return; }
-          const r = await apiFetch('/api/notes/share', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ noteId }) });
-          if (!r.ok) throw new Error('关闭分享失败');
-          N.shares = N.shares.filter((x) => x.noteId !== noteId);
-          alignShareState();
-          persistLocal();
-          toast('分享已关闭,旧链接全部失效');
-          closeDlg();
-        } else {
+        {
           const r = await apiFetch('/api/notes/share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ noteId, mode, expireDays }) });
           const data = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error((data.error && data.error.message) || '生成分享链接失败');
@@ -3235,10 +3404,30 @@
     });
   }
 
+  // 对话页 @笔记需要笔记数据:进入对话页后静默预热一次(不弹界面),
+  // 否则用户没打开过笔记时 @ 候选里看不到任何笔记。
+  function warmUp() {
+    if (!ensureUser()) return Promise.resolve(false);
+    if (N.ready) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      N.ready = true;
+      alignShareState();
+      pullFromCloud().finally(() => {
+        // 预热后不自动开界面,只让数据可用
+        resolve(true);
+      });
+    });
+  }
+
   window.OCNotes = {
     open,
     close,
     archiveFromMessage,
+    openShareManager,
+    warmUp,
+    isReady: () => !!N.ready,
+    listNotes: () => (N.doc.notes || []).map((n) => ({ id: n.id, title: n.title, tags: n.tags || [], content: n.content || '', updatedAt: n.updatedAt })),
+    searchNotes: (q, limit) => recallNotes(q, limit || 5).map((h) => ({ id: h.note.id, title: h.note.title, content: h.note.content })),
     _debug: N,
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initEntry);
