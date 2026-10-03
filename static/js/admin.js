@@ -4258,6 +4258,7 @@ async function restoreBackup(name) {
 })();
 
 const TAB_LOADERS = {
+  notes: loadNotesSettings,
   overview: () => { loadStats(); loadSystemBoard(); },
   usage: () => loadStats(),
   users: () => loadUsers(),
@@ -4412,6 +4413,82 @@ $('usage-export')?.addEventListener('click', async () => {
   } finally { btn.disabled = false; }
 });
 
+// ---------- AI 笔记:设置 + 使用用户列表 + 审阅 ----------
+async function loadNotesSettings() {
+  const r = await api('/api/admin/settings');
+  const s = ((await r.json()) || {}).settings || {};
+  if ($('notes-enabled')) $('notes-enabled').checked = s.notesEnabled !== false;
+  if ($('notes-allow-files')) $('notes-allow-files').checked = s.notesAllowFiles !== false;
+  if ($('notes-quota')) $('notes-quota').value = Number(s.notesQuotaMb != null ? s.notesQuotaMb : 200);
+  if ($('notes-max-file')) $('notes-max-file').value = Number(s.notesMaxFileMb != null ? s.notesMaxFileMb : 50);
+  if ($('notes-share-body-only')) $('notes-share-body-only').checked = s.notesShareBodyOnly !== false;
+  if ($('notes-ai-limit')) $('notes-ai-limit').value = Number(s.notesAiDailyLimit != null ? s.notesAiDailyLimit : 50);
+  if ($('notes-ai-customizable')) $('notes-ai-customizable').checked = s.notesAiCustomizable !== false;
+  // 用户列表默认折叠:仅在展开时才拉取,避免打开页面就发请求
+  const body = $('notes-users-body');
+  if (body && !body.hidden) await loadNotesUsers();
+}
+async function loadNotesUsers() {
+  const q = ($('notes-user-search') && $('notes-user-search').value.trim()) || '';
+  const r = await api('/api/admin/notes' + (q ? '?q=' + encodeURIComponent(q) : ''));
+  const d = await r.json();
+  if (!r.ok) throw new Error((d.error && d.error.message) || '加载失败');
+  const box = $('notes-users');
+  if ($('notes-overview')) {
+    $('notes-overview').textContent = d.users.length + ' 位用户 · 共 ' + d.notesTotal + ' 篇笔记 · 附件占用 ' + fmtBytesBig(d.totalUsed);
+  }
+  if (!d.users.length) { box.innerHTML = '<p class="muted small">还没有用户使用笔记。</p>'; return; }
+  box.innerHTML = d.users.map((u) => ''
+    + '<div class="pkg-card" style="display:flex;align-items:center;gap:10px">'
+    + '<div style="flex:1;min-width:0">'
+    + '<b>' + escapeHtml(u.name) + '</b>'
+    + '<div class="muted small">' + u.notes + ' 篇笔记 · ' + u.folders + ' 个文件夹 · 附件 ' + fmtBytesBig(u.used)
+    + (u.latestAt ? ' · 最近更新 ' + fmtTime(u.latestAt) : '') + '</div>'
+    + '</div>'
+    + '<button class="btn small" data-notes-view="' + escapeHtml(u.userId) + '">查看</button>'
+    + '<button class="btn small danger" data-notes-purge="' + escapeHtml(u.userId) + '" data-name="' + escapeHtml(u.name) + '">清空</button>'
+    + '</div>').join('');
+  box.querySelectorAll('[data-notes-view]').forEach((b) => b.addEventListener('click', () => viewUserNotes(b.dataset.notesView)));
+  box.querySelectorAll('[data-notes-purge]').forEach((b) => b.addEventListener('click', async () => {
+    const ok = await window.OCUI.confirm({
+      title: '清空「' + b.dataset.name + '」的全部笔记？',
+      message: '笔记、文件夹与附件文件都会被删除，且不可恢复（用户下次同步会得到空列表）。',
+      danger: true, confirmText: '清空',
+    });
+    if (!ok) return;
+    const r2 = await api('/api/admin/notes/purge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: b.dataset.notesView }) });
+    const d2 = await r2.json().catch(() => ({}));
+    if (!r2.ok) return toast((d2.error && d2.error.message) || '清理失败', true);
+    toast('已清理（删除附件 ' + (d2.removedFiles || 0) + ' 个）');
+    loadNotesUsers();
+  }));
+}
+async function viewUserNotes(userId) {
+  const r = await api('/api/admin/notes/view?userId=' + encodeURIComponent(userId));
+  const d = await r.json();
+  if (!r.ok) return toast((d.error && d.error.message) || '加载失败', true);
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask';
+  mask.innerHTML = '<div class="modal modal-lg" role="dialog" aria-modal="true" style="max-width:900px">'
+    + '<div class="modal-header"><h3>' + escapeHtml(d.name) + ' 的笔记（' + (d.notes || []).length + ' 篇）</h3>'
+    + '<button class="icon-btn" data-close aria-label="关闭">×</button></div>'
+    + '<div class="modal-body" style="max-height:70vh;overflow:auto">'
+    + ((d.notes || []).length ? d.notes.map((n) => ''
+      + '<details style="margin-bottom:10px;border:1px solid var(--hairline);border-radius:10px;padding:8px 12px">'
+      + '<summary style="cursor:pointer;font-weight:600">' + escapeHtml(n.title || '无标题') + '</summary>'
+      + '<div class="muted small" style="margin:6px 0">' + (n.tags || []).map((t) => '#' + escapeHtml(t)).join(' ')
+      + ' · ' + fmtTime(n.updatedAt) + ' · ' + ((n.content || '').length) + ' 字</div>'
+      + '<pre style="white-space:pre-wrap;word-break:break-word;font-size:12.5px;max-height:320px;overflow:auto">' + escapeHtml(n.content || '') + '</pre>'
+      + '</details>').join('') : '<p class="muted small">该用户还没有笔记。</p>')
+    + '</div></div>';
+  document.body.appendChild(mask);
+  const closeDlg = () => window.OCUI.closeModal(mask), rm = () => { closeDlg(); setTimeout(() => mask.remove(), 340); };
+  mask.querySelector('[data-close]').addEventListener('click', rm);
+  mask.addEventListener('mousedown', (e) => { if (e.target === mask) rm(); });
+  mask._onClose = closeDlg;
+  window.OCUI.openModal(mask);
+}
+
 const ADMIN_GROUPS = {
   overview: [{ id: 'overview', label: '概览' }, { id: 'usage', label: '用量分析' }, { id: 'announce', label: '全站公告' }, { id: 'logs', label: '运行日志' }],
   users: [{ id: 'users', label: '用户' }, { id: 'groups', label: '用户组' }, { id: 'access', label: '模型授权' }, { id: 'verify', label: '用户验证' }, { id: 'invite', label: '邀请码' }],
@@ -4421,7 +4498,7 @@ const ADMIN_GROUPS = {
     { id: 'codes-gen', label: '生成兑换码' },
     { id: 'codes-fixed', label: '添加固定兑换码' },
   ],
-  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'oauth', label: '第三方登录' }, { id: 'storage', label: '存储管理' }, { id: 'update', label: '版本更新' }],
+  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'notes', label: '笔记' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'oauth', label: '第三方登录' }, { id: 'storage', label: '存储管理' }, { id: 'update', label: '版本更新' }],
   thinking: [{ id: 'thinking', label: '思考策略' }],
   content: [{ id: 'assistants', label: '助手库' }],
 };
@@ -4445,6 +4522,52 @@ function showAdminTab(name, { load = true } = {}) {
   if (load && loader && !tabLoaded[name]) { tabLoaded[name] = true; Promise.resolve(loader()).catch((e) => toast('加载失败: ' + e.message, true)); }
   return true;
 }
+
+document.addEventListener('click', async (e) => {
+  const toggle = e.target.closest('#notes-users-toggle');
+  if (toggle) {
+    const body = $('notes-users-body');
+    const open = body.hidden;
+    body.hidden = !open;
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) loadNotesUsers().catch((err) => toast('加载失败: ' + err.message, true));
+    return;
+  }
+  const save = e.target.closest('#notes-settings-save');
+  if (save) {
+    save.disabled = true;
+    try {
+      const body = {
+        notesEnabled: $('notes-enabled').checked,
+        notesAllowFiles: $('notes-allow-files').checked,
+        notesQuotaMb: Number($('notes-quota').value || 0),
+        notesMaxFileMb: Number($('notes-max-file').value || 50),
+        notesShareBodyOnly: $('notes-share-body-only').checked,
+        notesAiDailyLimit: Number($('notes-ai-limit').value || 0),
+        notesAiCustomizable: $('notes-ai-customizable').checked,
+      };
+      const r = await api('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((d.error && d.error.message) || '保存失败');
+      toast('笔记设置已保存');
+      await loadNotesSettings();
+    } catch (err) {
+      toast(err.message || '保存失败', true);
+    } finally { save.disabled = false; }
+    return;
+  }
+});
+document.addEventListener('keydown', (e) => {
+  const toggle = e.target.closest && e.target.closest('#notes-users-toggle');
+  if (!toggle) return;
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle.click(); }
+});
+let notesSearchTimer = null;
+document.addEventListener('input', (e) => {
+  if (!e.target || e.target.id !== 'notes-user-search') return;
+  clearTimeout(notesSearchTimer);
+  notesSearchTimer = setTimeout(() => { loadNotesUsers().catch(() => {}); }, 350);
+});
 
 $('admin-tabs').addEventListener('click', (e) => {
   const groupBtn = e.target.closest('.admin-group-tab');

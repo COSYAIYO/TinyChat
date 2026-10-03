@@ -183,22 +183,28 @@
       menu.style.width = Math.max(220, Math.min(menu.offsetWidth, maxViewport)) + 'px';
     }
 
-    // 定位：默认向下，空间不足向上翻转
-    const tr = trigger.getBoundingClientRect();
-    const mh = Math.min(menu.offsetHeight, 320);
-    const gap = 6;
-    let top;
-    if (tr.bottom + mh + gap > window.innerHeight && tr.top - mh - gap > 0) {
-      top = tr.top - mh - gap;
+    // 定位：默认向下，空间不足向上翻转；opts.center 时在视口正中显示
+    // (用于「移动到文件夹」这类与触发位置无关、锚在角落会跑出视野的选择)
+    if (opts.center) {
+      menu.style.top = Math.max(8, Math.round((window.innerHeight - Math.min(menu.offsetHeight, 360)) / 2)) + 'px';
+      menu.style.left = Math.max(8, Math.round((window.innerWidth - menu.offsetWidth) / 2)) + 'px';
     } else {
-      top = tr.bottom + gap;
+      const tr = trigger.getBoundingClientRect();
+      const mh = Math.min(menu.offsetHeight, 320);
+      const gap = 6;
+      let top;
+      if (tr.bottom + mh + gap > window.innerHeight && tr.top - mh - gap > 0) {
+        top = tr.top - mh - gap;
+      } else {
+        top = tr.bottom + gap;
+      }
+      let left = tr.left;
+      if (left + menu.offsetWidth > window.innerWidth - 8) {
+        left = Math.max(8, window.innerWidth - menu.offsetWidth - 8);
+      }
+      menu.style.top = Math.max(8, Math.round(top)) + 'px';
+      menu.style.left = Math.round(left) + 'px';
     }
-    let left = tr.left;
-    if (left + menu.offsetWidth > window.innerWidth - 8) {
-      left = Math.max(8, window.innerWidth - menu.offsetWidth - 8);
-    }
-    menu.style.top = Math.max(8, Math.round(top)) + 'px';
-    menu.style.left = Math.round(left) + 'px';
 
     openMenu = menu;
 
