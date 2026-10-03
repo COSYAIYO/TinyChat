@@ -196,6 +196,11 @@
           <input id="notes-max-file" type="number" min="1" max="2048" step="1" value="50"></label>
       </div>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="notes-share-body-only" checked><span class="slider"></span></span><span>分享链接仅包含正文（图片/附件不随分享公开；关闭后分享页也能看到正文里引用的图片与附件）</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="notes-ai-customizable" checked><span class="slider"></span></span><span>允许用户自定义右键菜单动作（关闭后用户只能使用内置动作，齿轮弹窗只读）</span></label>
+      <div class="pkg-form-grid">
+        <label class="field"><span>笔记 AI 每日次数上限（每用户，0 = 不限；单次调用仍按额度计费）</span>
+          <input id="notes-ai-limit" type="number" min="0" max="10000" step="1" value="50"></label>
+      </div>
       <button class="btn primary" id="notes-settings-save" type="button">保存笔记设置</button>
     </div>
 

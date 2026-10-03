@@ -1001,6 +1001,7 @@ function tc_api_public_config($db) {
         'notesEnabled' => !empty($s['notesEnabled']),
         'notesAllowFiles' => !isset($s['notesAllowFiles']) || !empty($s['notesAllowFiles']),
         'notesShareBodyOnly' => !array_key_exists('notesShareBodyOnly', $s) || !empty($s['notesShareBodyOnly']),
+        'notesAiCustomizable' => !array_key_exists('notesAiCustomizable', $s) || !empty($s['notesAiCustomizable']),
         // 性能优化:前台据此决定是否加载内置字体 / KaTeX / 代码高亮 / Mermaid
         'perf' => array(
             'noWebfonts' => !empty($s['perfNoWebfonts']),
@@ -5213,6 +5214,51 @@ function tc_api_admin_notes_purge() {
     });
 }
 
+// 笔记 AI 每日计数:{userId: {date: n}} 存 data/notes/ai-usage.json(不占数据库)
+function tc_note_ai_usage_path() { return tc_note_root_dir() . '/ai-usage.json'; }
+function tc_note_ai_usage_read() {
+    static $cache = null;
+    if ($cache !== null) return $cache;
+    $j = json_decode((string) @file_get_contents(tc_note_ai_usage_path()), true);
+    $cache = is_array($j) ? $j : array();
+    return $cache;
+}
+function tc_note_ai_used_today($db, $userId) {
+    $all = tc_note_ai_usage_read();
+    $day = date('Y-m-d');
+    $row = isset($all[$userId]) && is_array($all[$userId]) ? $all[$userId] : array();
+    return (string) ($row['date'] ?? '') === $day ? (int) ($row['n'] ?? 0) : 0;
+}
+function tc_note_ai_consume($db, $userId) {
+    $limit = (int) ($db['settings']['notesAiDailyLimit'] ?? 50);
+    $used = tc_note_ai_used_today($db, $userId);
+    if ($limit > 0 && $used >= $limit) {
+        tc_fail(429, '今日笔记 AI 次数已用完（' . $limit . ' 次），可在后台调整上限');
+    }
+    $all = tc_note_ai_usage_read();
+    $day = date('Y-m-d');
+    $row = isset($all[$userId]) && is_array($all[$userId]) ? $all[$userId] : array();
+    $n = ((string) ($row['date'] ?? '') === $day) ? (int) ($row['n'] ?? 0) : 0;
+    $all[$userId] = array('date' => $day, 'n' => $n + 1);
+    // 顺手清掉非今日的旧记录,避免文件无界增长
+    foreach ($all as $k => $v) {
+        if (!is_array($v) || (string) ($v['date'] ?? '') !== $day) unset($all[$k]);
+    }
+    @file_put_contents(tc_note_ai_usage_path(), tc_json_encode($all), LOCK_EX);
+}
+
+// POST /api/notes/ai/consume:笔记 AI 编辑前扣一次每日配额(单次调用仍走标准计费)
+function tc_api_notes_ai_consume() {
+    tc_with_db(true, function (&$db) {
+        $user = tc_require_auth($db);
+        tc_note_feature_guard($db);
+        if (!tc_rate_limit_check('noteai:' . $user['id'], 30)) tc_fail(429, '操作过于频繁，请稍后再试');
+        tc_note_ai_consume($db, $user['id']);
+        $limit = (int) ($db['settings']['notesAiDailyLimit'] ?? 50);
+        tc_json(200, array('ok' => true, 'used' => tc_note_ai_used_today($db, $user['id']), 'limit' => $limit));
+    });
+}
+
 // GET /api/notes/usage:当前用户的笔记附件用量与配额(侧边栏左下角显示剩余空间)
 function tc_api_notes_usage() {
     tc_with_db(false, function ($db) {
@@ -5225,6 +5271,9 @@ function tc_api_notes_usage() {
             'quota' => $quota,
             'maxFileMb' => (int) ($db['settings']['notesMaxFileMb'] ?? 50),
             'allowFiles' => !isset($db['settings']['notesAllowFiles']) || !empty($db['settings']['notesAllowFiles']),
+            'aiDailyLimit' => (int) ($db['settings']['notesAiDailyLimit'] ?? 50),
+            'aiUsedToday' => tc_note_ai_used_today($db, $user['id']),
+            'aiCustomizable' => !array_key_exists('notesAiCustomizable', $db['settings']) || !empty($db['settings']['notesAiCustomizable']),
         ));
     });
 }

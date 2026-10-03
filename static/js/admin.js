@@ -4422,6 +4422,8 @@ async function loadNotesSettings() {
   if ($('notes-quota')) $('notes-quota').value = Number(s.notesQuotaMb != null ? s.notesQuotaMb : 200);
   if ($('notes-max-file')) $('notes-max-file').value = Number(s.notesMaxFileMb != null ? s.notesMaxFileMb : 50);
   if ($('notes-share-body-only')) $('notes-share-body-only').checked = s.notesShareBodyOnly !== false;
+  if ($('notes-ai-limit')) $('notes-ai-limit').value = Number(s.notesAiDailyLimit != null ? s.notesAiDailyLimit : 50);
+  if ($('notes-ai-customizable')) $('notes-ai-customizable').checked = s.notesAiCustomizable !== false;
   // 用户列表默认折叠:仅在展开时才拉取,避免打开页面就发请求
   const body = $('notes-users-body');
   if (body && !body.hidden) await loadNotesUsers();
@@ -4541,6 +4543,8 @@ document.addEventListener('click', async (e) => {
         notesQuotaMb: Number($('notes-quota').value || 0),
         notesMaxFileMb: Number($('notes-max-file').value || 50),
         notesShareBodyOnly: $('notes-share-body-only').checked,
+        notesAiDailyLimit: Number($('notes-ai-limit').value || 0),
+        notesAiCustomizable: $('notes-ai-customizable').checked,
       };
       const r = await api('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const d = await r.json().catch(() => ({}));

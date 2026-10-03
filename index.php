@@ -182,6 +182,7 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/notes/upload$#', 'tc_api_note_attachment_upload'),
         array('GET', '#^/api/notes/file$#', 'tc_api_note_attachment_serve'),
         array('GET', '#^/api/notes/usage$#', 'tc_api_notes_usage'),
+        array('POST', '#^/api/notes/ai/consume$#', 'tc_api_notes_ai_consume'),
         // 管理端笔记:用户用量列表 / 审阅某用户笔记 / 清理
         array('GET', '#^/api/admin/notes$#', 'tc_api_admin_notes_users'),
         array('GET', '#^/api/admin/notes/view$#', 'tc_api_admin_notes_view'),

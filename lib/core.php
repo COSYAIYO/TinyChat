@@ -176,6 +176,11 @@ $TC_SETTINGS_DEFAULTS = array(
     // 正文里的图片/附件引用会被移除,附件也不随分享暴露。
     // 关闭后分享页同样能看正文内引用的图片与附件。
     'notesShareBodyOnly' => true,
+    // 笔记内 AI 编辑(右键扩写/总结/翻译等)每日每用户次数上限,0 = 不限。
+    // 单次调用仍照常扣减用户额度(走 _purpose=note-edit 的标准计费通道)。
+    'notesAiDailyLimit' => 50,
+    // 允许用户自定义右键菜单的动作(关闭后固定为内置五项,齿轮只读)
+    'notesAiCustomizable' => true,
 );
 $TC_SETTINGS_DEFAULTS['mailTemplates'] = tc_mail_default_templates();
 
@@ -588,6 +593,8 @@ function tc_normalize_settings($raw) {
     $s['notesMaxFileMb'] = min(2048, max(1, (int) (isset($s['notesMaxFileMb']) ? $s['notesMaxFileMb'] : 50)));
     $s['notesAllowFiles'] = !array_key_exists('notesAllowFiles', $s) || !empty($s['notesAllowFiles']);
     $s['notesShareBodyOnly'] = !array_key_exists('notesShareBodyOnly', $s) || !empty($s['notesShareBodyOnly']);
+    $s['notesAiDailyLimit'] = min(10000, max(0, (int) (isset($s['notesAiDailyLimit']) ? $s['notesAiDailyLimit'] : 50)));
+    $s['notesAiCustomizable'] = !array_key_exists('notesAiCustomizable', $s) || !empty($s['notesAiCustomizable']);
     $s['perfNoWebfonts'] = !empty($s['perfNoWebfonts']);
     $s['perfNoKatex'] = !empty($s['perfNoKatex']);
     $s['perfNoHighlight'] = !empty($s['perfNoHighlight']);
@@ -2794,6 +2801,14 @@ function tc_quota_purpose_label($purpose, $model = '') {
         'compare' => '多模型对比',
         'assistant' => '助手对话',
         'api' => 'API 调用',
+        // ---- AI 笔记 ----
+        'note' => 'AI 笔记整理',        // 「保存到 AI 笔记」的自动归档
+        'note-edit' => 'AI 笔记编辑',    // 选中文字右键的扩写/总结/翻译等
+        'note-doc' => 'AI 笔记全文',     // 大纲/待办/摘要/自动整理
+        'note-tags' => 'AI 笔记标签',
+        'note-ask' => 'AI 笔记问答',
+        'note-continue' => 'AI 笔记续写',
+        'note-digest' => 'AI 笔记日报',
     );
     if (isset($map[$p])) return $map[$p];
     // 未标注用途时按模型名兜底推断

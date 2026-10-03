@@ -1757,6 +1757,36 @@ assert_contains "演示管理员不可查看笔记用户列表" "$(curl -s "$BAS
 assert_contains "演示管理员不可审阅用户笔记" "$(curl -s "$BASE/api/admin/notes/view?userId=$AUID" -H "Authorization: Bearer $DMT")" '演示管理员不可查看用户笔记'
 assert_contains "演示管理员不可清理用户笔记" "$(curl -s -X POST "$BASE/api/admin/notes/purge" -H "Authorization: Bearer $DMT" -H "Content-Type: application/json" -d "{\"userId\":\"$AUID\"}")" '演示管理员不能清理用户笔记'
 assert_has "真实管理员仍可查看笔记用户" "$(curl -s "$BASE/api/admin/notes" -H "$AUTH")" '"users":['
+
+# 笔记 AI 配额:每日上限与计数
+AUSD=$(curl -s "$BASE/api/notes/usage" -H "$AUTH")
+assert_contains "用量接口返回 AI 每日上限" "$AUSD" '"aiDailyLimit":'
+assert_contains "用量接口返回今日 AI 已用" "$AUSD" '"aiUsedToday":'
+assert_contains "用量接口返回可自定义开关" "$AUSD" '"aiCustomizable":'
+assert_contains "AI 配额扣减成功" "$(curl -s -X POST "$BASE/api/notes/ai/consume" -H "$AUTH")" '"ok":true'
+assert_contains "公开配置下发 AI 可自定义" "$(curl -s "$BASE/api/config")" '"notesAiCustomizable":true'
+# 上限设为 0(不限)与恢复
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesAiDailyLimit":0}' > /dev/null
+assert_contains "AI 上限可设为不限" "$(curl -s "$BASE/api/notes/usage" -H "$AUTH")" '"aiDailyLimit":0'
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesAiDailyLimit":50}' > /dev/null
+# 上限设为 1 时第二次应被拒
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesAiDailyLimit":1}' > /dev/null
+curl -s -X POST "$BASE/api/notes/ai/consume" -H "$AUTH" > /dev/null
+assert_contains "超出每日 AI 上限被拒" "$(curl -s -X POST "$BASE/api/notes/ai/consume" -H "$AUTH")" '今日笔记 AI 次数已用完'
+assert_contains "被拒后用量接口反映已用" "$(curl -s "$BASE/api/notes/usage" -H "$AUTH")" '"aiUsedToday":1'
+
+# 笔记 AI 用途标签:调用后余量明细应出现「AI 笔记编辑/问答」等可读用途
+curl -s -X POST "$BASE/api/admin/users/update" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"notemate","quota":100,"groupId":null}' > /dev/null || true
+NMT2=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"notemate","password":"notemate123"}' | jget token)
+PUP=$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"e2e-note-bill","baseUrl":"http://127.0.0.1:8100/v1","apiKey":"k","apiFormat":"chat","scope":"global","costPerCall":3,"models":[{"id":"e2e-bill","name":"b","enabled":true}],"enabled":true}' | python -c "import sys,json;print(json.load(sys.stdin).get('provider',{}).get('id',''))")
+if [ -n "$PUP" ]; then
+  curl -s -X POST "$BASE/api/proxy/chat" -H "Authorization: Bearer $NMT2" -H "Content-Type: application/json" -d "{\"model\":\"e2e-bill\",\"providerId\":\"$PUP\",\"stream\":false,\"_purpose\":\"note-edit\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" > /dev/null
+  LED=$(curl -s "$BASE/api/me/quota/ledger?limit=5" -H "Authorization: Bearer $NMT2")
+  assert_contains "笔记 AI 调用写入余量明细" "$LED" 'AI 笔记编辑'
+  assert_contains "明细含扣费金额" "$LED" '"amount":-3'
+  curl -s -X DELETE "$BASE/api/providers/$PUP" -H "$AUTH" > /dev/null
+else bad "建测试供应商失败"; fi
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesAiDailyLimit":50}' > /dev/null
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":true}' > /dev/null
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":true}' > /dev/null
 

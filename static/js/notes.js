@@ -392,6 +392,8 @@
       + '<span class="neb-sep">·</span>'
       + '<span class="ne-save-state" id="ne-save-state">已保存</span>'
       + '<button class="neb-tags-btn" id="ne-tags-btn" data-tip="编辑标签">' + icon('tag', 13) + '<span>标签</span></button>'
+      + '<button class="neb-ai-btn" id="ne-ai" data-tip="AI 全文操作">' + icon('spark', 13) + '<span>AI</span></button>'
+      + '<button class="neb-ai-btn" id="ne-ask" data-tip="基于全部笔记回答问题">' + icon('search', 13) + '<span>问笔记</span></button>'
       + '<button class="notes-icon-btn" id="ne-undo" data-tip="上一步（Ctrl+Z）" aria-label="上一步">' + icon('undo', 15) + '</button>'
       + '<button class="notes-icon-btn" id="ne-redo" data-tip="下一步（Ctrl+Shift+Z）" aria-label="下一步">' + icon('redo', 15) + '</button>'
       + '<div class="notes-mode-switch" id="ne-mode-switch">'
@@ -426,7 +428,7 @@
       + '<div class="notes-tree" id="notes-tree"></div>'
       + '<div class="notes-usage-row">'
       + '<span class="notes-usage" id="notes-usage"></span>'
-      + '<button class="notes-icon-btn notes-gear" id="notes-gear" data-tip="AI 编辑设置">' + icon('settings', 14) + '</button>'
+      + '<button class="notes-icon-btn notes-gear" id="notes-gear" data-tip="自定义右键菜单">' + icon('gear', 14) + '</button>'
       + '</div>'
       + '</aside>'
       + '<div class="notes-side-resizer" id="notes-side-resizer" data-tip="拖动调整宽度" aria-hidden="true"></div>'
@@ -659,13 +661,70 @@
   }
 
   // 左下角齿轮:定义右键菜单里显示哪些 AI 动作
-  const AI_ACTIONS = [
-    { key: 'expand', label: '扩写', desc: '把选中的内容展开写详细' },
-    { key: 'check', label: '谬误检查', desc: '检查事实与逻辑上的问题' },
-    { key: 'summarize', label: '总结', desc: '压缩为要点' },
-    { key: 'translate', label: '翻译', desc: '中→英 / 英→中 / 中英混杂→英' },
-    { key: 'dedupe', label: '降低重复率', desc: '改写去除重复表达' },
+  // 内置动作提示词(自定义动作直接存完整 prompt 模板,占位符 {{text}} 为选中文字)
+  const BUILTIN_ACTIONS = [
+    {
+      key: 'expand', label: '扩写', desc: '把选中的内容展开写详细', builtin: true,
+      prompt: '请扩写下面这段内容：补充细节、背景与必要的例子，使表达更充分，但不要改变原意，也不要引入原文没有的事实。',
+    },
+    {
+      key: 'check', label: '谬误检查', desc: '检查事实与逻辑上的问题', builtin: true,
+      prompt: '请检查下面这段内容中的事实性错误、逻辑漏洞与表述不严谨之处，并给出修正后的版本：保留原有结构与有效信息，改正的问题要落实到正文里（不要只列问题清单）。',
+    },
+    {
+      key: 'summarize', label: '总结', desc: '压缩为要点', builtin: true,
+      prompt: '请把下面这段内容总结为简洁的要点：保留关键信息、结论与限制条件，删除冗余表述。',
+    },
+    {
+      key: 'translate', label: '翻译', desc: '中→英 / 英→中 / 中英混杂→英', builtin: true,
+      autoDir: true,
+      prompt: '请把下面这段内容翻译成地道的{{lang}}：专有名词与技术术语保留原文（必要时括注），语气与原文一致。',
+    },
+    {
+      key: 'dedupe', label: '降低重复率', desc: '改写去除重复表达', builtin: true,
+      prompt: '请改写下面这段内容以降低重复率：合并同义表述、删除重复信息、替换冗余句式，保持原意与信息完整性不变。',
+    },
   ];
+  // 读取用户自定义(停用列表 + 自定义动作 + 内置动作的覆盖)
+  function aiConfig() {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('oc_notes_ai_cfg') || 'null'); } catch (e) {}
+    const cfg = saved && typeof saved === 'object' ? saved : {};
+    return {
+      disabled: Array.isArray(cfg.disabled) ? cfg.disabled : [],
+      custom: Array.isArray(cfg.custom) ? cfg.custom.filter((x) => x && x.key && x.label) : [],
+      overrides: cfg.overrides && typeof cfg.overrides === 'object' ? cfg.overrides : {},
+    };
+  }
+  function aiConfigSave(cfg) {
+    try { localStorage.setItem('oc_notes_ai_cfg', JSON.stringify(cfg)); } catch (e) {}
+  }
+  // 当前生效的动作列表(内置已覆盖 + 自定义,按顺序)
+  function aiActions() {
+    const cfg = aiConfig();
+    const list = BUILTIN_ACTIONS.map((a) => {
+      const ov = cfg.overrides[a.key] || {};
+      return Object.assign({}, a, {
+        label: ov.label || a.label,
+        desc: ov.desc || a.desc,
+        prompt: ov.prompt || a.prompt,
+        enabled: cfg.disabled.indexOf(a.key) < 0,
+      });
+    });
+    cfg.custom.forEach((c) => {
+      list.push({
+        key: c.key, label: c.label, desc: c.desc || '自定义动作', prompt: c.prompt || '{{text}}',
+        custom: true, enabled: cfg.disabled.indexOf(c.key) < 0,
+      });
+    });
+    return list;
+  }
+  // 兼容旧调用:启用映射
+  function aiActionsEnabled() {
+    const map = {};
+    aiActions().forEach((a) => { map[a.key] = a.enabled; });
+    return map;
+  }
 
   // 中文占比判断:用于翻译方向(中文→英文,英文→中文,中英混杂→英文)
   function mostlyChinese(text) {
@@ -673,33 +732,16 @@
     const en = (String(text).match(/[A-Za-z]/g) || []).length;
     return cn > 0 && cn * 2 >= en; // 中文占比过半 → 视为中文文本
   }
-  function aiActionPrompt(key, text) {
+  function aiActionPrompt(action, text) {
     // 统一约束:只输出结果本身,不加解释、不加代码块围栏,便于直接插回正文
     const tail = '\n直接输出处理后的内容本身，不要任何解释、前言、编号或代码块围栏，保持 Markdown 格式。';
-    if (key === 'expand') {
-      return '请扩写下面这段内容：补充细节、背景与必要的例子，使表达更充分，但不要改变原意，也不要引入原文没有的事实。' + tail + '\n\n' + text;
+    let body = String((action && action.prompt) || '{{text}}');
+    if (action && action.autoDir) {
+      body = body.replace('{{lang}}', mostlyChinese(text) ? '英文' : '中文');
     }
-    if (key === 'check') {
-      return '请检查下面这段内容中的事实性错误、逻辑漏洞与表述不严谨之处，并给出修正后的版本：保留原有结构与有效信息，改正的问题要落实到正文里（不要只列问题清单）。' + tail + '\n\n' + text;
-    }
-    if (key === 'summarize') {
-      return '请把下面这段内容总结为简洁的要点：保留关键信息、结论与限制条件，删除冗余表述。' + tail + '\n\n' + text;
-    }
-    if (key === 'translate') {
-      const dir = mostlyChinese(text) ? '英文' : '中文';
-      return '请把下面这段内容翻译成地道的' + dir + '：专有名词与技术术语保留原文（必要时括注），语气与原文一致。' + tail + '\n\n' + text;
-    }
-    if (key === 'dedupe') {
-      return '请改写下面这段内容以降低重复率：合并同义表述、删除重复信息、替换冗余句式，保持原意与信息完整性不变。' + tail + '\n\n' + text;
-    }
-    return text;
-  }
-  function aiActionsEnabled() {
-    let saved = null;
-    try { saved = JSON.parse(localStorage.getItem('oc_notes_ai_actions') || 'null'); } catch (e) {}
-    const map = {};
-    AI_ACTIONS.forEach((a) => { map[a.key] = saved ? saved[a.key] !== false : true; });
-    return map;
+    // 模板含占位符则替换,否则把原文附在末尾(自定义动作两种写法都支持)
+    if (body.indexOf('{{text}}') >= 0) return body.replace('{{text}}', text) + tail;
+    return body + tail + '\n\n' + text;
   }
   // ============ 正文选区右键:AI 编辑 ============
   // 结果插到选中文字之后(前后各留一个换行),原选中内容保持不变。
@@ -707,17 +749,117 @@
   function closeAiCtxMenu() {
     if (aiCtxMenu) { aiCtxMenu.remove(); aiCtxMenu = null; }
   }
+  // 常用编辑(原生 textarea 能力):以一排小图标放在 AI 动作上方。
+  // 「粘贴纯文本」用 navigator.clipboard.readText 过滤格式,粘贴为无格式文本。
+  const CTX_TOOLS = [
+    { key: 'cut', tip: '剪切', icon: 'cut' },
+    { key: 'copy', tip: '复制', icon: 'copy' },
+    { key: 'paste', tip: '粘贴', icon: 'clipboard' },
+    { key: 'paste-plain', tip: '粘贴为纯文本', icon: 'clipboardPlain' },
+    { key: 'selectall', tip: '全选', icon: 'selectAll' },
+    { key: 'undo', tip: '撤销', icon: 'undo' },
+    { key: 'redo', tip: '重做', icon: 'redo' },
+  ];
+  function runCtxTool(tool) {
+    const ta = N.editor && N.editor.ta;
+    if (!ta) return;
+    if (tool === 'cut' || tool === 'copy') {
+      const a = ta.selectionStart, b = ta.selectionEnd;
+      if (a === b) { toast('先选中要' + (tool === 'cut' ? '剪切' : '复制') + '的内容'); return; }
+      const sel = ta.value.slice(a, b);
+      const done = () => {
+        if (tool === 'cut') {
+          ta.value = ta.value.slice(0, a) + ta.value.slice(b);
+          ta.selectionStart = ta.selectionEnd = a;
+          N.editor.dirty = true;
+          pushHistory({ force: true });
+          renderPreview(ta.value);
+          scheduleSaveSoon();
+        }
+        toast(tool === 'cut' ? '已剪切' : '已复制');
+      };
+      if (window.OCUI && window.OCUI.copyText) {
+        window.OCUI.copyText(sel).then((ok) => { if (ok) done(); else toast('复制失败', true); });
+      } else {
+        try { navigator.clipboard.writeText(sel).then(done); } catch (e) { toast('复制失败', true); }
+      }
+      return;
+    }
+    if (tool === 'paste' || tool === 'paste-plain') {
+      const insert = (txt) => {
+        const a = ta.selectionStart, b = ta.selectionEnd;
+        ta.value = ta.value.slice(0, a) + txt + ta.value.slice(b);
+        ta.selectionStart = ta.selectionEnd = a + txt.length;
+        N.editor.dirty = true;
+        pushHistory({ force: true });
+        renderPreview(ta.value);
+        scheduleSaveSoon();
+      };
+      if (tool === 'paste-plain') {
+        // 纯文本:剥掉 Markdown 结构符号与多余空行
+        const plain = (raw) => String(raw)
+          .replace(/```[\s\S]*?```/g, (m) => m.replace(/```[a-zA-Z]*\n?/g, ''))
+          .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+          .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+          .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+          .replace(/^\s{0,3}>\s?/gm, '')
+          .replace(/^\s*[-*+]\s+/gm, '')
+          .replace(/[*_~`]+/g, '')
+          .replace(/\n{3,}/g, '\n\n');
+        if (navigator.clipboard && navigator.clipboard.readText) {
+          navigator.clipboard.readText().then((raw) => insert(plain(raw))).catch(() => {
+            toast('浏览器未授权读取剪贴板，请用 Ctrl+Shift+V', true);
+          });
+        } else {
+          toast('当前浏览器不支持，请用 Ctrl+Shift+V', true);
+        }
+        return;
+      }
+      // 普通粘贴:交给原生事件(这里显式读取剪贴板文本兜底)
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        navigator.clipboard.readText().then(insert).catch(() => toast('请用 Ctrl+V 粘贴', true));
+      } else {
+        toast('请用 Ctrl+V 粘贴', true);
+      }
+      return;
+    }
+    if (tool === 'selectall') {
+      ta.focus();
+      ta.selectionStart = 0;
+      ta.selectionEnd = ta.value.length;
+      return;
+    }
+    if (tool === 'undo') { undo(); return; }
+    if (tool === 'redo') { redo(); return; }
+  }
+
+  function ctxToolbarHtml() {
+    return '<div class="ncm-tools">' + CTX_TOOLS.map((t) =>
+      '<button class="ncm-tool" data-tool="' + t.key + '" data-tip="' + esc(t.tip) + '" aria-label="' + esc(t.tip) + '">'
+      + icon(t.icon, 14) + '</button>').join('') + '</div>';
+  }
+
   function openAiCtxMenu(x, y, text, start, end) {
     closeAiCtxMenu();
-    const enabled = aiActionsEnabled();
-    const acts = AI_ACTIONS.filter((a) => enabled[a.key]);
+    const acts = aiActions().filter((a) => a.enabled);
     const menu = document.createElement('div');
     menu.className = 'notes-ctx-menu';
-    menu.innerHTML = acts.length
-      ? '<div class="ncm-head">AI 编辑</div>'
-        + acts.map((a) => '<button class="ncm-item" data-ai="' + a.key + '"><span>' + esc(a.label) + '</span><i>' + esc(a.desc) + '</i></button>').join('')
-      : '<div class="ncm-empty">右键菜单里没有启用的动作，点左下角齿轮添加。</div>';
+    menu.innerHTML = ctxToolbarHtml()
+      + '<div class="ncm-sep"></div>'
+      + (acts.length
+        ? '<div class="ncm-head">AI 编辑</div>'
+          + acts.map((a) => '<button class="ncm-item" data-ai="' + a.key + '"><span>' + esc(a.label) + '</span><i>' + esc(a.desc) + '</i></button>').join('')
+        : '<div class="ncm-empty">没有启用的动作。点左下角齿轮添加或启用。</div>');
     document.body.appendChild(menu);
+    menu.querySelectorAll('[data-tool]').forEach((b) => {
+      b.addEventListener('mousedown', (e) => e.preventDefault()); // 保住输入框焦点与选区
+      b.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        closeAiCtxMenu();
+        runCtxTool(b.dataset.tool);
+      });
+    });
     // 视口内定位(靠近边缘时自动内收)
     const r = menu.getBoundingClientRect();
     menu.style.left = Math.max(8, Math.min(x, window.innerWidth - r.width - 8)) + 'px';
@@ -738,7 +880,7 @@
     const noteId = N.editor && N.editor.noteId;
     const n = noteById(noteId);
     if (!n) return;
-    const act = AI_ACTIONS.find((a) => a.key === key);
+    const act = aiActions().find((a) => a.key === key);
     // 占位标记:先把光标位置放好,结束后直接替换占位
     const ta = N.editor.ta;
     const marker = '\n\n<!--AI:' + Date.now().toString(36) + '-->\n';
@@ -746,13 +888,10 @@
     setSaveState('editing');
     const busy = showAiBusy(act ? act.label : '处理');
     try {
-      const out = await window.OCApp.aiComplete(
-        [
-          { role: 'system', content: '你是严谨的中文写作助手。只按用户要求处理文本并直接输出结果，不要解释过程。' },
-          { role: 'user', content: aiActionPrompt(key, text) },
-        ],
-        { purpose: 'note-edit', maxTokens: 4096 }
-      );
+      const out = await aiRun('note-edit', [
+        { role: 'system', content: '你是严谨的中文写作助手。只按用户要求处理文本并直接输出结果，不要解释过程。' },
+        { role: 'user', content: aiActionPrompt(act, text) },
+      ], 4096);
       const clean = String(out || '').trim().replace(/^```[a-zA-Z]*\n?|\n?```$/g, '').trim();
       if (!clean) throw new Error('模型没有返回内容');
       replaceMarker(marker, '\n\n' + clean + '\n');
@@ -803,6 +942,354 @@
     clearTimeout(N.editor.saveTimer);
     N.editor.saveTimer = setTimeout(saveEditor, 500);
   }
+  // ============ AI 扩展能力 ============
+  // 统一的 AI 取用入口:先扣每日配额(后端),再调用补全,避免被当作免费 LLM 通道
+  async function aiRun(purpose, messages, maxTokens) {
+    const r = await apiFetch('/api/notes/ai/consume', { method: 'POST' });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error((d.error && d.error.message) || '今日 AI 次数不足');
+    }
+    const out = await window.OCApp.aiComplete(messages, { purpose: purpose, maxTokens: maxTokens || 4096 });
+    refreshUsage();
+    return out;
+  }
+  function stripFence(t) {
+    return String(t || '').trim().replace(/^```[a-zA-Z]*\n?/, '').replace(/\n?```$/, '').trim();
+  }
+
+  // ---- 建议1:全文 AI 动作 ----
+  function openDocAiMenu(anchor) {
+    const items = [
+      { value: 'outline', label: '生成大纲 · 提取小标题层级' },
+      { value: 'todos', label: '提取待办 · 汇总为任务列表' },
+      { value: 'summary', label: '写入摘要 · 追加到正文开头' },
+      { value: 'tags', label: '推荐标签 · 自动补充标签' },
+      { value: 'tidy', label: '自动整理 · 重排结构（预览后应用）' },
+      { value: 'links', label: '双链图谱 · 生成 Mermaid 关系图' },
+      { value: 'digest', label: '生成日报 · 汇总近 24 小时更新的笔记' },
+    ];
+    window.OC.openSelect(anchor, items, {
+      fitWidth: true,
+      onSelect: (v) => runDocAi(v),
+    });
+  }
+  async function runDocAi(kind) {
+    if (kind === 'digest') { void runDailyDigest(); return; }
+    const n = noteById(N.ui.selNoteId);
+    if (!n || !N.editor) return;
+    const text = N.editor.ta.value || '';
+    if (!text.trim()) { toast('笔记还是空的，先写点内容吧', true); return; }
+    const busy = showAiBusy(DOC_AI_LABEL[kind] || '处理');
+    try {
+      if (kind === 'tags') {
+        const out = await aiRun('note-tags', [
+          { role: 'system', content: '你是笔记助手。只输出 3-6 个简短中文标签，用中文逗号分隔，不要解释。' },
+          { role: 'user', content: '为下面这篇笔记推荐标签：\n\n' + text.slice(0, 6000) },
+        ], 200);
+        const tags = stripFence(out).split(/[,，、\n]/).map((x) => x.trim().replace(/^#/, '')).filter(Boolean).slice(0, 8);
+        if (!tags.length) throw new Error('没有解析出标签');
+        const cur = noteById(n.id);
+        const merged = Array.from(new Set(((cur && cur.tags) || []).concat(tags))).slice(0, 20);
+        updateNote(n.id, { tags: merged });
+        toast('已补充标签：' + tags.join('、'));
+        return;
+      }
+      const prompts = {
+        outline: '请为下面这篇笔记生成层级大纲：用 Markdown 无序列表输出 2 层，覆盖全文要点，不要解释。',
+        todos: '请从下面这篇笔记里提取所有待办事项，输出 Markdown 任务列表（- [ ] 事项），注明负责人与时间（若有），不要解释。',
+        summary: '请为下面这篇笔记写一段 100 字以内的摘要，直接输出摘要正文（不要「摘要：」前缀）。',
+        tidy: '请重排下面这篇笔记的结构：补齐小标题、把并列信息改成列表、合并重复段落，保留全部事实与代码。直接输出整理后的完整 Markdown 全文。',
+        links: '请分析下面这篇笔记涉及的核心概念及其关系，输出一个 Mermaid 代码块（graph LR，节点用中文短语，最多 12 个节点），不要解释。',
+      };
+      const out = await aiRun('note-doc', [
+        { role: 'system', content: '你是严谨的中文写作助手。只输出要求的内容本身，不要任何解释或额外前言。' },
+        { role: 'user', content: prompts[kind] + '\n\n' + text.slice(0, 12000) },
+      ], kind === 'tidy' ? 8192 : 2048);
+      const clean = stripFence(out);
+      if (!clean) throw new Error('模型没有返回内容');
+      if (kind === 'tidy') { showTidyPreview(n, clean); return; }
+      if (kind === 'summary') {
+        const cur = noteById(n.id);
+        const head = '> **摘要**：' + clean.replace(/\n+/g, ' ').trim() + '\n\n';
+        updateNote(n.id, { content: head + (cur ? cur.content : text) });
+        saveEditorSoon(n.id);
+        toast('摘要已写入正文开头');
+        return;
+      }
+      // outline / todos / links 追加到文末
+      const cur = noteById(n.id);
+      const block = '\n\n## ' + (DOC_AI_HEAD[kind] || 'AI 生成') + '\n\n' + clean + '\n';
+      updateNote(n.id, { content: (cur ? cur.content : text) + block });
+      saveEditorSoon(n.id);
+      toast((DOC_AI_LABEL[kind] || 'AI') + '已完成');
+    } catch (e) {
+      toast('AI 操作失败：' + (e.message || '请稍后重试'), true);
+    } finally {
+      busy.remove();
+    }
+  }
+  const DOC_AI_LABEL = { outline: '生成大纲', todos: '提取待办', summary: '写入摘要', tags: '推荐标签', tidy: '自动整理', links: '生成双链图谱', digest: '生成日报' };
+  const DOC_AI_HEAD = { outline: '大纲', todos: '待办事项', links: '概念关系图' };
+  // 把更新后的内容灌回编辑器并触发保存(不重渲染编辑器,避免打断光标)
+  function saveEditorSoon(noteId) {
+    if (!N.editor || N.editor.noteId !== noteId) { renderEditor(); return; }
+    const cur = noteById(noteId);
+    if (!cur) return;
+    const ti = N.els.bar.querySelector('#ne-title');
+    if (ti && ti.value !== cur.title) ti.value = cur.title;
+    N.editor.ta.value = cur.content;
+    N.editor.dirty = true;
+    pushHistory({ force: true });
+    renderPreview(cur.content);
+    setSaveState('editing');
+    clearTimeout(N.editor.saveTimer);
+    N.editor.saveTimer = setTimeout(saveEditor, 400);
+    renderTree();
+  }
+
+  // 建议6:自动整理 → 预览对比后再应用
+  function showTidyPreview(n, newContent) {
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask notes-tidy-mask hidden';
+    mask.innerHTML =
+      '<div class="modal modal-lg notes-tidy-modal" role="dialog" aria-modal="true">'
+      + '<div class="modal-header"><h3>' + icon('spark', 15) + ' 自动整理预览</h3></div>'
+      + '<div class="modal-body notes-tidy-body">'
+      + '<div class="tidy-col"><div class="tidy-head">整理前</div><div class="tidy-pane md-prose msg assistant" id="tidy-old"></div></div>'
+      + '<div class="tidy-col"><div class="tidy-head">整理后</div><div class="tidy-pane md-prose msg assistant" id="tidy-new"></div></div>'
+      + '</div>'
+      + '<div class="modal-footer">'
+      + '<button class="btn" data-close type="button">放弃</button>'
+      + '<button class="btn primary" id="tidy-apply" type="button">应用整理结果</button>'
+      + '</div></div>';
+    document.body.appendChild(mask);
+    const done = () => { window.OCUI.closeModal(mask); setTimeout(() => mask.remove(), 340); };
+    mask._onClose = done;
+    mask.querySelector('[data-close]').addEventListener('click', done);
+    mask.addEventListener('mousedown', (e) => { if (e.target === mask) done(); });
+    if (window.OCRenderer) {
+      window.OCRenderer.renderInto(mask.querySelector('#tidy-old'), N.editor.ta.value);
+      window.OCRenderer.renderInto(mask.querySelector('#tidy-new'), newContent);
+    } else {
+      mask.querySelector('#tidy-old').textContent = N.editor.ta.value;
+      mask.querySelector('#tidy-new').textContent = newContent;
+    }
+    mask.querySelector('#tidy-apply').addEventListener('click', () => {
+      const cur = noteById(n.id);
+      updateNote(n.id, { content: newContent });
+      saveEditorSoon(n.id);
+      done();
+      toast('已应用整理结果（可 Ctrl+Z 撤销）');
+      void cur;
+    });
+    if (window.OCUI) window.OCUI.openModal(mask);
+    else mask.classList.add('show');
+  }
+
+  // ---- 建议3:问笔记(关键词召回 + 引用来源) ----
+  function noteKeywords(q) {
+    const raw = String(q).toLowerCase();
+    const words = raw.match(/[a-z0-9_]+|[\u4e00-\u9fff]{2,}/g) || [];
+    const out = new Set(words);
+    // 中文长词再切 2-gram,提升召回
+    words.forEach((w) => {
+      if (/^[\u4e00-\u9fff]+$/.test(w) && w.length > 2) {
+        for (let i = 0; i + 2 <= w.length; i++) out.add(w.slice(i, i + 2));
+      }
+    });
+    return Array.from(out).slice(0, 24);
+  }
+  function recallNotes(q, limit) {
+    const kws = noteKeywords(q);
+    const scored = [];
+    N.doc.notes.forEach((n) => {
+      const hay = ((n.title || '') + '\n' + (n.content || '')).toLowerCase();
+      let score = 0;
+      kws.forEach((k) => { if (k && hay.indexOf(k) >= 0) score += Math.min(4, k.length); });
+      if (kws.some((k) => (n.title || '').toLowerCase().indexOf(k) >= 0)) score += 6;
+      if (score > 0) scored.push({ note: n, score: score });
+    });
+    scored.sort((a, b) => b.score - a.score || (b.note.updatedAt || 0) - (a.note.updatedAt || 0));
+    return scored.slice(0, limit || 5);
+  }
+  function openAskNotes() {
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask notes-ask-mask hidden';
+    mask.innerHTML =
+      '<div class="modal notes-ask-modal" role="dialog" aria-modal="true">'
+      + '<div class="modal-header"><h3>' + icon('search', 15) + ' 问笔记</h3>'
+      + '<button class="notes-icon-btn" data-close>' + icon('close', 15) + '</button></div>'
+      + '<div class="modal-body">'
+      + '<p class="muted small">基于你的全部笔记回答，最多引用 5 篇；回答会列出引用来源，仅作参考，请自行核对。</p>'
+      + '<div class="ask-row"><input class="notes-prompt-input" id="ask-q" placeholder="例如：容器查询和媒体查询的差别是什么？" maxlength="300" spellcheck="false">'
+      + '<button class="btn primary" id="ask-go" type="button">提问</button></div>'
+      + '<div class="ask-answer" id="ask-answer"></div>'
+      + '</div>'
+      + '<div class="modal-footer"><button class="btn" data-close>关闭</button></div>'
+      + '</div>';
+    document.body.appendChild(mask);
+    const done = () => { window.OCUI.closeModal(mask); setTimeout(() => mask.remove(), 340); };
+    mask._onClose = done;
+    mask.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', done));
+    mask.addEventListener('mousedown', (e) => { if (e.target === mask) done(); });
+    const input = mask.querySelector('#ask-q');
+    const ans = mask.querySelector('#ask-answer');
+    const go = async () => {
+      const q = input.value.trim();
+      if (!q) return;
+      const hits = recallNotes(q, 5);
+      ans.innerHTML = '<div class="ask-loading"><span class="nab-spin"></span>正在阅读你的笔记…</div>';
+      try {
+        let ctx = '';
+        hits.forEach((h, i) => {
+          ctx += '\n\n【笔记' + (i + 1) + '】标题：' + h.note.title + '\n' + String(h.note.content || '').slice(0, 3000);
+        });
+        const out = await aiRun('note-ask', [
+          { role: 'system', content: '你是笔记助手。只根据提供的笔记内容回答问题；如果笔记里没有相关信息，直接说明「笔记里没有相关内容」，不要编造。回答后不要自行编造引用编号。' },
+          { role: 'user', content: '问题：' + q + '\n\n我的笔记：' + (ctx || '（没有检索到相关笔记）') },
+        ], 2048);
+        ans.innerHTML = '<div class="ask-text"></div><div class="ask-src"></div>';
+        const textBox = ans.querySelector('.ask-text');
+        if (window.OCRenderer) window.OCRenderer.renderInto(textBox, stripFence(out));
+        else textBox.textContent = stripFence(out);
+        const src = ans.querySelector('.ask-src');
+        src.innerHTML = hits.length
+          ? '<div class="ask-src-head">引用来源（' + hits.length + '）</div>' + hits.map((h) => ''
+              + '<button class="ask-src-item" data-id="' + esc(h.note.id) + '">' + esc(h.note.title || '无标题') + '</button>').join('')
+          : '<div class="ask-src-head">没有检索到相关笔记，回答仅供参考</div>';
+        src.querySelectorAll('[data-src-item], .ask-src-item').forEach((b) => {
+          b.addEventListener('click', () => {
+            const id = b.dataset.id;
+            done();
+            if (noteById(id)) openNote(id);
+          });
+        });
+        refreshUsage();
+      } catch (e) {
+        ans.innerHTML = '<div class="ask-err">' + esc(e.message || '提问失败，请稍后重试') + '</div>';
+      }
+    };
+    mask.querySelector('#ask-go').addEventListener('click', go);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+    if (window.OCUI) window.OCUI.openModal(mask);
+    else mask.classList.add('show');
+    setTimeout(() => input.focus(), 80);
+  }
+
+  // ---- 建议2:Tab 续写 ----
+  let continueBusy = false;
+  async function continueWriting() {
+    if (continueBusy || !N.editor) return;
+    const ta = N.editor.ta;
+    const caret = ta.selectionStart || 0;
+    const before = ta.value.slice(0, caret);
+    const after = ta.value.slice(ta.selectionEnd || caret);
+    if (!before.trim()) { toast('先写一点内容，AI 才知道怎么接', true); return; }
+    continueBusy = true;
+    const busy = showAiBusy('续写');
+    try {
+      const out = await aiRun('note-continue', [
+        { role: 'system', content: '你是写作助手。请接着用户已写的内容自然地续写一小段（60-160 字），保持语气与 Markdown 格式一致；只输出续写内容本身，不要重复已有文字，不要解释。' },
+        { role: 'user', content: '已有内容（末尾是我停笔的地方）：\n\n' + before.slice(-3000) + (after.trim() ? '\n\n[后面还有内容]' : '') },
+      ], 800);
+      const ins = stripFence(out);
+      if (!ins) throw new Error('没有生成内容');
+      const marker = '\n\n<!--AI:' + Date.now().toString(36) + '-->\n';
+      ta.value = before + marker + after;
+      ta.selectionStart = ta.selectionEnd = before.length + marker.length;
+      const rep = '\n\n' + ins + '\n';
+      ta.value = before + rep + after;
+      // 光标停在补全内容之后,继续按 Tab 可接着写
+      ta.selectionStart = ta.selectionEnd = before.length + rep.length;
+      N.editor.dirty = true;
+      pushHistory({ force: true });
+      renderPreview(ta.value);
+      setSaveState('editing');
+      clearTimeout(N.editor.saveTimer);
+      N.editor.saveTimer = setTimeout(saveEditor, 600);
+      toast('已续写（可 Ctrl+Z 撤销）');
+    } catch (e) {
+      toast('续写失败：' + (e.message || '请稍后重试'), true);
+    } finally {
+      busy.remove();
+      continueBusy = false;
+    }
+  }
+
+  // ---- 建议8:每日摘要(把近期改动的笔记汇总成一篇日报) ----
+  async function runDailyDigest() {
+    const now = Date.now();
+    const since = now - 24 * 3600 * 1000;
+    const picks = N.doc.notes
+      .filter((n) => (n.updatedAt || 0) >= since && !(n.source && n.source.generatedByAI && n.source.digest))
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+      .slice(0, 20);
+    if (!picks.length) { toast('最近 24 小时没有更新的笔记', true); return; }
+    const busy = showAiBusy('生成日报');
+    try {
+      const ctx = picks.map((n) => '## ' + (n.title || '无标题') + '\n' + String(n.content || '').slice(0, 1200)).join('\n\n');
+      const out = await aiRun('note-digest', [
+        { role: 'system', content: '你是学习/工作记录助手。请把下面的笔记汇总成一份简洁的日报：先给 3-5 条要点，再列出待办（若有），最后注明涉及的笔记标题。直接输出 Markdown。' },
+        { role: 'user', content: ctx },
+      ], 2048);
+      const day = new Date().toISOString().slice(0, 10);
+      const content = '## ' + day + ' 每日摘要\n\n' + stripFence(out) + '\n\n---\n\n> 由 AI 汇总，涉及 ' + picks.length + ' 篇近 24 小时更新的笔记。';
+      const note = createNote(N.ui.folderId || UNCATA, {
+        title: day + ' 日报', tags: ['日报'], content: content,
+        source: { conversationId: '', messageId: '', userQuestion: '', generatedByAI: true, digest: true },
+      });
+      openNote(note.id);
+      toast('已生成日报（' + picks.length + ' 篇来源）');
+    } catch (e) {
+      toast('日报生成失败：' + (e.message || '请稍后重试'), true);
+    } finally {
+      busy.remove();
+    }
+  }
+
+  // ============ 使用导航 ============
+  // 空态里常驻一份简版导航;首次进入再弹一次完整引导(加粗深色突出「可右键」)
+  function usageGuideHtml() {
+    return '<ul class="notes-guide">'
+      + '<li><b>选文字右键</b>，用 AI 扩写、总结、翻译、检查谬误或降低重复率。</li>'
+      + '<li><b>左下角齿轮</b>可自定义右键菜单里的动作（添加、删除、改名、改提示词）。</li>'
+      + '<li><b>打「/」</b>插入模板，<b>按 Tab</b> 让 AI 续写下一句。</li>'
+      + '<li><b>顶栏「问笔记」</b>基于全部笔记回答你的问题。</li>'
+      + '<li><b>拖拽</b>图片或文件到编辑区即可上传；<b>拖笔记</b>可移动到其他文件夹。</li>'
+      + '</ul>';
+  }
+  function maybeShowFirstRunGuide() {
+    let seen = false;
+    try { seen = localStorage.getItem('oc_notes_guide_seen') === '1'; } catch (e) {}
+    if (seen) return;
+    try { localStorage.setItem('oc_notes_guide_seen', '1'); } catch (e) {}
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask notes-guide-mask hidden';
+    mask.innerHTML =
+      '<div class="modal notes-guide-modal" role="dialog" aria-modal="true">'
+      + '<div class="modal-header"><h3>' + icon('notebook', 15) + ' 欢迎使用 AI 笔记</h3></div>'
+      + '<div class="modal-body">'
+      + '<p class="ng-lead">这是一套可以用 AI 帮你写作的 Markdown 笔记。几个关键用法：</p>'
+      + '<div class="ng-items">'
+      + '<div class="ng-item"><span class="ng-num">1</span><div><b>选中文字后右键</b>，让 AI 扩写 / 总结 / 翻译 / 检查谬误 / 降低重复率；结果会追加在选中文字后面，可随时 Ctrl+Z 撤销。</div></div>'
+      + '<div class="ng-item"><span class="ng-num">2</span><div><b>左下角齿轮</b>可以自定义这个右键菜单：添加自己的动作、改写提示词、停用不需要的。</div></div>'
+      + '<div class="ng-item"><span class="ng-num">3</span><div><b>输入 / 或按 Tab</b>：斜杠插入模板，Tab 让 AI 接着写。</div></div>'
+      + '<div class="ng-item"><span class="ng-num">4</span><div><b>顶栏「问笔记」</b>能基于你的全部笔记回答问题，并标出引用来源。</div></div>'
+      + '<div class="ng-item"><span class="ng-num">5</span><div><b>拖入图片或文件</b>即上传；把笔记<b>拖到左侧文件夹</b>即可移动；<b>拖动侧栏右缘</b>可调宽度。</div></div>'
+      + '</div>'
+      + '<p class="ng-foot">这份导航随时可以在左下角齿轮里重新查看。</p>'
+      + '</div>'
+      + '<div class="modal-footer"><button class="btn primary" id="ng-ok" type="button">开始使用</button></div>'
+      + '</div>';
+    document.body.appendChild(mask);
+    const done = () => { window.OCUI.closeModal(mask); setTimeout(() => mask.remove(), 340); };
+    mask._onClose = done;
+    mask.querySelector('#ng-ok').addEventListener('click', done);
+    if (window.OCUI) window.OCUI.openModal(mask);
+    else mask.classList.add('show');
+  }
+
   // 处理中的浮标(右下角,不遮挡编辑)
   function showAiBusy(label) {
     const el = document.createElement('div');
@@ -812,22 +1299,116 @@
     return el;
   }
 
+  // 齿轮:右键菜单管理(自定义添加/删除/编辑/启停)
   function openAiSettingsMenu(anchor) {
-    const map = aiActionsEnabled();
-    const items = AI_ACTIONS.map((a) => ({
-      value: a.key,
-      label: (map[a.key] ? '✓ ' : '　') + a.label + ' · ' + a.desc,
-    }));
-    window.OC.openSelect(anchor, items, {
-      fitWidth: true,
-      onSelect: (val) => {
-        const next = aiActionsEnabled();
-        next[val] = !next[val];
-        try { localStorage.setItem('oc_notes_ai_actions', JSON.stringify(next)); } catch (e) {}
-        // 重新打开以刷新勾选状态(openSelect 内部会先关掉上一个菜单)
-        setTimeout(() => openAiSettingsMenu(anchor), 80);
-      },
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask notes-aimgr-mask hidden';
+    mask.innerHTML =
+      '<div class="modal notes-aimgr-modal" role="dialog" aria-modal="true">'
+      + '<div class="modal-header"><h3>' + icon('gear', 15) + ' 右键菜单动作</h3>'
+      + '<button class="notes-icon-btn" data-close>' + icon('close', 15) + '</button></div>'
+      + '<div class="modal-body">'
+      + '<p class="muted small">这些动作会出现在正文选中文字的右键菜单里。可停用、改名、改提示词，或添加自己的动作（提示词里用 <code>{{text}}</code> 代表选中的文字）。</p>'
+      + '<div class="aimgr-list" id="aimgr-list"></div>'
+      + '<details class="aimgr-add"><summary>＋ 添加自定义动作</summary>'
+      + '<label class="field"><span>名称（右键菜单里显示）</span><input id="aimgr-new-label" maxlength="16" placeholder="例如：改写成表格"></label>'
+      + '<label class="field"><span>提示词（<code>{{text}}</code> 为选中文字，可省略）</span>'
+      + '<textarea id="aimgr-new-prompt" rows="3" spellcheck="false" placeholder="请把下面这段内容改写为 Markdown 表格，列包括…"></textarea></label>'
+      + '<button class="btn primary" id="aimgr-add-btn" type="button">添加</button>'
+      + '</details>'
+      + '</div>'
+      + '<div class="modal-footer">'
+      + '<button class="btn" id="aimgr-guide" type="button">重新查看使用导航</button>'
+      + '<button class="btn primary" data-close>完成</button></div>'
+      + '</div>';
+    document.body.appendChild(mask);
+    const closeDlg = () => { window.OCUI.closeModal(mask); setTimeout(() => mask.remove(), 340); };
+    mask._onClose = closeDlg;
+    mask.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', closeDlg));
+    mask.addEventListener('mousedown', (e) => { if (e.target === mask) closeDlg(); });
+    mask.querySelector('#aimgr-guide').addEventListener('click', () => {
+      closeDlg();
+      try { localStorage.removeItem('oc_notes_guide_seen'); } catch (e) {}
+      setTimeout(maybeShowFirstRunGuide, 380);
     });
+
+    const renderList = () => {
+      const cfg = aiConfig();
+      const list = mask.querySelector('#aimgr-list');
+      list.innerHTML = aiActions().map((a) => ''
+        + '<div class="aimgr-item' + (a.enabled ? '' : ' off') + '" data-key="' + esc(a.key) + '">'
+        + '<label class="aimgr-switch" data-tip="' + (a.enabled ? '停用' : '启用') + '">'
+        + '<input type="checkbox" data-act="toggle"' + (a.enabled ? ' checked' : '') + '><span class="slider"></span></label>'
+        + '<div class="aimgr-main">'
+        + '<input class="aimgr-label" data-act="label" value="' + esc(a.label) + '" maxlength="16" placeholder="动作名称">'
+        + '<textarea class="aimgr-prompt" data-act="prompt" rows="2" spellcheck="false" placeholder="提示词（{{text}} 代表选中文字）">' + esc(a.prompt) + '</textarea>'
+        + '</div>'
+        + '<div class="aimgr-ops">'
+        + (a.builtin ? '' : '<button class="notes-icon-btn" data-act="del" data-tip="删除">' + icon('trash', 14) + '</button>')
+        + (a.builtin ? '<span class="aimgr-tag" data-tip="内置动作，可停用与改写提示词">内置</span>' : '')
+        + '</div>'
+        + '</div>').join('');
+      list.querySelectorAll('.aimgr-item').forEach((row) => {
+        const key = row.dataset.key;
+        row.querySelector('[data-act="toggle"]').addEventListener('change', (e) => {
+          const c = aiConfig();
+          const i = c.disabled.indexOf(key);
+          if (e.target.checked) { if (i >= 0) c.disabled.splice(i, 1); }
+          else if (i < 0) c.disabled.push(key);
+          aiConfigSave(c);
+          row.classList.toggle('off', !e.target.checked);
+          row.querySelector('.aimgr-switch').dataset.tip = e.target.checked ? '停用' : '启用';
+        });
+        const lab = row.querySelector('[data-act="label"]');
+        lab.addEventListener('change', () => {
+          const c = aiConfig();
+          const v = lab.value.trim() || '未命名动作';
+          lab.value = v;
+          if (BUILTIN_ACTIONS.some((b) => b.key === key)) {
+            c.overrides[key] = Object.assign({}, c.overrides[key], { label: v });
+          } else {
+            const it = c.custom.find((x) => x.key === key);
+            if (it) it.label = v;
+          }
+          aiConfigSave(c);
+        });
+        const pr = row.querySelector('[data-act="prompt"]');
+        pr.addEventListener('change', () => {
+          const c = aiConfig();
+          const v = pr.value;
+          if (BUILTIN_ACTIONS.some((b) => b.key === key)) {
+            c.overrides[key] = Object.assign({}, c.overrides[key], { prompt: v });
+          } else {
+            const it = c.custom.find((x) => x.key === key);
+            if (it) it.prompt = v;
+          }
+          aiConfigSave(c);
+        });
+        const del = row.querySelector('[data-act="del"]');
+        if (del) del.addEventListener('click', () => {
+          const c = aiConfig();
+          c.custom = c.custom.filter((x) => x.key !== key);
+          c.disabled = c.disabled.filter((x) => x !== key);
+          aiConfigSave(c);
+          renderList();
+        });
+      });
+    };
+    mask.querySelector('#aimgr-add-btn').addEventListener('click', () => {
+      const label = (mask.querySelector('#aimgr-new-label').value || '').trim();
+      const prompt = (mask.querySelector('#aimgr-new-prompt').value || '').trim();
+      if (!label) { toast('请填写动作名称', true); return; }
+      const c = aiConfig();
+      c.custom.push({ key: 'c' + Date.now().toString(36), label: label, desc: '自定义动作', prompt: prompt || '{{text}}' });
+      aiConfigSave(c);
+      mask.querySelector('#aimgr-new-label').value = '';
+      mask.querySelector('#aimgr-new-prompt').value = '';
+      renderList();
+      toast('已添加动作「' + label + '」');
+    });
+    renderList();
+    if (window.OCUI) window.OCUI.openModal(mask);
+    else mask.classList.add('show');
   }
 
   async function refreshUsage() {
@@ -839,6 +1420,9 @@
       if (!r.ok) { el.textContent = ''; return; }
       N.usage = d;
       const quota = Number(d.quota) || 0;
+      const aiUsed = Number(d.aiUsedToday) || 0;
+      const aiLimit = Number(d.aiDailyLimit) || 0;
+      N.usageAi = { used: aiUsed, limit: aiLimit };
       if (!quota) {
         el.innerHTML = icon('upload', 12) + '<span>已用 ' + fmtBytes(d.used) + '（不限量）</span>';
       } else {
@@ -847,6 +1431,7 @@
         el.innerHTML = icon('upload', 12) + '<span>剩余 ' + fmtBytes(left) + ' / ' + fmtBytes(quota) + '</span>';
         el.title = '笔记附件空间已用 ' + fmtBytes(d.used) + '（' + pct + '%），上限 ' + fmtBytes(quota);
       }
+      if (aiLimit > 0) el.title += ' · 今日 AI 已用 ' + aiUsed + '/' + aiLimit + ' 次';
     } catch (e) { el.textContent = ''; }
   }
 
@@ -875,6 +1460,8 @@
     }
     if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(N.els.mask);
     else N.els.mask.classList.add('show');
+    if (!opts.boot) maybeShowFirstRunGuide();
+    else setTimeout(maybeShowFirstRunGuide, 400);
   }
   function close() {
     closeAiCtxMenu();
@@ -1195,7 +1782,7 @@
       pane.innerHTML = '<div class="notes-editor-empty">'
         + icon('notebook', 34)
         + '<h3>选择或新建一篇笔记</h3>'
-        + '<p>左侧选文件夹、点笔记打开；支持 Markdown、代码高亮、公式与 Mermaid 图表。</p>'
+        + usageGuideHtml()
         + '<button class="notes-new-btn" id="notes-empty-new">' + icon('plus', 13) + '新建笔记</button>'
         + '</div>';
       const btn = pane.querySelector('#notes-empty-new');
@@ -1224,6 +1811,8 @@
     N.editor = { noteId: n.id, ta, preview, dirty: false, saveTimer: null, renderTimer: null };
     renderPreview(n.content || '');
     resetHistory(n.id);
+    bar.querySelector('#ne-ai').addEventListener('click', (e) => openDocAiMenu(e.currentTarget));
+    bar.querySelector('#ne-ask').addEventListener('click', openAskNotes);
     bar.querySelector('#ne-undo').addEventListener('click', undo);
     bar.querySelector('#ne-redo').addEventListener('click', redo);
     bar.querySelector('#ne-tags-btn').addEventListener('click', () => {
@@ -1278,12 +1867,17 @@
         saveEditor();
         toast('已保存');
       }
-      // Tab 缩进两个空格
-      if (e.key === 'Tab') {
+      // Tab:行尾/空选区 → 让 AI 续写;行内缩进场景仍做缩进
+      if (e.key === 'Tab' && !e.shiftKey) {
         e.preventDefault();
-        const s = ta.selectionStart, epos = ta.selectionEnd;
-        ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(epos);
-        ta.selectionStart = ta.selectionEnd = s + 2;
+        const sPos = ta.selectionStart, ePos = ta.selectionEnd;
+        const lineStart = ta.value.lastIndexOf('\n', sPos - 1) + 1;
+        const lineEnd = ta.value.indexOf('\n', sPos);
+        const atLineEnd = (lineEnd < 0 || ePos >= lineEnd);
+        const atEmptyLine = ta.value.slice(lineStart, lineEnd < 0 ? ta.value.length : lineEnd).trim() === '';
+        if (atLineEnd || atEmptyLine) { continueWriting(); return; }
+        ta.value = ta.value.slice(0, sPos) + '  ' + ta.value.slice(ePos);
+        ta.selectionStart = ta.selectionEnd = sPos + 2;
         ta.dispatchEvent(new Event('input'));
       }
     });
