@@ -117,7 +117,8 @@
         </div>
       </label>
       <label class="field"><span>单次输出上限（token，即 max_tokens）</span>
-          <input id="chat-output" type="number" min="256" max="128000" step="256" value="8192">
+          <input id="chat-output" type="number" min="256" max="128000" step="256" value="32000">
+          <span class="field-hint">单次回答最多生成的 token。推理模型的思维链与正文<b>共用</b>这个额度，设得太小会导致思维链吃光额度、正文为空。默认 32000。</span>
       </label>
       <label class="field"><span>温度 temperature（0–2，留空使用模型默认）</span>
           <input id="chat-temperature" type="number" min="0" max="2" step="0.1" placeholder="留空则不发送该参数">
@@ -129,6 +130,10 @@
           <input id="chat-timeout" type="number" min="5" max="600" step="5" value="120">
       </label>
       <p class="muted small" style="margin:-6px 0 10px">调用上游 AI 接口的最长等待时间。生成长文或使用较慢的模型/平台时适当调大。<b>若上游根本连不上</b>（地址错误、网络不通），会更快返回明确提示，不受此值影响。</p>
+      <label class="field"><span>出站代理（留空 = 直连）</span>
+          <input id="chat-outbound-proxy" type="text" maxlength="300" placeholder="http://127.0.0.1:2080" autocomplete="off">
+      </label>
+      <p class="muted small" style="margin:-6px 0 10px">填写后所有出站请求（含「模型元数据」拉取 litellm 价格表）都走该代理。支持 <code>http://</code>、<code>https://</code>、<code>socks5h://</code>。国内网络直连 <code>raw.githubusercontent.com</code> 常下到一半卡死，走代理可稳定完成。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-context-learn" checked><span class="slider"></span></span><span>自动学习上下文窗口（从上游 context length 报错回填模型的最大上下文，不覆盖手动设置）</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-persist-chats" checked><span class="slider"></span></span><span>服务器保存对话记录（关闭后对话仅存用户浏览器本地，服务器不留存）</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-save-api" checked><span class="slider"></span></span><span>开放 API 对话记入用户对话列表（用户在「设置 → 数据」可选择是否显示到首页；需开启上一项「服务器保存对话记录」）</span></label>
@@ -145,6 +150,79 @@
         <label class="field"><span>「不稳定」阈值（成功率 ≥ %）</span><input id="chat-health-warn" type="number" min="0" max="99" step="1" value="40"></label>
       </div>
       <button class="btn primary" id="chat-limits-save" type="button">保存对话设置</button>
+    </div>
+  </div>
+
+  <!-- 模型元数据 -->
+  <div class="admin-panel" id="panel-modelmeta">
+    <div class="admin-card">
+      <h2>模型元数据</h2>
+
+      <div class="mm-intro">
+      <p class="muted small"><b>一句话：输出上限三级取最低。</b>「供应商里手填的」→「本表」→「对话设置里的全局输出上限」，哪个最小就按哪个。本页主要管<b>单个模型的天花板</b>。</p>
+
+      <p class="muted small mm-note">
+        <b>⚠️ 推理模型（带思维链）必看：</b>思维链和正文<b>抢同一个额度</b>。额度太小（如 8192）会被思维链吃光，导致<b>正文空白、回答中途停止</b>。请到「对话设置」把<b>单次输出上限调大到 32000 或更高</b>。
+      </p>
+
+      <p class="muted small mm-note warn">
+        <b>💰 关于计费：</b>当前系统默认按<b>调用次数</b>扣费，<b>不</b>按输入/输出 token 计价。本表的价格<b>仅作展示与估算参考，不参与实际扣费</b>（渠道若单独设为「按 token」计费，用的是该渠道自己的单价，与本表无关）。因此请按<b>次数</b>在「模型」界面给各模型<b>合理定价</b>，即按单次调用的大致成本来折算。
+      </p>
+
+      <details class="mm-help">
+        <summary>展开看详细说明（新手向）</summary>
+        <div class="muted small" style="line-height:1.8;padding-top:8px">
+          <p style="margin:0 0 8px"><b>这个表是干什么的？</b>它是每个模型的「能力档案」。你在这里登记某模型最多能听多少字、最多能说多少字、多少钱一万字，全站所有渠道共用一份。匹配只看<b>模型名</b>，跟你在哪个渠道调用无关。</p>
+
+          <p style="margin:0 0 6px"><b>三列分别是什么意思：</b></p>
+          <ul style="margin:0 0 10px;padding-left:20px">
+            <li><b>输入窗口</b>：模型一次能「听」多少（含聊天历史）。防止内容太长塞不进去。</li>
+            <li><b>输出上限</b>：模型一次最多能「说」多少，对应请求里的 <code>max_tokens</code>。这是模型的<b>能力上限</b>，不是每次都必须说这么多。</li>
+            <li><b>价格 $/M</b>：每<b>百万</b> token 的单价，只用于展示和估算花费，不影响回答。<code>—</code> 表示该模型没有这项或不提供。</li>
+          </ul>
+
+          <p style="margin:0 0 6px"><b>「三级取最低」到底怎么算？</b>系统按顺序找上限，<b>谁最小听谁的</b>：</p>
+          <ol style="margin:0 0 10px;padding-left:20px">
+            <li>供应商里给这个模型<b>手填</b>的 max_tokens（针对该渠道的硬约束）</li>
+            <li><b>本表</b>里的「输出上限」</li>
+            <li><b>对话设置</b>里的「单次输出上限」（全局）</li>
+          </ol>
+
+          <p style="margin:0 0 6px"><b>举个例子</b>（最容易踩的坑）：本表填了 1048576，但对话设置仍是 8192 —— 取最低＝按 <b>8192</b>。所以想提高输出，<b>对话设置那个全局值也必须一起调大</b>，光改本表没用。</p>
+
+          <p style="margin:0 0 6px">反过来，本表填 8192、全局填 32000 —— 取最低＝还是按 <b>8192</b>。本表是天花板，全局调多大都顶不破它。</p>
+
+          <p style="margin:0 0 6px"><b>数据从哪来？</b>点「从 litellm 同步」从 <a href="https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json" target="_blank" rel="noopener">litellm 的公开价格表</a>批量拉取，覆盖 4000+ 模型。你自己<b>手工改过</b>的条目标记为 <b>手工</b>，同步时<b>不会</b>被覆盖。</p>
+
+          <p style="margin:0 0 0"><b>为什么不显示「公司」？</b>上游表里的 <code>litellm_provider</code> 指的是托管平台（如 bedrock、azure、openrouter），同一个模型常同时挂在多个平台下，并不是模型厂商，所以不展示。同一模型多个平台报价不一致时，本表按<b>多数平台一致的值</b>取用。</p>
+        </div>
+      </details>
+      </div>
+
+      <div class="pkg-form-grid" style="align-items:end">
+        <label class="field"><span>搜索模型名</span>
+          <input id="mm-search" type="search" placeholder="如 gpt-4o、deepseek" autocomplete="off">
+        </label>
+        <label class="field"><span>每页条数</span>
+          <select id="mm-perpage">
+            <option value="50">50</option>
+            <option value="100" selected>100</option>
+            <option value="200">200</option>
+          </select>
+        </label>
+      </div>
+      <div class="row-actions" style="display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 10px">
+        <button class="btn primary" id="mm-sync" type="button">从 litellm 同步</button>
+        <button class="btn" id="mm-new" type="button">手动新增</button>
+        <button class="btn" id="mm-clear-litellm" type="button">清空同步数据</button>
+        <span class="muted small" id="mm-status" style="align-self:center"></span>
+      </div>
+      <div id="mm-table-wrap"></div>
+      <div class="row-actions" style="display:flex;gap:8px;align-items:center;margin-top:10px">
+        <button class="btn" id="mm-prev" type="button">上一页</button>
+        <span class="muted small" id="mm-pageinfo"></span>
+        <button class="btn" id="mm-next" type="button">下一页</button>
+      </div>
     </div>
   </div>
 
