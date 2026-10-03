@@ -10,7 +10,8 @@
  *    (删除走 tombs 墓碑,与对话云同步同构)
  */
 (function () {
-  const UNCATA = 'uncat';
+  const UNCATA = 'uncat';  // 内部 id 保持不变(兼容已存数据),界面文案为「默认分类」
+  const UNCATA_LABEL = '默认分类';
   const MODES = ['edit', 'split', 'preview'];
   const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'];
   const DOC_EXT = ['pdf', 'txt', 'md', 'csv', 'json', 'zip', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
@@ -107,7 +108,7 @@
     if (N.doc.folders.some((f) => f.id === UNCATA)) return;
     const now = Date.now();
     N.doc.folders.unshift({
-      id: UNCATA, parentId: null, name: '未分类', description: '',
+      id: UNCATA, parentId: null, name: UNCATA_LABEL, description: '',
       createdAt: now, updatedAt: now, system: true,
     });
   }
@@ -235,7 +236,7 @@
   // ============ 数据操作 ============
   function folderById(id) { return N.doc.folders.find((f) => f.id === id) || null; }
   function noteById(id) { return N.doc.notes.find((n) => n.id === id) || null; }
-  function folderName(id) { const f = folderById(id); return f ? f.name : '未分类'; }
+  function folderName(id) { const f = folderById(id); return f ? f.name : UNCATA_LABEL; }
   function childFolders(pid) { return N.doc.folders.filter((f) => f.parentId === pid); }
   function folderDepth(id, guard) {
     guard = guard || 0;
@@ -270,7 +271,7 @@
     const f = folderById(id);
     if (!f) return;
     const now = Date.now();
-    // 子文件夹上提一级,笔记全部落入「未分类」
+    // 子文件夹上提一级,笔记全部落入「默认分类」
     N.doc.folders.forEach((x) => { if (x.parentId === id) { x.parentId = f.parentId || null; x.updatedAt = now; } });
     N.doc.notes.forEach((n) => { if (n.folderId === id) { n.folderId = UNCATA; n.updatedAt = now; } });
     N.doc.tombs[id] = now;
@@ -421,6 +422,7 @@
       + '<input id="notes-search-input" type="search" placeholder="搜索标题、内容或标签" autocomplete="off" spellcheck="false">'
       + '</div>'
       + '<div class="notes-tree" id="notes-tree"></div>'
+      + '<div class="notes-usage" id="notes-usage"></div>'
       + '</aside>'
       + '<section class="notes-editor-pane" id="notes-editor-pane"></section>'
       + '</div>'
@@ -435,6 +437,7 @@
     N.els.searchInput = mask.querySelector('#notes-search-input');
     N.els.syncDot = mask.querySelector('#notes-sync-dot');
     N.els.uploadBar = mask.querySelector('#notes-upload-bar');
+    N.els.usage = mask.querySelector('#notes-usage');
 
     mask.addEventListener('mousedown', (e) => {
       if (e.target === mask) flushEditor();
@@ -443,7 +446,7 @@
     // Logo 与返回按钮一致:关闭笔记模块回到对话首页
     mask.querySelector('#notes-brand').addEventListener('click', close);
     mask.querySelector('#notes-folder-new').addEventListener('click', () => {
-      // 选中普通文件夹时在其内部新建子文件夹;未分类/根保持顶层
+      // 选中普通文件夹时在其内部新建子文件夹;默认分类/根保持顶层
       const sel = folderById(N.ui.folderId);
       promptNewFolder(sel && sel.id !== UNCATA ? sel.id : null);
     });
@@ -487,6 +490,7 @@
   function applySideState() {
     const fs = N.els.mask && N.els.mask.querySelector('.notes-fs');
     if (!fs) return;
+    // 只折叠左侧面板:编辑器区域占满剩余宽度
     fs.classList.toggle('side-collapsed', !!N.ui.sideCollapsed);
     const float = N.els.mask.querySelector('#notes-side-float');
     if (float) float.classList.toggle('hidden', !N.ui.sideCollapsed);
@@ -603,6 +607,34 @@
     setTimeout(() => { input.focus(); }, 60);
   }
 
+  // 侧栏左下角:附件空间剩余(配额在后台设置,0 表示不限)
+  function fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(n < 10240 ? 1 : 0) + ' KB';
+    if (n < 1073741824) return (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + ' MB';
+    return (n / 1073741824).toFixed(2) + ' GB';
+  }
+  async function refreshUsage() {
+    const el = N.els.usage;
+    if (!el) return;
+    try {
+      const r = await apiFetch('/api/notes/usage');
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { el.textContent = ''; return; }
+      N.usage = d;
+      const quota = Number(d.quota) || 0;
+      if (!quota) {
+        el.innerHTML = icon('upload', 12) + '<span>已用 ' + fmtBytes(d.used) + '（不限量）</span>';
+      } else {
+        const left = Math.max(0, quota - (Number(d.used) || 0));
+        const pct = Math.min(100, Math.round(((Number(d.used) || 0) / quota) * 100));
+        el.innerHTML = icon('upload', 12) + '<span>剩余 ' + fmtBytes(left) + ' / ' + fmtBytes(quota) + '</span>';
+        el.title = '笔记附件空间已用 ' + fmtBytes(d.used) + '（' + pct + '%），上限 ' + fmtBytes(quota);
+      }
+    } catch (e) { el.textContent = ''; }
+  }
+
   function syncDot(state) {
     const dot = N.els.syncDot;
     if (!dot) return;
@@ -610,13 +642,22 @@
     dot.dataset.tip = state === 'err' ? '云同步失败，稍后自动重试' : (state === 'ok' ? '已同步到云端' : '云同步中');
   }
 
-  async function open() {
+  function isNotesPath() {
+    try { return location.pathname.replace(/\/+$/, '') === '/ainotes'; } catch (e) { return false; }
+  }
+  async function open(opts) {
+    opts = opts || {};
     if (!(await ensureLoaded())) { toast('请先登录后再使用 AI 笔记', true); return; }
     if (!N.els.mask) buildShell();
     flushEditor();
+    refreshUsage();
     N.ui.search = '';
     N.els.searchInput.value = '';
     renderAll();
+    // 独立地址:刷新后仍停留在笔记页
+    if (window.history && !isNotesPath()) {
+      try { history.pushState({ notes: true }, '', '/ainotes'); } catch (e) {}
+    }
     if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(N.els.mask);
     else N.els.mask.classList.add('show');
   }
@@ -624,6 +665,10 @@
     flushEditor();
     if (window.OCUI && window.OCUI.closeModal) window.OCUI.closeModal(N.els.mask);
     else N.els.mask.classList.remove('show');
+    // 返回对话首页:地址同步回根路径(仅在确实处于 /ainotes 时)
+    if (isNotesPath() && window.history) {
+      try { history.pushState(null, '', '/'); } catch (e) {}
+    }
   }
 
   // ============ 渲染 ============
@@ -665,11 +710,11 @@
       matches.forEach((n) => tree.appendChild(noteRow(n, true)));
       return;
     }
-    tree.appendChild(folderBlock(folderById(UNCATA) || { id: UNCATA, name: '未分类' }, 0));
+    tree.appendChild(folderBlock(folderById(UNCATA) || { id: UNCATA, name: UNCATA_LABEL }, 0));
     const build = (pid, depth, host) => {
       if (N.ui.expanded[pid] === false) return;
       childFolders(pid).forEach((f) => {
-        if (f.id === UNCATA) return; // 未分类已固定在顶部
+        if (f.id === UNCATA) return; // 默认分类已固定在顶部
         host.appendChild(folderBlock(f, depth));
         build(f.id, depth + 1, host);
       });
@@ -743,9 +788,9 @@
     });
     row.appendChild(chev); row.appendChild(ic); row.appendChild(name); row.appendChild(count); row.appendChild(more);
     row.addEventListener('click', () => {
-      // 点击 = 选中该文件夹并切换折叠/展开(箭头是精确的独立切换)
+      // 点击 = 选中该文件夹并展开其笔记列表(折叠只走左侧箭头,避免误折叠)
       N.ui.folderId = f.id;
-      if (expandable) N.ui.expanded[f.id] = N.ui.expanded[f.id] === false;
+      if (expandable) N.ui.expanded[f.id] = true;
       persistUi();
       renderTree();
     });
@@ -777,7 +822,7 @@
           const cnt = folderNotes(f.id).length;
           const ok = await window.OCUI.confirm({
             title: '删除文件夹「' + f.name + '」？',
-            message: cnt ? ('其中 ' + cnt + ' 篇笔记将移动到「未分类」，子文件夹上提一级。') : '空文件夹将被删除。',
+            message: cnt ? ('其中 ' + cnt + ' 篇笔记将移动到「' + UNCATA_LABEL + '」，子文件夹上提一级。') : '空文件夹将被删除。',
             danger: true, confirmText: '删除',
           });
           if (ok) deleteFolder(f.id);
@@ -889,8 +934,11 @@
       .filter((f) => f.id !== excludeId)
       .sort((a, b) => folderDepth(a.id) - folderDepth(b.id))
       .map((f) => ({ value: f.id, label: '　'.repeat(folderDepth(f.id)) + f.name }));
-    const anchor = N.els.mask.querySelector('.notes-side') || N.els.mask;
-    window.OC.openSelect(anchor, items, { searchable: true, searchPlaceholder: '搜索文件夹…', onSelect: cb });
+    // 锚到编辑区(页面居中偏右),避免出现在左下角看不见
+    const anchor = N.els.editorPane && N.els.editorPane.offsetWidth
+      ? N.els.editorPane
+      : N.els.mask;
+    window.OC.openSelect(anchor, items, { searchable: true, searchPlaceholder: '搜索文件夹…', center: true, onSelect: cb });
   }
 
   function exportNote(n) {
@@ -906,6 +954,12 @@
   // ============ 编辑器 ============
   function openNote(id) {
     flushEditor();
+    const n = noteById(id);
+    // 选中笔记时,所属文件夹同步选中并展开(两者高亮保持一致)
+    if (n) {
+      N.ui.folderId = n.folderId;
+      N.ui.expanded[n.folderId] = true;
+    }
     N.ui.selNoteId = id;
     persistUi();
     renderTree();
@@ -1160,15 +1214,16 @@
   function extOf(name) { const m = String(name).toLowerCase().match(/\.([a-z0-9]+)$/); return m ? m[1] : ''; }
   function validateFile(f) {
     const ext = extOf(f.name);
+    const maxFileMb = (N.usage && Number(N.usage.maxFileMb)) || 50;
     if (IMAGE_EXT.indexOf(ext) >= 0) {
       if (f.size > 10 * 1048576) return '图片不能超过 10MB';
       return '';
     }
-    if (DOC_EXT.indexOf(ext) >= 0) {
-      if (f.size > 25 * 1048576) return '附件不能超过 25MB';
-      return '';
-    }
-    return '不支持的类型: .' + ext + '（图片: PNG/JPG/JPEG/GIF/WEBP/SVG）';
+    if (N.usage && N.usage.allowFiles === false) return '本站仅允许上传图片附件';
+    // 通用文件:仅要求有扩展名(服务端按类型给出 MIME,非图片强制下载)
+    if (!ext) return '文件缺少扩展名，无法识别类型';
+    if (f.size > maxFileMb * 1048576) return '附件不能超过 ' + maxFileMb + 'MB';
+    return '';
   }
 
   function uploadFiles(files) {
@@ -1232,6 +1287,7 @@
         if (xhr.status >= 200 && xhr.status < 300 && data.url) {
           chip.done();
           insertAttachment(noteId, file.name, data);
+          refreshUsage();
         } else {
           chip.fail(() => uploadOne(file));
           toast((data && data.error && data.error.message) || ('上传失败（HTTP ' + xhr.status + '）'), true);
@@ -1462,7 +1518,7 @@
       answer.slice(0, 24000),
       '',
       '## 现有笔记文件夹树（含层级与已有笔记标题摘要）',
-      folderTreePromptLines().join('\n') || '（还没有任何文件夹,只有默认的「未分类」）',
+      folderTreePromptLines().join('\n') || '（还没有任何文件夹,只有默认的「默认分类」）',
       '',
       '## 用户指定文件夹',
       '无',
@@ -1487,7 +1543,7 @@
     if (!plan) {
       showArchiveError(dlg, (lastErr && lastErr.message) || '整理失败', () => {
         return {
-          folderAction: 'create', newFolderName: '未分类', noteTitle: (question || '笔记').slice(0, 60),
+          folderAction: 'create', newFolderName: UNCATA_LABEL, noteTitle: (question || '笔记').slice(0, 60),
           tags: [], markdownContent: answer, reasoning: 'AI 整理失败,直接保存原文。',
           _forceFolder: UNCATA,
         };
@@ -1563,7 +1619,7 @@
     const foot = mask.querySelector('#nai-foot');
     body.innerHTML =
       '<div class="nai-error"><p>' + esc(message) + '</p>'
-      + '<p class="muted">可以让 AI 重试,也可以把原始回答不做加工直接存入「未分类」。</p></div>';
+      + '<p class="muted">可以让 AI 重试,也可以把原始回答不做加工直接存入「默认分类」。</p></div>';
     foot.innerHTML =
       '<button class="btn" id="nai-cancel">取消</button>'
       + '<button class="btn" id="nai-raw">直接保存原文</button>'
@@ -1590,7 +1646,7 @@
       folderId = '';
     }
     const recommendedName = plan.folderAction === 'create'
-      ? (plan.newFolderName || (plan._forceFolder ? '未分类' : ''))
+      ? (plan.newFolderName || (plan._forceFolder ? UNCATA_LABEL : ''))
       : folderName(folderId);
     const direct = !!plan._direct;
     body.innerHTML =
@@ -1723,12 +1779,39 @@
   }
 
   // ============ 入口 ============
+  // 入口按后台开关显示(公开配置 cached 在 localStorage['oc_cfg'])
+  function notesFeatureEnabled() {
+    try {
+      const cfg = JSON.parse(localStorage.getItem('oc_cfg') || 'null');
+      if (cfg && typeof cfg.notesEnabled === 'boolean') return cfg.notesEnabled;
+    } catch (e) {}
+    return true;
+  }
   function initEntry() {
     const btn = document.getElementById('notes-entry-btn');
-    if (!btn) return;
-    const iconEl = document.getElementById('notes-entry-icon');
-    if (iconEl && window.OC && OC.icon) iconEl.innerHTML = OC.icon('notebook', 15);
-    btn.addEventListener('click', open);
+    if (btn && !notesFeatureEnabled()) btn.classList.add('hidden');
+    if (btn) {
+      const iconEl = document.getElementById('notes-entry-icon');
+      if (iconEl && window.OC && OC.icon) iconEl.innerHTML = OC.icon('notebook', 15);
+      btn.addEventListener('click', open);
+    }
+    // 直接访问 /ainotes(或刷新)时自动进入笔记;登录态未就绪时等 app 初始化完再试
+    if (isNotesPath()) {
+      let tries = 0;
+      const boot = async () => {
+        tries++;
+        const st = window.OCApp && window.OCApp.state;
+        if (st && st.user) { open({ boot: true }); return; }
+        if (tries < 40) setTimeout(boot, 250);
+      };
+      boot();
+    }
+    // 浏览器前进/后退:地址与模块状态保持一致
+    window.addEventListener('popstate', () => {
+      const shown = N.els.mask && N.els.mask.classList.contains('show');
+      if (isNotesPath() && !shown) open();
+      else if (!isNotesPath() && shown) close();
+    });
   }
 
   window.OCNotes = {

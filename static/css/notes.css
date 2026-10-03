@@ -120,7 +120,12 @@
   gap: 4px;
   flex: 1 1 auto;
   min-width: 0;
+  height: 34px;
 }
+.notes-editor-bar .notes-icon-btn { width: 28px; height: 28px; }
+.neb-tags-btn { height: 28px; }
+.nfh-right { align-items: center; }
+.nfh-right { min-height: 34px; }
 .neb-folder { margin-left: auto; }
 .notes-editor-bar.hidden { display: none; }
 .neb-title {
@@ -273,8 +278,22 @@
   flex-wrap: wrap;
 }
 .notes-tree { flex: 1; overflow-y: auto; padding: 4px 8px 20px; }
-/* 整栏折叠:收起目录树列,浮标恢复 */
-.notes-fs.side-collapsed .notes-fs-body { grid-template-columns: 0 1fr; }
+/* 侧栏左下角:附件空间剩余 */
+.notes-usage {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 12px 10px;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  border-top: 1px solid var(--hairline);
+  font-variant-numeric: tabular-nums;
+  min-height: 30px;
+}
+.notes-usage .oc-icon { flex-shrink: 0; opacity: .75; }
+/* 整栏折叠:只收起左侧面板,编辑器占满剩余空间(不能把列宽压成 0,否则编辑器会被挤没) */
+.notes-fs.side-collapsed .notes-fs-body { grid-template-columns: 1fr; }
 .notes-fs.side-collapsed .notes-side { display: none; }
 .notes-side-float {
   position: absolute;
@@ -310,7 +329,10 @@
   user-select: none;
 }
 .notes-folder-row:hover { background: var(--bg-hover); color: var(--text); }
-.notes-folder-row.active { background: var(--bg-active); color: var(--text); font-weight: 600; }
+/* 选中文件夹:不填充灰底,仅图标变蓝(与选中笔记区分) */
+.notes-folder-row.active { background: transparent; color: var(--text); }
+.notes-folder-row.active .notes-folder-icon { color: var(--accent); }
+.notes-folder-row.active .notes-folder-name { font-weight: 600; }
 .notes-folder-row.drag-over { background: color-mix(in srgb, var(--accent) 14%, transparent); box-shadow: inset 0 0 0 1.5px var(--accent); }
 .notes-chev {
   border: none; background: transparent;
@@ -421,10 +443,16 @@
 .notes-editor { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
 /* 模式切换:文字 + 下划线,不再用胶囊底 */
+/* 模式切换:浅灰圆角无描边容器,选中项为白底胶囊;与顶栏同高,垂直居中 */
 .notes-mode-switch {
   display: inline-flex;
+  align-items: center;
   gap: 2px;
   flex-shrink: 0;
+  background: var(--bg-code);
+  border: none;
+  border-radius: 9px;
+  padding: 3px;
 }
 .notes-mode-switch button {
   border: none;
@@ -432,17 +460,18 @@
   color: var(--text-secondary);
   font-size: 12.5px;
   font-family: inherit;
-  padding: 6px 10px 7px;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
+  line-height: 1;
+  padding: 5px 12px;
+  border-radius: 7px;
   cursor: pointer;
-  transition: color .13s, border-color .13s;
+  transition: background .13s, color .13s;
 }
 .notes-mode-switch button:hover { color: var(--text); }
 .notes-mode-switch button.active {
   color: var(--text);
   font-weight: 600;
-  border-bottom-color: var(--accent);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xs);
 }
 .notes-editor-toolbar {
   display: flex;
@@ -497,21 +526,30 @@
 .notes-editor-panes.mode-preview { grid-template-columns: 1fr; }
 .notes-editor-panes.mode-preview .notes-ta { display: none; }
 .notes-editor-panes.mode-split { grid-template-columns: 1fr 1fr; }
-.notes-ta {
+/* 分屏:左右两栏各为微圆角矩形,编辑区聚焦不出现任何描边/蓝框 */
+.notes-editor-panes { gap: 10px; padding: 10px 12px 12px; background: var(--bg-app); }
+.notes-ta,
+.notes-ta:focus,
+.notes-ta:focus-visible {
   border: none;
   outline: none;
+  box-shadow: none;
   resize: none;
-  padding: 16px 22px 26px;
+  padding: 16px 20px 24px;
   background: var(--bg-surface);
   color: var(--text);
+  border-radius: 12px;
   font: 13.5px/1.75 ui-monospace, SFMono-Regular, "JetBrains Mono", Consolas, monospace;
-  border-right: 1px solid var(--hairline);
 }
 .notes-preview-wrap {
   overflow-y: auto;
-  padding: 8px 22px 26px;
-  background: var(--bg-app);
+  padding: 8px 20px 24px;
+  background: var(--bg-surface);
+  border-radius: 12px;
 }
+/* 编辑/预览单栏时同样保持圆角矩形的整体观感 */
+.notes-editor-panes.mode-edit .notes-ta,
+.notes-editor-panes.mode-preview .notes-preview-wrap { border-radius: 12px; }
 /* 复用聊天的 markdown 排版层:去掉消息流特有的间距 */
 .notes-preview-wrap .msg { padding: 8px 0; }
 .notes-preview-wrap .msg-content { flex: 1 1 100%; }

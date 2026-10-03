@@ -4260,6 +4260,7 @@ function syncPrefsPanel() {
       ? '一次判定同时决定：本轮要联网还是出图，并用同一个模型为新对话命名，不重复消耗。'
       : '判定已关闭：不再发起判定调用（省一次额度）。联网改用系统启发式判断，出图回退关键词粗略识别，标题改用本地截取。';
   }
+  syncAuxModelSelect('pref-notes-model', 'notesModel', '');
   syncAuxModelSelect('pref-followups-model', 'followupsModel', '');
   syncAuxModelSelect('pref-judge-model', 'judgeModel', '');
   syncImageModelSelect('pref-image-model', 'imageModel');
@@ -4493,6 +4494,7 @@ async function saveToolSource(patch) {
     if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('aiJudge', judgeEl.checked);
     syncPrefsPanel();
   });
+  bindAuxModelSelect('pref-notes-model', 'notesModel', 'notes');
   bindAuxModelSelect('pref-followups-model', 'followupsModel', 'followups');
   bindAuxModelSelect('pref-judge-model', 'judgeModel', '');
   bindImageModelSelect('pref-image-model', 'imageModel');

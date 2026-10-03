@@ -73,6 +73,8 @@ if ($method === 'GET' || $method === 'HEAD') {
         '/' => 'index.html',
         '/index.html' => 'index.html',
         '/chat' => 'index.html',
+        // AI 笔记独立地址:刷新后仍停留在笔记页(前端 boot 时检测该路径自动打开)
+        '/ainotes' => 'index.html',
         '/login' => 'login.html',
         '/login.html' => 'login.html',
         '/admin' => 'admin.html',
@@ -179,6 +181,11 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/sync/notes$#', 'tc_api_notes_save'),
         array('POST', '#^/api/notes/upload$#', 'tc_api_note_attachment_upload'),
         array('GET', '#^/api/notes/file$#', 'tc_api_note_attachment_serve'),
+        array('GET', '#^/api/notes/usage$#', 'tc_api_notes_usage'),
+        // 管理端笔记:用户用量列表 / 审阅某用户笔记 / 清理
+        array('GET', '#^/api/admin/notes$#', 'tc_api_admin_notes_users'),
+        array('GET', '#^/api/admin/notes/view$#', 'tc_api_admin_notes_view'),
+        array('POST', '#^/api/admin/notes/purge$#', 'tc_api_admin_notes_purge'),
         array('POST', '#^/api/notes/share$#', 'tc_api_note_share_create'),
         array('DELETE', '#^/api/notes/share$#', 'tc_api_note_share_close'),
         array('GET', '#^/api/notes/shared/([A-Za-z0-9]+)$#', 'tc_api_note_shared_get'),

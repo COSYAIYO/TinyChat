@@ -166,6 +166,33 @@
     </div>
   </div>
 
+  <!-- AI 笔记 -->
+  <div class="admin-panel" id="panel-notes">
+    <div class="admin-card">
+      <h2>AI 笔记</h2>
+      <p class="muted small">用户可在对话侧栏「AI 笔记」中写作 Markdown 笔记，支持图片/附件上传、分享链接与「把 AI 回答保存为笔记」。附件保存在 <code>data/notes/用户ID/</code>，只对笔记所属人可读；分享链接仅包含正文。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="notes-enabled" checked><span class="slider"></span></span><span>开启 AI 笔记功能（关闭后前台入口隐藏、接口拒绝写入）</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="notes-allow-files" checked><span class="slider"></span></span><span>允许上传非图片附件（关闭后仅允许图片；非图片附件一律强制下载，不作为网页外链托管）</span></label>
+      <div class="pkg-form-grid">
+        <label class="field"><span>每用户空间上限（MB，0 = 不限；用户侧边栏左下角显示剩余）</span>
+          <input id="notes-quota" type="number" min="0" max="102400" step="50" value="200"></label>
+        <label class="field"><span>单个附件大小上限（MB；图片固定 10MB）</span>
+          <input id="notes-max-file" type="number" min="1" max="2048" step="1" value="50"></label>
+      </div>
+      <button class="btn primary" id="notes-settings-save" type="button">保存笔记设置</button>
+    </div>
+
+    <div class="admin-card" style="margin-top:16px">
+      <h2>使用笔记的用户</h2>
+      <p class="muted small">按最近更新排序；可搜索用户名或 ID，点「查看」审阅该用户的笔记内容（管理员操作会记入日志）。</p>
+      <div class="row-between" style="gap:8px;margin-bottom:10px">
+        <input id="notes-user-search" type="search" placeholder="搜索用户名 / ID" style="max-width:260px">
+        <div class="muted small" id="notes-overview"></div>
+      </div>
+      <div id="notes-users" class="pkg-cards"></div>
+    </div>
+  </div>
+
   <!-- 用户管理 -->
   <div class="admin-panel" id="panel-thinking">
     <div class="admin-card">

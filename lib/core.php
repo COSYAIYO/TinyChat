@@ -163,6 +163,15 @@ $TC_SETTINGS_DEFAULTS = array(
     'imageArchiveEnabled' => true,
     // 本地留存总量上限(MB),超出按最旧优先清理
     'imageArchiveQuotaMb' => 500,
+    // ---- AI 笔记 ----
+    // 笔记功能总开关(关闭后前台入口隐藏、接口拒绝)
+    'notesEnabled' => true,
+    // 每用户笔记附件空间上限(MB),0 = 不限;用户侧边栏左下角显示剩余
+    'notesQuotaMb' => 200,
+    // 单个附件大小上限(MB);图片另有独立上限(固定 10MB)
+    'notesMaxFileMb' => 50,
+    // 允许普通用户上传非图片附件(关闭后仅图片可传)
+    'notesAllowFiles' => true,
 );
 $TC_SETTINGS_DEFAULTS['mailTemplates'] = tc_mail_default_templates();
 
@@ -570,6 +579,10 @@ function tc_normalize_settings($raw) {
     $s['agreementEnabled'] = !empty($s['agreementEnabled']);
     $s['agreementHtml'] = substr((string) (isset($s['agreementHtml']) ? $s['agreementHtml'] : ''), 0, 200000);
     // 性能优化开关(默认关闭)
+    $s['notesEnabled'] = !array_key_exists('notesEnabled', $s) || !empty($s['notesEnabled']);
+    $s['notesQuotaMb'] = min(102400, max(0, (int) (isset($s['notesQuotaMb']) ? $s['notesQuotaMb'] : 200)));
+    $s['notesMaxFileMb'] = min(2048, max(1, (int) (isset($s['notesMaxFileMb']) ? $s['notesMaxFileMb'] : 50)));
+    $s['notesAllowFiles'] = !array_key_exists('notesAllowFiles', $s) || !empty($s['notesAllowFiles']);
     $s['perfNoWebfonts'] = !empty($s['perfNoWebfonts']);
     $s['perfNoKatex'] = !empty($s['perfNoKatex']);
     $s['perfNoHighlight'] = !empty($s['perfNoHighlight']);

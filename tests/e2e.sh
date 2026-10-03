@@ -1618,21 +1618,34 @@ assert_has "同步返回分享状态字段" "$NOTES1" '"shares":[]'
 
 say "== AI 笔记:附件上传与签名输出 =="
 python -c "import base64,sys; open(sys.argv[1],'wb').write(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='))" "$TMP/pixel.png"
-printf 'not really' > "$TMP/evil.exe"
+printf 'PK\003\004fake-zip' > "$TMP/archive.zip"
 # 原生 curl 读不了 -F 里 MSYS 风格的 /tmp 路径:与文档解析用例一致,进 $TMP 用相对路径发起
 UP=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@pixel.png;type=image/png" ) )
 assert_contains "图片上传成功返回签名 URL" "$UP" '/api/notes/file?id='
 FURL=$(printf '%s' "$UP" | jget url | sed 's#\\/#/#g')
 assert_contains "签名 URL 可匿名读取" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE$FURL")" "200"
-assert_contains "附件 Content-Type 正确" "$(curl -s -D - -o /dev/null "$BASE$FURL")" "image/png"
-# 签名被篡改 → 403(替换的字符必须与原字符不同:末位本来就是 0 时换 1,否则换 0)
-LASTC="${FURL: -1}"
-if [ "$LASTC" = "0" ]; then REPL="1"; else REPL="0"; fi
-BADURL="${FURL%?}$REPL"
+assert_contains "图片内联输出正确 Content-Type" "$(curl -s -D - -o /dev/null "$BASE$FURL")" "image/png"
+# 图片不得带 attachment(预览要能直接显示)
+if curl -s -D - -o /dev/null "$BASE$FURL" | grep -qi 'content-disposition: attachment'; then bad "图片不应强制下载"; else ok "图片为内联输出(可直接预览)"; fi
+# 签名被篡改 → 403(把签名首字符翻转成必然不同的值,避免与原签名恰好相同)
+SIG="${FURL##*&s=}"; SIG="${SIG%%&*}"
+FLIP="0"; [ "${SIG:0:1}" = "0" ] && FLIP="1"
+BADSIG="$FLIP${SIG:1}"
+BADURL="${FURL/&s=$SIG/&s=$BADSIG}"
 if curl -s -o /dev/null -w '%{http_code}' "$BASE$BADURL" | grep -q '403'; then ok "签名被篡改返回 403"; else bad "签名被篡改返回 403"; fi
-# 不支持的类型被拒
-EV=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@evil.exe;type=application/octet-stream" ) )
-assert_contains "不支持的扩展名被拒" "$EV" '不支持的文件类型'
+# 通用文件上传(zip):非图片一律强制下载,避免被当作图床/网页外链托管
+UZ=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@archive.zip" ) )
+assert_has "通用文件上传成功" "$UZ" '/api/notes/file?id='
+ZURL=$(printf '%s' "$UZ" | jget url | sed 's#\\/#/#g')
+assert_contains "非图片强制附件下载" "$(curl -s -D - -o /dev/null "$BASE$ZURL")" "Content-Disposition: attachment"
+assert_contains "非图片类型标注正确" "$(curl -s -D - -o /dev/null "$BASE$ZURL")" "application/zip"
+# 附件按用户 ID 分目录存储(不再堆在单一目录)
+NSDIR=$(ls "$TMP/data/notes" 2>/dev/null | grep -v '^index.json$' | head -1)
+if [ -n "$NSDIR" ]; then ok "附件按用户 ID 分目录存储($NSDIR)"; else bad "附件按用户 ID 分目录存储"; fi
+# 空间用量接口
+USAGE=$(curl -s "$BASE/api/notes/usage" -H "$AUTH")
+assert_contains "用量接口返回剩余配额" "$USAGE" '"quota":'
+assert_contains "用量接口返回已用字节" "$USAGE" '"used":'
 
 say "== AI 笔记:分享链接 =="
 # view-link:创建分享 → 匿名可读 → 页面路由可达 → edit 被拒 → 关闭后失效
@@ -1664,6 +1677,32 @@ if curl -s "$BASE/api/notes/shared/$NTOK3" | grep -q '分享不存在'; then ok 
 assert_contains "笔记分享状态复位" "$(curl -s "$BASE/api/sync/notes" -H "$AUTH")" '"shareMode":"private"'
 # 不存在的笔记分享被拒
 assert_contains "分享不存在的笔记被拒" "$(curl -s -X POST "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"ghost","mode":"view-link"}')" '笔记不存在'
+
+say "== AI 笔记:管理端 =="
+AN=$(curl -s "$BASE/api/admin/notes" -H "$AUTH")
+assert_has "管理端列出使用笔记的用户" "$AN" '"users":['
+assert_has "管理端返回用户笔记数" "$AN" '"notes":'
+assert_contains "管理端返回附件用量" "$AN" '"totalUsed":'
+assert_contains "管理端返回空间上限" "$AN" '"quota":'
+# 审阅某用户笔记(取当前管理员的 userId)
+AUID=$(curl -s "$BASE/api/auth/me" -H "$AUTH" | jget id)
+AV=$(curl -s "$BASE/api/admin/notes/view?userId=$AUID" -H "$AUTH")
+assert_contains "审阅接口返回该用户笔记" "$AV" 'SQLite 要点'
+# 普通用户被拒
+assert_contains "普通用户不能访问笔记管理" "$(curl -s "$BASE/api/admin/notes" -H "$UAUTH")" '需要管理员权限'
+# 设置项可保存并下发
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesQuotaMb":321,"notesMaxFileMb":12,"notesAllowFiles":true}' > /dev/null
+ASET=$(curl -s "$BASE/api/admin/settings" -H "$AUTH")
+assert_contains "笔记空间上限已保存" "$ASET" '"notesQuotaMb":321'
+assert_contains "单附件上限已保存" "$ASET" '"notesMaxFileMb":12'
+assert_contains "公开配置下发笔记开关" "$(curl -s "$BASE/api/config")" '"notesEnabled":true'
+assert_contains "用量接口读取新配额" "$(curl -s "$BASE/api/notes/usage" -H "$AUTH")" '"quota":336592896'
+# 关闭笔记功能后接口拒绝写入,公开配置同步
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesEnabled":false}' > /dev/null
+assert_contains "关闭后同步接口被拒" "$(curl -s "$BASE/api/sync/notes" -H "$AUTH")" '未开放 AI 笔记功能'
+assert_contains "关闭后公开配置同步" "$(curl -s "$BASE/api/config")" '"notesEnabled":false'
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesEnabled":true}' > /dev/null
+
 
 say ""
 say "结果: $PASS 通过, $FAIL 失败"
