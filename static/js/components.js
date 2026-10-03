@@ -512,6 +512,8 @@
       listEl.innerHTML = modelTableHtml(vis.map((m) =>
         modelRowHtml(m, { checked: selected.has(m.id), keys: keyOptions, showCost: cfg.showCost })
       ).join(''), { showKey: keyOptions.length > 1, showCost: cfg.showCost });
+      // 「+ 加备用 Key」是动态渲染的原生 select:换成站内自定义下拉
+      if (typeof enhanceSelects === 'function') enhanceSelects(listEl);
       updateMeta();
     }
 
@@ -848,6 +850,8 @@
     const staleBlockEl = mask.querySelector('[data-role="staleblock"]');
     const staleCountEl = mask.querySelector('[data-role="stalecount"]');
     const msgEl = mask.querySelector('[data-role="msg"]');
+    // 「获取用 Key」是原生 select:换成站内自定义下拉(change 委托仍照常工作)
+    if (typeof enhanceSelects === 'function') enhanceSelects(mask);
     const fetchKeyEl = mask.querySelector('[data-role="fetchkey"]');
     const refetchBtn = mask.querySelector('[data-role="refetch"]');
     const countEl = mask.querySelector('[data-role="count"]');
@@ -1230,5 +1234,95 @@
   window.OC.closeSelect = closeOpenMenu;
   window.OC.bindModelChecklist = bindModelChecklist;
   window.OC.openFetchedModelsModal = openFetchedModelsModal;
+  // ============ 原生 <select> → 站内自定义下拉 ============
+  // 全站唯一实现:任何页面/模块只要提供 select 元素即可换成 .select-box 观感,
+  // 交互沿用原生 change 语义(现有监听器无需改动)。
+  function enhanceSelect(sel, opts) {
+    opts = opts || {};
+    if (!sel || sel.tagName !== 'SELECT' || sel.dataset.enhanced === '1') return null;
+    if (typeof openSelect !== 'function') return null;
+    sel.dataset.enhanced = '1';
+    sel.style.display = 'none';
+    // 无障碍:原生 select 仍留在 DOM 里(只是隐藏),给读屏器保留语义
+    sel.setAttribute('tabindex', '-1');
+    sel.setAttribute('aria-hidden', 'true');
+
+    const box = document.createElement('div');
+    box.className = 'select-box' + (opts.className ? ' ' + opts.className : '');
+    if (sel.id) box.id = sel.id + '-box';
+    box.setAttribute('role', 'button');
+    box.setAttribute('tabindex', '0');
+    box.setAttribute('aria-haspopup', 'listbox');
+    box.setAttribute('aria-expanded', 'false');
+    // 原 select 上的内联布局样式(如工具栏里的 flex:1;min-width)挪到新控件,
+    // 否则换完控件这一行会塌掉。只搬布局相关属性,视觉交给 .select-box。
+    ['flex', 'flex-grow', 'flex-shrink', 'flex-basis', 'min-width', 'max-width', 'width', 'margin'].forEach((prop) => {
+      const v = sel.style.getPropertyValue(prop);
+      if (v) box.style.setProperty(prop, v);
+    });
+    if (sel.classList.contains('search-input')) box.classList.add('search-input');
+    const label = document.createElement('span');
+    label.className = 'sb-label';
+    const arrow = document.createElement('span');
+    arrow.className = 'sb-arrow';
+    arrow.innerHTML = '<svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg>';
+    box.appendChild(label);
+    box.appendChild(arrow);
+    sel.parentNode.insertBefore(box, sel);
+
+    const items = () => Array.prototype.map.call(sel.options, (o) => ({ value: o.value, label: o.textContent }));
+    const sync = (v) => {
+      const hit = items().find((o) => o.value === String(v));
+      label.textContent = hit ? hit.label : String(v == null ? '' : v);
+      box.dataset.value = sel.value;
+    };
+    // 选项动态填充(如文件夹列表变化)后重新同步显示文字
+    box.syncLabel = () => sync(sel.value);
+    sync(sel.value);
+
+    const open = () => {
+      box.setAttribute('aria-expanded', 'true');
+      openSelect(box, items(), {
+        selected: sel.value,
+        center: !!opts.center,
+        menuClass: opts.menuClass || '',
+        onSelect: (val) => {
+          box.setAttribute('aria-expanded', 'false');
+          if (sel.value === val) { sync(val); return; }
+          sel.value = val;
+          sync(val);
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        },
+      });
+    };
+    box.addEventListener('click', open);
+    box.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+    });
+    // 外部直接给 select 赋值时同步显示文字
+    const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+    if (desc && !sel.dataset.valuePatched) {
+      sel.dataset.valuePatched = '1';
+      Object.defineProperty(sel, 'value', {
+        get() { return desc.get.call(sel); },
+        set(v) { desc.set.call(sel, v); sync(v); },
+        configurable: true,
+      });
+    }
+    return box;
+  }
+  // 按容器批量替换(未指定则全文档);scope 内的 select 都会被接管
+  function enhanceSelects(scope) {
+    const root = scope || document;
+    const out = [];
+    root.querySelectorAll('select').forEach((sel) => {
+      const box = enhanceSelect(sel);
+      if (box) out.push(box);
+    });
+    return out;
+  }
+
+  window.OC.enhanceSelect = enhanceSelect;
+  window.OC.enhanceSelects = enhanceSelects;
   window.OC.restyleNativeTitles = restyleNativeTitles;
 })();

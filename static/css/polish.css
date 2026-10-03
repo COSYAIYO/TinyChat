@@ -419,7 +419,7 @@ html:not(.oc-streaming) .stream-cursor { display: none; }
 .toast {
   animation: toastRise var(--dur-3) var(--ease-spring) both;
   padding: 10px 20px;
-  font-size: 13.5px;
+  font-size: 0.964rem;
   font-weight: 500;
   max-width: min(480px, 90vw);
   text-align: center;
@@ -561,7 +561,7 @@ html:not(.oc-streaming) .stream-cursor { display: none; }
   gap: 6px;
   margin-top: 6px;
   color: var(--text-tertiary);
-  font-size: 12px;
+  font-size: 0.857rem;
   cursor: pointer;
 }
 .key-keep-option input[type="checkbox"] {
@@ -575,7 +575,7 @@ html:not(.oc-streaming) .stream-cursor { display: none; }
   align-items: center;
   gap: 6px;
   margin-top: 2px;
-  font-size: 12px;
+  font-size: 0.857rem;
   color: var(--text-tertiary);
   min-width: 0;
 }
@@ -611,7 +611,7 @@ html:not(.oc-streaming) .stream-cursor { display: none; }
 
 /* ---------- 17. 杂项细节 ---------- */
 /* 供应商徽章圆角统一 */
-.badge { border-radius: 7px; padding: 2px 8px; font-size: 11px; font-weight: 550; }
+.badge { border-radius: 7px; padding: 2px 8px; font-size: 0.786rem; font-weight: 550; }
 .badge.global { border-radius: 7px; }
 /* 分割线更轻 */
 .user-menu-sep { margin: 4px 8px; }
@@ -655,7 +655,7 @@ html:not(.oc-boot) .oc-fade-boot { animation: emptyIn var(--dur-3) var(--ease-ou
   padding: 0;
   flex-basis: auto;
   display: inline;
-  font-size: 11.5px;
+  font-size: 0.821rem;
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
 }
@@ -681,7 +681,7 @@ html:not(.oc-boot) .oc-fade-boot { animation: emptyIn var(--dur-3) var(--ease-ou
   white-space: nowrap;
 }
 .plan-price {
-  font-size: 13px;
+  font-size: 0.929rem;
   font-variant-numeric: tabular-nums;
 }
 .reply-continue {
@@ -690,7 +690,7 @@ html:not(.oc-boot) .oc-fade-boot { animation: emptyIn var(--dur-3) var(--ease-ou
   background: transparent;
   padding: 0;
   font: inherit;
-  font-size: 11.5px;
+  font-size: 0.821rem;
   color: var(--accent);
   cursor: pointer;
 }
@@ -713,7 +713,7 @@ html:not(.oc-boot) .oc-fade-boot { animation: emptyIn var(--dur-3) var(--ease-ou
   height: 18px;
   padding: 0;
   border-radius: 5px;
-  font-size: 12px;
+  font-size: 0.857rem;
   line-height: 18px;
   cursor: pointer;
 }
@@ -728,7 +728,7 @@ html:not(.oc-boot) .oc-fade-boot { animation: emptyIn var(--dur-3) var(--ease-ou
 .reply-ver-label {
   min-width: 28px;
   text-align: center;
-  font-size: 11.5px;
+  font-size: 0.821rem;
   font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
 }
@@ -804,7 +804,7 @@ html:not(.oc-boot) .oc-fade-boot { animation: emptyIn var(--dur-3) var(--ease-ou
 	.chat-toc:focus-within .chat-toc-item { display: flex !important; }
 	.chat-toc-head {
 	  padding: 10px 8px 6px;
-	  font-size: 11px;
+	  font-size: 0.786rem;
 	  font-weight: 550;
 	  letter-spacing: 0.04em;
 	  color: var(--text-tertiary);
@@ -832,7 +832,7 @@ html:not(.oc-boot) .oc-fade-boot { animation: emptyIn var(--dur-3) var(--ease-ou
   border-radius: 50%;
   background: var(--bg-active);
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 0.786rem;
   line-height: 18px;
   text-align: center;
   font-variant-numeric: tabular-nums;
@@ -855,11 +855,11 @@ html:not(.oc-boot) .oc-fade-boot { animation: emptyIn var(--dur-3) var(--ease-ou
   white-space: nowrap;
 }
 .chat-toc-q {
-  font-size: 13px;
+  font-size: 0.929rem;
   color: var(--text);
 }
 .chat-toc-a {
-  font-size: 11.5px;
+  font-size: 0.821rem;
   color: var(--text-tertiary);
 }
 @media (max-width: 768px) {

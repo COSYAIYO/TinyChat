@@ -29,6 +29,8 @@ const state = {
   assistantCategories: [],
   defaultAssistant: null,
   mention: { open: false, q: '', index: 0, start: -1 },
+  noteMentions: [], // @笔记:待发送的笔记引用(发送后清空并挂到该条消息上)
+  noteFolderMentions: [], // @笔记文件夹:整目录引用(发送时展开为该目录全部笔记)
   clearAssistantAt: 0,
   webSearchAvailable: false,
   tools: null,
@@ -948,6 +950,14 @@ function mergeChatLists(cloudChats, localChats) {
   return merged;
 }
 
+// 切换对话时清空待发送的 @笔记(不同对话不应共享引用)
+function resetNoteMentions() {
+  if ((state.noteMentions || []).length || (state.noteFolderMentions || []).length) {
+    state.noteMentions = [];
+    state.noteFolderMentions = [];
+    renderNoteMentions();
+  }
+}
 function currentChat() {
   return state.chats.find((c) => c.id === state.currentChatId) || null;
 }
@@ -990,6 +1000,7 @@ function renderChatList() {
     onSelect: (c) => {
       if (state.streaming) { stopStreaming(); }
       state.currentChatId = c.id;
+      resetNoteMentions();
       state._scrollHistoryToBottom = true;
       if (c._visibleCount != null) delete c._visibleCount;
       renderChatList(); renderMessages(); resetComposer(); updateAssistantChip();
@@ -1180,6 +1191,7 @@ function newChat(opts) {
   applyAssistantToChat(chat, assistant);
   state.chats.unshift(chat);
   state.currentChatId = chat.id;
+      resetNoteMentions();
   saveChats(); renderChatList(); renderMessages(); renderEmptyState(); resetComposer();
   updateAssistantChip();
   autosizeInput();
@@ -1237,12 +1249,14 @@ function updateAssistantChip() {
     chip.textContent = '';
     chip.removeAttribute('data-tip');
     chip.removeAttribute('title');
+    if (typeof syncComposerIndent === 'function') syncComposerIndent();
     return;
   }
   chip.classList.remove('hidden');
   chip.textContent = '@' + name;
   chip.setAttribute('data-tip', '当前助手：' + name + '（再按两下 Backspace 可取消）');
   chip.removeAttribute('title');
+  if (typeof syncComposerIndent === 'function') syncComposerIndent();
 }
 function renderEmptyState() {
   const empty = $('empty-state');
@@ -1860,9 +1874,12 @@ function buildMsgNode(m, chat, idx) {
     }
   } else {
     // 用户消息：走渲染管线以支持附件（图片/文件卡片），但限制富文本能力
+    // @笔记 引用只用于注入上下文,展示时从正文里剥掉,改在气泡下方以 chip 呈现
+    const shown = String(m.content || '').split(NOTE_CTX_SEP)[0];
     const root = document.createElement('div');
     contentDiv.appendChild(root);
-    window.OCRenderer.renderInto(root, m.content || '');
+    window.OCRenderer.renderInto(root, shown);
+    // @笔记 的引用改在 AI 回答侧展示(避免与问题气泡重复)
   }
   div.appendChild(contentDiv);
 
@@ -1882,6 +1899,8 @@ function buildMsgNode(m, chat, idx) {
     if (m.followUps && m.followUps.length) {
       window.OCMultimodal.renderFollowUps(div, m.followUps, applyFollowUp);
     }
+    // @笔记 的回答:标注基于笔记并列出可点击的来源
+    appendNoteRefs(div, m);
     // 来源列表
     if (m.citations && m.citations.length && window.OCCitations) {
       window.OCCitations.renderSources(div, m.citations);
@@ -2374,9 +2393,9 @@ function applyReasoningToBody(body, format) {
       body.output_config = { effort: effort };
       return body;
     }
-    const budget = effort === 'high' ? 16000 : effort === 'low' ? 2048 : 8000;
+    const budget = thinkingBudgetFor(effort);
     body.thinking = { type: 'enabled', budget_tokens: budget };
-    if (!body.max_tokens || body.max_tokens <= budget) body.max_tokens = budget + 2048;
+    reserveThinkingHeadroom(body, effort);
     return body;
   }
   if (format === 'responses') {
@@ -2396,13 +2415,29 @@ function applyReasoningToBody(body, format) {
     if (enabled) {
       // DeepSeek 官方映射：界面“中”对应实际 high，不能直接发送 medium/max。
       body.reasoning_effort = deepseekEffort;
+      reserveThinkingHeadroom(body, effort);
     }
     return body;
   }
   if (!enabled) return body;
   // OpenAI Chat Completions and compatible gateways use the top-level field.
   body.reasoning_effort = effort;
+  reserveThinkingHeadroom(body, effort);
   return body;
+}
+
+// 推理型模型的 output_tokens 上限同时容纳思维链与正文。
+// 只开 thinking 而不抬高 max_tokens，会让模型把预算全部耗在推理上、
+// 正文一个字都写不出来（finish_reason 仍是正常结束，前端表现为“答到一半就停”）。
+// 返回本次要求的输出下限，呼叫方据此放宽自身的钳制。
+function thinkingBudgetFor(effort) {
+  return effort === 'high' ? 16000 : effort === 'low' ? 2048 : 8000;
+}
+function reserveThinkingHeadroom(body, effort) {
+  const budget = thinkingBudgetFor(effort);
+  const floor = budget + 2048;
+  body._thinkingFloor = floor;
+  return floor;
 }
 function buildRequestBody(chatMessages, format, chat, extra) {
   const msgs = outgoingMessages(chatMessages, chat);
@@ -2421,7 +2456,10 @@ function buildRequestBody(chatMessages, format, chat, extra) {
     if (system) body.system = system;
     if (state.currentProviderId) body.providerId = state.currentProviderId;
     const readyA = attachWebSearchFlag(applyReasoningToBody(body, format));
-    if (!readyA.max_tokens || readyA.max_tokens > cap) readyA.max_tokens = cap;
+    const floorA = Number(readyA._thinkingFloor) || 0;
+    delete readyA._thinkingFloor;
+    const limitA = Math.max(cap, floorA);
+    if (!readyA.max_tokens || readyA.max_tokens > limitA) readyA.max_tokens = limitA;
     return stampContext(readyA, msgs);
   }
   if (format === 'responses') {
@@ -2461,7 +2499,12 @@ function buildRequestBody(chatMessages, format, chat, extra) {
   }, format);
   if (state.currentProviderId) body.providerId = state.currentProviderId;
   const ready = attachWebSearchFlag(body);
-  if (!ready.max_tokens || ready.max_tokens > cap) ready.max_tokens = cap;
+  // 思考预留是硬下限:开启思考时输出上限取 max(全局上限, 思考预算+正文预留),
+  // 避免思维链耗尽预算后正文无从输出;已显式配置的更大值不受影响。
+  const floor = Number(ready._thinkingFloor) || 0;
+  delete ready._thinkingFloor;
+  const limit = Math.max(cap, floor);
+  if (!ready.max_tokens || ready.max_tokens > limit) ready.max_tokens = limit;
   if (extra && extra.continueFrom) ready.webSearch = 'off';
   return stampContext(ready, msgs);
 }
@@ -2630,7 +2673,7 @@ async function aiJudgeTools(text, ctx) {
 async function sendMessage() {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
   const input = $('input');
-  const text = input.value.trim();
+  let text = input.value.trim();
   const attachments = (state.pendingAttachments || []).slice();
   if (attachments.some((a) => a && a.parsing)) {
     toast('文档还在解析，请稍候', true);
@@ -2659,6 +2702,16 @@ async function sendMessage() {
     return;
   }
 
+  // @笔记:把被提及笔记的正文拼进本轮提问,让 AI 基于笔记回答。
+  // 注入原文而不是「让 AI 自己去查」——单轮请求无法访问本地笔记。
+  const noteCtx = noteMentionsContext(4000);
+  let noteRefs = [];
+  if (noteCtx) {
+    noteRefs = noteCtx.notes.map((n) => ({ id: n.id, title: n.title || '无标题' }));
+    text = (text || '请总结这些笔记的内容。') + '\n\n---\n'
+      + noteCtx.instruction + '\n\n' + noteCtx.text;
+  }
+
   // 群聊模式:交给群聊管线(多成员按对话模式顺序发言),不走单模型/生图/视频意图
   if (window.OCGroup && window.OCGroup.isGroupMode()) {
     input.value = '';
@@ -2667,6 +2720,20 @@ async function sendMessage() {
     renderAttachments();
     updateSendBtn();
     await window.OCGroup.sendGroupTurn(text, attachments);
+    await refreshMe();
+    refreshModelHealth();
+    return;
+  }
+
+  // 多模型并答:用户先在入口勾好 2–3 个模型,这里把问题依次问它们,回答成为可切换的标签页。
+  // 放在生图/视频分支之前:这是用户的显式选择,应优先于「画图意图」的自动识别。
+  if (Array.isArray(state._compareModels) && state._compareModels.length >= 2) {
+    input.value = '';
+    autosizeInput();
+    state.pendingAttachments = [];
+    renderAttachments();
+    updateSendBtn();
+    await sendCompareTurn(text, attachments);
     await refreshMe();
     refreshModelHealth();
     return;
@@ -2805,6 +2872,16 @@ async function sendMessage() {
 
   // 消息立刻进对话(判定阶段已发过就复用),输入框随即清空;进展写在 AI 回复气泡里。
   const turn = postUserTurn(text, attachments, posted);
+  // @笔记:把提及记录到该条用户消息上(气泡下方显示来源 chip),并清空输入区的待发 chip。
+  // 同时给 AI 回答打标记,回答气泡里显示「基于笔记回答」并附来源卡片。
+  if (noteRefs.length && turn && turn.userMsg) {
+    turn.userMsg.noteRefs = noteRefs;
+    if (turn.assistantMsg) turn.assistantMsg.noteRefs = noteRefs;
+    state.noteMentions = [];
+    state.noteFolderMentions = [];
+    renderNoteMentions();
+    renderMessages();
+  }
   const searching = state._toolSearch === true || webSearchMode() === 'on';
   setReplyPhase(turn.assistantMsg, searching ? '正在联网检索' : '思考中');
   try {
@@ -2934,6 +3011,26 @@ async function streamRequest(format, body, chat, assistantMsg) {
   }
 }
 
+// @笔记 引用的展示(回答侧):「基于 N 篇笔记回答」提示 + 可点击来源卡片。
+// 两条渲染路径(renderMessages 全量 / reRenderLastAssistant 精准)共用,避免漏挂。
+function appendNoteRefs(container, msg) {
+  if (!Array.isArray(msg.noteRefs) || !msg.noteRefs.length) return;
+  const hint = document.createElement('div');
+  hint.className = 'note-answer-hint';
+  hint.innerHTML = '📒 基于 ' + msg.noteRefs.length + ' 篇笔记回答';
+  container.appendChild(hint);
+  const refs = document.createElement('div');
+  refs.className = 'note-ref-row';
+  refs.innerHTML = msg.noteRefs.map((r) => '<span class="note-mention-chip" data-id="' + escapeHtml(r.id) + '">'
+    + '<b>@</b>' + escapeHtml(r.title || '无标题笔记') + '</span>').join('');
+  refs.querySelectorAll('.note-mention-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      if (window.OCNotes) window.OCNotes.open();
+    });
+  });
+  container.appendChild(refs);
+}
+
 // 精准重绘最后一条 assistant 消息（流式结束后调用）
 function reRenderLastAssistant(assistantMsg) {
   const chat = currentChat();
@@ -2985,6 +3082,8 @@ function reRenderLastAssistant(assistantMsg) {
     if (assistantMsg.citations && assistantMsg.citations.length && window.OCCitations) {
       window.OCCitations.renderSources(last, assistantMsg.citations);
     }
+    // @笔记 来源(与全量渲染保持一致)
+    appendNoteRefs(last, assistantMsg);
     // 耗时显示(先清旧再渲染,避免重复叠加)
     if (typeof renderElapsed === 'function') renderElapsed(last, assistantMsg);
   }
@@ -3406,6 +3505,8 @@ async function requestAssistantReply(chat, userMsg, extra) {
       return true;
     });
   const body = buildRequestBody(source, format, chat, continuing ? { continueFrom: assistantMsg } : null);
+  // 调用方自定义计费用途(如多模型对比记为 «多模型对比»);不传则沿用默认的对话计费
+  if (extra && extra._purpose) body._purpose = extra._purpose;
   assistantMsg.contextCount = body._contextCount || 0;
   assistantMsg.contextLimit = body._contextLimit || assistantMsg.contextCount;
   delete body._contextCount;
@@ -7138,43 +7239,61 @@ function imageSourceToDataUrl(src) {
 }
 
 // ============ 多模型并答对比 ============
-// 独立于流式管线:非流式并行请求,结果并排展示并支持投票(计入模型评价)。每个所选模型各计费一次。
+// 这里只负责「选模型」:选好后问题照常从输入框发,各模型的回答以标签页呈现在同一轮对话里
+// (与「@模型重答」同一套 UI),点标签切换对比。每个所选模型各计费一次(用途记为「多模型对比」)。
+function compareChatModels() {
+  const items = [];
+  (availableModelItems() || []).forEach((group) => {
+    (group.items || []).forEach((it) => {
+      // 只列对话模型:拿生图/生视频模型对比没有意义
+      if (it.isImage || it.isVideo) return;
+      items.push(it);
+    });
+  });
+  return items;
+}
+
 function openCompareDialog() {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
-  const models = availableModels();
-  if (models.length < 2) return toast('至少需要两个可用模型才能对比', true);
+  const models = compareChatModels();
+  if (models.length < 2) return toast('至少需要两个对话模型才能对比', true);
+  const picked = {};
+  (state._compareModels || []).forEach((p) => { picked[p.providerId + '\n' + p.model] = true; });
+  const hasSaved = Array.isArray(state._compareModels) && state._compareModels.length > 0;
   const mask = document.createElement('div');
   mask.className = 'modal-mask';
   const options = models.map((item) => {
-    const on = item.providerId === state.currentProviderId && item.model === state.currentModel;
-    return '<label class="compare-model-opt"><input type="checkbox" value="' + escapeHtml(item.providerId + '\n' + item.model) + '"' + (on ? ' checked' : '') + '>'
-      + '<span>' + escapeHtml(item.provider + ' · ' + item.model) + '</span></label>';
+    const on = hasSaved
+      ? !!picked[item.providerId + '\n' + item.modelId]
+      : (item.providerId === state.currentProviderId && item.modelId === state.currentModel);
+    return '<label class="compare-model-opt"><input type="checkbox" value="' + escapeHtml(item.providerId + '\n' + item.modelId) + '"' + (on ? ' checked' : '') + '>'
+      + (item.icon && window.OC && OC.logoImg ? OC.logoImg(item.icon, 'compare-model-logo') : '')
+      + '<span>' + escapeHtml(item.label) + '</span></label>';
   }).join('');
   mask.innerHTML =
-    '<div class="modal modal-lg compare-modal" role="dialog" aria-modal="true">'
-    + '<div class="modal-header"><h3>多模型对比</h3>'
+    '<div class="modal compare-modal" role="dialog" aria-modal="true">'
+    + '<div class="modal-header"><h3>多模型并答</h3>'
     + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + (window.OC ? OC.icon('close', 16) : '×') + '</button></div>'
     + '<div class="modal-body" id="compare-body">'
-    + '<label class="field"><span>问题（发送给每个所选模型，各自按标准计费）</span><textarea id="compare-q" rows="3" style="resize:vertical"></textarea></label>'
-    + '<div class="section-title">选择模型（2–3 个）</div>'
+    + '<p class="muted small" style="margin:0 0 8px">勾选 2–3 个对话模型。选好后在输入框输入问题发送，各模型的回答会成为这一轮对话里的标签页，点标签即可切换对比。</p>'
     + '<div class="compare-model-list" id="compare-models">' + options + '</div>'
-    + '<div class="form-actions" style="margin-top:10px"><button class="btn primary" id="compare-run" type="button">开始对比</button><span class="muted small" id="compare-status"></span></div>'
-    + '<div class="compare-results" id="compare-results"></div>'
+    + '<div class="form-actions" style="margin-top:10px"><button class="btn primary" id="compare-run" type="button">用这些模型回答</button><span class="muted small" id="compare-status"></span></div>'
     + '</div></div>';
   document.body.appendChild(mask);
-  const qEl = mask.querySelector('#compare-q');
-  const input = $('input');
-  if (qEl && input && input.value.trim()) qEl.value = input.value.trim();
-  if (qEl) setTimeout(() => qEl.focus(), 60);
   // 纳入统一弹窗栈:支持 Esc 关闭
   const rawClose = () => mask.remove();
   const closeCompare = (window.OCUI && window.OCUI.adoptModal) ? window.OCUI.adoptModal(mask, rawClose) : rawClose;
   mask.addEventListener('click', (e) => {
     if (e.target === mask || e.target.closest('[data-act="close"]')) closeCompare();
   });
-  mask.querySelector('#compare-run').addEventListener('click', async () => {
-    const question = (qEl && qEl.value.trim()) || '';
-    if (!question) return toast('请先输入问题', true);
+  const status = mask.querySelector('#compare-status');
+  const syncStatus = () => {
+    const n = mask.querySelectorAll('#compare-models input:checked').length;
+    if (status) status.textContent = n >= 2 ? ('已选 ' + n + ' 个模型') : '请勾选 2–3 个模型';
+  };
+  mask.querySelectorAll('#compare-models input').forEach((inp) => inp.addEventListener('change', syncStatus));
+  syncStatus();
+  mask.querySelector('#compare-run').addEventListener('click', () => {
     const picks = [];
     mask.querySelectorAll('#compare-models input:checked').forEach((inp) => {
       const [providerId, model] = inp.value.split('\n');
@@ -7182,71 +7301,12 @@ function openCompareDialog() {
     });
     if (picks.length < 2) return toast('请至少勾选 2 个模型', true);
     if (picks.length > 3) return toast('最多对比 3 个模型', true);
-    const runBtn = mask.querySelector('#compare-run');
-    const status = mask.querySelector('#compare-status');
-    const results = mask.querySelector('#compare-results');
-    runBtn.disabled = true;
-    status.textContent = '正在并行询问 ' + picks.length + ' 个模型…';
-    results.innerHTML = picks.map((p, i) =>
-      '<div class="compare-card" data-ci="' + i + '"><div class="compare-card-head"><b>' + escapeHtml(p.model) + '</b><span class="muted small" data-el="' + i + '">生成中…</span></div><div class="compare-card-body muted">…</div>'
-      + '<div class="compare-card-actions hidden"><button class="btn small" data-vote="up" type="button">👍 这个更好</button><button class="btn small" data-copy type="button">复制</button></div></div>'
-    ).join('');
-    const cap = Math.min(128000, Math.max(256, Number((state.chatLimits || {}).maxOutputTokens) || 8192));
-    const started = Date.now();
-    const answers = picks.map((p) => {
-      const prov = (state.providers || []).find((x) => x.id === p.providerId);
-      const format = (prov && prov.apiFormat) || 'chat';
-      const body = { model: p.model, providerId: p.providerId, stream: false, max_tokens: cap, _purpose: 'compare', messages: [{ role: 'user', content: question }] };
-      return api(ENDPOINT_BY_FORMAT[format] || '/api/proxy/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      }).then(async (r) => {
-        const data = await r.json();
-        if (!r.ok) throw new Error((data.error && data.error.message) || ('HTTP ' + r.status));
-        return extractText(data, format) || '（空回复）';
-      }).catch((e) => ({ error: (e && e.message) || '请求失败' }));
-    });
-    const settled = await Promise.all(answers.map((p) => p.catch(() => ({ error: '请求失败' }))));
-    const elapsed = Date.now() - started;
-    settled.forEach((res, i) => {
-      const card = results.querySelector('[data-ci="' + i + '"]');
-      if (!card) return;
-      const el = card.querySelector('[data-el]');
-      const bodyEl = card.querySelector('.compare-card-body');
-      const isErr = res && typeof res === 'object' && res.error;
-      if (el) el.textContent = isErr ? '失败' : (elapsed + ' ms');
-      if (bodyEl) {
-        if (isErr) { bodyEl.textContent = '请求失败：' + res.error; bodyEl.classList.add('muted'); }
-        else { bodyEl.textContent = res; bodyEl.classList.remove('muted'); }
-      }
-      const actions = card.querySelector('.compare-card-actions');
-      if (actions && !isErr) {
-        actions.classList.remove('hidden');
-        const voteBtn = actions.querySelector('[data-vote]');
-        if (voteBtn) voteBtn.addEventListener('click', async () => {
-          voteBtn.disabled = true;
-          voteBtn.textContent = '投票中…';
-          try {
-            await api('/api/votes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: picks[i].model, to: 'up' }) });
-            voteBtn.textContent = '已投票 ✓';
-          } catch (e) {
-            voteBtn.disabled = false;
-            voteBtn.textContent = '👍 这个更好';
-            toast('投票失败，请稍后再试', true);
-          }
-        });
-        const copyBtn = actions.querySelector('[data-copy]');
-        if (copyBtn) copyBtn.addEventListener('click', async () => {
-          const ok = (window.OCUI && OCUI.copyText) ? await OCUI.copyText(res) : false;
-          if (ok) { copyBtn.textContent = '已复制'; toast('已复制'); setTimeout(() => { copyBtn.textContent = '复制'; }, 1600); }
-          else toast('复制失败，请手动选择文本复制', true);
-        });
-      }
-    });
-    status.textContent = '完成，用时 ' + elapsed + ' ms。点击"这个更好"为满意的模型投票（计入模型评价）。';
-    runBtn.disabled = false;
-    runBtn.textContent = '再来一轮';
+    // 只记住这次选择:问题由输入框正常发送时据此依次问这些模型
+    state._compareModels = picks;
+    closeCompare();
+    toast('已选 ' + picks.length + ' 个模型，输入问题发送即可对比');
+    const input = $('input');
+    if (input) input.focus();
   });
 }
 
@@ -7343,8 +7403,10 @@ function toggleSidebar() {
   // ============ 侧边栏拖拽调宽 ============
   const resizer = $('sidebar-resizer');
   if (resizer && sidebar) {
-    const MIN_W = 200;
-    const MAX_W = 480;
+    // 侧栏宽度上下限跟随「外观 → 字号」等比缩放(基准 14px)
+    const rootFs = parseFloat(getComputedStyle(document.documentElement).fontSize) || 14;
+    const MIN_W = Math.round(200 * rootFs / 14);
+    const MAX_W = Math.round(480 * rootFs / 14);
     // 恢复上次宽度
     const savedW = parseInt(localStorage.getItem('oc_sidebar_width') || '', 10);
     if (savedW >= MIN_W && savedW <= MAX_W) {
@@ -7595,6 +7657,22 @@ function mentionCandidates(q) {
   });
   return [none].concat(ranked.slice(0, 12));
 }
+// 笔记候选(@笔记):标题命中优先,其次标签,最后正文。
+// 用户可能没打开过笔记模块,这里静默预热一次数据(仅一次)。
+// 确保笔记数据可用(用户可能从没打开过笔记模块):首次触发静默预热一次
+function ensureNotesForMention() {
+  if (!window.OCNotes) return;
+  if (window.OCNotes.isReady && window.OCNotes.isReady()) return;
+  if (state._notesWarming) return;
+  state._notesWarming = true;
+  Promise.resolve(window.OCNotes.warmUp && window.OCNotes.warmUp())
+    .then(() => {
+      state._notesWarming = false;
+      if (state.mention && state.mention.open) renderMention();
+    })
+    .catch(() => { state._notesWarming = false; });
+}
+
 function closeMention() {
   state.mention = { open: false, q: '', index: 0, start: -1 };
   const pop = $('mention-pop');
@@ -7611,24 +7689,92 @@ function renderMention() {
     pop.innerHTML = '';
     return;
   }
-  const items = mentionCandidates(state.mention.q);
-  if (!items.length) {
-    pop.innerHTML = '<div class="mention-empty">没有匹配的助手</div>';
-    pop.classList.remove('hidden');
-    return;
-  }
+  // 分类页签:0=助手,1=笔记(Tab 键切换)
+  const tab = state.mention.tab === 1 ? 1 : 0;
+  state.mention.tab = tab;
+  const items = tab === 1 ? noteMentionItems(state.mention.q) : mentionCandidates(state.mention.q);
+  const pickable = items.filter((x) => !x._folder);
   if (state.mention.index < 0) state.mention.index = 0;
-  if (state.mention.index >= items.length) state.mention.index = items.length - 1;
-  pop.innerHTML = '<div class="mention-head"><b>选择助手</b><span>↑↓ 回车 · Esc</span></div>' + items.map((a, i) =>
-    '<button type="button" class="mention-item' + (i === state.mention.index ? ' active' : '') + '" data-idx="' + i + '" role="option" aria-selected="' + (i === state.mention.index ? 'true' : 'false') + '">'
-    + '<span class="mention-ico">' + escapeHtml(a.icon || '✨') + '</span>'
-    + '<span class="mention-text"><span class="mention-name">' + escapeHtml(a.name || '') + '</span>'
-    + '<span class="mention-desc">' + escapeHtml(a.desc || assistantCatName(a.categoryId) || '') + '</span></span></button>'
-  ).join('');
+  if (state.mention.index >= pickable.length) state.mention.index = Math.max(0, pickable.length - 1);
+  // 把「可选项序号」写回 item,便于键盘与点击共用
+  let pi = 0;
+  items.forEach((x) => { if (!x._folder) x._pickIdx = pi++; });
+  pop.innerHTML = '<div class="mention-tabs">'
+    + '<button type="button" class="mention-tab' + (tab === 0 ? ' active' : '') + '" data-tab="0">助手</button>'
+    + '<button type="button" class="mention-tab' + (tab === 1 ? ' active' : '') + '" data-tab="1">笔记</button>'
+    + '<span class="mention-tab-hint">' + (tab === 1 ? '↑↓ 选择 · Tab 切换 · 点文件夹展开' : '↑↓ 选择 · Tab 切换') + '</span>'
+    + '</div>'
+    + '<div class="mention-body">' + mentionBodyHtml(items, tab) + '</div>';
   pop.classList.remove('hidden');
   const active = pop.querySelector('.mention-item.active');
   if (active && active.scrollIntoView) active.scrollIntoView({ block: 'nearest' });
 }
+
+// 笔记候选:按文件夹分组(可展开),搜索时平铺
+function noteMentionItems(q) {
+  const dbg = window.OCNotes && window.OCNotes._debug;
+  if (!dbg || !dbg.doc) return [];
+  const kw = String(q || '').trim().toLowerCase();
+  const notes = (dbg.doc.notes || []).filter((n) => {
+    if (!kw) return true;
+    return [n.title, (n.tags || []).join(' '), n.content].some((x) => String(x || '').toLowerCase().includes(kw));
+  }).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  if (kw) return notes.map((n) => noteMentionItem(n, folderNameOf(dbg, n.folderId)));
+  const openMap = state.mention.folderOpen || (state.mention.folderOpen = {});
+  const folders = (dbg.doc.folders || []).slice();
+  const known = {};
+  folders.forEach((f) => { known[f.id] = f; });
+  const out = [];
+  const pushGroup = (id, name, list) => {
+    if (!list.length) return;
+    const isOpen = openMap[id] === true; // 默认折叠:点文件夹才展开
+    out.push({ _folder: true, id: id, name: name, count: list.length, open: isOpen });
+    if (isOpen) list.forEach((n) => out.push(noteMentionItem(n, name)));
+  };
+  folders.forEach((f) => pushGroup(f.id, f.name, notes.filter((n) => n.folderId === f.id)));
+  pushGroup('__orphan', '未归类', notes.filter((n) => !known[n.folderId]));
+  return out;
+}
+function folderNameOf(dbg, fid) {
+  const f = (dbg.doc.folders || []).find((x) => x.id === fid);
+  return f ? f.name : '未归类';
+}
+function noteMentionItem(n, folderName) {
+  const tags = (n.tags || []).slice(0, 3).map((t) => '#' + t).join(' ');
+  return {
+    id: n.id,
+    name: n.title || '无标题笔记',
+    desc: (folderName ? folderName : '笔记') + (tags ? ' · ' + tags : ''),
+    icon: '📒',
+    _note: true,
+    _noteId: n.id,
+  };
+}
+// 候选主体(文件夹行与助手/笔记项)
+function mentionBodyHtml(items, tab) {
+  if (!items.length) return '<div class="mention-empty">' + (tab === 1 ? '还没有笔记，或没有匹配项' : '没有匹配的助手') + '</div>';
+  return items.map((a) => {
+    if (a._folder) {
+      const picked = (state.noteFolderMentions || []).some((x) => x.id === a.id);
+      return '<div class="mention-folder-row">'
+        + '<button type="button" class="mention-folder' + (a.open ? ' open' : '') + '" data-folder="' + escapeHtml(a.id) + '">'
+        + '<span class="mention-folder-chev">' + (a.open ? '▾' : '▸') + '</span>'
+        + '<span class="mention-folder-name">' + escapeHtml(a.name) + '</span>'
+        + '<span class="mention-folder-count">' + a.count + ' 篇</span></button>'
+        // 默认就是「选整个文件夹」——点这一项把目录下全部笔记加入引用
+        + '<button type="button" class="mention-folder-pick' + (picked ? ' picked' : '') + '" data-folder-pick="' + escapeHtml(a.id) + '" data-folder-name="' + escapeHtml(a.name) + '" data-tip="' + (picked ? '已选整个文件夹' : '选整个文件夹') + '">'
+        + (picked ? '✓ 整个文件夹' : '整个文件夹') + '</button>'
+        + '</div>';
+    }
+    const active = a._pickIdx === state.mention.index;
+    const picked = a._note && (state.noteMentions || []).some((x) => x.id === a._noteId);
+    return '<button type="button" class="mention-item' + (active ? ' active' : '') + (a._note ? ' mention-note' : '') + (picked ? ' picked' : '') + '" data-idx="' + a._pickIdx + '" role="option" aria-selected="' + (active ? 'true' : 'false') + '">'
+      + '<span class="mention-ico">' + escapeHtml(a.icon || '✨') + '</span>'
+      + '<span class="mention-text"><span class="mention-name">' + (picked ? '✓ ' : '') + escapeHtml(a.name || '') + '</span>'
+      + '<span class="mention-desc">' + escapeHtml(a.desc || assistantCatName(a.categoryId) || '') + '</span></span></button>';
+  }).join('');
+}
+
 function openMention(q, start) {
   state.mention = { open: true, q: q || '', index: 0, start: start == null ? -1 : start };
   renderMention();
@@ -7639,15 +7785,38 @@ function syncMentionFromInput() {
     if (state.mention.open) closeMention();
     return;
   }
+  ensureNotesForMention();
+  const wasOpen = state.mention.open;
   state.mention.open = true;
   state.mention.q = hit.q;
   state.mention.start = hit.start;
-  if (!state.mention.index) state.mention.index = 0;
+  state.mention.index = 0;
+  if (!wasOpen) {
+    // 刚打开面板:已经选过助手时直接给「笔记」页签(常见诉求是 @ 笔记),
+    // 没选助手则先给「助手」。
+    const hasAssistant = !!(currentChat() && currentChat().assistantId);
+    state.mention.tab = hasAssistant ? 1 : 0;
+    if (hasAssistant) ensureNotesForMention();
+  }
   renderMention();
 }
 function pickMention(item) {
   const el = inputEl;
   const start = state.mention.start;
+  if (item && item._note) {
+    // @笔记:把提及文本删掉,改在输入区上方显示浅红色 chip(可多个,可移除)
+    if (el && start >= 0) {
+      const pos = typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length;
+      el.value = (el.value.slice(0, start) + el.value.slice(pos)).replace(/^\s+/, '');
+      el.selectionStart = el.selectionEnd = Math.max(0, start);
+    }
+    closeMention();
+    addNoteMention(item._noteId, item.name);
+    // 不调用 autosizeInput:chip 不在 textarea 内,重算高度只会让输入框莫名变高
+    updateSendBtn();
+    if (el) el.focus();
+    return;
+  }
   if (el && start >= 0) {
     const pos = typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length;
     el.value = el.value.slice(0, start) + el.value.slice(pos);
@@ -7660,6 +7829,141 @@ function pickMention(item) {
   updateSendBtn();
   if (el) el.focus();
 }
+
+// ============ @笔记:提及的笔记集合与 chip ============
+// 注入上下文与正文的分隔标记(展示时据此剥离,只留用户原本写的问题)
+const NOTE_CTX_SEP = String.fromCharCode(10, 10, 45, 45, 45, 10);
+// 与「保存到 AI 笔记」共用笔记文档;这里只记录 id,发送时检索正文注入上下文。
+function addNoteMention(id, title) {
+  if (!id) return;
+  // 防御:标题不能是文件夹名(历史脏数据会显示成 @默认分类)
+  const dbg = window.OCNotes && window.OCNotes._debug;
+  const n = dbg && dbg.doc ? (dbg.doc.notes || []).find((x) => x.id === id) : null;
+  if (n) title = n.title || '无标题笔记';
+  state.noteMentions = state.noteMentions || [];
+  if (state.noteMentions.some((x) => x.id === id)) { toast('已经 @ 过这篇笔记了'); return; }
+  state.noteMentions.push({ id: id, title: title || '无标题笔记' });
+  renderNoteMentions();
+}
+// 整文件夹引用:@ 一个目录 = 引用其中全部笔记(发送时展开)
+function toggleFolderMention(fid, name) {
+  if (!fid) return;
+  state.noteFolderMentions = state.noteFolderMentions || [];
+  const i = state.noteFolderMentions.findIndex((x) => x.id === fid);
+  if (i >= 0) { state.noteFolderMentions.splice(i, 1); toast('已取消引用文件夹「' + name + '」'); }
+  else {
+    state.noteFolderMentions.push({ id: fid, name: name || '文件夹' });
+    toast('已引用整个文件夹「' + name + '」');
+  }
+  renderNoteMentions();
+  updateSendBtn();
+}
+function removeNoteMention(id) {
+  state.noteMentions = (state.noteMentions || []).filter((x) => x.id !== id);
+  renderNoteMentions();
+}
+// 首行缩进:让正文第一行从 @ 行之后开始,折行后回到最左侧(悬挂缩进)。
+// 宽度取 @ 行实际渲染宽度,并在 @ 行变化时同步。
+function syncComposerIndent() {
+  const row = $('composer-at-row');
+  const inp = $('input');
+  if (!row || !inp) return;
+  const hasAt = (row.querySelector('#composer-assistant') && !row.querySelector('#composer-assistant').classList.contains('hidden'))
+    || (row.querySelector('#note-mention-row') && !row.querySelector('#note-mention-row').classList.contains('hidden'));
+  if (!hasAt) { inp.style.textIndent = ''; return; }
+  // 用 next frame 测量:chip 刚插入 DOM 时宽度尚未确定,直接测量会偏小/为 0
+  // 缩进量按 @ 行实际宽度换算成 em(相对输入字号):
+  // 字号变化 / 页面缩放(Zoom)时缩进都随之等比缩放,无需重新测量。
+  // 但 @ 行宽度本身会因字号/字体/助手名变化而变,所以还要在布局变化后重测:
+  // 用 ResizeObserver 盯住 @ 行,任何尺寸变化都重新换算一次。
+  const apply = () => {
+    const w = row.getBoundingClientRect().width;
+    if (w <= 0) return;
+    const fs = parseFloat(window.getComputedStyle(inp).fontSize) || 14;
+    const gap = fs * 0.57;              // 约 8px @ 14px 字号
+    inp.style.textIndent = ((w + gap) / fs).toFixed(3) + 'em';
+  };
+  apply();
+  requestAnimationFrame(apply);
+  // 只挂一次:观察 @ 行的尺寸变化(助手名/笔记数/字号/缩放都会触发)
+  if (!row._indentObserver && typeof ResizeObserver === 'function') {
+    row._indentObserver = new ResizeObserver(() => apply());
+    row._indentObserver.observe(row);
+  }
+}
+
+function renderNoteMentions() {
+  const box = $('note-mention-row');
+  if (!box) return;
+  const list = state.noteMentions || [];
+  const folders = state.noteFolderMentions || [];
+  if (!list.length && !folders.length) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    syncComposerIndent();
+    return;
+  }
+  box.classList.remove('hidden');
+  // 顺序:@助手 在前,随后是 @文件夹 与 @笔记,连读为「@助手 @笔记 提问内容」
+  const folderHtml = folders.map((f) => ''
+    + '<span class="note-mention-chip note-mention-folder" data-fid="' + escapeHtml(f.id) + '" title="整个文件夹的笔记都会作为参考，点 × 移除">'
+    + '<b>@</b>' + escapeHtml(f.name) + ' 文件夹'
+    + '<button type="button" class="nmc-x" aria-label="移除">×</button></span>').join('');
+  const noteHtml = list.map((x) => ''
+    + '<span class="note-mention-chip" data-id="' + escapeHtml(x.id) + '" title="基于这篇笔记提问，点 × 移除">'
+    + '<b>@</b>' + escapeHtml(x.title || '无标题笔记')
+    + '<button type="button" class="nmc-x" aria-label="移除">×</button></span>').join('');
+  box.innerHTML = folderHtml + noteHtml;
+  if (typeof syncComposerIndent === 'function') syncComposerIndent();
+  box.querySelectorAll('.nmc-x').forEach((b) => {
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      const chip = e.target.closest('.note-mention-chip');
+      if (!chip) return;
+      if (chip.dataset.fid) {
+        state.noteFolderMentions = (state.noteFolderMentions || []).filter((x) => x.id !== chip.dataset.fid);
+        renderNoteMentions();
+      } else {
+        removeNoteMention(chip.dataset.id);
+      }
+      updateSendBtn();
+    });
+  });
+}
+// 发送前把 @笔记 的内容拼成上下文(供 AI 引用);返回 null 表示没有 @笔记
+function noteMentionsContext(limitPerNote) {
+  const list = state.noteMentions || [];
+  const folders = state.noteFolderMentions || [];
+  if (!list.length && !folders.length) return null;
+  const dbg = window.OCNotes && window.OCNotes._debug;
+  const found = [];
+  const seen = {};
+  if (dbg && dbg.doc) {
+    // 整文件夹引用:展开为该目录下全部笔记(已在列表里的不重复)
+    folders.forEach((f) => {
+      (dbg.doc.notes || []).filter((n) => n.folderId === f.id).forEach((n) => {
+        if (!seen[n.id]) { seen[n.id] = 1; found.push(n); }
+      });
+    });
+    list.forEach((m) => {
+      const n = (dbg.doc.notes || []).find((x) => x.id === m.id);
+      if (n && !seen[n.id]) { seen[n.id] = 1; found.push(n); }
+    });
+  }
+  if (!found.length) return null;
+  const cap = limitPerNote || 4000;
+  // 整文件夹引用可能命中很多篇:取最近更新的前 N 篇,避免上下文爆炸
+  const MAX_NOTES = 20;
+  const picked = found.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, MAX_NOTES);
+  const parts = picked.map((n, i) => '【笔记' + (i + 1) + '】' + (n.title || '无标题') + '\n'
+    + String(n.content || '').slice(0, cap));
+  return {
+    notes: picked,
+    text: parts.join('\n\n'),
+    instruction: '用户 @ 了 ' + picked.length + ' 篇笔记，请只根据下面提供的笔记内容回答；'
+      + '笔记里没有的信息要明确说明「笔记里没有相关内容」，不要编造。回答后不要自行编造引用编号。',
+  };
+}
 function ensureAssistantsLoaded() {
   if ((state.assistants || []).length) return Promise.resolve();
   return loadDefaultAssistant();
@@ -7667,19 +7971,61 @@ function ensureAssistantsLoaded() {
 const mentionPop = $('mention-pop');
 if (mentionPop) {
   mentionPop.addEventListener('mousedown', (e) => {
+    const tabBtn = e.target.closest('.mention-tab');
+    if (tabBtn) {
+      e.preventDefault();
+      state.mention.tab = Number(tabBtn.dataset.tab) === 1 ? 1 : 0;
+      state.mention.index = 0;
+      if (state.mention.tab === 1) ensureNotesForMention();
+      renderMention();
+      return;
+    }
+    const pickBtn = e.target.closest('[data-folder-pick]');
+    if (pickBtn) {
+      e.preventDefault();
+      toggleFolderMention(pickBtn.dataset.folderPick, pickBtn.dataset.folderName);
+      return;
+    }
+    const folderBtn = e.target.closest('.mention-folder');
+    if (folderBtn) {
+      e.preventDefault();
+      const fid = folderBtn.dataset.folder;
+      const openMap = state.mention.folderOpen || (state.mention.folderOpen = {});
+      // 默认折叠:点击在「展开 / 折叠」之间切换
+      openMap[fid] = openMap[fid] !== true;
+      renderMention();
+      return;
+    }
     const btn = e.target.closest('.mention-item');
     if (!btn) return;
     e.preventDefault();
-    const items = mentionCandidates(state.mention.q);
-    pickMention(items[Number(btn.dataset.idx)]);
+    // data-idx 是「可选项序号」(文件夹行不参与编号),按它查找而不是数组下标
+    const want = Number(btn.dataset.idx);
+    const list = currentMentionItems().filter((x) => !x._folder);
+    pickMention(list[want] || list[0]);
   });
+}
+// 当前页签下的可选项(与 renderMention 的编号保持一致)
+function currentMentionItems() {
+  const tab = state.mention.tab === 1 ? 1 : 0;
+  return tab === 1 ? noteMentionItems(state.mention.q) : mentionCandidates(state.mention.q);
 }
 inputEl.addEventListener('keydown', (e) => {
   // 中文输入法组词期间的 Enter 是「确认候选词」,不能当成发送;
   // isComposing 之外的 keyCode===229 兜底旧版 Safari。
   if (e.isComposing || e.keyCode === 229) return;
   if (state.mention.open) {
-    const items = mentionCandidates(state.mention.q);
+    const all = currentMentionItems();
+    const items = all.filter((x) => !x._folder);
+    if (e.key === 'Tab') {
+      // Tab 在「助手 / 笔记」两个页签之间切换
+      e.preventDefault();
+      state.mention.tab = state.mention.tab === 1 ? 0 : 1;
+      state.mention.index = 0;
+      if (state.mention.tab === 1) ensureNotesForMention();
+      renderMention();
+      return;
+    }
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       state.mention.index = Math.min(items.length - 1, state.mention.index + 1);
@@ -7692,7 +8038,7 @@ inputEl.addEventListener('keydown', (e) => {
       renderMention();
       return;
     }
-    if (e.key === 'Enter' || e.key === 'Tab') {
+    if (e.key === 'Enter') {
       e.preventDefault();
       pickMention(items[state.mention.index] || items[0]);
       return;
@@ -8218,6 +8564,69 @@ async function reanswerWithModel(msg, chat, providerId, modelId) {
   renderMessages();
   try {
     await requestAssistantReply(chat, { role: 'user', content: '' }, { target: msg, upToIdx: n + 1 });
+  } finally {
+    state.currentProviderId = savedProv;
+    state.currentModel = savedModel;
+    renderProviderLabel();
+    renderModelPicker();
+  }
+}
+
+// 多模型并答:一条用户消息,依次问选中的每个模型,各自成为该回答的一个可切换标签。
+// 必须串行(requestAssistantReply 有 state.streaming 守卫),好处是全程走流式管线:
+// 出字可见、可随时停止,与「@模型重答」体验一致。每个模型各计费一次(用途「多模型对比」)。
+async function sendCompareTurn(text, attachments) {
+  const picks = (state._compareModels || []).slice(0, 3);
+  // 一次性:发送后即失效,后续消息恢复单模型,不会一直问多个模型
+  state._compareModels = null;
+  const turn = postUserTurn(text, attachments);
+  const chat = turn.chat;
+  const msg = turn.assistantMsg;
+  const savedProv = state.currentProviderId;
+  const savedModel = state.currentModel;
+  try {
+    for (let i = 0; i < picks.length; i++) {
+      // 第 2 个及以后:在当前回答上追加一个空白版本(标签),写法与 @模型重答一致
+      if (i > 0) {
+        const live = liveMessage(chat, msg);
+        if (!live) break;
+        persistCurrentReplyVersion(live.msg);
+        pushReplyVersion(live.msg);
+        live.msg.error = false;
+        live.msg.interrupted = false;
+        live.msg.failNote = '';
+        live.msg._startTime = Date.now();
+        chat.updatedAt = Date.now();
+        saveChats();
+        renderMessages();
+      }
+      // pushReplyVersion 与 requestAssistantReply 都从全局 state 取模型,这里临时切换
+      state.currentProviderId = picks[i].providerId;
+      state.currentModel = picks[i].model;
+      renderProviderLabel();
+      renderModelPicker();
+      const live = liveMessage(chat, msg);
+      if (!live) break;
+      const n = live.idx;
+      try {
+        // 单个模型失败不回滚整轮:requestAssistantReply 内部会把该版本标成 error,
+        // 标签条照常渲染(带重试按钮),继续问下一个模型。
+        await requestAssistantReply(chat, turn.userMsg, {
+          target: live.msg,
+          upToIdx: n + 1,
+          _purpose: 'compare',
+        });
+      } catch (e) { /* 已由内部标记为错误版本,继续下一个 */ }
+    }
+    // 全部答完停在第一个模型的回答上,标签顺序即勾选顺序
+    const live = liveMessage(chat, msg);
+    if (live && Array.isArray(live.msg.versions) && live.msg.versions.length) {
+      live.msg.versionIndex = 0;
+      applyReplyVersion(live.msg, live.msg.versions[0]);
+    }
+    chat.updatedAt = Date.now();
+    saveChats();
+    renderMessages();
   } finally {
     state.currentProviderId = savedProv;
     state.currentModel = savedModel;

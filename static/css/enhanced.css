@@ -20,7 +20,7 @@
   justify-content: space-between;
   min-height: 30px;
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: 0.786rem;
   color: var(--text-tertiary);
   border-bottom: 1px solid var(--hairline);
   background: color-mix(in srgb, var(--bg-code) 88%, var(--bg-hover));
@@ -28,7 +28,7 @@
 .code-lang {
   font-family: "SF Mono", "Consolas", monospace;
   text-transform: uppercase;
-  font-size: 11px;
+  font-size: 0.786rem;
   letter-spacing: 0.05em;
 }
 .code-copy {
@@ -42,7 +42,7 @@
   align-items: center;
   gap: 4px;
   font: inherit;
-  font-size: 11px;
+  font-size: 0.786rem;
   line-height: 1.2;
 }
 .code-copy .oc-icon { width: 13px; height: 13px; }
@@ -67,7 +67,7 @@
   color: var(--accent);
   padding: 3px 10px;
   border-radius: 999px;
-  font-size: 11.5px;
+  font-size: 0.821rem;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -91,7 +91,7 @@
   border: none;
   background: linear-gradient(to top, var(--bg-code) 30%, transparent);
   color: var(--accent);
-  font-size: 12px;
+  font-size: 0.857rem;
   cursor: pointer;
   padding-top: 24px;
 }
@@ -109,12 +109,12 @@
 }
 .mermaid-loading {
   color: var(--text-tertiary);
-  font-size: 13px;
+  font-size: 0.929rem;
   padding: 24px;
 }
 .mermaid-error, .mermaid-unavailable {
   text-align: left;
-  font-size: 13px;
+  font-size: 0.929rem;
   color: var(--text-tertiary);
   white-space: pre-wrap;
 }
@@ -150,7 +150,7 @@
 .mindmap-tree { min-width: min-content; }
 .mindmap-empty {
   color: var(--text-tertiary);
-  font-size: 13px;
+  font-size: 0.929rem;
   padding: 16px;
   text-align: center;
 }
@@ -204,7 +204,7 @@
 .mm-title {
   display: block;
   color: var(--text);
-  font-size: 13.5px;
+  font-size: 0.964rem;
   line-height: 1.35;
   word-break: break-word;
 }
@@ -212,7 +212,7 @@
   display: block;
   margin-top: 2px;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 0.857rem;
   line-height: 1.35;
   font-weight: 400;
 }
@@ -290,7 +290,7 @@
   position: absolute;
   right: 5px;
   opacity: 0.35;
-  font-size: 10px;
+  font-size: 0.714rem;
 }
 .table-wrap th.sort-asc::after { content: "↑"; opacity: 1; color: var(--accent); }
 .table-wrap th.sort-desc::after { content: "↓"; opacity: 1; color: var(--accent); }
@@ -308,7 +308,7 @@
 }
 .md-image img:hover { transform: scale(1.005); }
 .md-image figcaption {
-  font-size: 12.5px;
+  font-size: 0.893rem;
   color: var(--text-tertiary);
   margin-top: 6px;
 }
@@ -324,7 +324,7 @@
   display: inline-block;
 }
 .md-video figcaption {
-  font-size: 12.5px;
+  font-size: 0.893rem;
   color: var(--text-tertiary);
   margin-top: 6px;
 }
@@ -359,7 +359,7 @@
   height: 38px;
   border-radius: 50%;
   cursor: pointer;
-  font-size: 16px;
+  font-size: 1.143rem;
 }
 
 /* 引用块增强 */
@@ -378,7 +378,7 @@
 }
 
 /* 脚注 */
-.footnotes { font-size: 13px; color: var(--text-tertiary); }
+.footnotes { font-size: 0.929rem; color: var(--text-tertiary); }
 .footnotes hr { display: none; }
 
 /* 未知组件 */
@@ -386,7 +386,7 @@
   border: 1px dashed var(--hairline-strong);
   border-radius: var(--radius-sm);
   padding: 10px 14px;
-  font-size: 13px;
+  font-size: 0.929rem;
   color: var(--text-tertiary);
 }
 
@@ -406,14 +406,14 @@
   padding: 10px 14px;
   cursor: pointer;
   user-select: none;
-  font-size: 13px;
+  font-size: 0.929rem;
   color: var(--text-secondary);
 }
 .reasoning-header:hover { background: var(--bg-active); }
 .reasoning-icon { color: var(--text-tertiary); display: flex; }
 .reasoning-title { font-weight: 600; flex: 1; }
 .reasoning-count {
-  font-size: 11px;
+  font-size: 0.786rem;
   background: var(--bg-active);
   padding: 1px 8px;
   border-radius: 999px;
@@ -434,7 +434,7 @@
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 0.929rem;
   color: var(--text);
   list-style: none;
   padding: 3px 0;
@@ -445,15 +445,15 @@
   height: 18px;
   border-radius: 50%;
   background: var(--bg-active);
-  font-size: 11px;
+  font-size: 0.786rem;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
-.step-toggle { margin-left: auto; color: var(--text-tertiary); font-size: 11px; }
+.step-toggle { margin-left: auto; color: var(--text-tertiary); font-size: 0.786rem; }
 .reasoning-body {
-  font-size: 13.5px;
+  font-size: 0.964rem;
   color: var(--text-secondary);
   padding: 6px 0 4px;
 }
@@ -471,7 +471,7 @@
   gap: 8px;
   padding: 9px 14px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 0.929rem;
   color: var(--text-secondary);
   user-select: none;
 }
@@ -479,7 +479,7 @@
 .tool-icon { color: var(--accent); display: flex; }
 .tool-name { font-weight: 600; flex: 1; }
 .tool-status {
-  font-size: 11px;
+  font-size: 0.786rem;
   background: var(--danger-bg);
   color: var(--danger);
   padding: 1px 8px;
@@ -488,15 +488,15 @@
 .tool-call-body {
   padding: 4px 14px 12px;
   border-top: 1px solid var(--hairline);
-  font-size: 13px;
+  font-size: 0.929rem;
 }
 .tool-section-title {
-  font-size: 12px;
+  font-size: 0.857rem;
   color: var(--text-tertiary);
   margin: 8px 0 4px;
   font-weight: 600;
 }
-.tool-section .code-block { margin: 4px 0; font-size: 12.5px; }
+.tool-section .code-block { margin: 4px 0; font-size: 0.893rem; }
 
 /* 多阶段思考状态 */
 .phase-indicator {
@@ -507,7 +507,7 @@
   border-radius: 999px;
   background: var(--bg-hover);
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 0.929rem;
   margin: 8px 0;
 }
 .phase-spinner {
@@ -557,7 +557,7 @@
   color: var(--text-secondary);
   padding: 5px 13px;
   border-radius: 999px;
-  font-size: 12.5px;
+  font-size: 0.893rem;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
@@ -571,7 +571,7 @@
   background: var(--bg-code);
   padding: 12px 14px;
   font-family: inherit;
-  font-size: 14px;
+  font-size: 1.000rem;
   color: var(--text);
   resize: vertical;
   outline: none;
@@ -595,7 +595,7 @@
   max-width: 100%;
 }
 .follow-ups-label {
-  font-size: 12px;
+  font-size: 0.857rem;
   color: var(--text-tertiary);
   margin-bottom: 6px;
   font-weight: 500;
@@ -609,7 +609,7 @@
   color: var(--text-secondary);
   padding: 7px 8px;
   border-radius: 8px;
-  font-size: 13.5px;
+  font-size: 0.964rem;
   cursor: pointer;
   transition: all 0.15s;
   text-align: left;
@@ -648,7 +648,7 @@
   border: none;
   outline: none;
   background: transparent;
-  font-size: 13px;
+  font-size: 0.929rem;
   color: var(--text);
   font-family: inherit;
 }
@@ -677,7 +677,7 @@
 .chat-item-menu .menu-btn {
   background: none;
   border: none;
-  font-size: 13px;
+  font-size: 0.929rem;
   cursor: pointer;
   padding: 3px 5px;
   border-radius: 5px;
@@ -685,11 +685,11 @@
 }
 .chat-item-menu .menu-btn:hover { background: var(--bg-hover); }
 .chat-item-menu .menu-btn.danger:hover { background: var(--danger-bg); }
-.pin-mark { font-size: 12px; flex-shrink: 0; }
+.pin-mark { font-size: 0.857rem; flex-shrink: 0; }
 .chat-item.active .chat-item-menu { display: flex; }
 .chat-list-empty {
   color: var(--text-tertiary);
-  font-size: 13px;
+  font-size: 0.929rem;
   text-align: center;
   padding: 24px 12px;
 }
@@ -699,7 +699,7 @@
   outline: none;
   background: var(--bg-surface);
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 0.929rem;
   color: var(--text);
   padding: 2px 6px;
   font-family: inherit;
@@ -742,7 +742,7 @@
   border-radius: var(--radius-sm);
   background: var(--bg-surface);
   box-shadow: var(--shadow-xs);
-  font-size: 12.5px;
+  font-size: 0.893rem;
   max-width: 220px;
 }
 .file-card .fc-icon {
@@ -752,7 +752,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 15px;
+  font-size: 1.071rem;
   flex-shrink: 0;
 }
 .file-card .fc-info {
@@ -771,7 +771,7 @@
   color: var(--text);
   font-weight: 500;
 }
-.file-card .fc-size { font-size: 11px; color: var(--text-tertiary); }
+.file-card .fc-size { font-size: 0.786rem; color: var(--text-tertiary); }
 .file-card .fc-remove {
   background: none;
   border: none;
@@ -779,7 +779,7 @@
   cursor: pointer;
   padding: 2px 4px;
   border-radius: 4px;
-  font-size: 13px;
+  font-size: 0.929rem;
   flex-shrink: 0;
 }
 .file-card .fc-remove:hover { color: var(--danger); }
@@ -801,7 +801,7 @@
   height: 18px;
   border-radius: 50%;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 0.786rem;
   line-height: 1;
 }
 
@@ -833,7 +833,7 @@
   border-bottom: 1px solid var(--hairline);
   flex-shrink: 0;
 }
-.artifact-title { font-weight: 650; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-title { font-weight: 650; font-size: 1.071rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .artifact-actions { display: flex; gap: 6px; }
 .artifact-btn {
   border: none;
@@ -841,7 +841,7 @@
   color: var(--text-secondary);
   padding: 5px 12px;
   border-radius: 999px;
-  font-size: 12.5px;
+  font-size: 0.893rem;
   cursor: pointer;
 }
 .artifact-btn:hover { background: var(--bg-active); color: var(--text); }
@@ -852,7 +852,7 @@
 .artifact-code {
   margin: 0;
   padding: 16px;
-  font-size: 13px;
+  font-size: 0.929rem;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
@@ -860,7 +860,7 @@
   color: var(--text);
 }
 .artifact-svg { padding: 16px; display: flex; justify-content: center; }
-.artifact-text { padding: 18px; font-size: 14px; color: var(--text); line-height: 1.7; }
+.artifact-text { padding: 18px; font-size: 1.000rem; color: var(--text); line-height: 1.7; }
 
 /* 语音按钮 */
 .voice-btn {
@@ -908,7 +908,7 @@
   color: var(--text-secondary);
   padding: 8px 20px;
   border-radius: 999px;
-  font-size: 13px;
+  font-size: 0.929rem;
   cursor: pointer;
 }
 .msgs-pagination button:hover { background: var(--bg-active); color: var(--text); }
@@ -921,7 +921,7 @@
 @media (max-width: 768px) {
   .artifact-panel { width: 100vw; }
   .quick-actions { gap: 4px; }
-  .quick-action { font-size: 12px; padding: 4px 10px; }
+  .quick-action { font-size: 0.857rem; padding: 4px 10px; }
 }
 
 /* 来源引用 */
@@ -933,7 +933,7 @@
   border-radius: 999px;
   background: var(--bg-active);
   color: var(--text-secondary);
-  font-size: 10.5px;
+  font-size: 0.750rem;
   font-weight: 600;
   cursor: pointer;
   vertical-align: super;
@@ -944,7 +944,7 @@
 .cite-badge:hover { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
 .reply-cost {
   display: block;
-  font-size: 11px;
+  font-size: 0.786rem;
   color: var(--text-tertiary);
   margin-top: 8px;
   user-select: none;
@@ -955,7 +955,7 @@
   border-top: 1px dashed var(--hairline-strong);
 }
 .cite-sources-title {
-  font-size: 12px;
+  font-size: 0.857rem;
   color: var(--text-tertiary);
   font-weight: 600;
   margin-bottom: 8px;
@@ -966,7 +966,7 @@
   gap: 8px;
   padding: 6px 10px;
   border-radius: 8px;
-  font-size: 13px;
+  font-size: 0.929rem;
   color: var(--text-secondary);
   text-decoration: none;
   transition: background 0.15s;
@@ -978,7 +978,7 @@
   border-radius: 50%;
   background: var(--bg-active);
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 0.786rem;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1006,7 +1006,7 @@
   border: 1px solid var(--hairline);
   box-shadow: var(--shadow-xs);
   color: var(--text-secondary);
-  font-size: 13.5px;
+  font-size: 0.964rem;
   font-weight: 500;
   cursor: pointer;
   text-align: left;
@@ -1055,7 +1055,7 @@
   background: transparent;
   padding: 7px 16px;
   border-radius: 999px;
-  font-size: 13.5px;
+  font-size: 0.964rem;
   font-weight: 500;
   color: var(--text-secondary);
   cursor: pointer;
@@ -1075,14 +1075,14 @@
   gap: 14px;
   padding: 14px 0 18px;
 }
-.avatar-lg { width: 52px; height: 52px; font-size: 20px; }
+.avatar-lg { width: 52px; height: 52px; font-size: 1.429rem; }
 .acc-head-meta { flex: 1; min-width: 0; }
-.acc-name { font-size: 17px; font-weight: 650; }
+.acc-name { font-size: 1.214rem; font-weight: 650; }
 .acc-quota-badge {
   padding: 8px 16px;
   border-radius: 999px;
   background: var(--bg-hover);
-  font-size: 13.5px;
+  font-size: 0.964rem;
   font-weight: 600;
   color: var(--text);
 }
@@ -1113,12 +1113,12 @@
   border-radius: 1px;
   background: var(--hairline-strong, var(--hairline));
 }
-.pref-sub-row .pref-name { font-size: 13.5px; font-weight: 500; }
+.pref-sub-row .pref-name { font-size: 0.964rem; font-weight: 500; }
 /* 总开关关闭时:被停用的子项置灰且不可交互 */
 .pref-row.is-disabled { opacity: 0.45; pointer-events: none; }
 .pref-info { min-width: 0; }
-.pref-name { font-size: 14.5px; font-weight: 550; }
-.pref-desc { font-size: 12.5px; color: var(--text-tertiary); margin-top: 3px; }
+.pref-name { font-size: 1.036rem; font-weight: 550; }
+.pref-desc { font-size: 0.893rem; color: var(--text-tertiary); margin-top: 3px; }
 
 .theme-seg {
   display: inline-flex;
@@ -1145,7 +1145,7 @@
   background: transparent;
   text-align: center;
   font: inherit;
-  font-size: 13px;
+  font-size: 0.929rem;
   font-weight: 600;
   color: var(--text);
   padding: 4px 0;
@@ -1156,7 +1156,7 @@
   background: transparent;
   padding: 6px 14px;
   border-radius: 999px;
-  font-size: 13px;
+  font-size: 0.929rem;
   font-weight: 500;
   color: var(--text-secondary);
   cursor: pointer;
@@ -1170,7 +1170,7 @@
    ============================================================ */
 .oc-confirm-mask { z-index: 3000; }
 .modal-sm { width: min(400px, 92vw); }
-.confirm-message { font-size: 14.5px; line-height: 1.7; color: var(--text-secondary); }
+.confirm-message { font-size: 1.036rem; line-height: 1.7; color: var(--text-secondary); }
 .modal-footer {
   display: flex;
   justify-content: flex-end;
@@ -1196,7 +1196,7 @@
   border-radius: 999px;
   background: var(--bg-hover);
   color: var(--text);
-  font-size: 13.5px;
+  font-size: 0.964rem;
   font-family: inherit;
   outline: none;
 }
@@ -1233,7 +1233,7 @@
   top: -20px;
   left: 50%;
   transform: translateX(-50%);
-  font-size: 11px;
+  font-size: 0.786rem;
   font-weight: 600;
   color: var(--text-secondary);
   opacity: 0;
@@ -1241,15 +1241,15 @@
   transition: opacity 0.15s;
 }
 .trend-col:hover .trend-val { opacity: 1; }
-.trend-label { font-size: 11px; color: var(--text-tertiary); white-space: nowrap; }
-.trend-empty { color: var(--text-tertiary); font-size: 13px; text-align: center; padding: 30px 0; }
+.trend-label { font-size: 0.786rem; color: var(--text-tertiary); white-space: nowrap; }
+.trend-empty { color: var(--text-tertiary); font-size: 0.929rem; text-align: center; padding: 30px 0; }
 
 /* 指标行 */
 .meta-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 22px;
-  font-size: 13px;
+  font-size: 0.929rem;
   color: var(--text-secondary);
   margin-top: 6px;
 }
@@ -1262,7 +1262,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  font-size: 13.5px;
+  font-size: 0.964rem;
   padding: 8px 12px;
   border-radius: 10px;
   background: var(--bg-surface-2);
@@ -1286,7 +1286,7 @@
   color: var(--text-secondary);
   padding: 6px 14px;
   border-radius: 999px;
-  font-size: 12.5px;
+  font-size: 0.893rem;
   font-family: inherit;
   cursor: pointer;
   transition: all 0.15s;
@@ -1294,14 +1294,14 @@
 .log-filter-btn:hover { background: var(--bg-hover); color: var(--text); }
 .log-filter-btn.active { background: var(--text); color: var(--bg-surface); border-color: var(--text); }
 
-.log-table { font-size: 13px; }
+.log-table { font-size: 0.929rem; }
 .log-table th, .log-table td { padding: 9px 12px; }
 .log-table td { font-variant-numeric: tabular-nums; }
 .log-badge {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 0.786rem;
   font-weight: 600;
 }
 .log-badge.chat { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); }
@@ -1320,7 +1320,7 @@
 .log-detail-modal .modal-body { max-height: 70vh; overflow: auto; }
 .log-detail-pre {
   margin: 0; padding: 12px 14px; border-radius: 10px; background: var(--bg-hover);
-  color: var(--text); font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word;
+  color: var(--text); font-size: 0.893rem; line-height: 1.6; white-space: pre-wrap; word-break: break-word;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -1330,7 +1330,7 @@
 .model-picker .provider-chip { display: flex; }
 .model-picker .provider-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
 .provider-chip .pc-format {
-  font-size: 11px;
+  font-size: 0.786rem;
   color: var(--text-tertiary);
   padding: 1px 7px;
   border-radius: 999px;
@@ -1355,7 +1355,7 @@
 /* 回复耗时 / 分页 */
 .reply-cost {
   flex-basis: 100%;
-  font-size: 12px;
+  font-size: 0.857rem;
   color: var(--text-tertiary);
   margin-top: 6px;
 }
@@ -1366,7 +1366,7 @@
   color: var(--text-secondary);
   border-radius: 999px;
   padding: 8px 18px;
-  font-size: 13px;
+  font-size: 0.929rem;
   cursor: pointer;
   font-family: inherit;
   transition: all 0.15s;
@@ -1412,7 +1412,7 @@
 .sidebar-model-wrap .model-name {
   flex: 1;
   max-width: none;
-  font-size: 13.5px;
+  font-size: 0.964rem;
 }
 .sidebar-model-wrap .provider-chip { margin: 0; }
 /* 回复耗时 / 分页等保持在原位置 */
@@ -1545,7 +1545,7 @@
 .trend-bar .trend-val {
   opacity: 0;
   top: -20px;
-  font-size: 11px;
+  font-size: 0.786rem;
   font-weight: 700;
   color: var(--text-secondary);
   background: var(--bg-surface);
@@ -1556,7 +1556,7 @@
 }
 .trend-col.has:hover .trend-val { opacity: 1; }
 .trend-label {
-  font-size: 10.5px;
+  font-size: 0.750rem;
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
 }
@@ -1577,11 +1577,11 @@
   background: var(--bg-surface-2);
   border: 1px solid var(--hairline);
   border-radius: var(--radius-md);
-  font-size: 12px;
+  font-size: 0.857rem;
   color: var(--text-tertiary);
 }
 .meta-row b {
-  font-size: 15px;
+  font-size: 1.071rem;
   font-weight: 700;
   color: var(--text);
   font-variant-numeric: tabular-nums;
@@ -1593,7 +1593,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 13.5px;
+  font-size: 0.964rem;
   padding: 10px 14px;
   border-radius: var(--radius-md);
   background: var(--bg-surface-2);
@@ -1608,7 +1608,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: 0.857rem;
   font-weight: 700;
   flex-shrink: 0;
   background: var(--bg-active);
@@ -1636,7 +1636,7 @@
   align-items: center;
   gap: 6px;
   padding: 10px 12px 4px;
-  font-size: 11px;
+  font-size: 0.786rem;
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -1645,34 +1645,34 @@
   margin-top: 4px;
 }
 .chat-group:first-of-type { border-top: none; margin-top: 0; }
-.chat-group-icon { font-size: 12px; }
+.chat-group-icon { font-size: 0.857rem; }
 .chat-group-label { flex-shrink: 0; }
 .chat-group-time {
   margin-left: auto;
   font-weight: 500;
   text-transform: none;
-  font-size: 10.5px;
+  font-size: 0.750rem;
   color: var(--text-tertiary);
   opacity: 0.8;
 }
 
 /* 对话列表字体调小 */
-.chat-item { font-size: 13px; padding: 8px 11px; }
+.chat-item { font-size: 0.929rem; padding: 8px 11px; }
 .chat-item .chat-icon svg { width: 13px; height: 13px; }
-.chat-title { font-size: 13px; }
+.chat-title { font-size: 0.929rem; }
 
 /* 消息字体调小(15px -> 14px,行高略收) */
-.msg .msg-content { font-size: 14px; line-height: 1.65; }
-.msg.assistant code { font-size: 12.5px; }
-.msg.assistant pre { font-size: 12.5px; }
+.msg .msg-content { font-size: 1.000rem; line-height: 1.65; }
+.msg.assistant code { font-size: 0.893rem; }
+.msg.assistant pre { font-size: 0.893rem; }
 
 /* ============================================================
    18. emoji 头像
    ============================================================ */
-.avatar { font-size: 18px; }
-.avatar-lg { font-size: 26px; }
+.avatar { font-size: 1.286rem; }
+.avatar-lg { font-size: 1.857rem; }
 .msg .msg-avatar {
-  font-size: 18px;
+  font-size: 1.286rem;
   line-height: 1;
   background: linear-gradient(135deg, var(--bg-active), var(--bg-hover));
   border: 1px solid var(--hairline);
@@ -1698,7 +1698,7 @@
   padding: 11px 14px;
   cursor: pointer;
   list-style: none;
-  font-size: 14px;
+  font-size: 1.000rem;
   transition: background 0.12s;
   user-select: none;
 }
@@ -1708,31 +1708,31 @@
   content: "▾";
   margin-left: auto;
   color: var(--text-tertiary);
-  font-size: 12px;
+  font-size: 0.857rem;
   transition: transform 0.15s;
 }
 .chat-history-item[open] summary::after { transform: rotate(180deg); }
 .chat-h-title { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-h-meta { flex-shrink: 0; font-size: 12px; color: var(--text-tertiary); }
+.chat-h-meta { flex-shrink: 0; font-size: 0.857rem; color: var(--text-tertiary); }
 .chat-detail { border-top: 1px solid var(--hairline); max-height: 62vh; overflow-y: auto; }
 .chat-detail-msgs { padding: 8px 14px 14px; display: flex; flex-direction: column; gap: 8px; }
 .chat-msg {
   border-radius: 10px;
   padding: 8px 12px;
-  font-size: 13px;
+  font-size: 0.929rem;
   line-height: 1.6;
   min-width: 0;
 }
 .chat-msg.u { background: var(--bg-user-msg); align-self: flex-start; max-width: 92%; }
 .chat-msg.a { background: var(--bg-surface); border: 1px solid var(--hairline); align-self: flex-start; max-width: 92%; }
-.chat-msg-who { font-size: 11px; color: var(--text-tertiary); margin-bottom: 3px; font-weight: 600; }
+.chat-msg-who { font-size: 0.786rem; color: var(--text-tertiary); margin-bottom: 3px; font-weight: 600; }
 .chat-msg-text { word-break: break-word; }
 .chat-msg-text img { max-width: 100%; height: auto; border-radius: 8px; }
 .chat-msg-text pre { overflow-x: auto; max-width: 100%; }
 .chat-reasoning { margin: 2px 0 6px; }
-.chat-reasoning > summary { font-size: 11px; color: var(--text-tertiary); cursor: pointer; }
+.chat-reasoning > summary { font-size: 0.786rem; color: var(--text-tertiary); cursor: pointer; }
 .chat-reasoning-body {
-  margin-top: 5px; padding: 7px 10px; border-radius: 8px; font-size: 12px;
+  margin-top: 5px; padding: 7px 10px; border-radius: 8px; font-size: 0.857rem;
   background: var(--bg-hover); color: var(--text-secondary); max-height: 240px; overflow: auto;
 }
 /* 后台对话弹窗里的 Markdown 元素:markdown.css 只作用于 .msg.assistant,这里补齐通用样式 */
@@ -1741,7 +1741,7 @@
   padding: 10px 12px;
   border-radius: 8px;
   background: var(--bg-hover);
-  font-size: 12.5px;
+  font-size: 0.893rem;
   line-height: 1.55;
 }
 #user-chats-content .md-prose code { font-size: 0.92em; }
@@ -1778,7 +1778,7 @@
   accent-color: var(--accent);
 }
 .font-size-value {
-  font-size: 13px;
+  font-size: 0.929rem;
   font-weight: 600;
   color: var(--text-secondary);
   margin-top: 4px;
@@ -1792,7 +1792,7 @@
   border-radius: 10px;
   background: var(--bg-hover);
   color: var(--text);
-  font-size: 13.5px;
+  font-size: 0.964rem;
   font-family: inherit;
   outline: none;
 }
@@ -1828,7 +1828,7 @@
   background: var(--bg-surface);
   color: var(--text);
   font: inherit;
-  font-size: 13px;
+  font-size: 0.929rem;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
   cursor: pointer;
@@ -1907,7 +1907,7 @@
 .accent-hex-field:focus-within { box-shadow: 0 0 0 3px var(--ring-brand); }
 .accent-hex-prefix {
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: 0.857rem;
   font-weight: 650;
   letter-spacing: 0.04em;
   color: var(--text-tertiary);
@@ -1921,7 +1921,7 @@
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 14px;
+  font-size: 1.000rem;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.03em;
   text-transform: uppercase;
@@ -1939,7 +1939,7 @@
   background: transparent;
   color: var(--text-secondary);
   font: inherit;
-  font-size: 13px;
+  font-size: 0.929rem;
   cursor: pointer;
 }
 .accent-tool:hover,
@@ -1974,7 +1974,7 @@
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 6px;
-  font-size: 12.5px;
+  font-size: 0.893rem;
   color: var(--text-secondary);
 }
 .accent-slider-val {
@@ -2032,7 +2032,7 @@
 }
 .accent-hint {
   margin: 0;
-  font-size: 12px;
+  font-size: 0.857rem;
   line-height: 1.5;
   color: var(--text-tertiary);
 }

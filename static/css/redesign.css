@@ -72,7 +72,7 @@
   --radius-lg: 20px;
   --radius-xl: 26px;
 
-  --sidebar-w: 264px;
+  --sidebar-w: 18.857rem;   /* 264px @14px 基准:随「外观→字号」等比缩放 */
   --content-w: 820px;
 }
 
@@ -130,7 +130,7 @@
 body {
   background: var(--bg-app);
   color: var(--text);
-  font-size: 15px;
+  font-size: 1.071rem;
   letter-spacing: -0.011em;
 }
 ::selection { background: color-mix(in srgb, var(--brand) 85%, transparent); color: #fff; }
@@ -193,7 +193,7 @@ textarea:focus-visible {
   border-radius: 13px;
   background: var(--primary);
   color: var(--primary-text);
-  font-size: 14px;
+  font-size: 1.000rem;
   font-weight: 600;
   box-shadow: var(--shadow-soft);
   transition: background 0.16s, box-shadow 0.16s, transform 0.1s;
@@ -216,7 +216,7 @@ textarea:focus-visible {
 }
 .sidebar-model-wrap .model-picker:hover { background: var(--bg-surface); border-color: var(--hairline-strong); box-shadow: var(--shadow-sm); }
 .sidebar-model-wrap .model-icon { color: var(--brand); }
-.sidebar-model-wrap .model-name { font-size: 13.5px; font-weight: 550; }
+.sidebar-model-wrap .model-name { font-size: 0.964rem; font-weight: 550; }
 
 /* 会话搜索:同款圆润 */
 .chat-search {
@@ -235,7 +235,7 @@ textarea:focus-visible {
   box-shadow: 0 0 0 4px var(--ring-brand);
 }
 .chat-search svg { color: var(--text-tertiary); flex-shrink: 0; }
-.chat-search input { font-size: 13.5px; }
+.chat-search input { font-size: 0.964rem; }
 
 /* 会话列表 */
 .chat-list { padding: 2px 8px 10px; gap: 2px; }
@@ -245,7 +245,7 @@ textarea:focus-visible {
   align-items: center;
   gap: 6px;
   padding: 14px 10px 6px;
-  font-size: 11px;
+  font-size: 0.786rem;
   font-weight: 600;
   letter-spacing: 0.01em;
   color: var(--text-tertiary);
@@ -269,7 +269,7 @@ textarea:focus-visible {
 .chat-group-label { flex-shrink: 0; }
 .chat-group-count {
   margin-left: auto;
-  font-size: 10.5px;
+  font-size: 0.750rem;
   font-weight: 600;
   color: var(--text-tertiary);
   background: var(--bg-hover);
@@ -290,7 +290,7 @@ textarea:focus-visible {
   height: 38px;
   padding: 0 10px;
   border-radius: 10px;
-  font-size: 13.5px;
+  font-size: 0.964rem;
   position: relative;
   color: var(--text);
 }
@@ -336,7 +336,7 @@ textarea:focus-visible {
 .chat-item-menu .menu-btn.danger:hover { background: var(--danger-bg); }
 .pin-mark { display: inline-flex; color: var(--brand); flex-shrink: 0; }
 .pin-mark svg { width: 15px; height: 15px; }
-.chat-list-empty { font-size: 12.5px; color: var(--text-tertiary); padding: 28px 12px; }
+.chat-list-empty { font-size: 0.893rem; color: var(--text-tertiary); padding: 28px 12px; }
 
 /* ============================================================
    3. 侧边栏底部:账户区 + 用户菜单
@@ -364,13 +364,13 @@ textarea:focus-visible {
 .account-chip:hover { background: var(--bg-hover); }
 .sidebar-footer .avatar {
   width: 34px; height: 34px;
-  font-size: 13px;
+  font-size: 0.929rem;
   flex-shrink: 0;
   border-radius: 50%;
 }
 .user-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.user-name { font-size: 13.5px; font-weight: 600; }
-.quota { font-size: 11.5px; color: var(--text-tertiary); margin-top: 1px; }
+.user-name { font-size: 0.964rem; font-weight: 600; }
+.quota { font-size: 0.821rem; color: var(--text-tertiary); margin-top: 1px; }
 .quota.low { color: var(--danger); font-weight: 600; }
 .account-chip .account-chevron { color: var(--text-tertiary); flex-shrink: 0; display: flex; transition: transform 0.16s; }
 .account-chip.menu-open .account-chevron { transform: rotate(180deg); }
@@ -396,7 +396,7 @@ textarea:focus-visible {
   border: none;
   background: none;
   border-radius: 9px;
-  font-size: 13.5px;
+  font-size: 0.964rem;
   color: var(--text);
   cursor: pointer;
   text-align: left;
@@ -459,12 +459,12 @@ textarea:focus-visible {
 .empty-logo svg { width: 27px; height: 27px; }
 .empty-state:hover .empty-logo { transform: translateY(-2px); box-shadow: 0 8px 22px color-mix(in srgb, var(--brand) 16%, transparent); }
 .empty-state h2 {
-  font-size: 30px;
+  font-size: 2.143rem;
   font-weight: 700;
   letter-spacing: -0.025em;
   color: var(--text);
 }
-.empty-state p.muted { font-size: 15px; margin-top: 12px; color: var(--text-secondary); }
+.empty-state p.muted { font-size: 1.071rem; margin-top: 12px; color: var(--text-secondary); }
 
 /* 核心动作按钮:品牌主按钮 + 柔和投影 */
 .empty-start-btn {
@@ -478,7 +478,7 @@ textarea:focus-visible {
   border-radius: 14px;
   background: var(--primary);
   color: var(--primary-text);
-  font-size: 14.5px;
+  font-size: 1.036rem;
   font-weight: 600;
   font-family: inherit;
   cursor: pointer;
@@ -526,9 +526,9 @@ textarea:focus-visible {
 .empty-suggest .es-icon svg { width: 19px; height: 19px; }
 .empty-suggest:hover .es-icon { background: var(--brand-soft-strong); transform: scale(1.05); }
 .empty-suggest .es-text { min-width: 0; display: flex; flex-direction: column; gap: 3px; padding-top: 2px; }
-.empty-suggest .es-title { font-size: 14.5px; font-weight: 600; color: var(--text); }
-.empty-suggest .es-desc { font-size: 12.5px; color: var(--text-tertiary); line-height: 1.5; }
-.empty-hint { margin-top: 18px; font-size: 12px; }
+.empty-suggest .es-title { font-size: 1.036rem; font-weight: 600; color: var(--text); }
+.empty-suggest .es-desc { font-size: 0.893rem; color: var(--text-tertiary); line-height: 1.5; }
+.empty-hint { margin-top: 18px; font-size: 0.857rem; }
 
 /* ============================================================
    6. 消息区(OpenWebUI 风:AI 宽幅极简 / 用户右侧气泡)
@@ -547,7 +547,7 @@ textarea:focus-visible {
   background: var(--bg-hover);
   border: 1px solid var(--hairline);
   box-shadow: none;
-  font-size: 13px;
+  font-size: 0.929rem;
   font-weight: 600;
   color: var(--text-secondary);
   display: flex;
@@ -572,7 +572,7 @@ textarea:focus-visible {
   border-radius: 18px 18px 6px 18px;
   padding: 10px 16px;
 }
-.msg .msg-content { font-size: 15px; line-height: 1.7; }
+.msg .msg-content { font-size: 1.071rem; line-height: 1.7; }
 
 /* 回复富文本 */
 .msg.assistant pre { border: 0; border-radius: 12px; background: var(--bg-code); }
@@ -630,7 +630,7 @@ textarea:focus-visible {
   border-color: var(--brand);
   box-shadow: 0 0 0 4px var(--ring-brand), var(--shadow-md);
 }
-.composer textarea { font-size: 15px; padding: 8px 2px; }
+.composer textarea { font-size: 1.071rem; padding: 8px 2px; }
 /* 仅去掉 textarea 自身的蓝色矩形 outline,保留输入卡整体的蓝色光环 */
 .composer textarea:focus,
 .composer textarea:focus-visible {
@@ -668,7 +668,7 @@ textarea:focus-visible {
 .stop-btn { background: var(--text-secondary); }
 .stop-btn:hover { background: var(--text); transform: scale(1.04); }
 
-.composer-hint { margin-top: 12px; font-size: 11.5px; color: var(--text-tertiary); }
+.composer-hint { margin-top: 12px; font-size: 0.821rem; color: var(--text-tertiary); }
 .attach-previews { max-width: var(--content-w); }
 .file-card {
   background: var(--bg-surface);
@@ -705,11 +705,11 @@ textarea:focus-visible {
 .modal-mask { opacity: 1 !important; }
 .modal-mask .modal { opacity: 1 !important; transform: none !important; }
 .modal-header { padding: 20px 24px 14px; }
-.modal-header h3 { font-size: 17px; letter-spacing: -0.01em; }
+.modal-header h3 { font-size: 1.214rem; letter-spacing: -0.01em; }
 .modal-body { padding: 6px 24px 26px; }
 /* 小节标题:去掉 ALL-CAPS 模板痕迹,正常大小写 + 弱色分层 */
 .section-title {
-  font-size: 13px;
+  font-size: 0.929rem;
   font-weight: 600;
   color: var(--text-secondary);
   letter-spacing: 0.01em;
@@ -719,7 +719,7 @@ textarea:focus-visible {
 .settings-tab {
   padding: 7px 16px;
   border-radius: 999px;
-  font-size: 13.5px;
+  font-size: 0.964rem;
 }
 .settings-tab.active { background: var(--bg-hover); color: var(--text); box-shadow: none; }
 
@@ -839,11 +839,11 @@ textarea:focus-visible {
   .composer { border-radius: 20px; }
   .scroll-bottom-btn { right: 14px; bottom: 88px; }
   .empty-state { padding-top: max(8vh, 48px); }
-  .empty-suggest .es-desc { font-size: 12px; }
+  .empty-suggest .es-desc { font-size: 0.857rem; }
 }
 @media (max-width: 480px) {
   .empty-suggests { grid-template-columns: 1fr; }
-  .empty-state h2 { font-size: 24px; }
+  .empty-state h2 { font-size: 1.714rem; }
 }
 /* ============================================================
    12. 细节抛光(Apple 风:统一缓动 / 滚动条 / 焦点 / 文本)
