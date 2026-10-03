@@ -411,7 +411,7 @@
   background: transparent;
   color: var(--brand);
   font: inherit;
-  font-size: 14.5px;
+  font-size: var(--composer-at-fs, 14.5px);
   font-weight: 650;
   line-height: 1.5;
   letter-spacing: 0.01em;
@@ -4319,15 +4319,14 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 /* 待发送的 @笔记:与 @助手(.composer-at)同款「内联文字流元素」,紧跟其后:
    不占独立行、不改变输入框高度,视觉连读为「@助手 @笔记 提问内容」。 */
 .note-mention-row {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
-  flex-shrink: 1;
-  flex-wrap: nowrap;
+  flex: 0 1 auto;
+  flex-wrap: wrap;          /* 多个 @ 时自然折行,而不是挤压 */
   align-self: center;
-  max-width: min(40%, 260px);
-  overflow: hidden;
   min-width: 0;
+  max-width: 100%;
 }
 .note-mention-row.hidden { display: none; }
 /* 与 .composer-at 完全同款观感(同字号/粗细/基线),不加背景与边框 */
@@ -4338,19 +4337,20 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   padding: 0;
   border: none;
   background: transparent;
-  color: var(--brand);
+  /* 红色表示「已选中的笔记引用」;字号与行高严格对齐 .composer-at,保证等高 */
+  color: #dc2626;
   font: inherit;
-  font-size: 14.5px;
+  font-size: inherit;
   font-weight: 650;
-  line-height: 1.5;
+  line-height: inherit;
   letter-spacing: 0.01em;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   cursor: pointer;
   max-width: 100%;
+  vertical-align: baseline;
 }
-.note-mention-chip:hover { color: var(--brand-hover, var(--brand)); text-decoration: underline; text-underline-offset: 3px; }
+[data-theme="dark"] .note-mention-chip { color: #f87171; }
+.note-mention-chip:hover { text-decoration: underline; text-underline-offset: 3px; }
 .note-mention-chip b { font-weight: 650; opacity: .9; }
 [data-theme="dark"] .note-mention-chip {
   background: rgba(248, 113, 113, .16);
@@ -4466,15 +4466,18 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 }
 .mention-item.mention-note .mention-name { font-size: 12.5px; flex-shrink: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mention-item.mention-note .mention-desc { font-size: 11px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* @ 候选里的笔记项:淡红底以示区分 */
-.mention-item.mention-note { background: rgba(220, 38, 38, .05); }
+/* @ 候选里的笔记项:默认灰色(未选中);已选中的标红 */
+.mention-item.mention-note { background: transparent; }
+.mention-item.mention-note .mention-name { color: var(--text-secondary); }
+.mention-item.mention-note.picked { background: rgba(220, 38, 38, .09); }
+.mention-item.mention-note.picked .mention-name { color: #dc2626; font-weight: 650; }
+[data-theme="dark"] .mention-item.mention-note.picked { background: rgba(248, 113, 113, .16); }
+[data-theme="dark"] .mention-item.mention-note.picked .mention-name { color: #f87171; }
 .mention-item.mention-note:hover,
 .mention-item.mention-note.active { background: rgba(220, 38, 38, .12); }
 .mention-item.mention-note .mention-name { color: #b91c1c; }
-[data-theme="dark"] .mention-item.mention-note { background: rgba(248, 113, 113, .10); }
 [data-theme="dark"] .mention-item.mention-note:hover,
-[data-theme="dark"] .mention-item.mention-note.active { background: rgba(248, 113, 113, .18); }
-[data-theme="dark"] .mention-item.mention-note .mention-name { color: #fca5a5; }
+[data-theme="dark"] .mention-item.mention-note.active { background: rgba(248, 113, 113, .12); }
 
 
 /* ---------- 回答展示:@笔记 引用来源卡片 ---------- */
@@ -4516,3 +4519,42 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   margin: 6px 0 0;
 }
 [data-theme="dark"] .note-answer-hint { color: #fca5a5; background: rgba(248, 113, 113, .14); }
+
+
+/* ---------- 输入流容器:@助手 / @笔记 / 正文 在同一行内自然流动 ----------
+   composer-flow 是 flex-wrap 容器:内容够宽时三者并排,
+   正文过长时 textarea 换到下一行,@ 留在第一行 —— 而不是互相挤压。 */
+.composer-flow {
+  flex: 1 1 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 2px;
+  min-width: 0;
+  align-self: center;
+}
+.composer-flow .composer-at,
+.composer-flow .note-mention-row { flex: 0 0 auto; order: 0; }
+.composer-flow textarea {
+  flex: 1 1 60px;    /* 最小 60px:装不下就换到下一行 */
+  min-width: 60px;
+  order: 1;
+}
+/* @ 与正文首行严格对齐:composer-flow 顶部对齐 + @ 补上 textarea 的上内边距,
+   这样 @ 与第一行文字同高,文字换行时 @ 自然留在第一行左侧。 */
+.composer-flow { align-items: flex-start; }
+.composer-flow .composer-at,
+.composer-flow .note-mention-row {
+  align-self: flex-start;
+  margin-top: 10px;   /* 抵消 textarea 的 padding-top,与首行文字基线对齐 */
+}
+.composer-flow textarea { padding-top: 10px; }
+/* @笔记 chip 与 @助手 完全等高(同字号、同 line-height、同 vertical-align) */
+.composer-at,
+.note-mention-chip {
+  font-size: 14.5px;
+  line-height: 1.5;
+  height: 21.75px;   /* 14.5 * 1.5:锁定高度,避免一个偏高一个偏低 */
+  display: inline-flex;
+  align-items: center;
+}

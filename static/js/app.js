@@ -7764,9 +7764,10 @@ function mentionBodyHtml(items, tab) {
         + '</div>';
     }
     const active = a._pickIdx === state.mention.index;
-    return '<button type="button" class="mention-item' + (active ? ' active' : '') + (a._note ? ' mention-note' : '') + '" data-idx="' + a._pickIdx + '" role="option" aria-selected="' + (active ? 'true' : 'false') + '">'
+    const picked = a._note && (state.noteMentions || []).some((x) => x.id === a._noteId);
+    return '<button type="button" class="mention-item' + (active ? ' active' : '') + (a._note ? ' mention-note' : '') + (picked ? ' picked' : '') + '" data-idx="' + a._pickIdx + '" role="option" aria-selected="' + (active ? 'true' : 'false') + '">'
       + '<span class="mention-ico">' + escapeHtml(a.icon || '✨') + '</span>'
-      + '<span class="mention-text"><span class="mention-name">' + escapeHtml(a.name || '') + '</span>'
+      + '<span class="mention-text"><span class="mention-name">' + (picked ? '✓ ' : '') + escapeHtml(a.name || '') + '</span>'
       + '<span class="mention-desc">' + escapeHtml(a.desc || assistantCatName(a.categoryId) || '') + '</span></span></button>';
   }).join('');
 }

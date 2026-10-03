@@ -240,9 +240,11 @@
             </div>
             <div class="attach-btn" id="attach-btn" title="上传图片或文件" role="button" tabindex="0" aria-label="上传图片或文件"></div>
           </div>
-          <button type="button" class="composer-at hidden" id="composer-assistant" data-tip="当前助手" aria-label="当前助手"></button>
-          <div class="note-mention-row hidden" id="note-mention-row" aria-live="polite"></div>
-          <textarea id="input" rows="1" placeholder="输入消息，Enter 发送；可粘贴或拖入图片/文件；输入 @ 选择助手" data-placeholder-desktop="输入消息，Enter 发送；可粘贴或拖入图片/文件；输入 @ 选择助手" data-placeholder-mobile="输入消息" aria-label="消息输入框" autocomplete="off" spellcheck="true"></textarea>
+          <div class="composer-flow">
+            <button type="button" class="composer-at hidden" id="composer-assistant" data-tip="当前助手" aria-label="当前助手"></button>
+            <div class="note-mention-row hidden" id="note-mention-row" aria-live="polite"></div>
+            <textarea id="input" rows="1" placeholder="输入消息，Enter 发送；可粘贴或拖入图片/文件；输入 @ 选择助手" data-placeholder-desktop="输入消息，Enter 发送；可粘贴或拖入图片/文件；输入 @ 选择助手" data-placeholder-mobile="输入消息" aria-label="消息输入框" autocomplete="off" spellcheck="true"></textarea>
+          </div>
           <div class="composer-right">
             <div class="websearch-wrap">
               <button type="button" class="websearch-btn" id="composer-websearch" title="联网：智能" aria-label="联网：智能" aria-haspopup="listbox" aria-expanded="false">
