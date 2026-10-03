@@ -2852,6 +2852,8 @@
         } finally { closeShareBtn.disabled = false; renderTree(); }
       });
     }
+    // 原生 select(链接有效期)换成站内自定义下拉
+    if (window.OC && window.OC.enhanceSelects) window.OC.enhanceSelects(mask);
     if (window.OCUI) window.OCUI.openModal(mask);
     else mask.classList.add('show');
     renderTree();
@@ -3092,12 +3094,21 @@
       sel.innerHTML = opts.join('');
       sel.value = selectedId || (plan._forceFolder || '');
       if (!sel.value) sel.value = UNCATA;
+      if (typeof syncFolderBox === 'function') syncFolderBox();
     };
     fillFolderOptions(plan.folderAction === 'existing' ? folderId : (plan._forceFolder || '__create__'));
+    // 归档文件夹下拉同样是原生 select:换成站内控件(选项由 fillFolderOptions 动态填充)
+    let folderBox = null;
+    const syncFolderBox = () => { if (folderBox && folderBox.syncLabel) folderBox.syncLabel(); };
+    if (window.OC && window.OC.enhanceSelect) {
+      folderBox = window.OC.enhanceSelect(sel, { className: 'nai-folder-box' });
+      syncFolderBox();
+    }
     if (plan.folderAction === 'create' && !plan._forceFolder) {
       sel.value = '__create__';
       newInput.classList.remove('hidden');
       newInput.value = recommendedName || '';
+      if (typeof syncFolderBox === 'function') syncFolderBox();
     }
     ta.value = plan.markdownContent;
     if (window.OCRenderer) window.OCRenderer.renderInto(previewBox, plan.markdownContent);

@@ -60,79 +60,13 @@ function escapeHtml(s) {
 // 长选项还会把整行撑满。这里保持原来的 .value / change 语义不变,
 // 所以调用方(读取 $('x').value、监听 change、直接赋值)一句都不用改。
 // 用法:enhanceNativeSelect('th-mode') —— 在 DOM 就绪后调用一次。
+// 复用 components.js 的通用实现(全站同一套观感)
 function enhanceNativeSelect(id, opts = {}) {
   const sel = $(id);
-  if (!sel || sel.tagName !== 'SELECT' || sel.dataset.enhanced === '1') return null;
-  if (!window.OC || typeof window.OC.openSelect !== 'function') return null;
-  sel.dataset.enhanced = '1';
-  sel.style.display = 'none';
-
-  const box = document.createElement('div');
-  box.className = 'select-box';
-  box.id = id + '-box';
-  box.setAttribute('role', 'button');
-  box.setAttribute('tabindex', '0');
-  box.setAttribute('aria-haspopup', 'listbox');
-  box.setAttribute('aria-expanded', 'false');
-  box.dataset.value = sel.value;
-  // 原 select 上的内联布局样式(如工具栏里的 flex:1;min-width)要挪到新控件上,
-  // 否则换完控件这一行会塌掉。只搬运布局相关的属性,视觉样式交给 .select-box。
-  ['flex', 'flex-grow', 'flex-shrink', 'flex-basis', 'min-width', 'max-width', 'width', 'margin'].forEach((prop) => {
-    const v = sel.style.getPropertyValue(prop);
-    if (v) box.style.setProperty(prop, v);
-  });
-  if (sel.classList.contains('search-input')) box.classList.add('search-input');
-  const label = document.createElement('span');
-  label.className = 'sb-label';
-  const arrow = document.createElement('span');
-  arrow.className = 'sb-arrow';
-  // 与 admin.html 里其它 .select-box 保持完全一致的箭头(内联 SVG)
-  arrow.innerHTML = '<svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg>';
-  box.appendChild(label);
-  box.appendChild(arrow);
-  sel.parentNode.insertBefore(box, sel);
-
-  const items = () => Array.prototype.map.call(sel.options, (o) => ({ value: o.value, label: o.textContent }));
-  const sync = (v) => {
-    const hit = items().find((o) => o.value === String(v));
-    label.textContent = hit ? hit.label : String(v == null ? '' : v);
-    box.dataset.value = sel.value;
-  };
-  // 选项是动态填充的(如「选择套餐」),数据变化后要重新同步显示文字
-  box.syncLabel = () => sync(sel.value);
-  sync(sel.value);
-
-  box.addEventListener('click', () => {
-    box.setAttribute('aria-expanded', 'true');
-    window.OC.openSelect(box, items(), {
-      selected: sel.value,
-      onSelect: (val) => {
-        box.setAttribute('aria-expanded', 'false');
-        if (sel.value === val) { sync(val); return; }
-        sel.value = val;
-        sync(val);
-        // 沿用原生 select 的 change 语义,现有监听器照常触发
-        sel.dispatchEvent(new Event('change', { bubbles: true }));
-      },
-    });
-  });
-  box.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); box.click(); }
-  });
-  // 外部直接给 select 赋值时,把显示文字同步过来
-  const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
-  if (desc && !sel.dataset.valuePatched) {
-    sel.dataset.valuePatched = '1';
-    Object.defineProperty(sel, 'value', {
-      get() { return desc.get.call(sel); },
-      set(v) { desc.set.call(sel, v); sync(v); },
-      configurable: true,
-    });
-  }
-  return box;
+  if (!sel || !window.OC || typeof window.OC.enhanceSelect !== 'function') return null;
+  return window.OC.enhanceSelect(sel, opts);
 }
 
-// 页面里所有原生下拉一次性替换(在 DOM 就绪后调用)
 function enhanceAllNativeSelects(ids) {
   ids.forEach((id) => enhanceNativeSelect(id));
 }
