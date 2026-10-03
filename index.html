@@ -25,20 +25,21 @@
 </script>
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
-<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.110">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.110" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.110">
-<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.110">
-<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.110">
-<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.110">
-<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.110">
-<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.110">
-<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.110">
-<link rel="stylesheet" href="./static/css/groupchat.min.css?v=2.0.110">
-<script src="./static/js/theme-boot.min.js?v=2.0.110"></script>
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.117">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.117" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.117">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.117">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.117">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.117">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.117">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.117">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.117">
+<link rel="stylesheet" href="./static/css/notes.min.css?v=2.0.117">
+<link rel="stylesheet" href="./static/css/groupchat.min.css?v=2.0.117">
+<script src="./static/js/theme-boot.min.js?v=2.0.117"></script>
 <!-- 性能门控:按后台设置决定是否加载渲染依赖(markdown-it 始终加载;KaTeX/highlight 可关)。
      必须在渲染依赖之前同步执行;具体的 <script> 标签由 perf.js 用 document.write 注入。 -->
-<script src="./static/js/perf.min.js?v=2.0.110"></script>
+<script src="./static/js/perf.min.js?v=2.0.117"></script>
 </head>
 <body>
   <!-- 移动端侧边栏遮罩 -->
@@ -87,6 +88,10 @@
         <span class="model-icon" id="chat-mode-icon"></span>
         <span class="model-name" id="chat-mode-label">简单对话</span>
         <span class="switch chat-mode-switch"><input type="checkbox" id="chat-mode-toggle"><span class="slider"></span></span>
+      </button>
+      <button type="button" class="assistant-lib-btn chat-mode-row" id="notes-entry-btn" title="打开 AI 笔记" aria-label="打开 AI 笔记" aria-haspopup="dialog">
+        <span class="model-icon" id="notes-entry-icon"></span>
+        <span class="model-name">AI 笔记</span>
       </button>
     </div>
     <nav class="chat-list" id="chat-list" aria-label="对话列表"></nav>
@@ -464,10 +469,6 @@
             <div><div>清空云端聊天记录</div><div class="muted small">删除服务器端保存的聊天数据</div></div>
             <button class="btn small danger" id="acc-clear-chats">清空</button>
           </div>
-          <div class="row-between">
-            <div><div>退出登录</div><div class="muted small">清除本机登录状态</div></div>
-            <button class="btn small" id="acc-logout">退出</button>
-          </div>
           <p class="muted small" id="acc-tip"></p>
         </section>
 
@@ -635,6 +636,17 @@
             </div>
             <div class="switch"><input type="checkbox" id="pref-followups"><span class="slider"></span></div>
           </label>
+          <div class="pref-row pref-sub-row" id="pref-notes-model-row">
+            <div class="pref-info">
+              <div class="pref-name">AI 笔记模型</div>
+              <div class="pref-desc">「保存到 AI 笔记」整理归档所用的模型，默认跟随当前对话模型</div>
+            </div>
+            <div class="select-box pref-model-select" id="pref-notes-model" data-value="" role="button" tabindex="0" aria-haspopup="listbox">
+              <span class="sb-label">跟随当前模型</span>
+              <span class="sb-arrow"><svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg></span>
+            </div>
+          </div>
+
           <div class="pref-row pref-sub-row" id="pref-followups-model-row">
             <div class="pref-info">
               <div class="pref-name">跟进建议模型</div>
@@ -697,27 +709,73 @@
           <div class="pref-row pref-row-accent">
             <div class="pref-info">
               <div class="pref-name">主题色</div>
-              <div class="pref-desc">拖动色相与明暗，即时应用到按钮和高亮</div>
+              <div class="pref-desc">按钮和高亮的颜色，可带透明度</div>
             </div>
-            <div class="accent-picker" id="accent-picker">
-              <div class="accent-preview" id="accent-preview" title="当前主题色"></div>
-              <div class="accent-bars">
-                <div class="accent-track accent-hue" id="accent-hue" tabindex="0" role="slider" aria-label="色相" aria-valuemin="0" aria-valuemax="360">
-                  <span class="accent-thumb" id="accent-hue-thumb"></span>
-                </div>
-                <div class="accent-track accent-light" id="accent-light" tabindex="0" role="slider" aria-label="明暗" aria-valuemin="0" aria-valuemax="100">
-                  <span class="accent-thumb" id="accent-light-thumb"></span>
-                </div>
-              </div>
-              <div class="accent-meta">
-                <input type="text" class="accent-hex" id="pref-accent-hex" maxlength="7" spellcheck="false" aria-label="主题色色值">
-                <button class="btn small" id="pref-accent-reset" type="button">重置</button>
-              </div>
-            </div>
+            <button class="accent-entry" id="accent-open" type="button" aria-haspopup="dialog" aria-label="修改主题色">
+              <span class="accent-entry-swatch" id="accent-entry-swatch" aria-hidden="true"></span>
+              <span class="accent-entry-hex" id="accent-entry-hex">#2563EB</span>
+            </button>
           </div>
           <p class="muted small" id="prefs-tip" style="margin-top:14px">外观保存在本机浏览器，不会上传。</p>
         </section>
       </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask hidden" id="accent-modal" role="dialog" aria-modal="true" aria-labelledby="accent-modal-title">
+    <div class="modal modal-sm accent-modal">
+      <h3 id="accent-modal-title" class="sr-only">主题色</h3>
+      <div class="modal-body">
+        <div class="accent-picker" id="accent-picker">
+          <div class="accent-hex-row">
+            <span class="accent-chip" id="accent-preview" title="当前主题色" aria-hidden="true"></span>
+            <label class="accent-hex-field">
+              <span class="accent-hex-prefix">HEX</span>
+              <input type="text" class="accent-hex" id="pref-accent-hex" maxlength="9" spellcheck="false" autocomplete="off" aria-label="主题色色值">
+            </label>
+            <button class="accent-tool" id="pref-accent-clear" type="button" title="透明" aria-label="设为透明">
+              <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M16.2 4.8a3.2 3.2 0 014.5 4.5L9.4 20.6 4 21.5l.9-5.4L16.2 4.8z" stroke-linejoin="round"/><path d="M14.2 6.8l3 3" stroke-linecap="round"/></svg>
+              <span>透明</span>
+            </button>
+            <button class="icon-btn accent-tool-close" id="accent-modal-x" type="button" aria-label="取消并关闭">
+              <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+          <div class="accent-stage">
+            <div class="accent-swatch" id="accent-swatch" aria-hidden="true"></div>
+            <div class="accent-bars">
+              <div class="accent-slider">
+                <div class="accent-slider-head"><span>色相 Hue</span><span class="accent-slider-val" id="accent-hue-val">0°</span></div>
+                <div class="accent-track accent-hue" id="accent-hue" tabindex="0" role="slider" aria-label="色相 Hue" aria-valuemin="0" aria-valuemax="360">
+                  <span class="accent-thumb" id="accent-hue-thumb"></span>
+                </div>
+              </div>
+              <div class="accent-slider">
+                <div class="accent-slider-head"><span>饱和度 Saturation</span><span class="accent-slider-val" id="accent-sat-val">100%</span></div>
+                <div class="accent-track accent-sat" id="accent-sat" tabindex="0" role="slider" aria-label="饱和度 Saturation" aria-valuemin="0" aria-valuemax="100">
+                  <span class="accent-thumb" id="accent-sat-thumb"></span>
+                </div>
+              </div>
+              <div class="accent-slider">
+                <div class="accent-slider-head"><span>明度 Lightness</span><span class="accent-slider-val" id="accent-light-val">50%</span></div>
+                <div class="accent-track accent-light" id="accent-light" tabindex="0" role="slider" aria-label="明度 Lightness" aria-valuemin="0" aria-valuemax="100">
+                  <span class="accent-thumb" id="accent-light-thumb"></span>
+                </div>
+              </div>
+              <div class="accent-slider">
+                <div class="accent-slider-head"><span>透明度 Alpha</span><span class="accent-slider-val" id="accent-alpha-val">100%</span></div>
+                <div class="accent-track accent-alpha" id="accent-alpha" tabindex="0" role="slider" aria-label="透明度 Alpha" aria-valuemin="0" aria-valuemax="100">
+                  <span class="accent-thumb" id="accent-alpha-thumb"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p class="accent-hint">支持 #RRGGBB 与 #RRGGBBAA；透明度会同时保留在填充和描边色中。</p>
+        </div>
+      </div>
+      <div class="modal-footer accent-footer">
+        <button class="btn primary" id="accent-modal-done" type="button">完成</button>
       </div>
     </div>
   </div>
@@ -872,20 +930,21 @@
     <button class="btn small primary" id="guest-bar-login" type="button">登录 / 注册</button>
   </div>
 
-  <script defer src="./static/js/config.min.js?v=2.0.110"></script>
-  <script defer src="./static/js/icons.min.js?v=2.0.110"></script>
-  <script defer src="./static/js/logos.min.js?v=2.0.110"></script>
-  <script defer src="./static/js/components.min.js?v=2.0.110"></script>
-  <script defer src="./static/js/ui.min.js?v=2.0.110"></script>
-  <script defer src="./static/js/assistants.min.js?v=2.0.110"></script>
-  <script defer src="./static/js/conversations.min.js?v=2.0.110"></script>
-  <script defer src="./static/js/renderer.min.js?v=2.0.110"></script>
-  <script defer src="./static/js/reasoning.min.js?v=2.0.110"></script>
-  <script defer src="./static/js/office-formula-copy.min.js?v=2.0.110"></script>
-  <script defer src="./static/js/citations.min.js?v=2.0.110"></script>
-  <script defer src="./static/js/messages.min.js?v=2.0.110"></script>
-  <script defer src="./static/js/multimodal.min.js?v=2.0.110"></script>
-  <script defer src="./static/js/app.min.js?v=2.0.110"></script>
-  <script defer src="./static/js/groupchat.min.js?v=2.0.110"></script>
+  <script defer src="./static/js/config.min.js?v=2.0.117"></script>
+  <script defer src="./static/js/icons.min.js?v=2.0.117"></script>
+  <script defer src="./static/js/logos.min.js?v=2.0.117"></script>
+  <script defer src="./static/js/components.min.js?v=2.0.117"></script>
+  <script defer src="./static/js/ui.min.js?v=2.0.117"></script>
+  <script defer src="./static/js/assistants.min.js?v=2.0.117"></script>
+  <script defer src="./static/js/conversations.min.js?v=2.0.117"></script>
+  <script defer src="./static/js/renderer.min.js?v=2.0.117"></script>
+  <script defer src="./static/js/reasoning.min.js?v=2.0.117"></script>
+  <script defer src="./static/js/office-formula-copy.min.js?v=2.0.117"></script>
+  <script defer src="./static/js/citations.min.js?v=2.0.117"></script>
+  <script defer src="./static/js/messages.min.js?v=2.0.117"></script>
+  <script defer src="./static/js/multimodal.min.js?v=2.0.117"></script>
+  <script defer src="./static/js/app.min.js?v=2.0.117"></script>
+  <script defer src="./static/js/groupchat.min.js?v=2.0.117"></script>
+  <script defer src="./static/js/notes.min.js?v=2.0.117"></script>
 </body>
 </html>

@@ -54,6 +54,89 @@ function toast(msg, isError = false) {
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+
+// 把原生 <select> 换成站内统一的自定义下拉(.select-box)。
+// 后台此前混用两种控件:原生 select 点开是操作系统菜单,和旁边 11 个自定义下拉完全两个观感,
+// 长选项还会把整行撑满。这里保持原来的 .value / change 语义不变,
+// 所以调用方(读取 $('x').value、监听 change、直接赋值)一句都不用改。
+// 用法:enhanceNativeSelect('th-mode') —— 在 DOM 就绪后调用一次。
+function enhanceNativeSelect(id, opts = {}) {
+  const sel = $(id);
+  if (!sel || sel.tagName !== 'SELECT' || sel.dataset.enhanced === '1') return null;
+  if (!window.OC || typeof window.OC.openSelect !== 'function') return null;
+  sel.dataset.enhanced = '1';
+  sel.style.display = 'none';
+
+  const box = document.createElement('div');
+  box.className = 'select-box';
+  box.id = id + '-box';
+  box.setAttribute('role', 'button');
+  box.setAttribute('tabindex', '0');
+  box.setAttribute('aria-haspopup', 'listbox');
+  box.setAttribute('aria-expanded', 'false');
+  box.dataset.value = sel.value;
+  // 原 select 上的内联布局样式(如工具栏里的 flex:1;min-width)要挪到新控件上,
+  // 否则换完控件这一行会塌掉。只搬运布局相关的属性,视觉样式交给 .select-box。
+  ['flex', 'flex-grow', 'flex-shrink', 'flex-basis', 'min-width', 'max-width', 'width', 'margin'].forEach((prop) => {
+    const v = sel.style.getPropertyValue(prop);
+    if (v) box.style.setProperty(prop, v);
+  });
+  if (sel.classList.contains('search-input')) box.classList.add('search-input');
+  const label = document.createElement('span');
+  label.className = 'sb-label';
+  const arrow = document.createElement('span');
+  arrow.className = 'sb-arrow';
+  // 与 admin.html 里其它 .select-box 保持完全一致的箭头(内联 SVG)
+  arrow.innerHTML = '<svg class="oc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 9.5L12 14.5 17 9.5"/></svg>';
+  box.appendChild(label);
+  box.appendChild(arrow);
+  sel.parentNode.insertBefore(box, sel);
+
+  const items = () => Array.prototype.map.call(sel.options, (o) => ({ value: o.value, label: o.textContent }));
+  const sync = (v) => {
+    const hit = items().find((o) => o.value === String(v));
+    label.textContent = hit ? hit.label : String(v == null ? '' : v);
+    box.dataset.value = sel.value;
+  };
+  // 选项是动态填充的(如「选择套餐」),数据变化后要重新同步显示文字
+  box.syncLabel = () => sync(sel.value);
+  sync(sel.value);
+
+  box.addEventListener('click', () => {
+    box.setAttribute('aria-expanded', 'true');
+    window.OC.openSelect(box, items(), {
+      selected: sel.value,
+      onSelect: (val) => {
+        box.setAttribute('aria-expanded', 'false');
+        if (sel.value === val) { sync(val); return; }
+        sel.value = val;
+        sync(val);
+        // 沿用原生 select 的 change 语义,现有监听器照常触发
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      },
+    });
+  });
+  box.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); box.click(); }
+  });
+  // 外部直接给 select 赋值时,把显示文字同步过来
+  const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+  if (desc && !sel.dataset.valuePatched) {
+    sel.dataset.valuePatched = '1';
+    Object.defineProperty(sel, 'value', {
+      get() { return desc.get.call(sel); },
+      set(v) { desc.set.call(sel, v); sync(v); },
+      configurable: true,
+    });
+  }
+  return box;
+}
+
+// 页面里所有原生下拉一次性替换(在 DOM 就绪后调用)
+function enhanceAllNativeSelects(ids) {
+  ids.forEach((id) => enhanceNativeSelect(id));
+}
+
 function fmtTime(ts) {
   return new Date(ts).toLocaleString('zh-CN', { hour12: false });
 }
@@ -85,14 +168,18 @@ function sysRing(label, sub, pct, color) {
     + '<div class="sys-meter-meta"><div class="k">' + escapeHtml(label) + '</div><div class="v">' + escapeHtml(sub) + '</div></div>'
     + '</div>';
 }
-function sysFact(k, v, sub) {
-  return '<div class="sys-fact"><div class="k">' + escapeHtml(k) + '</div><div class="v">' + escapeHtml(String(v)) + '</div>'
-    + (sub ? '<div class="sub">' + escapeHtml(sub) + '</div>' : '') + '</div>';
-}
 function sysRingColor(pct) { return pct >= 85 ? '#dc2626' : (pct >= 60 ? '#f59e0b' : '#16a34a'); }
+// 无环数值卡片:网速、运行时长、体积这类没有百分比可言的指标用大字直接显示
+function sysStat(label, value, sub) {
+  return '<div class="sys-meter sys-stat"><div class="sys-meter-meta">'
+    + '<div class="k">' + escapeHtml(label) + '</div><div class="v">' + escapeHtml(String(value)) + '</div>'
+    + (sub ? '<div class="sub">' + escapeHtml(sub) + '</div>' : '') + '</div></div>';
+}
+function fmtBps(n) { return fmtBytesBig(n) + '/s'; }
+function fmtCores(n) { return (Math.round(Number(n) * 100) / 100) + ' 核'; }
 async function loadSystemBoard() {
-  const metersEl = $('sys-meters'); const factsEl = $('sys-facts');
-  if (!metersEl || !factsEl) return;
+  const metersEl = $('sys-meters');
+  if (!metersEl) return;
   let d = null;
   try {
     const r = await api('/api/admin/system');
@@ -102,48 +189,111 @@ async function loadSystemBoard() {
     metersEl.innerHTML = '<p class="muted small" style="margin:0">服务器指标加载失败：' + escapeHtml(e.message || '') + '</p>';
     return;
   }
-  const cpu = d.cpu || {}, mem = d.memory || {}, disk = d.disk || {}, users = d.users || {};
-  const calls = d.calls || {}, content = d.content || {}, srv = d.server || {};
+  const cpu = d.cpu || {}, mem = d.memory || {}, disk = d.disk || {}, net = d.net || {};
+  const uptime = d.uptime || {}, srv = d.server || {}, quota = d.quota || {};
   const meters = [];
-  if (cpu.percent !== null && cpu.percent !== undefined) {
+  // 虚拟主机/容器里整机 CPU 取不到,后端会退一步读 cgroup 配额,这里同样按「配额 > 整机 > 核数」兜底
+  const hasQuotaCpu = (quota.cpuPercent !== null && quota.cpuPercent !== undefined)
+    || (quota.cpuCoreUsage !== null && quota.cpuCoreUsage !== undefined);
+  if (hasQuotaCpu) {
+    const sub = [];
+    if (quota.cpuCores) sub.push('配额 ' + fmtCores(quota.cpuCores));
+    if (quota.cpuCoreUsage !== null && quota.cpuCoreUsage !== undefined) sub.push('现用 ' + fmtCores(quota.cpuCoreUsage));
+    meters.push(sysRing(quota.cpuCores ? 'CPU（配额）' : 'CPU（账户用量）', sub.join(' · ') || '—',
+      quota.cpuPercent, sysRingColor(quota.cpuPercent || 0)));
+  } else if (cpu.percent !== null && cpu.percent !== undefined) {
     const la = (cpu.loadavg && cpu.loadavg.length) ? '负载 ' + cpu.loadavg.join(' / ') : (cpu.cores ? cpu.cores + ' 核' : '—');
     meters.push(sysRing('CPU 使用率', la, cpu.percent, sysRingColor(cpu.percent)));
   } else if (cpu.cores) {
     meters.push(sysRing('CPU', cpu.cores + ' 核', null, '#cbd5e1'));
   }
-  if (mem.totalBytes) {
-    const pct = mem.usedBytes * 100 / mem.totalBytes;
-    meters.push(sysRing('内存', fmtBytesBig(mem.usedBytes) + ' / ' + fmtBytesBig(mem.totalBytes), pct, sysRingColor(pct)));
-  } else if (mem.phpBytes) {
+  // 内存同理:配额比整机更有约束力时(或整机取不到)用配额;此时 PHP 进程内存另立一格,免得丢掉 memory_limit 视角
+  const hasQuotaMem = quota.memLimitBytes > 0 && quota.memUsedBytes !== null && quota.memUsedBytes !== undefined
+    && (!mem.totalBytes || quota.memLimitBytes < mem.totalBytes);
+  const phpRing = () => {
+    if (!mem.phpBytes) return;
     const lim = mem.phpLimitBytes;
     meters.push(sysRing('PHP 进程内存', fmtBytesBig(mem.phpBytes) + (lim ? ' / ' + fmtBytesBig(lim) : ''),
       lim ? mem.phpBytes * 100 / lim : null, sysRingColor(lim ? mem.phpBytes * 100 / lim : 0)));
+  };
+  if (hasQuotaMem) {
+    const pct = quota.memUsedBytes * 100 / quota.memLimitBytes;
+    meters.push(sysRing('内存（配额）', fmtBytesBig(quota.memUsedBytes) + ' / ' + fmtBytesBig(quota.memLimitBytes), pct, sysRingColor(pct)));
+  } else if (mem.totalBytes) {
+    const pct = mem.usedBytes * 100 / mem.totalBytes;
+    meters.push(sysRing('内存', fmtBytesBig(mem.usedBytes) + ' / ' + fmtBytesBig(mem.totalBytes), pct, sysRingColor(pct)));
   }
   if (disk.totalBytes && disk.freeBytes !== null && disk.freeBytes !== undefined) {
     const used = disk.totalBytes - disk.freeBytes;
     const pct = used * 100 / disk.totalBytes;
     meters.push(sysRing('磁盘', fmtBytesBig(used) + ' / ' + fmtBytesBig(disk.totalBytes), pct, sysRingColor(pct)));
   }
+  // 网速:上行=出站(回复与图片发给用户),下行=入站(用户请求进来)
+  if (net.txBps !== null && net.txBps !== undefined) {
+    meters.push(sysStat('上行网速', fmtBps(net.txBps), '累计出站 ' + fmtBytesBig(net.txBytes)));
+  }
+  if (net.rxBps !== null && net.rxBps !== undefined) {
+    meters.push(sysStat('下行网速', fmtBps(net.rxBps), '累计入站 ' + fmtBytesBig(net.rxBytes)));
+  }
+  if (uptime.systemSec !== null && uptime.systemSec !== undefined) meters.push(sysStat('系统运行时长', fmtUptime(uptime.systemSec)));
+  if (uptime.appSec !== null && uptime.appSec !== undefined) meters.push(sysStat('应用运行时长', fmtUptime(uptime.appSec)));
+  if (d.db && d.db.bytes) {
+    const dataBytes = (d.storage || []).reduce((sum, c) => sum + (c.bytes || 0), 0);
+    meters.push(sysStat('数据库大小', fmtBytesBig(d.db.bytes), dataBytes ? '数据目录共 ' + fmtBytesBig(dataBytes) : ''));
+  }
+  phpRing();
+  if ((hasQuotaCpu || hasQuotaMem) && quota.source) {
+    meters.push('<p class="muted small sys-note">整机指标被当前环境屏蔽，CPU / 内存为账户配额用量（' + escapeHtml(quota.source) + '），非物理机总量。</p>');
+  }
   metersEl.innerHTML = meters.join('') || '<p class="muted small" style="margin:0">当前环境未提供 CPU / 内存指标。</p>';
-  factsEl.innerHTML = [
-    sysFact('在线用户', users.online, '最近 ' + (users.onlineWindowMin || 5) + ' 分钟活跃'),
-    sysFact('总用户', users.total, '24 小时活跃 ' + (users.active24h || 0)),
-    sysFact('今日调用', calls.today, '近 7 天 ' + (calls.last7d || 0)),
-    sysFact('累计调用', calls.total),
-    sysFact('对话总数', content.chats),
-    sysFact('模型供应商', content.providers),
-    sysFact('助手数', content.assistants),
-    sysFact('运行时长', fmtUptime(d.uptimeSec)),
-  ].join('');
   const hostEl = $('sys-host');
-  if (hostEl) hostEl.textContent = ['v' + (d.version || '?'), srv.phpVersion ? 'PHP ' + srv.phpVersion : '', srv.os, srv.sqliteVersion ? 'SQLite ' + srv.sqliteVersion : '', srv.arch].filter(Boolean).join(' · ');
+  if (hostEl) {
+    hostEl.textContent = [
+      'v' + (d.version || '?'), srv.phpVersion ? 'PHP ' + srv.phpVersion : '', srv.sapi, srv.os,
+      srv.arch, srv.sqliteVersion ? 'SQLite ' + srv.sqliteVersion : '', srv.host, srv.timezone,
+    ].filter(Boolean).join(' · ');
+  }
   const upEl = $('sys-updated');
   if (upEl) upEl.textContent = '更新于 ' + fmtTime(Date.now()).replace(/^.*\s/, '').replace(/:\d\d$/, '');
+  OV.sys = d;
+  renderOverviewGrid();
 }
 (function initSystemBoard() {
   const btn = $('sys-refresh');
   if (btn) btn.addEventListener('click', () => { btn.disabled = true; Promise.resolve(loadSystemBoard()).then(() => { btn.disabled = false; }); });
 })();
+
+// ============ 概览(只放用户 / 运营 / 对话 / 调用,服务器指标见上方看板) ============
+// 两块数据来自不同接口(系统看板给用户与调用,统计接口给额度),谁先到都先渲染一次,
+// 后到的补齐;这样单独刷新任一边都不会把另一边的格子抹掉。
+const OV = { sys: null, stats: null };
+function ovCard(label, value, sub) {
+  return '<div class="stat-card"><div class="stat-value">' + escapeHtml(String(value)) + '</div>'
+    + '<div class="stat-label">' + escapeHtml(label) + '</div>'
+    + (sub ? '<div class="stat-sub">' + escapeHtml(sub) + '</div>' : '') + '</div>';
+}
+function renderOverviewGrid() {
+  const el = $('stats-grid');
+  if (!el) return;
+  const sys = OV.sys || {}, s = (OV.stats || {}).stats || {};
+  const users = sys.users || {}, calls = sys.calls || {}, content = sys.content || {};
+  const cards = [];
+  if (OV.sys) {
+    cards.push(['当前在线用户', users.online, '最近 ' + (users.onlineWindowMin || 5) + ' 分钟活跃']);
+    const adminN = s.adminCount ? ' · 管理员 ' + s.adminCount : '';
+    cards.push(['总用户', users.total, '24 小时活跃 ' + (users.active24h || 0) + adminN]);
+    cards.push(['今日调用', calls.today, '近 7 天 ' + (calls.last7d || 0)]);
+    cards.push(['累计调用', calls.total]);
+    cards.push(['对话总数', content.chats, content.deletedChats ? '已删除留档 ' + content.deletedChats : '']);
+    cards.push(['模型供应商', content.providers, '用户分组 ' + (content.groups || 0)]);
+    cards.push(['助手数', content.assistants]);
+  }
+  if (OV.stats) {
+    cards.push(['已发放额度', s.totalQuotaGiven || 0]);
+    cards.push(['注册默认额度', OV.stats.freeQuotaUnlimited ? '不限' : (OV.stats.freeQuota || 0)]);
+  }
+  el.innerHTML = cards.map((c) => ovCard(c[0], c[1], c[2])).join('');
+}
 
 // ============ 存储管理 ============
 function stRow(name, desc, bytes, maxBytes, action) {
@@ -194,6 +344,15 @@ async function loadStorage() {
     + '<div class="st-row-desc">' + escapeHtml(x[2]) + '</div></div>'
     + '<div class="st-row-val"><button class="btn small st-danger" type="button" data-st-clean="' + x[0] + '">清理</button></div></div>').join('')
     : '<p class="muted small">暂无可清理项。</p>';
+  if ($('st-deleted')) {
+    const del = d.deleted || { count: 0, bytes: 0, users: [] };
+    $('st-deleted').innerHTML = del.count
+      ? '<div class="st-row"><div class="st-row-main"><div class="st-row-name">已删除对话留档（' + del.count + ' 条）</div>'
+        + '<div class="st-row-desc">涉及 ' + (del.users || []).length + ' 个用户 · 估算 ' + fmtBytesBig(del.bytes)
+        + ' · 清理后不可恢复' + (del.users || []).slice(0, 3).map((u) => ' · ' + escapeHtml(u.name) + ' ' + u.count + ' 条').join('') + '</div></div>'
+        + '<div class="st-row-val"><button class="btn small" type="button" id="st-deleted-open">查看 / 清理</button></div></div>'
+      : '<p class="muted small">暂无用户删除的对话。</p>';
+  }
   const fileRow = (f) => '<div class="st-row"><div class="st-row-main"><div class="st-row-name">' + escapeHtml(f.name) + '</div>'
     + '<div class="st-row-desc">' + fmtTime(f.mtime) + '</div></div>'
     + '<div class="st-row-val">' + fmtBytesBig(f.bytes) + '</div></div>';
@@ -204,6 +363,196 @@ async function loadStorage() {
     ? d.backups.items.map(fileRow).join('') + (d.backups.count > d.backups.items.length ? '<p class="muted small">仅显示最近 ' + d.backups.items.length + ' 个，共 ' + d.backups.count + ' 个。</p>' : '')
     : '<p class="muted small">暂无备份文件（可在「版本更新」页开启自动备份）。</p>';
 }
+// ============ 用户删除的对话（云端留档）查看 / 批量清理 ============
+let DC_PAGE = 1;
+let DC_DATA = { items: [], total: 0, pageSize: 50 };
+const DC_SELECTED = new Set(); // 'userId\nchatId'
+function dcKey(it) { return it.userId + '\n' + it.chatId; }
+function dcOpenModal() {
+  const modal = $('deleted-chats-modal');
+  if (!modal) return;
+  if (window.OCUI) window.OCUI.openModal(modal);
+  else modal.classList.remove('hidden');
+}
+function dcCloseModal() {
+  const modal = $('deleted-chats-modal');
+  if (!modal) return;
+  if (window.OCUI) window.OCUI.closeModal(modal);
+  else modal.classList.add('hidden');
+}
+async function loadDeletedChats(page) {
+  const content = $('deleted-chats-content');
+  if (!content) return;
+  if (page) DC_PAGE = page;
+  content.innerHTML = '<p class="muted small" style="text-align:center;padding:24px 0">加载中…</p>';
+  try {
+    const q = $('dc-search');
+    const kw = q ? q.value.trim() : '';
+    const url = '/api/admin/chats/deleted?page=' + DC_PAGE + '&pageSize=50' + (kw ? '&q=' + encodeURIComponent(kw) : '');
+    const r = await api(url);
+    const d = await readJsonSafe(r);
+    if (!r.ok) throw new Error((d.error && d.error.message) || '加载失败');
+    DC_DATA = { items: d.items || [], total: d.total || 0, pageSize: d.pageSize || 50 };
+    // 清掉不在当前结果里的选中项
+    const valid = new Set(DC_DATA.items.map(dcKey));
+    Array.from(DC_SELECTED).forEach((k) => { if (!valid.has(k)) DC_SELECTED.delete(k); });
+    renderDeletedChats();
+  } catch (e) {
+    content.innerHTML = '<p class="muted small" style="text-align:center;padding:24px 0">加载失败：' + escapeHtml(e.message || '') + '</p>';
+  }
+}
+function renderDeletedChats() {
+  const content = $('deleted-chats-content');
+  if (!content) return;
+  const items = DC_DATA.items || [];
+  if (!items.length) {
+    content.innerHTML = '<p class="muted small" style="text-align:center;padding:24px 0">' + (DC_PAGE > 1 ? '本页没有记录' : '暂无用户删除的对话') + '</p>';
+  } else {
+    content.innerHTML = items.map((it) => {
+      const k = dcKey(it);
+      const when = it.deletedAt ? it.deletedAt : it.updatedAt;
+      return '<div class="st-row"><div class="st-row-main">'
+        + '<label class="user-form-admin" style="margin:0"><span class="switch"><input type="checkbox" class="dc-pick" data-k="' + escapeHtml(k) + '"' + (DC_SELECTED.has(k) ? ' checked' : '') + '><span class="slider"></span></span>'
+        + '<span class="st-row-name">' + escapeHtml(it.title || '新对话') + (it.pinned ? ' · 置顶' : '') + '</span></label>'
+        + '<div class="st-row-desc">' + escapeHtml(it.userName) + ' · ' + (it.messageCount || 0) + ' 条消息 · 删除于 ' + (when ? fmtTime(when) : '—')
+        + (it.preview ? '<br>' + escapeHtml(it.preview) + (it.preview.length >= 80 ? '…' : '') : '') + '</div></div>'
+        + '<div class="st-row-val"><button class="btn small" type="button" data-dc-view="' + escapeHtml(k) + '">查看</button></div></div>';
+    }).join('');
+  }
+  const info = $('dc-page-info');
+  if (info) info.textContent = DC_DATA.total ? ('共 ' + DC_DATA.total + ' 条 · 第 ' + DC_PAGE + ' 页 / 共 ' + Math.max(1, Math.ceil(DC_DATA.total / DC_DATA.pageSize)) + ' 页') : '';
+  const prev = $('dc-prev');
+  const next = $('dc-next');
+  if (prev) prev.disabled = DC_PAGE <= 1;
+  if (next) next.disabled = DC_PAGE >= Math.ceil(DC_DATA.total / DC_DATA.pageSize);
+  const sel = $('dc-purge-selected');
+  if (sel) { sel.disabled = DC_SELECTED.size === 0; sel.textContent = DC_SELECTED.size ? ('清理所选 (' + DC_SELECTED.size + ')') : '清理所选'; }
+}
+// 单条全文查看(与用户对话历史同样的 Markdown/思维链渲染)
+async function viewDeletedChat(key) {
+  const modal = $('deleted-chat-view-modal');
+  const content = $('deleted-chat-view-content');
+  if (!modal || !content) return;
+  const parts = String(key).split('\n');
+  const userId = parts[0];
+  const chatId = parts.slice(1).join('\n');
+  if (window.OCUI) window.OCUI.openModal(modal); else modal.classList.remove('hidden');
+  $('deleted-chat-view-title').textContent = '对话详情';
+  content.innerHTML = '<p class="muted small" style="text-align:center;padding:24px 0">加载中…</p>';
+  try {
+    const r = await api('/api/admin/chats/deleted/view?userId=' + encodeURIComponent(userId) + '&chatId=' + encodeURIComponent(chatId));
+    const d = await readJsonSafe(r);
+    if (!r.ok) throw new Error((d.error && d.error.message) || '加载失败');
+    const c = d.chat;
+    if (!c) { content.innerHTML = '<p class="muted small">该留档已被清理</p>'; return; }
+    $('deleted-chat-view-title').textContent = (c.title || '对话') + ' · ' + ((d.user && d.user.name) || '');
+    const renderMarkdown = (el, text) => {
+      if (window.OCRenderer && OCRenderer.renderInto) {
+        try { OCRenderer.renderInto(el, String(text || '')); return; } catch (e) { /* 回退纯文本 */ }
+      }
+      el.textContent = String(text || '');
+    };
+    const msgs = (c.messages || []).map((m) => {
+      const who = m.role === 'user' ? '用户' : (m.role === 'system' ? '系统' : 'AI');
+      const err = m.error ? ' <span class="log-badge err">失败</span>' : '';
+      const reasoning = m.reasoning
+        ? '<details class="chat-reasoning"><summary>思维链</summary><div class="chat-reasoning-body"></div></details>'
+        : '';
+      return '<div class="chat-msg ' + (m.role === 'user' ? 'u' : 'a') + '"><span class="chat-msg-who">' + who + escapeHtml(m.model ? ' · ' + m.model : '') + err + '</span>'
+        + reasoning
+        + '<div class="chat-msg-text md-prose" data-md></div></div>';
+    }).join('');
+    content.innerHTML = '<div class="muted small" style="margin-bottom:8px">删除时间：' + (d.deletedAt ? fmtTime(d.deletedAt) : '—')
+      + ' · ' + (c.messages || []).length + ' 条消息</div><div class="chat-detail"><div class="chat-detail-msgs">' + msgs + '</div></div>';
+    let mi = 0;
+    (c.messages || []).forEach((m) => {
+      const root = content.querySelectorAll('[data-md]')[mi++];
+      if (!root) return;
+      renderMarkdown(root, m.content);
+      if (m.reasoning) {
+        const rb = root.closest('.chat-msg') ? root.closest('.chat-msg').querySelector('.chat-reasoning-body') : null;
+        if (rb) renderMarkdown(rb, m.reasoning);
+      }
+    });
+  } catch (e) {
+    content.innerHTML = '<p class="muted small">加载失败：' + escapeHtml(e.message || '') + '</p>';
+  }
+}
+async function purgeDeletedChats(payload, confirmMsg) {
+  const ok = window.OCUI && window.OCUI.confirm
+    ? await window.OCUI.confirm({ title: '清理留档', message: confirmMsg, danger: true, confirmText: '清理' })
+    : window.confirm(confirmMsg);
+  if (!ok) return;
+  try {
+    const r = await api('/api/admin/chats/deleted/purge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const d = await readJsonSafe(r);
+    if (!r.ok) throw new Error((d.error && d.error.message) || '清理失败');
+    DC_SELECTED.clear();
+    toast('已清理 ' + (d.removed || 0) + ' 条留档，释放 ' + fmtBytesBig(d.freedBytes || 0));
+    await loadDeletedChats(1);
+    await loadStorage();
+  } catch (e) {
+    toast('清理失败：' + (e.message || ''), true);
+  }
+}
+(function initDeletedChats() {
+  // 存储管理页里的入口按钮是动态渲染的:用委托绑定
+  const st = $('st-deleted');
+  if (st) st.addEventListener('click', (e) => {
+    if (e.target.closest('#st-deleted-open')) { DC_PAGE = 1; DC_SELECTED.clear(); dcOpenModal(); loadDeletedChats(1); }
+  });
+  const close = $('deleted-chats-close');
+  if (close) close.addEventListener('click', dcCloseModal);
+  const modal = $('deleted-chats-modal');
+  if (modal) modal.addEventListener('click', (e) => { if (e.target === modal) dcCloseModal(); });
+  const viewModal = $('deleted-chat-view-modal');
+  const viewClose = $('deleted-chat-view-close');
+  if (viewClose) viewClose.addEventListener('click', () => {
+    if (window.OCUI) window.OCUI.closeModal(viewModal); else viewModal.classList.add('hidden');
+  });
+  if (viewModal) viewModal.addEventListener('click', (e) => { if (e.target === viewModal) { if (window.OCUI) window.OCUI.closeModal(viewModal); else viewModal.classList.add('hidden'); } });
+  const content = $('deleted-chats-content');
+  if (content) {
+    content.addEventListener('change', (e) => {
+      const pick = e.target.closest('.dc-pick');
+      if (!pick) return;
+      const k = pick.getAttribute('data-k');
+      if (pick.checked) DC_SELECTED.add(k); else DC_SELECTED.delete(k);
+      renderDeletedChats();
+    });
+    content.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-dc-view]');
+      if (!btn) return;
+      viewDeletedChat(btn.getAttribute('data-dc-view'));
+    });
+  }
+  const search = $('dc-search');
+  if (search) search.addEventListener('input', () => { clearTimeout(search._t); search._t = setTimeout(() => loadDeletedChats(1), 300); });
+  const reload = $('dc-reload');
+  if (reload) reload.addEventListener('click', () => loadDeletedChats(DC_PAGE));
+  const prev = $('dc-prev');
+  if (prev) prev.addEventListener('click', () => { if (DC_PAGE > 1) loadDeletedChats(DC_PAGE - 1); });
+  const next = $('dc-next');
+  if (next) next.addEventListener('click', () => loadDeletedChats(DC_PAGE + 1));
+  const sel = $('dc-purge-selected');
+  if (sel) sel.addEventListener('click', () => {
+    const items = Array.from(DC_SELECTED).map((k) => {
+      const p = k.split('\n');
+      return { userId: p[0], chatId: p.slice(1).join('\n') };
+    });
+    if (!items.length) return;
+    const withTombs = !!($('dc-with-tombs') && $('dc-with-tombs').checked);
+    purgeDeletedChats({ items: items, withTombstones: withTombs },
+      '确认清理选中的 ' + items.length + ' 条留档？清理后不可恢复。' + (withTombs ? '（将同时删除墓碑）' : ''));
+  });
+  const all = $('dc-purge-all');
+  if (all) all.addEventListener('click', () => {
+    const withTombs = !!($('dc-with-tombs') && $('dc-with-tombs').checked);
+    purgeDeletedChats({ all: true, withTombstones: withTombs },
+      '确认清空全部用户删除的对话留档？所有用户的留档都会被删除，且不可恢复。' + (withTombs ? '（将同时删除墓碑）' : ''));
+  });
+})();
+
 (function initStoragePanel() {
   const b = $('st-refresh');
   if (b) b.addEventListener('click', () => { b.disabled = true; Promise.resolve(loadStorage()).then(() => { b.disabled = false; }); });
@@ -244,16 +593,8 @@ async function loadStats() {
   const r = await api('/api/admin/stats');
   const data = await r.json();
   const s = data.stats || {};
-  $('stats-grid').innerHTML = [
-    ['用户总数', s.userCount ?? 0],
-    ['累计调用', s.totalCalls ?? 0],
-    ['今日调用', s.todayCalls ?? 0],
-    ['已发放额度', s.totalQuotaGiven ?? 0],
-    ['注册默认额度', data.freeQuota ?? 100],
-    ['供应商数', s.providerCount ?? 0],
-  ].map(([label, value]) =>
-    `<div class="stat-card"><div class="stat-value">${value}</div><div class="stat-label">${label}</div></div>`
-  ).join('');
+  OV.stats = data;
+  renderOverviewGrid();   // 概览格子:与系统看板的用户/调用数据合在一处渲染
 
   // 近 14 天趋势(纯 CSS 柱状)
   const trendEl = $('trend-chart');
@@ -1318,7 +1659,7 @@ async function loadProviders() {
           ${isDefault ? '<span class="badge default">默认</span>' : ''}
           ${disabled ? '<span class="badge disabled">已停用</span>' : ''}
         </div>
-        <div class="pc-url">${escapeHtml(p.baseUrl)} · ${escapeHtml(p.apiFormat)} · 模型: ${escapeHtml(p.models.map((m) => m.id).join(', '))} · ${p.billingMode === 'token' ? ('按 token ' + (p.pricePer1k || 0) + '/1K') : ('扣 ' + p.costPerCall + ' 次')}</div>
+        <div class="pc-url">${escapeHtml(p.baseUrl)} · ${escapeHtml(p.apiFormat)} · ${Array.isArray(p.models) ? p.models.length : 0} 个模型 · ${p.billingMode === 'token' ? ('按 token ' + (p.pricePer1k || 0) + '/1K') : ('扣 ' + p.costPerCall + ' 次')}</div>
         ${keyHtml}
       </div>
       <div class="provider-card-actions" style="display:flex;gap:6px;flex-shrink:0">
@@ -2780,7 +3121,12 @@ function asstIcon(name) {
 function asstCatMark(c) {
   if (!c) return '';
   if (asstIsEmoji(c.icon)) return c.icon;
-  return ({ 'ac-academic': '📚', 'ac-code': '💻', 'ac-life': '🌿', 'ac-write': '✍️', 'ac-study': '🎓' })[c.id] || '';
+  return ({
+    'ac-present': '🎨', 'ac-academic': '📚', 'ac-code': '💻', 'ac-life': '🌿',
+    'ac-write': '✍️', 'ac-study': '🎓', 'ac-as-ai': '🤖', 'ac-as-mind': '🧠',
+    'ac-as-social': '💬', 'ac-as-philosophy': '🏛️', 'ac-as-language': '🌐',
+    'ac-as-comments': '⭐', 'ac-as-company': '🏢', 'ac-as-tool': '🧰', 'ac-as-games': '🎲',
+  })[c.id] || '';
 }
 
 function setAsstCatSelect(id) {
@@ -2808,11 +3154,14 @@ function bindAsstCatSelect() {
 function renderAssistantCats() {
   const el = $('asst-cats');
   if (!el) return;
-  const tabs = [{ id: 'all', name: '全部', count: ASST_ITEMS.length }]
-    .concat(ASST_CATS.map((c) => ({ id: c.id, name: c.name, count: c.count || 0 })));
+  const pinned = [];
+  const rest = [];
+  ASST_CATS.forEach((c) => (c.id === 'ac-present' ? pinned : rest).push(c));
+  const tabs = [{ id: 'all', name: '全部', mark: '📚', count: ASST_ITEMS.length }]
+    .concat(pinned.concat(rest).map((c) => ({ id: c.id, name: c.name, mark: asstCatMark(c), count: c.count || 0 })));
   el.innerHTML = tabs.map((t) =>
     '<button class="al-cat' + (t.id === ASST_FILTER ? ' active' : '') + '" type="button" role="tab" aria-selected="' + (t.id === ASST_FILTER ? 'true' : 'false') + '" data-cat="' + escapeHtml(t.id) + '">'
-    + (t.id !== 'all' && asstCatMark(ASST_CATS.find((c) => c.id === t.id)) ? '<i>' + escapeHtml(asstCatMark(ASST_CATS.find((c) => c.id === t.id))) + '</i>' : '')
+    + (t.mark ? '<i>' + escapeHtml(t.mark) + '</i>' : '')
     + '<span>' + escapeHtml(t.name) + '</span>'
     + '<small>' + (t.count || 0) + '</small>'
     + '</button>'
@@ -2829,7 +3178,8 @@ function renderAssistants() {
     el.innerHTML = '<div class="al-empty">暂无助手，先添加分类再添加助手。</div>';
     return;
   }
-  const groups = (ASST_FILTER === 'all' ? ASST_CATS : ASST_CATS.filter((c) => c.id === ASST_FILTER)).map((c) => ({
+  const ordered = ASST_CATS.slice().sort((a, b) => (a.id === 'ac-present' ? -1 : b.id === 'ac-present' ? 1 : 0));
+  const groups = (ASST_FILTER === 'all' ? ordered : ordered.filter((c) => c.id === ASST_FILTER)).map((c) => ({
     cat: c,
     items: list.filter((a) => a.categoryId === c.id),
   })).filter((g) => g.items.length);
@@ -3485,6 +3835,8 @@ async function loadPackages() {
   const opts=PKG_CACHE.map(p=>'<option value="'+escapeHtml(p.id)+'">'+escapeHtml(p.name)+'</option>').join('');
   if(sel) sel.innerHTML=opts;
   if(bulk) bulk.innerHTML=opts;
+  // 这两个下拉已换成自定义控件:重建 option 后要把显示文字同步过来,否则标签会停在旧值
+  [$('pkg-code-package-box'), $('codes-bulk-package-box')].forEach((b) => { if (b && typeof b.syncLabel === 'function') b.syncLabel(); });
   if (list) renderPackageCards();
   CODES_CACHE = (d.codes || []).slice().sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   renderCodesList();
@@ -3906,6 +4258,7 @@ async function restoreBackup(name) {
 })();
 
 const TAB_LOADERS = {
+  notes: loadNotesSettings,
   overview: () => { loadStats(); loadSystemBoard(); },
   usage: () => loadStats(),
   users: () => loadUsers(),
@@ -4060,6 +4413,82 @@ $('usage-export')?.addEventListener('click', async () => {
   } finally { btn.disabled = false; }
 });
 
+// ---------- AI 笔记:设置 + 使用用户列表 + 审阅 ----------
+async function loadNotesSettings() {
+  const r = await api('/api/admin/settings');
+  const s = ((await r.json()) || {}).settings || {};
+  if ($('notes-enabled')) $('notes-enabled').checked = s.notesEnabled !== false;
+  if ($('notes-allow-files')) $('notes-allow-files').checked = s.notesAllowFiles !== false;
+  if ($('notes-quota')) $('notes-quota').value = Number(s.notesQuotaMb != null ? s.notesQuotaMb : 200);
+  if ($('notes-max-file')) $('notes-max-file').value = Number(s.notesMaxFileMb != null ? s.notesMaxFileMb : 50);
+  if ($('notes-share-body-only')) $('notes-share-body-only').checked = s.notesShareBodyOnly !== false;
+  if ($('notes-ai-limit')) $('notes-ai-limit').value = Number(s.notesAiDailyLimit != null ? s.notesAiDailyLimit : 50);
+  if ($('notes-ai-customizable')) $('notes-ai-customizable').checked = s.notesAiCustomizable !== false;
+  // 用户列表默认折叠:仅在展开时才拉取,避免打开页面就发请求
+  const body = $('notes-users-body');
+  if (body && !body.hidden) await loadNotesUsers();
+}
+async function loadNotesUsers() {
+  const q = ($('notes-user-search') && $('notes-user-search').value.trim()) || '';
+  const r = await api('/api/admin/notes' + (q ? '?q=' + encodeURIComponent(q) : ''));
+  const d = await r.json();
+  if (!r.ok) throw new Error((d.error && d.error.message) || '加载失败');
+  const box = $('notes-users');
+  if ($('notes-overview')) {
+    $('notes-overview').textContent = d.users.length + ' 位用户 · 共 ' + d.notesTotal + ' 篇笔记 · 附件占用 ' + fmtBytesBig(d.totalUsed);
+  }
+  if (!d.users.length) { box.innerHTML = '<p class="muted small">还没有用户使用笔记。</p>'; return; }
+  box.innerHTML = d.users.map((u) => ''
+    + '<div class="pkg-card" style="display:flex;align-items:center;gap:10px">'
+    + '<div style="flex:1;min-width:0">'
+    + '<b>' + escapeHtml(u.name) + '</b>'
+    + '<div class="muted small">' + u.notes + ' 篇笔记 · ' + u.folders + ' 个文件夹 · 附件 ' + fmtBytesBig(u.used)
+    + (u.latestAt ? ' · 最近更新 ' + fmtTime(u.latestAt) : '') + '</div>'
+    + '</div>'
+    + '<button class="btn small" data-notes-view="' + escapeHtml(u.userId) + '">查看</button>'
+    + '<button class="btn small danger" data-notes-purge="' + escapeHtml(u.userId) + '" data-name="' + escapeHtml(u.name) + '">清空</button>'
+    + '</div>').join('');
+  box.querySelectorAll('[data-notes-view]').forEach((b) => b.addEventListener('click', () => viewUserNotes(b.dataset.notesView)));
+  box.querySelectorAll('[data-notes-purge]').forEach((b) => b.addEventListener('click', async () => {
+    const ok = await window.OCUI.confirm({
+      title: '清空「' + b.dataset.name + '」的全部笔记？',
+      message: '笔记、文件夹与附件文件都会被删除，且不可恢复（用户下次同步会得到空列表）。',
+      danger: true, confirmText: '清空',
+    });
+    if (!ok) return;
+    const r2 = await api('/api/admin/notes/purge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: b.dataset.notesView }) });
+    const d2 = await r2.json().catch(() => ({}));
+    if (!r2.ok) return toast((d2.error && d2.error.message) || '清理失败', true);
+    toast('已清理（删除附件 ' + (d2.removedFiles || 0) + ' 个）');
+    loadNotesUsers();
+  }));
+}
+async function viewUserNotes(userId) {
+  const r = await api('/api/admin/notes/view?userId=' + encodeURIComponent(userId));
+  const d = await r.json();
+  if (!r.ok) return toast((d.error && d.error.message) || '加载失败', true);
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask';
+  mask.innerHTML = '<div class="modal modal-lg" role="dialog" aria-modal="true" style="max-width:900px">'
+    + '<div class="modal-header"><h3>' + escapeHtml(d.name) + ' 的笔记（' + (d.notes || []).length + ' 篇）</h3>'
+    + '<button class="icon-btn" data-close aria-label="关闭">×</button></div>'
+    + '<div class="modal-body" style="max-height:70vh;overflow:auto">'
+    + ((d.notes || []).length ? d.notes.map((n) => ''
+      + '<details style="margin-bottom:10px;border:1px solid var(--hairline);border-radius:10px;padding:8px 12px">'
+      + '<summary style="cursor:pointer;font-weight:600">' + escapeHtml(n.title || '无标题') + '</summary>'
+      + '<div class="muted small" style="margin:6px 0">' + (n.tags || []).map((t) => '#' + escapeHtml(t)).join(' ')
+      + ' · ' + fmtTime(n.updatedAt) + ' · ' + ((n.content || '').length) + ' 字</div>'
+      + '<pre style="white-space:pre-wrap;word-break:break-word;font-size:12.5px;max-height:320px;overflow:auto">' + escapeHtml(n.content || '') + '</pre>'
+      + '</details>').join('') : '<p class="muted small">该用户还没有笔记。</p>')
+    + '</div></div>';
+  document.body.appendChild(mask);
+  const closeDlg = () => window.OCUI.closeModal(mask), rm = () => { closeDlg(); setTimeout(() => mask.remove(), 340); };
+  mask.querySelector('[data-close]').addEventListener('click', rm);
+  mask.addEventListener('mousedown', (e) => { if (e.target === mask) rm(); });
+  mask._onClose = closeDlg;
+  window.OCUI.openModal(mask);
+}
+
 const ADMIN_GROUPS = {
   overview: [{ id: 'overview', label: '概览' }, { id: 'usage', label: '用量分析' }, { id: 'announce', label: '全站公告' }, { id: 'logs', label: '运行日志' }],
   users: [{ id: 'users', label: '用户' }, { id: 'groups', label: '用户组' }, { id: 'access', label: '模型授权' }, { id: 'verify', label: '用户验证' }, { id: 'invite', label: '邀请码' }],
@@ -4069,7 +4498,7 @@ const ADMIN_GROUPS = {
     { id: 'codes-gen', label: '生成兑换码' },
     { id: 'codes-fixed', label: '添加固定兑换码' },
   ],
-  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'oauth', label: '第三方登录' }, { id: 'storage', label: '存储管理' }, { id: 'update', label: '版本更新' }],
+  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'notes', label: '笔记' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'oauth', label: '第三方登录' }, { id: 'storage', label: '存储管理' }, { id: 'update', label: '版本更新' }],
   thinking: [{ id: 'thinking', label: '思考策略' }],
   content: [{ id: 'assistants', label: '助手库' }],
 };
@@ -4094,6 +4523,52 @@ function showAdminTab(name, { load = true } = {}) {
   return true;
 }
 
+document.addEventListener('click', async (e) => {
+  const toggle = e.target.closest('#notes-users-toggle');
+  if (toggle) {
+    const body = $('notes-users-body');
+    const open = body.hidden;
+    body.hidden = !open;
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) loadNotesUsers().catch((err) => toast('加载失败: ' + err.message, true));
+    return;
+  }
+  const save = e.target.closest('#notes-settings-save');
+  if (save) {
+    save.disabled = true;
+    try {
+      const body = {
+        notesEnabled: $('notes-enabled').checked,
+        notesAllowFiles: $('notes-allow-files').checked,
+        notesQuotaMb: Number($('notes-quota').value || 0),
+        notesMaxFileMb: Number($('notes-max-file').value || 50),
+        notesShareBodyOnly: $('notes-share-body-only').checked,
+        notesAiDailyLimit: Number($('notes-ai-limit').value || 0),
+        notesAiCustomizable: $('notes-ai-customizable').checked,
+      };
+      const r = await api('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((d.error && d.error.message) || '保存失败');
+      toast('笔记设置已保存');
+      await loadNotesSettings();
+    } catch (err) {
+      toast(err.message || '保存失败', true);
+    } finally { save.disabled = false; }
+    return;
+  }
+});
+document.addEventListener('keydown', (e) => {
+  const toggle = e.target.closest && e.target.closest('#notes-users-toggle');
+  if (!toggle) return;
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle.click(); }
+});
+let notesSearchTimer = null;
+document.addEventListener('input', (e) => {
+  if (!e.target || e.target.id !== 'notes-user-search') return;
+  clearTimeout(notesSearchTimer);
+  notesSearchTimer = setTimeout(() => { loadNotesUsers().catch(() => {}); }, 350);
+});
+
 $('admin-tabs').addEventListener('click', (e) => {
   const groupBtn = e.target.closest('.admin-group-tab');
   if (groupBtn) return showAdminTab((ADMIN_GROUPS[groupBtn.dataset.group] || [])[0].id);
@@ -4113,6 +4588,13 @@ window.addEventListener('hashchange', () => {
     const me = await api('/api/auth/me');
     const data = await me.json();
     if (!me.ok || !data.user.admin) throw new Error('not admin');
+    // 原生下拉统一换成站内自定义下拉,保证后台控件观感一致
+    // (脚本是 defer,这里 DOM 已解析完;放在各 tab loader 之前,回填时 .value 也能正确同步文字)
+    enhanceAllNativeSelects([
+      'th-default', 'th-mode', 'th-force',
+      'account-deletion-mode', 'smtp-encryption',
+      'pkg-code-package', 'codes-bulk-package', 'user-chats-select',
+    ]);
     localStorage.setItem('oc_user', JSON.stringify(data.user));
     ME_ID = data.user && data.user.id ? data.user.id : ME_ID;
     // 演示管理员:顶部常驻提示,提醒修改会失效;敏感入口直接隐藏,避免误操作撞到 403
@@ -4129,7 +4611,9 @@ window.addEventListener('hashchange', () => {
         const el = $(id); if (el) el.disabled = true;
       });
       const smtpNote = document.getElementById('smtp-demo-note');
-      if (smtpNote) smtpNote.hidden = false;
+      // 该元素用 class="hidden" 隐藏(.hidden{display:none!important}),
+      // 只改 .hidden 属性去不掉类,提示永远出不来。和上面几处一样按类切换。
+      if (smtpNote) smtpNote.classList.remove('hidden');
     }
     // 全局演示还原窗口:用户表单回填用(所有管理员都拉一次,避免编辑表单写死 10)
     try {

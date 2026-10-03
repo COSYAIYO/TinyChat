@@ -6,7 +6,9 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.110');
+define('TC_VERSION', '2.0.117');
+// 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
+define('TC_NOTE_MAX_CHARS', 500000);
 define('TC_DB_VERSION', 2);
 define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
@@ -163,6 +165,24 @@ $TC_SETTINGS_DEFAULTS = array(
     'imageArchiveEnabled' => true,
     // 本地留存总量上限(MB),超出按最旧优先清理
     'imageArchiveQuotaMb' => 500,
+    // ---- AI 笔记 ----
+    // 笔记功能总开关(关闭后前台入口隐藏、接口拒绝)
+    'notesEnabled' => true,
+    // 每用户笔记附件空间上限(MB),0 = 不限;用户侧边栏左下角显示剩余
+    'notesQuotaMb' => 200,
+    // 单个附件大小上限(MB);图片另有独立上限(固定 10MB)
+    'notesMaxFileMb' => 50,
+    // 允许普通用户上传非图片附件(关闭后仅图片可传)
+    'notesAllowFiles' => true,
+    // 分享链接仅包含正文(默认开启):分享出去的内容只有标题、正文与标签,
+    // 正文里的图片/附件引用会被移除,附件也不随分享暴露。
+    // 关闭后分享页同样能看正文内引用的图片与附件。
+    'notesShareBodyOnly' => true,
+    // 笔记内 AI 编辑(右键扩写/总结/翻译等)每日每用户次数上限,0 = 不限。
+    // 单次调用仍照常扣减用户额度(走 _purpose=note-edit 的标准计费通道)。
+    'notesAiDailyLimit' => 50,
+    // 允许用户自定义右键菜单的动作(关闭后固定为内置五项,齿轮只读)
+    'notesAiCustomizable' => true,
 );
 $TC_SETTINGS_DEFAULTS['mailTemplates'] = tc_mail_default_templates();
 
@@ -225,18 +245,89 @@ function tc_now() {
     return (int) round(microtime(true) * 1000);
 }
 
+// 站点对外基址。用于生成重置密码/验证邮件里的链接,所以「谁来决定这个域名」很关键:
+// Host 头由请求方自由填写,直接采信等于让攻击者把受害者引到他自己的域名上收 token
+// (伪造 Host 发一封找回密码请求,受害者点到的就是攻击者站)。
+// 因此:优先用配置的 site_url;否则只在 Host 与本机 SERVER_NAME 一致时采信它
+// (一致才说明没有被伪造,同时能保留 Host 里的端口),不一致就退回 SERVER_NAME + SERVER_PORT。
 function tc_public_base_url() {
     $configured = trim((string) tc_cfg('site_url'));
     if ($configured !== '') return rtrim($configured, '/');
     $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = isset($_SERVER['HTTP_HOST']) ? preg_replace('/[^A-Za-z0-9.:-]/', '', (string) $_SERVER['HTTP_HOST']) : 'localhost';
+    $clean = function ($h) { return preg_replace('/[^A-Za-z0-9.:-]/', '', (string) $h); };
+    $serverName = $clean(isset($_SERVER['SERVER_NAME']) ? $_SERVER['SERVER_NAME'] : '');
+    $httpHost = $clean(isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '');
+    // Host 里的主机名部分与 SERVER_NAME 相同(仅大小写/端口可能不同)才认它
+    $httpHostName = preg_replace('/:\d+$/', '', $httpHost);
+    if ($httpHost !== '' && ($serverName === '' || strcasecmp($httpHostName, $serverName) === 0)) {
+        $safeHost = $httpHost;
+    } else {
+        $safeHost = $serverName;
+        // SERVER_NAME 不带端口:非默认端口要从 SERVER_PORT 补回来,
+        // 否则站点跑在 :8099 这类端口时,邮件里的链接会指向默认端口而打不开。
+        $port = isset($_SERVER['SERVER_PORT']) ? (int) $_SERVER['SERVER_PORT'] : 0;
+        if ($port > 0 && !in_array($port, array(80, 443), true)) $safeHost .= ':' . $port;
+    }
+    if ($safeHost === '') $safeHost = 'localhost';
     $script = str_replace('\\', '/', dirname(isset($_SERVER['SCRIPT_NAME']) ? $_SERVER['SCRIPT_NAME'] : '/'));
     $script = rtrim($script, '/');
-    return $scheme . '://' . $host . ($script === '/' ? '' : $script);
+    return $scheme . '://' . $safeHost . ($script === '/' ? '' : $script);
 }
 
 function tc_public_link($path, $token) {
     return tc_public_base_url() . '/' . ltrim($path, '/') . '?token=' . rawurlencode($token);
+}
+
+// 测试/自建环境的例外开关:置 1 时允许上游指向内网(如 E2E 用 127.0.0.1 的 mock 上游)。
+// 与 TC_PAGE_FETCH_BASE 等测试钩子同一约定——只能由部署者通过环境变量开启,
+// 不来自任何请求内容,所以不会成为绕过 SSRF 防线的口子。生产环境不要设置。
+function tc_upstream_allow_private() {
+    $v = strtolower(trim((string) getenv('TC_ALLOW_PRIVATE_UPSTREAM')));
+    return $v === '1' || $v === 'true' || $v === 'yes' || $v === 'on';
+}
+
+// 供应商 Base URL 的出站目标校验(SSRF 防线)。
+// 供应商地址由用户自行填写,服务端却会带着自己的网络身份去请求它:不拦住内网目标,
+// 等于把「读内网服务」的能力交给任何能填供应商的人(云上 169.254.169.254 更直接)。
+// 只允许 http/https + 常见端口,且所有解析结果都必须是公网地址。
+// 写入时与请求时都会校验,避免旧数据绕过。
+function tc_upstream_url_is_safe($url) {
+    $p = @parse_url((string) $url);
+    if (!is_array($p) || empty($p['host'])) return false;
+    // 端口与协议限制对内网 mock 同样适用,所以放在例外开关之前判断
+    $scheme = strtolower(isset($p['scheme']) ? $p['scheme'] : '');
+    if ($scheme !== 'http' && $scheme !== 'https') return false;
+    $port = isset($p['port']) ? (int) $p['port'] : ($scheme === 'https' ? 443 : 80);
+    // 测试/自建例外:允许任意端口与内网地址(E2E 的 mock 上游跑在 127.0.0.1:8100)
+    if (tc_upstream_allow_private()) {
+        if (isset($p['user']) || isset($p['pass'])) return false;
+        return trim((string) $p['host']) !== '';
+    }
+    if (!in_array($port, array(80, 443, 8080, 8443), true)) return false;
+    // 带用户信息的 URL(user:pass@host)会让主机判断失真,直接拒绝
+    if (isset($p['user']) || isset($p['pass'])) return false;
+    $host = trim(strtolower((string) $p['host']), '[]');
+    if ($host === '' || $host === 'localhost') return false;
+    if (preg_match('/\.(local|internal|intranet|lan|home\.arpa|arpa)$/i', $host)) return false;
+    $ipOk = function ($ip) {
+        return is_string($ip) && $ip !== ''
+            && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+    };
+    $ips = array();
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        $ips[] = $host;
+    } else {
+        foreach ((array) @gethostbynamel($host) as $ip) $ips[] = $ip;
+        if (!$ips && function_exists('dns_get_record')) {
+            foreach ((array) @dns_get_record($host, DNS_AAAA) as $rec) {
+                if (!empty($rec['ipv6'])) $ips[] = $rec['ipv6'];
+            }
+        }
+    }
+    if (!$ips) return false;
+    // 任一解析结果是内网/保留地址就拒绝:DNS 轮询可能让校验与请求落到不同 IP
+    foreach ($ips as $ip) if (!$ipOk($ip)) return false;
+    return true;
 }
 
 function tc_uid($len = 16) {
@@ -499,6 +590,13 @@ function tc_normalize_settings($raw) {
     $s['agreementEnabled'] = !empty($s['agreementEnabled']);
     $s['agreementHtml'] = substr((string) (isset($s['agreementHtml']) ? $s['agreementHtml'] : ''), 0, 200000);
     // 性能优化开关(默认关闭)
+    $s['notesEnabled'] = !array_key_exists('notesEnabled', $s) || !empty($s['notesEnabled']);
+    $s['notesQuotaMb'] = min(102400, max(0, (int) (isset($s['notesQuotaMb']) ? $s['notesQuotaMb'] : 200)));
+    $s['notesMaxFileMb'] = min(2048, max(1, (int) (isset($s['notesMaxFileMb']) ? $s['notesMaxFileMb'] : 50)));
+    $s['notesAllowFiles'] = !array_key_exists('notesAllowFiles', $s) || !empty($s['notesAllowFiles']);
+    $s['notesShareBodyOnly'] = !array_key_exists('notesShareBodyOnly', $s) || !empty($s['notesShareBodyOnly']);
+    $s['notesAiDailyLimit'] = min(10000, max(0, (int) (isset($s['notesAiDailyLimit']) ? $s['notesAiDailyLimit'] : 50)));
+    $s['notesAiCustomizable'] = !array_key_exists('notesAiCustomizable', $s) || !empty($s['notesAiCustomizable']);
     $s['perfNoWebfonts'] = !empty($s['perfNoWebfonts']);
     $s['perfNoKatex'] = !empty($s['perfNoKatex']);
     $s['perfNoHighlight'] = !empty($s['perfNoHighlight']);
@@ -736,6 +834,16 @@ function tc_empty_db() {
         'stats' => array('totalCalls' => 0, 'totalQuotaGiven' => 0, 'callsByDay' => new stdClass(), 'modelVotes' => new stdClass(), 'usageLedger' => new stdClass(), 'modelHealth' => new stdClass()),
         'settings' => tc_normalize_settings(null),
         'userChats' => new stdClass(),
+        // 已删除对话留档:{userId: {chats:[完整记录], tombs:{chatId: 删除时间}}}——用户端删除只打标记,
+        // 内容留在云端供管理员查看与批量清理;tombs 是墓碑,防止别的设备用旧副本把对话合并回来
+        'userDeletedChats' => new stdClass(),
+        // AI 笔记:按用户拆成 note:{uid} 行(与 userChats 同一套省写放大机制),
+        // 值为 {folders:[], notes:[], tombs:{id:删除时间}} 整份文档,由客户端驱动同步
+        'userNotes' => new stdClass(),
+        // 笔记文档乐观并发修订号:{userId: int},语义与 userChatRevisions 一致
+        'userNoteRevisions' => new stdClass(),
+        // 笔记分享:{token: {token, ownerId, noteId, mode, createdAt}},内容不快照、读取时按属主实时取
+        'noteShares' => new stdClass(),
         'shares' => new stdClass(),
         'userGroups' => array(),
         'accessRules' => array(),
@@ -815,6 +923,15 @@ function tc_demo_arm(&$db, $user, $force = false) {
         $snapshot['demoQuota'] = isset($user['quota']) ? $user['quota'] : 0;
         $snapshot['demoQuotaGrants'] = isset($user['quotaGrants']) && is_array($user['quotaGrants']) ? $user['quotaGrants'] : array();
     }
+    // 已删除对话留档同样定格:演示期间删掉的对话(含墓碑)在还原时一并回到当时的状态,
+    // 否则墓碑会把快照里恢复出来的对话再次过滤掉。
+    if ($prevBase !== null && array_key_exists('demoDeletedChats', $prevBase)) {
+        $snapshot['demoDeletedChats'] = $prevBase['demoDeletedChats'];
+    } else {
+        $delMap = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array());
+        $snapshot['demoDeletedChats'] = ($uid !== '' && isset($delMap[$uid]) && is_array($delMap[$uid]))
+            ? $delMap[$uid] : array('chats' => array(), 'tombs' => array());
+    }
     $revMap = tc_assoc(isset($db['userChatRevisions']) ? $db['userChatRevisions'] : array());
     $snapshot['demoChatRevision'] = isset($revMap[$uid]) ? (int) $revMap[$uid] : 0;
     $db['demoSnapshot'] = $snapshot;
@@ -853,6 +970,14 @@ function tc_demo_revert(&$db) {
                 $revMap[$uid] = (isset($revMap[$uid]) ? (int) $revMap[$uid] : 0) + 1;
                 $db['userChatRevisions'] = tc_object_map($revMap);
             }
+            // 删除留档/墓碑还原到快照时刻:演示期间的删除不再拦着被恢复的对话
+            $delMap = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array());
+            if (array_key_exists('demoDeletedChats', $snap) && is_array($snap['demoDeletedChats'])) {
+                $delMap[$uid] = $snap['demoDeletedChats'];
+            } else {
+                unset($delMap[$uid]);
+            }
+            $db['userDeletedChats'] = tc_object_map($delMap);
             foreach ($db['users'] as &$u) {
                 if (!isset($u['id']) || (string) $u['id'] !== $uid) continue;
                 if (array_key_exists('demoQuota', $snap)) $u['quota'] = $snap['demoQuota'];
@@ -870,6 +995,7 @@ function tc_demo_revert(&$db) {
         'demoChats' => array_key_exists('demoChats', $snap) ? $snap['demoChats'] : array(),
         'demoQuota' => array_key_exists('demoQuota', $snap) ? $snap['demoQuota'] : 0,
         'demoQuotaGrants' => array_key_exists('demoQuotaGrants', $snap) ? $snap['demoQuotaGrants'] : array(),
+        'demoDeletedChats' => array_key_exists('demoDeletedChats', $snap) ? $snap['demoDeletedChats'] : array('chats' => array(), 'tombs' => array()),
     );
     // 还原标记:客户端凭它识别「这是一次整体还原」,从而丢弃本地旧副本整体采纳云端。
     // 没有这个标记,浏览器里残留的旧对话会在下一次合并时把已还原的内容"复活"回服务端。
@@ -1104,7 +1230,22 @@ function tc_migrate_db($raw) {
     }
     tc_migrate_provider_keys($db);
     $db['userChats'] = tc_object_map(isset($db['userChats']) ? $db['userChats'] : array());
+    // 已删除对话留档:老库里没有这个键(默认空);逐用户规整为 {chats:[], tombs:{}} 形状,
+    // 避免半截数据(只有 chats 没有 tombs)在后续读写里取不到键而报错
+    $delMap = array();
+    foreach (tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array()) as $uid => $row) {
+        $row = tc_assoc($row);
+        $delMap[$uid] = array(
+            'chats' => isset($row['chats']) && is_array($row['chats']) ? array_values($row['chats']) : array(),
+            'tombs' => tc_assoc(isset($row['tombs']) ? $row['tombs'] : array()),
+        );
+    }
+    $db['userDeletedChats'] = tc_object_map($delMap);
     $db['shares'] = tc_object_map(isset($db['shares']) ? $db['shares'] : array());
+    // AI 笔记:老库没有这些键(默认空);文档本体按用户拆行存储,这里只规整映射形状
+    $db['userNotes'] = tc_object_map(isset($db['userNotes']) ? $db['userNotes'] : array());
+    $db['userNoteRevisions'] = tc_object_map(isset($db['userNoteRevisions']) ? $db['userNoteRevisions'] : array());
+    $db['noteShares'] = tc_object_map(isset($db['noteShares']) ? $db['noteShares'] : array());
     $stats = tc_assoc(isset($db['stats']) ? $db['stats'] : array());
     $votes = array();
     foreach (tc_assoc(isset($stats['modelVotes']) ? $stats['modelVotes'] : array()) as $model => $row) {
@@ -1395,12 +1536,23 @@ function tc_db_load_all($pdo) {
 function tc_db_load_with_baseline($pdo) {
     $db = tc_empty_db();
     $db['userChats'] = new stdClass();
+    $db['userNotes'] = new stdClass();
     $orig = array();
     $origChats = array();
+    $origDeleted = array();
+    $origNotes = array();
     $rows = $pdo->query('SELECT k, v FROM store')->fetchAll();
     foreach ($rows as $row) {
         $k = (string) $row['k'];
         $raw = (string) $row['v'];
+        if (strncmp($k, 'chatdel:', 8) === 0) {
+            $origDeleted[substr($k, 8)] = $raw;
+            $val = json_decode($raw, true);
+            if (is_array($val)) {
+                $db['userDeletedChats']->{substr($k, 8)} = $val;
+            }
+            continue;
+        }
         if (strncmp($k, 'chat:', 5) === 0) {
             $origChats[substr($k, 5)] = $raw;
             $val = json_decode($raw, true);
@@ -1409,12 +1561,20 @@ function tc_db_load_with_baseline($pdo) {
             }
             continue;
         }
+        if (strncmp($k, 'note:', 5) === 0) {
+            $origNotes[substr($k, 5)] = $raw;
+            $val = json_decode($raw, true);
+            if (is_array($val)) {
+                $db['userNotes']->{substr($k, 5)} = $val;
+            }
+            continue;
+        }
         $orig[$k] = $raw;
         $val = json_decode($raw, true);
         if ($val === null && $raw !== 'null') continue;
         $db[$k] = $val;
     }
-    return array(tc_migrate_db($db), $orig, $origChats);
+    return array(tc_migrate_db($db), $orig, $origChats, $origDeleted, $origNotes);
 }
 
 // 整库快照写入(迁移导入 / 恢复备份用):清空后按顶层键落行
@@ -1428,6 +1588,18 @@ function tc_db_write_snapshot($pdo, $db) {
             }
             continue;
         }
+        if ($k === 'userNotes') {
+            foreach (tc_assoc($v) as $uid => $row) {
+                $ins->execute(array(':k' => 'note:' . $uid, ':v' => tc_json_encode($row)));
+            }
+            continue;
+        }
+        if ($k === 'userDeletedChats') {
+            foreach (tc_assoc($v) as $uid => $row) {
+                $ins->execute(array(':k' => 'chatdel:' . $uid, ':v' => tc_json_encode($row)));
+            }
+            continue;
+        }
         $ins->execute(array(':k' => $k, ':v' => tc_json_encode($v)));
     }
 }
@@ -1437,12 +1609,13 @@ function tc_with_db($write, $fn) {
     // 结果按请求缓存,不产生额外文件读取开销。
     tc_integrity_guard();
     $pdo = tc_db();
-    list($db, $orig, $origChats) = tc_db_load_with_baseline($pdo);
+    list($db, $orig, $origChats, $origDeleted, $origNotes) = tc_db_load_with_baseline($pdo);
     $GLOBALS['_tc_db'] = &$db;
     $GLOBALS['_tc_demo_before'] = null;
     $GLOBALS['_tc_db_ctx'] = array(
         'write' => $write, 'committed' => false, 'pdo' => $pdo,
-        'orig' => $orig, 'origChats' => $origChats,
+        'orig' => $orig, 'origChats' => $origChats, 'origDeleted' => $origDeleted,
+        'origNotes' => $origNotes,
     );
     try {
         if ($write) $pdo->exec('BEGIN IMMEDIATE');
@@ -1485,6 +1658,10 @@ function tc_db_commit() {
         $ups = $pdo->prepare('INSERT INTO store (k, v) VALUES (:k, :v) ON CONFLICT(k) DO UPDATE SET v = :v2');
         $del = $pdo->prepare('DELETE FROM store WHERE k = :k');
         $newChats = tc_assoc(isset($db['userChats']) ? $db['userChats'] : null);
+        $newDeleted = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : null);
+        $newNotes = tc_assoc(isset($db['userNotes']) ? $db['userNotes'] : null);
+        $origDeleted = isset($ctx['origDeleted']) ? $ctx['origDeleted'] : array();
+        $origNotes = isset($ctx['origNotes']) ? $ctx['origNotes'] : array();
         foreach ($db as $k => $v) {
             if ($k === 'userChats') {
                 foreach ($newChats as $uid => $row) {
@@ -1494,6 +1671,28 @@ function tc_db_commit() {
                 }
                 foreach ($ctx['origChats'] as $uid => $json) {
                     if (!array_key_exists($uid, $newChats)) $del->execute(array(':k' => 'chat:' . $uid));
+                }
+                continue;
+            }
+            if ($k === 'userNotes') {
+                foreach ($newNotes as $uid => $row) {
+                    $json = tc_json_encode($row);
+                    if (isset($origNotes[$uid]) && $origNotes[$uid] === $json) continue;
+                    $ups->execute(array(':k' => 'note:' . $uid, ':v' => $json, ':v2' => $json));
+                }
+                foreach ($origNotes as $uid => $json) {
+                    if (!array_key_exists($uid, $newNotes)) $del->execute(array(':k' => 'note:' . $uid));
+                }
+                continue;
+            }
+            if ($k === 'userDeletedChats') {
+                foreach ($newDeleted as $uid => $row) {
+                    $json = tc_json_encode($row);
+                    if (isset($origDeleted[$uid]) && $origDeleted[$uid] === $json) continue;
+                    $ups->execute(array(':k' => 'chatdel:' . $uid, ':v' => $json, ':v2' => $json));
+                }
+                foreach ($origDeleted as $uid => $json) {
+                    if (!array_key_exists($uid, $newDeleted)) $del->execute(array(':k' => 'chatdel:' . $uid));
                 }
                 continue;
             }
@@ -1582,7 +1781,12 @@ function tc_jwt_verify($token) {
     if (!hash_equals($expect, $s)) return null;
     $json = tc_b64url_decode($b);
     $payload = json_decode($json, true);
-    return is_array($payload) ? $payload : null;
+    if (!is_array($payload)) return null;
+    // 有效期在这里统一把关:签名只证明「是我们签发的」,不代表「还能用」。
+    // 以前只有会话令牌在调用处查 exp,一次性票据(登录/绑定)全都漏检,
+    // 导致票据被记录后可以无限期重放。签发处一律带 exp,所以在这里拒绝是安全的。
+    if (empty($payload['exp']) || (int) $payload['exp'] < tc_now()) return null;
+    return $payload;
 }
 
 function tc_hash_password($password, $salt) {
@@ -1827,6 +2031,82 @@ function tc_demo_guard($user, $reason = '演示管理员不可修改此处') {
     if (is_array($user) && !empty($user['demo'])) {
         tc_fail(403, $reason);
     }
+}
+
+// 用户协议是管理员写的 HTML,会原样出现在公开页 /agreement。
+// 规则与前端 renderer.js 的 sanitizeRenderedHtml 对齐:去掉可执行标签、事件属性和危险地址,
+// 保留排版所需的普通标签。没有 DOM 扩展时退回纯文本,避免把未过滤的 HTML 发出去。
+function tc_agreement_html($html) {
+    $html = (string) $html;
+    if (trim($html) === '') return '';
+    if (!class_exists('DOMDocument')) {
+        return htmlspecialchars(trim(strip_tags($html)), ENT_QUOTES, 'UTF-8');
+    }
+    $prev = libxml_use_internal_errors(true);
+    $dom = new DOMDocument();
+    $wrapped = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"></head><body><div id="tc-agreement">'
+        . $html . '</div></body></html>';
+    $loaded = $dom->loadHTML($wrapped, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
+    libxml_clear_errors();
+    libxml_use_internal_errors($prev);
+    if (!$loaded) return htmlspecialchars(trim(strip_tags($html)), ENT_QUOTES, 'UTF-8');
+    $root = $dom->getElementById('tc-agreement');
+    if (!$root) return '';
+    tc_agreement_sanitize_node($root);
+    $out = '';
+    foreach ($root->childNodes as $child) $out .= $dom->saveHTML($child);
+    return $out;
+}
+
+function tc_agreement_sanitize_node($node) {
+    $blocked = array(
+        'script' => true, 'style' => true, 'iframe' => true, 'object' => true, 'embed' => true,
+        'link' => true, 'meta' => true, 'base' => true, 'form' => true, 'input' => true,
+        'textarea' => true, 'select' => true, 'button' => true, 'svg' => true, 'math' => true,
+        'html' => true, 'head' => true, 'body' => true, 'frame' => true, 'frameset' => true,
+    );
+    $kids = array();
+    foreach ($node->childNodes as $child) $kids[] = $child;
+    foreach ($kids as $child) {
+        if ($child->nodeType !== XML_ELEMENT_NODE) continue;
+        $tag = strtolower($child->nodeName);
+        if (isset($blocked[$tag])) {
+            $child->parentNode->removeChild($child);
+            continue;
+        }
+        if ($child->hasAttributes()) {
+            $drop = array();
+            foreach ($child->attributes as $attr) {
+                $name = strtolower($attr->name);
+                $val = (string) $attr->value;
+                if (strpos($name, 'on') === 0 || $name === 'srcdoc' || $name === 'srcset') {
+                    $drop[] = $attr->name;
+                    continue;
+                }
+                if (($name === 'href' || $name === 'src' || $name === 'xlink:href') && !tc_agreement_url_ok($name, $val)) {
+                    $drop[] = $attr->name;
+                    continue;
+                }
+                if ($name === 'style' && !tc_agreement_style_ok($val)) $drop[] = $attr->name;
+            }
+            foreach ($drop as $name) $child->removeAttribute($name);
+        }
+        tc_agreement_sanitize_node($child);
+    }
+}
+
+function tc_agreement_url_ok($name, $val) {
+    $v = trim((string) $val);
+    if (!preg_match('/^(javascript|vbscript|data):/i', $v)) return true;
+    if (($name === 'src' || $name === 'xlink:href')
+        && preg_match('#^data:image/(png|jpe?g|gif|webp|avif|bmp);base64,[a-z0-9+/=\s]+$#i', $v)) {
+        return true;
+    }
+    return false;
+}
+
+function tc_agreement_style_ok($val) {
+    return !preg_match('/expression\s*\(|@import|javascript\s*:|vbscript\s*:|behavior\s*:|url\s*\(/i', (string) $val);
 }
 
 function tc_touch_user(&$db, $userId) {
@@ -2078,8 +2358,49 @@ function tc_json($code, $obj, $extraHeaders = array()) {
 }
 
 function tc_fail($code, $msg) {
+    // 已预扣额度但本次请求要失败退出:把预扣部分退回,免得用户为一次没拿到的回答买单。
+    // (预留成功→上游失败→tc_fail 的路径有多条,集中在这里兜住,避免逐个出口去补。)
+    tc_quota_refund_pending();
     tc_db_skip_write();
     tc_json($code, array('error' => array('message' => $msg)));
+}
+
+// 记录一笔待结算的预扣(供失败退款)。
+function tc_quota_mark_pending($userId, $cost) {
+    $GLOBALS['_tc_quota_pending'] = array('userId' => (string) $userId, 'cost' => max(0, (float) $cost));
+}
+
+// 失败退款:把待结算的预扣按全额退回,并清除待结算标记。
+function tc_quota_refund_pending() {
+    if (empty($GLOBALS['_tc_quota_pending'])) return;
+    $p = $GLOBALS['_tc_quota_pending'];
+    $GLOBALS['_tc_quota_pending'] = null;
+    $uid = isset($p['userId']) ? (string) $p['userId'] : '';
+    $cost = isset($p['cost']) ? (float) $p['cost'] : 0;
+    if ($uid === '' || $cost <= 0) return;
+    try {
+        tc_with_db(true, function (&$db) use ($uid, $cost) {
+            foreach ($db['users'] as $i => $u) {
+                if ((string) $u['id'] !== $uid) continue;
+                unset($db['users'][$i]['_quotaReserved']);
+                if (tc_is_unlimited_quota($u)) return;
+                $before = isset($u['quota']) ? (float) $u['quota'] : 0;
+                $db['users'][$i]['quota'] = round($before + $cost, 4);
+                tc_quota_note($db, $uid, array(
+                    'amount' => $cost, 'source' => 'refund',
+                    'purpose' => '请求失败,预扣额度已退回',
+                    'before' => round($before, 4),
+                    'after' => round((float) $db['users'][$i]['quota'], 4),
+                ));
+                return;
+            }
+        });
+    } catch (Throwable $e) { /* 退款失败不应遮蔽原始错误 */ }
+}
+
+// 结算完成后清除待结算标记(成功路径)。
+function tc_quota_clear_pending() {
+    $GLOBALS['_tc_quota_pending'] = null;
 }
 
 function tc_require_auth($db) {
@@ -2482,6 +2803,14 @@ function tc_quota_purpose_label($purpose, $model = '') {
         'compare' => '多模型对比',
         'assistant' => '助手对话',
         'api' => 'API 调用',
+        // ---- AI 笔记 ----
+        'note' => 'AI 笔记整理',        // 「保存到 AI 笔记」的自动归档
+        'note-edit' => 'AI 笔记编辑',    // 选中文字右键的扩写/总结/翻译等
+        'note-doc' => 'AI 笔记全文',     // 大纲/待办/摘要/自动整理
+        'note-tags' => 'AI 笔记标签',
+        'note-ask' => 'AI 笔记问答',
+        'note-continue' => 'AI 笔记续写',
+        'note-digest' => 'AI 笔记日报',
     );
     if (isset($map[$p])) return $map[$p];
     // 未标注用途时按模型名兜底推断
@@ -2579,6 +2908,64 @@ function tc_replace_user(&$db, $user) {
     }
 }
 
+// 额度预扣:在写事务里「检查 + 扣减」一次完成。
+// 原来是在只读事务里查余额、等上游返回后再另开写事务扣费,两个事务之间留有窗口:
+// 并发请求会同时读到同一笔余额并全部放行,最后每笔都 max(0,…) 落到 0,
+// 等于用 1 次的额度换到了 N 次调用。BEGIN IMMEDIATE 下这里天然串行。
+// 返回 true=预扣成功(或无需扣费),false=余额不足。
+function tc_quota_reserve(&$db, $userId, $cost) {
+    $n = max(0, (float) $cost);
+    foreach ($db['users'] as $i => $u) {
+        if ((string) $u['id'] !== (string) $userId) continue;
+        if ($n <= 0 || tc_is_unlimited_quota($u)) {
+            $db['users'][$i]['_quotaReserved'] = 0.0;
+            return true;
+        }
+        tc_enforce_quota_expiry($db, $u);
+        $effective = tc_quota_effective($u);
+        if ($effective < $n) {
+            $db['users'][$i] = $u;   // 过期清理后的状态要落库
+            return false;
+        }
+        $before = isset($u['quota']) ? (float) $u['quota'] : 0;
+        $u['quota'] = max(0, round($before - $n, 4));
+        tc_consume_quota_grants($u, $n);
+        $u['_quotaReserved'] = $n;
+        $db['users'][$i] = $u;
+        return true;
+    }
+    return false;
+}
+
+// 结算预扣:按实际费用多退少补,并记一条「消耗明细」。
+// 明细的金额取实际消耗,而 before/after 跨越预扣与找零,所以一条就能说明整次调用,
+// 不需要额外再记退款条目(否则一次调用会出现两条明细)。
+function tc_quota_settle(&$db, $userId, $actualCost, $model = '', $purpose = '') {
+    $actual = max(0, (float) $actualCost);
+    foreach ($db['users'] as $i => $u) {
+        if ((string) $u['id'] !== (string) $userId) continue;
+        $reserved = isset($u['_quotaReserved']) ? (float) $u['_quotaReserved'] : 0.0;
+        unset($db['users'][$i]['_quotaReserved']);
+        if (tc_is_unlimited_quota($u)) return $actual;
+        $before = isset($u['quota']) ? (float) $u['quota'] : 0;   // 预扣之后的余额
+        $diff = round($reserved - $actual, 4);
+        $after = max(0, round($before + $diff, 4));
+        if (abs($diff) >= 0.00005) $db['users'][$i]['quota'] = $after;
+        if ($actual > 0) {
+            tc_quota_note($db, (string) $u['id'], array(
+                'amount' => -$actual,
+                'source' => 'usage',
+                'purpose' => tc_quota_purpose_label($purpose, $model),
+                'model' => (string) $model,
+                'before' => round($before + $reserved, 4),   // 这次调用之前的余额
+                'after' => $after,
+            ));
+        }
+        return $actual;
+    }
+    return $actual;
+}
+
 function tc_charge_user(&$db, &$user, $cost, $model = '', $purpose = '') {
     $n = max(0, (float) $cost);
     $unlimited = tc_is_unlimited_quota($user);
@@ -2599,6 +2986,13 @@ function tc_charge_user(&$db, &$user, $cost, $model = '', $purpose = '') {
             'after' => round((float) $user['quota'], 4),
         ));
     }
+    tc_charge_user_stats($db, $user, $model, $purpose);
+    return $unlimited ? 0 : $n;
+}
+
+// 只记调用统计,不动额度。额度已由 tc_quota_reserve / tc_quota_settle 处理,
+// 分开是为了让「预扣 + 结算」路径不会把费用扣第二遍。
+function tc_charge_user_stats(&$db, &$user, $model = '', $purpose = '') {
     // 生命周期调用计数:存用户记录上,清空对话也不丢失
     if (!isset($user['totalCalls'])) {
         // 首次建立计数:用台账里可查的历史调用打底,避免老用户计数从 0 跳变
@@ -2626,7 +3020,6 @@ function tc_charge_user(&$db, &$user, $cost, $model = '', $purpose = '') {
     }
     $db['stats']['callsByDay'] = tc_object_map($by);
     tc_replace_user($db, $user);
-    return $unlimited ? 0 : $n;
 }
 
 function tc_health_key($providerId, $model) {

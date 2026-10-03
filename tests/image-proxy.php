@@ -48,6 +48,20 @@ foreach ($allow as $u) {
     if (tc_url_is_public_http($u)) $ok('允许 ' . $u);
     else $bad('误拒公网地址: ' . $u);
 }
+// 非常规端口与网页抓取同一套白名单,即使地址本身是公网也不放行
+$ports = array('http://8.8.8.8:22/a.png', 'https://example.com:8444/a.png', 'http://1.1.1.1:8080/a.png');
+if (!tc_url_is_public_http($ports[0]) && !tc_url_is_public_http($ports[1])) $ok('拒绝非常规端口');
+else $bad('非常规端口被放行');
+if (tc_url_is_public_http($ports[2])) $ok('允许 8080'); else $bad('误拒 8080');
+
+$html = '<p>条款</p><script>alert(1)</script><a href="javascript:alert(1)" onclick="alert(2)">点</a><img src="http://127.0.0.1/a.png">';
+$clean = tc_agreement_html($html);
+if (strpos($clean, '条款') !== false && strpos($clean, '<script') === false && stripos($clean, 'onclick') === false && stripos($clean, 'javascript:') === false) {
+    $ok('协议页去掉脚本、事件和危险链接');
+} else {
+    $bad('协议页清洗不完整: ' . $clean);
+}
+if (trim(tc_agreement_html('   ')) === '') $ok('空协议清洗后为空'); else $bad('空白协议未被视为空');
 
 // 3) 图片结果解析后应带 display(同源代理)字段
 $items = tc_image_results_from_payload(array('data' => array(array('url' => $src))), 1);

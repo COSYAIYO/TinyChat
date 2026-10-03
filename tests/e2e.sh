@@ -78,6 +78,7 @@ DATA_DIR="$TMP/data" ADMIN_NAME=admin ADMIN_PASSWORD=e2e-pass \
   TC_QQ_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
   TC_LINUXDO_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
   TC_NODELOC_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
+  TC_ALLOW_PRIVATE_UPSTREAM=1 \
   php -S "127.0.0.1:$PORT" router.php >"$TMP/app.log" 2>&1 &
 APP_PID=$!
 TC_MOCK_ECHO_FILE="$TMP/pf_echo_out.txt" php -S "127.0.0.1:$MOCK_PORT" tests/mock-upstream.php >"$TMP/mock.log" 2>&1 &
@@ -474,6 +475,69 @@ chatsresp=$(curl -s "$BASE/api/admin/users/chats?userId=$CHATUID" -H "$AUTH")
 assert_contains "后台对话: 长正文未被截断(读到尾部标记)" "$chatsresp" 'TAILMARKER-完整尾部'
 assert_contains "后台对话: 带出思维链" "$chatsresp" '先想一下再回答'
 
+# ---------- 云同步软删除: A 删 B 也删, 云端留档, 管理员可查可清 ----------
+say "== 云同步软删除与留档 =="
+cat > "$TMP/sd1.json" <<EOF
+{"chats":[{"id":"sd-keep","title":"保留的对话","messages":[{"role":"user","content":"保留"}],"updatedAt":1791000000000},{"id":"sd-gone","title":"待删的对话","messages":[{"role":"user","content":"删除标记"}],"updatedAt":1791000000001}]}
+EOF
+curl -s -X POST "$BASE/api/sync/chats" -H "$UAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/sd1.json" > /dev/null
+assert_contains "软删除前两段对话都在" "$(curl -s "$BASE/api/sync/chats" -H "$UAUTH")" '"sd-gone"'
+# 设备 A 删除 sd-gone:带 deletedIds + 副本(deletedChats)
+cat > "$TMP/sd2.json" <<EOF
+{"chats":[{"id":"sd-keep","title":"保留的对话","messages":[{"role":"user","content":"保留"}],"updatedAt":1791000000000}],"deletedIds":["sd-gone"],"deletedChats":[{"id":"sd-gone","title":"待删的对话","messages":[{"role":"user","content":"删除标记"}],"updatedAt":1791000000002}]}
+EOF
+SDRESP=$(curl -s -X POST "$BASE/api/sync/chats" -H "$UAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/sd2.json")
+assert_contains "删除推送返回墓碑集合" "$SDRESP" '"deletedIds"'
+# 精确检查活跃列表(整段 grep 会把 deletedIds 里的墓碑键也匹配上)
+check_live() { # $1=响应 $2=id $3=want(present/absent)
+  printf '%s' "$1" | python -c "
+import sys,json
+d=json.load(sys.stdin)
+ids=[c.get('id') for c in d.get('chats',[])]
+want=sys.argv[1]=='present'
+got=('$2' in ids)
+print('OK' if got==want else ('FAIL ids=%s' % ids))
+" "$3"
+}
+GETA=$(curl -s "$BASE/api/sync/chats" -H "$UAUTH")
+assert_eq "删除后云端列表不再下发 sd-gone" "$(check_live "$GETA" sd-gone absent)" "OK"
+assert_eq "删除后 sd-keep 仍在活跃列表" "$(check_live "$GETA" sd-keep present)" "OK"
+assert_contains "删除后云端下发墓碑(A 删 B 也删)" "$GETA" '"sd-gone"'
+# 设备 B 拿着旧列表回推(deletedIds 没带):墓碑必须挡住复活,内容进留档
+cat > "$TMP/sd3.json" <<EOF
+{"chats":[{"id":"sd-keep","title":"保留的对话","messages":[{"role":"user","content":"保留"}],"updatedAt":1791000000000},{"id":"sd-gone","title":"待删的对话","messages":[{"role":"user","content":"旧设备回推"}],"updatedAt":1791000000009}]}
+EOF
+curl -s -X POST "$BASE/api/sync/chats" -H "$UAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/sd3.json" > /dev/null
+GETB=$(curl -s "$BASE/api/sync/chats" -H "$UAUTH")
+assert_eq "墓碑挡住旧设备回推,不复活" "$(check_live "$GETB" sd-gone absent)" "OK"
+DELRESP=$(curl -s "$BASE/api/admin/chats/deleted" -H "$AUTH")
+assert_contains "后台留档列表含已删对话" "$DELRESP" '待删的对话'
+assert_contains "后台留档带删除时间" "$DELRESP" '"deletedAt"'
+assert_contains "存续管理汇总含留档统计" "$(curl -s "$BASE/api/admin/storage" -H "$AUTH")" '"deleted"'
+VIEWRESP=$(curl -s "$BASE/api/admin/chats/deleted/view?userId=$CHATUID&chatId=sd-gone" -H "$AUTH")
+assert_contains "后台可查看留档全文" "$VIEWRESP" '旧设备回推'
+# 批量清理留档(保留墓碑):内容删除,删除依然对所有设备生效
+assert_contains "批量清理留档成功" "$(curl -s -X POST "$BASE/api/admin/chats/deleted/purge" -H "$AUTH" -H "Content-Type: application/json" -d '{"items":[{"userId":"'"$CHATUID"'","chatId":"sd-gone"}]}')" '"removed":1'
+check_archived() { # $1=响应 $2=id $3=want(present/absent)
+  printf '%s' "$1" | python -c "
+import sys,json
+d=json.load(sys.stdin)
+ids=[x.get('chatId') for x in d.get('items',[])]
+want=sys.argv[1]=='present'
+got=('$2' in ids)
+print('OK' if got==want else ('FAIL ids=%s' % ids))
+" "$3"
+}
+assert_eq "清理后留档列表不再含 sd-gone" "$(check_archived "$(curl -s "$BASE/api/admin/chats/deleted?userId=$CHATUID" -H "$AUTH")" sd-gone absent)" "OK"
+assert_eq "清理留档不影响删除(墓碑仍在,不复活)" "$(check_live "$(curl -s "$BASE/api/sync/chats" -H "$UAUTH")" sd-gone absent)" "OK"
+# 清空全部留档(带墓碑):彻底清除
+curl -s -X POST "$BASE/api/sync/chats" -H "$UAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/sd1.json" > /dev/null
+curl -s -X POST "$BASE/api/sync/chats" -H "$UAUTH" -H "Content-Type: application/json" -d '{"chats":[],"deletedIds":["sd-keep","sd-gone"]}' > /dev/null
+assert_contains "清空全部留档(带墓碑)成功" "$(curl -s -X POST "$BASE/api/admin/chats/deleted/purge" -H "$AUTH" -H "Content-Type: application/json" -d '{"all":true,"withTombstones":true}')" '"ok":true'
+GETC=$(curl -s "$BASE/api/sync/chats" -H "$UAUTH")
+assert_eq "清空留档带墓碑后活跃列表无 sd-keep" "$(check_live "$GETC" sd-keep absent)" "OK"
+assert_eq "清空留档带墓碑后墓碑也清空" "$(printf '%s' "$GETC" | python -c "import sys,json;print(len(json.load(sys.stdin).get('deletedIds',{})))")" "0"
+
 say "== 获取模型列表 ==" 
 # Git Bash 的 curl 会搅乱 UTF-8 字面量,掩码占位符用字节转义构造,确保后端收到真实的 ••••
 MASKEDKEY=$'sk-\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2'
@@ -543,6 +607,7 @@ assert_contains "演示管理员不可改密码" "$(curl -s -X POST "$BASE/api/a
 assert_contains "演示管理员不可强制下线" "$(curl -s -X POST "$BASE/api/admin/session/invalidate" -H "$DAUTH")" '演示账号不能强制全站下线'
 assert_contains "演示管理员不可删用户" "$(curl -s -X DELETE "$BASE/api/admin/users/$GID1" -H "$DAUTH")" '演示账号不能删除用户'
 assert_contains "演示管理员不可改公告" "$(curl -s -X POST "$BASE/api/admin/settings" -H "$DAUTH" -H "Content-Type: application/json" -d '{"announcement":{"enabled":true,"text":"x"}}')" '演示管理员不能修改公告'
+assert_contains "演示管理员不可改协议" "$(curl -s -X POST "$BASE/api/admin/settings" -H "$DAUTH" -H "Content-Type: application/json" -d '{"agreementHtml":"<script>alert(1)</script>"}')" '演示管理员不能修改用户协议'
 assert_contains "演示管理员不可查看用户对话" "$(curl -s "$BASE/api/admin/users/chats" -H "$DAUTH")" '演示管理员不能查看用户对话'
 assert_contains "演示管理员不可创建用户" "$(curl -s -X POST "$BASE/api/admin/users" -H "$DAUTH" -H "Content-Type: application/json" -d '{"name":"zzz","password":"pass1234"}')" '演示管理员不能管理用户账号'
 # 真实管理员的改动成为演示的还原基准(不会被演示到期还原冲掉)
@@ -1354,6 +1419,16 @@ assert_eq "快照在消费后自动重建" "$(demo_has_snapshot "$TMP/data")" "y
 demo_expire_now "$TMP/data"
 curl -s -o /dev/null "$BASE/"
 assert_eq "第二轮到期后新对话也被清除" "$(demo_chats "$TMP/data")" "0"
+# 留档汇总的隐私边界:真实管理员能看到归属,演示管理员只拿到匿名汇总,且不能翻列表
+cat > "$TMP/sd-demo.json" <<'EOF'
+{"chats":[{"id":"sd-demo","title":"匿名边界","messages":[{"role":"user","content":"x"}],"updatedAt":1791000000500}],"deletedIds":["sd-demo"],"deletedChats":[{"id":"sd-demo","title":"匿名边界","messages":[{"role":"user","content":"x"}],"updatedAt":1791000000501}]}
+EOF
+curl -s -X POST "$BASE/api/sync/chats" -H "$UAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/sd-demo.json" > /dev/null
+assert_contains "真实管理员留档汇总带用户名" "$(curl -s "$BASE/api/admin/storage" -H "$AUTH")" 'tester1'
+DEMOSTOR=$(curl -s "$BASE/api/admin/storage" -H "$CDA")
+assert_contains "演示管理员可见留档汇总" "$DEMOSTOR" '"deleted"'
+if printf '%s' "$DEMOSTOR" | grep -q 'tester1'; then bad "演示管理员留档汇总暴露了用户名"; else ok "演示管理员留档汇总匿名化"; fi
+assert_contains "演示管理员被拒访问留档列表" "$(curl -s "$BASE/api/admin/chats/deleted" -H "$CDA")" '演示管理员'
 CDID=$(demo_del "$TMP/data")
 [ -n "$CDID" ] && curl -s -X DELETE "$BASE/api/admin/users/$CDID" -H "$AUTH" > /dev/null
 say "== 账号注销 =="
@@ -1416,6 +1491,17 @@ assert_contains "统计总用户" "$SYS" '"total":'
 assert_contains "统计今日调用" "$SYS" '"today"'
 assert_contains "统计对话总数" "$SYS" '"chats"'
 assert_contains "返回版本号" "$SYS" '"version"'
+# 虚拟主机配额字段:开发机没有 cgroup 时各值为 null,但键必须在,前端才能按层兜底
+assert_has "系统接口返回配额字段" "$SYS" '"quota":{'
+assert_has "配额字段带来源" "$SYS" '"source":'
+assert_has "配额字段带内存上限" "$SYS" '"memLimitBytes":'
+assert_has "配额字段带 CPU 百分比" "$SYS" '"cpuPercent":'
+# 服务器状态块自带网速 / 运行时长 / 数据库体积(整机 /proc 取不到时为 null,键必须在)
+assert_has "系统接口返回网速字段" "$SYS" '"net":{'
+assert_has "网速含上下行速率" "$SYS" '"txBps":'
+assert_has "网速含累计流量" "$SYS" '"rxBytes":'
+assert_has "系统接口返回运行时长" "$SYS" '"uptime":{"systemSec":'
+assert_has "系统接口返回数据库体积" "$SYS" '"db":{"bytes":'
 # 非管理员不可访问
 assert_contains "非管理员访问系统接口被拒" "$(curl -s "$BASE/api/admin/system" -H "$UAUTH")" '需要管理员权限'
 assert_contains "非管理员访问存储接口被拒" "$(curl -s "$BASE/api/admin/storage" -H "$UAUTH")" '需要管理员权限'
@@ -1501,6 +1587,257 @@ assert_contains "图片缓存(含子目录)清理成功" "$CL4" '"ok":true'
 assert_contains "图片缓存递归删到 1 个文件" "$CL4" '"removed":1'
 # 系统接口在清理后依然可用(不因日志/缓存被清而 500)
 assert_contains "清理后系统接口仍正常" "$(curl -s "$BASE/api/admin/system" -H "$AUTH")" '"server"'
+
+# ---------- AI 笔记 ----------
+say "== AI 笔记:文档同步 =="
+# 初始为空:folders/notes 都是空数组,tombs 是空对象
+NOTES0=$(curl -s "$BASE/api/sync/notes" -H "$AUTH")
+assert_has "初始笔记文档为空" "$NOTES0" '"notes":[]'
+assert_contains "初始修订号为 0" "$NOTES0" '"revision":0'
+# 未登录访问被拒
+assert_contains "笔记同步需要登录" "$(curl -s "$BASE/api/sync/notes")" '未登录'
+# 推送一份文档(一个文件夹 + 一篇笔记)
+cat > "$TMP/notes1.json" <<'EOF'
+{"baseRevision":0,"doc":{"folders":[{"id":"f1","parentId":null,"name":"技术","createdAt":1000,"updatedAt":1000}],"notes":[{"id":"n1","folderId":"f1","title":"SQLite 要点","content":"# 要点\n\n- WAL 模式\n- 单表快照","tags":["php","sqlite"],"isPinned":true,"shareMode":"private","createdAt":1000,"updatedAt":1000}],"tombs":{}}}
+EOF
+NS1=$(curl -s -X POST "$BASE/api/sync/notes" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/notes1.json")
+assert_contains "笔记文档推送成功" "$NS1" '"revision":1'
+# baseRevision 过期 → 409 并带回云端文档
+cat > "$TMP/notes-stale.json" <<'EOF'
+{"baseRevision":0,"doc":{"folders":[],"notes":[],"tombs":{}}}
+EOF
+STALE=$(curl -s -X POST "$BASE/api/sync/notes" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/notes-stale.json")
+assert_contains "过期修订号冲突返回 409" "$STALE" '笔记已在其他页面更新'
+assert_contains "冲突响应带回云端文档" "$STALE" 'SQLite 要点'
+# 拉取可见推送内容
+NOTES1=$(curl -s "$BASE/api/sync/notes" -H "$AUTH")
+assert_contains "云端文档含文件夹" "$NOTES1" '技术'
+assert_contains "云端文档含笔记" "$NOTES1" 'SQLite 要点'
+# 分享状态列表随同步返回
+assert_has "同步返回分享状态字段" "$NOTES1" '"shares":[]'
+
+say "== AI 笔记:附件上传与签名输出 =="
+python -c "import base64,sys; open(sys.argv[1],'wb').write(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='))" "$TMP/pixel.png"
+printf 'PK\003\004fake-zip' > "$TMP/archive.zip"
+# 原生 curl 读不了 -F 里 MSYS 风格的 /tmp 路径:与文档解析用例一致,进 $TMP 用相对路径发起
+UP=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@pixel.png;type=image/png" ) )
+assert_contains "图片上传成功返回签名 URL" "$UP" '/api/notes/file?id='
+FURL=$(printf '%s' "$UP" | jget url | sed 's#\\/#/#g')
+assert_contains "属主可读取附件" "$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" "$BASE$FURL")" "200"
+assert_contains "图片内联输出正确 Content-Type" "$(curl -s -D - -o /dev/null -H "$AUTH" "$BASE$FURL")" "image/png"
+# 图片不得带 attachment(预览要能直接显示)
+if curl -s -D - -o /dev/null -H "$AUTH" "$BASE$FURL" | grep -qi 'content-disposition: attachment'; then bad "图片不应强制下载"; else ok "图片为内联输出(可直接预览)"; fi
+# 签名被篡改 → 403(把签名首字符翻转成必然不同的值,避免与原签名恰好相同)
+SIG="${FURL##*&s=}"; SIG="${SIG%%&*}"
+FLIP="0"; [ "${SIG:0:1}" = "0" ] && FLIP="1"
+BADSIG="$FLIP${SIG:1}"
+BADURL="${FURL/&s=$SIG/&s=$BADSIG}"
+if curl -s -o /dev/null -w '%{http_code}' "$BASE$BADURL" | grep -q '403'; then ok "签名被篡改返回 403"; else bad "签名被篡改返回 403"; fi
+# 通用文件上传(zip):非图片一律强制下载,避免被当作图床/网页外链托管
+UZ=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@archive.zip" ) )
+assert_has "通用文件上传成功" "$UZ" '/api/notes/file?id='
+ZURL=$(printf '%s' "$UZ" | jget url | sed 's#\\/#/#g')
+ZURLID=$(printf '%s' "$UZ" | jget id)
+assert_contains "非图片强制附件下载" "$(curl -s -D - -o /dev/null -H "$AUTH" "$BASE$ZURL")" "Content-Disposition: attachment"
+assert_contains "非图片类型标注正确" "$(curl -s -D - -o /dev/null -H "$AUTH" "$BASE$ZURL")" "application/zip"
+# 附件身份鉴权:复制链接给他人 / 未登录访问一律 404(不暴露存在性)
+assert_contains "未登录访问附件被拒" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE$FURL")" "404"
+assert_contains "未登录访问附件不暴露内容" "$(curl -s "$BASE$FURL")" '附件不存在'
+# 另一个已登录用户同样被拒
+curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"notemate","password":"notemate123","quota":10}' > /dev/null
+NMT=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"notemate","password":"notemate123"}' | jget token)
+assert_contains "其他已登录用户访问附件被拒" "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $NMT" "$BASE$FURL")" "404"
+
+# 附件按用户 ID 分目录存储(不再堆在单一目录)
+NSDIR=$(ls "$TMP/data/notes" 2>/dev/null | grep -v '^index.json$' | head -1)
+if [ -n "$NSDIR" ]; then ok "附件按用户 ID 分目录存储($NSDIR)"; else bad "附件按用户 ID 分目录存储"; fi
+# 空间用量接口
+USAGE=$(curl -s "$BASE/api/notes/usage" -H "$AUTH")
+assert_contains "用量接口返回剩余配额" "$USAGE" '"quota":'
+assert_contains "用量接口返回已用字节" "$USAGE" '"used":'
+
+say "== AI 笔记:分享链接 =="
+# view-link:创建分享 → 匿名可读 → 页面路由可达 → edit 被拒 → 关闭后失效
+SH1=$(curl -s -X POST "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"n1","mode":"view-link"}')
+assert_contains "创建 view-link 分享" "$SH1" '"url":"\/n\/'
+NTOK=$(printf '%s' "$SH1" | jget token)
+assert_contains "分享链接匿名可读" "$(curl -s "$BASE/api/notes/shared/$NTOK")" 'SQLite 要点'
+assert_contains "分享响应标记不可编辑" "$(curl -s "$BASE/api/notes/shared/$NTOK")" '"editable":false'
+assert_contains "分享页 /n/ 路由可达" "$(curl -s "$BASE/n/$NTOK")" '笔记分享'
+assert_contains "view-link 拒绝在线编辑" "$(curl -s -X POST "$BASE/api/notes/shared/$NTOK" -H "Content-Type: application/json" -d '{"title":"黑掉这篇"}')" '只允许查看'
+# 重新生成 → 旧链接失效
+SH2=$(curl -s -X POST "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"n1","mode":"view-link"}')
+NTOK2=$(printf '%s' "$SH2" | jget token)
+if [ "$NTOK" != "$NTOK2" ]; then ok "重新生成产生新令牌"; else bad "重新生成产生新令牌"; fi
+if curl -s "$BASE/api/notes/shared/$NTOK" | grep -q '分享不存在'; then ok "旧令牌已失效"; else bad "旧令牌已失效"; fi
+# edit-link:匿名可编辑属主笔记(最后写入胜出);中文体走 heredoc,避免控制台码页问题
+SH3=$(curl -s -X POST "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"n1","mode":"edit-link"}')
+NTOK3=$(printf '%s' "$SH3" | jget token)
+cat > "$TMP/note-edit.json" <<'EOF'
+{"title":"SQLite 要点(修订)","content":"# 要点(经分享链接修订)"}
+EOF
+ED1=$(curl -s -X POST "$BASE/api/notes/shared/$NTOK3" -H "Content-Type: application/json" --data-binary @"$TMP/note-edit.json")
+assert_contains "edit-link 匿名编辑成功" "$ED1" 'SQLite 要点(修订)'
+assert_contains "编辑响应标记可编辑" "$ED1" '"editable":true'
+assert_contains "属主侧读到修订后内容" "$(curl -s "$BASE/api/sync/notes" -H "$AUTH")" '经分享链接修订'
+# 关闭分享 → 链接失效,笔记回到 private
+assert_contains "关闭分享成功" "$(curl -s -X DELETE "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"n1"}')" '"ok":true'
+if curl -s "$BASE/api/notes/shared/$NTOK3" | grep -q '分享不存在'; then ok "关闭后链接失效"; else bad "关闭后链接失效"; fi
+assert_contains "笔记分享状态复位" "$(curl -s "$BASE/api/sync/notes" -H "$AUTH")" '"shareMode":"private"'
+# 不存在的笔记分享被拒
+assert_contains "分享不存在的笔记被拒" "$(curl -s -X POST "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"ghost","mode":"view-link"}')" '笔记不存在'
+
+say "== AI 笔记:管理端 =="
+AN=$(curl -s "$BASE/api/admin/notes" -H "$AUTH")
+assert_has "管理端列出使用笔记的用户" "$AN" '"users":['
+assert_has "管理端返回用户笔记数" "$AN" '"notes":'
+assert_contains "管理端返回附件用量" "$AN" '"totalUsed":'
+assert_contains "管理端返回空间上限" "$AN" '"quota":'
+# 审阅某用户笔记(取当前管理员的 userId)
+AUID=$(curl -s "$BASE/api/auth/me" -H "$AUTH" | jget id)
+AV=$(curl -s "$BASE/api/admin/notes/view?userId=$AUID" -H "$AUTH")
+assert_contains "审阅接口返回该用户笔记" "$AV" 'SQLite 要点'
+# 普通用户被拒
+assert_contains "普通用户不能访问笔记管理" "$(curl -s "$BASE/api/admin/notes" -H "$UAUTH")" '需要管理员权限'
+# 设置项可保存并下发
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesQuotaMb":321,"notesMaxFileMb":12,"notesAllowFiles":true}' > /dev/null
+ASET=$(curl -s "$BASE/api/admin/settings" -H "$AUTH")
+assert_contains "笔记空间上限已保存" "$ASET" '"notesQuotaMb":321'
+assert_contains "单附件上限已保存" "$ASET" '"notesMaxFileMb":12'
+assert_contains "公开配置下发笔记开关" "$(curl -s "$BASE/api/config")" '"notesEnabled":true'
+assert_contains "用量接口读取新配额" "$(curl -s "$BASE/api/notes/usage" -H "$AUTH")" '"quota":336592896'
+# 关闭笔记功能后接口拒绝写入,公开配置同步
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesEnabled":false}' > /dev/null
+assert_contains "关闭后同步接口被拒" "$(curl -s "$BASE/api/sync/notes" -H "$AUTH")" '未开放 AI 笔记功能'
+assert_contains "关闭后公开配置同步" "$(curl -s "$BASE/api/config")" '"notesEnabled":false'
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesEnabled":true}' > /dev/null
+# (恢复功能后再验证分享策略,否则同步接口仍被总开关拒绝)
+# 分享策略:仅正文时,正文里的附件引用被裁剪,附件不随分享暴露
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":true}' > /dev/null
+AUID2=$(curl -s "$BASE/api/auth/me" -H "$AUTH" | jget id)
+IMGREF=$(printf '%s' "$UP" | jget url | sed 's#\\/#/#g')
+cat > "$TMP/notes-bodyonly.json" <<EOF
+{"baseRevision":$(curl -s "$BASE/api/sync/notes" -H "$AUTH" | python -c "import sys,json;print(json.load(sys.stdin)['revision'])"),"doc":{"folders":[{"id":"fb","parentId":null,"name":"分享测试","createdAt":1,"updatedAt":1}],"notes":[{"id":"nb","folderId":"fb","title":"含图笔记","content":"正文。\n\n![图]($IMGREF)\n\n结尾。","tags":[],"isPinned":false,"shareMode":"private","createdAt":1,"updatedAt":1}],"tombs":{}}}
+EOF
+curl -s -X POST "$BASE/api/sync/notes" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/notes-bodyonly.json" > /dev/null
+SHT=$(curl -s -X POST "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"nb","mode":"view-link"}' | python -c "import sys,json;print(json.load(sys.stdin)['share']['token'])")
+SB=$(curl -s "$BASE/api/notes/shared/$SHT")
+assert_contains "仅正文:分享标记 bodyOnly" "$SB" '"bodyOnly":true'
+if printf '%s' "$SB" | grep -qF '/api/notes/file'; then bad "仅正文时正文内不应残留附件链接"; else ok "仅正文:正文内附件链接已裁剪"; fi
+assert_contains "仅正文:给出未显示提示" "$SB" '未在分享中显示'
+# 关闭该策略后,引用与附件随分享可见
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":false}' > /dev/null
+SB2=$(curl -s "$BASE/api/notes/shared/$SHT")
+assert_contains "关闭后分享标记 bodyOnly=false" "$SB2" '"bodyOnly":false'
+assert_contains "关闭后正文保留附件引用" "$SB2" '/api/notes/file'
+# 附件通过分享下载:仅在「已分享 + 管理员关闭仅正文」时放行,其余一律 404
+AUIDX=$(curl -s "$BASE/api/auth/me" -H "$AUTH" | jget id)
+SPZ=$(printf '%s' "$UZ" | jget url | sed 's#\\/#/#g')
+cat > "$TMP/notes-share-att.json" <<EOF
+{"baseRevision":$(curl -s "$BASE/api/sync/notes" -H "$AUTH" | python -c "import sys,json;print(json.load(sys.stdin)['revision'])"),"doc":{"folders":[{"id":"fsa","parentId":null,"name":"附件分享","createdAt":1,"updatedAt":1}],"notes":[{"id":"nsa","folderId":"fsa","title":"带附件笔记","content":"附件：[文件]($SPZ)\n","tags":[],"isPinned":false,"shareMode":"private","createdAt":1,"updatedAt":1}],"tombs":{}}}
+EOF
+curl -s -X POST "$BASE/api/sync/notes" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/notes-share-att.json" > /dev/null
+# 上传时声明所属笔记(前端上传会带 noteId)
+UZ2=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@archive.zip" -F "noteId=nsa" ) )
+Z2=$(printf '%s' "$UZ2" | jget url | sed 's#\\/#/#g')
+SAT=$(curl -s -X POST "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"nsa","mode":"view-link"}' | python -c "import sys,json;print(json.load(sys.stdin)['share']['token'])")
+# 仅正文=开:分享页带令牌也不放行
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":true}' > /dev/null
+assert_contains "仅正文时分享页也取不到附件" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE$Z2&share=$SAT")" "404"
+# 关闭仅正文:分享页凭令牌可取
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":false}' > /dev/null
+assert_contains "关闭仅正文后分享页可下载附件" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE$Z2&share=$SAT")" "200"
+assert_contains "伪造分享令牌仍被拒" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE$Z2&share=deadbeef")" "404"
+# 非属主即使拿到链接与真实令牌之外的信息也取不到(无令牌)
+assert_contains "无令牌的其他用户仍被拒" "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $NMT" "$BASE$Z2")" "404"
+
+say "== AI 笔记:附件删除/回收、魔数校验、超长与分享有效期 =="
+# 伪造图片:HTML 内容配 .png 扩展名,应被魔数校验拒绝
+printf '<html><script>alert(1)</script></html>' > "$TMP/fake.png"
+FAKE=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@fake.png;type=image/png" ) )
+assert_contains "伪装成图片的 HTML 被拒" "$FAKE" '文件内容与图片格式不符'
+# 真实 PNG 仍可上传(regression)
+OKP=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@pixel.png;type=image/png" ) )
+assert_has "真实图片仍可上传" "$OKP" '/api/notes/file?id='
+OKID=$(printf '%s' "$OKP" | jget id)
+# 删除自己的附件:成功且配额回落
+DELB=$(curl -s "$BASE/api/notes/usage" -H "$AUTH" | python -c "import sys,json;print(json.load(sys.stdin)['used'])")
+assert_contains "删除自己的附件成功" "$(curl -s -X DELETE "$BASE/api/notes/file?id=$OKID" -H "$AUTH")" '"ok":true'
+DELA=$(curl -s "$BASE/api/notes/usage" -H "$AUTH" | python -c "import sys,json;print(json.load(sys.stdin)['used'])")
+if [ "$DELA" -lt "$DELB" ]; then ok "删除附件后已用配额下降($DELB→$DELA)"; else bad "删除附件后配额未下降"; fi
+# 删除后不可再读,且他人无法删除
+assert_contains "删除后附件不可读" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/notes/file?id=$OKID&s=deadbeef")" "403"
+assert_contains "他人不能删除他人附件" "$(curl -s -X DELETE "$BASE/api/notes/file?id=$ZURLID" -H "Authorization: Bearer $NMT")" '附件不存在'
+# 孤儿回收:再传一个不绑定笔记的附件,GC 后应被清掉
+ORPH=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@pixel.png;type=image/png" ) )
+ORPHID=$(printf '%s' "$ORPH" | jget id)
+GC=$(curl -s -X POST "$BASE/api/notes/files/gc" -H "$AUTH")
+assert_contains "孤儿附件回收成功" "$GC" '"ok":true'
+assert_contains "回收释放了字节数" "$GC" '"freed":'
+assert_contains "孤儿附件已被清理" "$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" "$BASE/api/notes/file?id=$ORPHID&s=$(python -c "import hashlib,hmac;print('x')")")" "403"
+# 超长笔记:明确报错而不是静默截断
+python -c "import json,sys; print(json.dumps({'baseRevision':0,'doc':{'folders':[],'notes':[{'id':'big1','folderId':'uncat','title':'超大','content':'x'*500001,'tags':[],'isPinned':False,'shareMode':'private','createdAt':1,'updatedAt':1}],'tombs':{}}}))" > "$TMP/huge.json"
+BIGREV=$(curl -s "$BASE/api/sync/notes" -H "$AUTH" | python -c "import sys,json;print(json.load(sys.stdin)['revision'])")
+sed -i "s/\"baseRevision\": *0/\"baseRevision\": $BIGREV/" "$TMP/huge.json"
+assert_contains "超长笔记明确报错" "$(curl -s -X POST "$BASE/api/sync/notes" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/huge.json")" '字符上限'
+# 分享有效期:1 天
+EXPREV=$(curl -s "$BASE/api/sync/notes" -H "$AUTH" | python -c "import sys,json;print(json.load(sys.stdin)['revision'])")
+python -c "
+import json, io
+d = json.load(io.open('$TMP/notes-bodyonly.json')) if False else None
+"
+cat > "$TMP/notes-exp.json" <<EOF
+{"baseRevision":$EXPREV,"doc":{"folders":[{"id":"fexp","parentId":null,"name":"有效期","createdAt":1,"updatedAt":1}],"notes":[{"id":"nexp","folderId":"fexp","title":"有效期笔记","content":"用于验证分享有效期。","tags":[],"isPinned":false,"shareMode":"private","createdAt":1,"updatedAt":1}],"tombs":{}}}
+EOF
+curl -s -X POST "$BASE/api/sync/notes" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/notes-exp.json" > /dev/null
+SHX=$(curl -s -X POST "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"nexp","mode":"view-link","expireDays":1}')
+assert_contains "分享返回有效期" "$SHX" '"expireAt":'
+XT=$(printf '%s' "$SHX" | jget token)
+assert_contains "带有效期的分享可正常访问" "$(curl -s "$BASE/api/notes/shared/$XT")" '用于验证分享有效期'
+assert_contains "分享列表带有效期" "$(curl -s "$BASE/api/sync/notes" -H "$AUTH")" '"expireAt":'
+curl -s -X DELETE "$BASE/api/notes/share" -H "$AUTH" -H "Content-Type: application/json" -d '{"noteId":"nexp"}' > /dev/null
+
+# 演示管理员:不可查看用户笔记列表 / 审阅 / 清理
+curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"demoa1","password":"demoa12345","quota":50,"admin":true,"demo":true}' > /dev/null
+DMT=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"demoa1","password":"demoa12345"}' | jget token)
+assert_contains "演示管理员不可查看笔记用户列表" "$(curl -s "$BASE/api/admin/notes" -H "Authorization: Bearer $DMT")" '演示管理员不可查看用户笔记'
+assert_contains "演示管理员不可审阅用户笔记" "$(curl -s "$BASE/api/admin/notes/view?userId=$AUID" -H "Authorization: Bearer $DMT")" '演示管理员不可查看用户笔记'
+assert_contains "演示管理员不可清理用户笔记" "$(curl -s -X POST "$BASE/api/admin/notes/purge" -H "Authorization: Bearer $DMT" -H "Content-Type: application/json" -d "{\"userId\":\"$AUID\"}")" '演示管理员不能清理用户笔记'
+assert_has "真实管理员仍可查看笔记用户" "$(curl -s "$BASE/api/admin/notes" -H "$AUTH")" '"users":['
+
+# 笔记 AI 配额:每日上限与计数
+AUSD=$(curl -s "$BASE/api/notes/usage" -H "$AUTH")
+assert_contains "用量接口返回 AI 每日上限" "$AUSD" '"aiDailyLimit":'
+assert_contains "用量接口返回今日 AI 已用" "$AUSD" '"aiUsedToday":'
+assert_contains "用量接口返回可自定义开关" "$AUSD" '"aiCustomizable":'
+assert_contains "AI 配额扣减成功" "$(curl -s -X POST "$BASE/api/notes/ai/consume" -H "$AUTH")" '"ok":true'
+assert_contains "公开配置下发 AI 可自定义" "$(curl -s "$BASE/api/config")" '"notesAiCustomizable":true'
+# 上限设为 0(不限)与恢复
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesAiDailyLimit":0}' > /dev/null
+assert_contains "AI 上限可设为不限" "$(curl -s "$BASE/api/notes/usage" -H "$AUTH")" '"aiDailyLimit":0'
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesAiDailyLimit":50}' > /dev/null
+# 上限设为 1 时第二次应被拒
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesAiDailyLimit":1}' > /dev/null
+curl -s -X POST "$BASE/api/notes/ai/consume" -H "$AUTH" > /dev/null
+assert_contains "超出每日 AI 上限被拒" "$(curl -s -X POST "$BASE/api/notes/ai/consume" -H "$AUTH")" '今日笔记 AI 次数已用完'
+assert_contains "被拒后用量接口反映已用" "$(curl -s "$BASE/api/notes/usage" -H "$AUTH")" '"aiUsedToday":1'
+
+# 笔记 AI 用途标签:调用后余量明细应出现「AI 笔记编辑/问答」等可读用途
+curl -s -X POST "$BASE/api/admin/users/update" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"notemate","quota":100,"groupId":null}' > /dev/null || true
+NMT2=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"notemate","password":"notemate123"}' | jget token)
+PUP=$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"e2e-note-bill","baseUrl":"http://127.0.0.1:8100/v1","apiKey":"k","apiFormat":"chat","scope":"global","costPerCall":3,"models":[{"id":"e2e-bill","name":"b","enabled":true}],"enabled":true}' | python -c "import sys,json;print(json.load(sys.stdin).get('provider',{}).get('id',''))")
+if [ -n "$PUP" ]; then
+  curl -s -X POST "$BASE/api/proxy/chat" -H "Authorization: Bearer $NMT2" -H "Content-Type: application/json" -d "{\"model\":\"e2e-bill\",\"providerId\":\"$PUP\",\"stream\":false,\"_purpose\":\"note-edit\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" > /dev/null
+  LED=$(curl -s "$BASE/api/me/quota/ledger?limit=5" -H "Authorization: Bearer $NMT2")
+  assert_contains "笔记 AI 调用写入余量明细" "$LED" 'AI 笔记编辑'
+  assert_contains "明细含扣费金额" "$LED" '"amount":-3'
+  curl -s -X DELETE "$BASE/api/providers/$PUP" -H "$AUTH" > /dev/null
+else bad "建测试供应商失败"; fi
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesAiDailyLimit":50}' > /dev/null
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":true}' > /dev/null
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":true}' > /dev/null
+
+
 say ""
 say "结果: $PASS 通过, $FAIL 失败"
 [ "$FAIL" -eq 0 ]

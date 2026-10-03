@@ -17,7 +17,13 @@ const state = {
   _followStream: true, // 流式期间是否自动吸底(用户上翻时暂停)
   chats: [], // {id, title, messages: [{role, content}]}
   currentChatId: null,
-  deletedIds: [], // 本端已删除的聊天 id(墓碑,合并云端时排除,防止删除记录复活)
+  // 云同步删除模型(软删除,云端始终留档):
+  //   deletedIds    本端已删、待推送给云端归档的 id(推送成功即清)
+  //   _deletedCopies 本端删除时暂存的对话副本,随推送带给云端留档(本端可能比云端最后一次推送更新)
+  //   serverTombs   云端已删除 id(墓碑),合并/加载时据此排除,保证 A 删 B 也删、旧设备回推不复活
+  deletedIds: [],
+  _deletedCopies: {},
+  serverTombs: null,
   streamToggle: true,
   assistants: [],
   assistantCategories: [],
@@ -283,6 +289,71 @@ async function readJsonSafe(res) {
   return { error: { message: '服务器返回了非预期内容（HTTP ' + res.status + '），请检查站点配置或稍后重试' } };
 }
 
+// 出字前的状态:在干嘛就写在干嘛。显示在 AI 回复气泡里(m.phase),不占输入框下方。
+function setReplyPhase(msg, text) {
+  if (!msg) return;
+  msg.phase = text || '';
+  const chat = currentChat();
+  if (!chat) return;
+  const idx = (chat.messages || []).indexOf(msg);
+  if (idx < 0) { renderMessages(); return; }
+  const node = document.querySelector('#messages .msg.assistant[data-idx="' + idx + '"] .phase-text');
+  if (node) { node.textContent = text || '思考中'; return; }
+  renderMessages();
+}
+
+// 把这一轮用户消息立刻发进对话(含 AI 占位),输入框随即清空。
+// existing 是判定阶段已经发出去的那条时直接复用,避免同一条消息发两遍。
+function postUserTurn(text, attachments, existing) {
+  if (existing && existing.chat && existing.userMsg && existing.assistantMsg) return existing;
+  const input = $('input');
+  input.value = '';
+  autosizeInput();
+  state.pendingAttachments = [];
+  renderAttachments();
+  updateSendBtn();
+  let chat = currentChat();
+  if (!chat || !chat.id) chat = newChat();
+  // 新会话第一个消息先按本地截取起标题;判定给出的标题稍后由调用方补上
+  if (chat.messages.length === 0 && autoTitleEnabled()) {
+    const seed = text || (attachments[0] && attachments[0].name) || '新对话';
+    chat.title = (state._judgeTitle && state._judgeTitle.trim()) || window.OCConversations.autoTitle(seed);
+    chat._autoTitled = true;
+    renderChatList();
+  }
+  state._judgeTitle = '';
+  const displayParts = [];
+  if (text) displayParts.push(text);
+  if (attachments.length && window.OCMultimodal) {
+    attachments.forEach((a) => displayParts.push(window.OCMultimodal.toMarkdown(a)));
+  }
+  const content = displayParts.join('\n\n') || '（附件）';
+  const userMsg = { role: 'user', content, text, attachments, createdAt: Date.now() };
+  chat.messages.push(userMsg);
+  jumpToLatestOnSend();
+  chat.updatedAt = Date.now();
+  // 占位先挂 _streaming:首 token 之前气泡里显示当前步骤(判定/检索/思考)
+  const assistantMsg = { role: 'assistant', content: '', phase: '思考中', _streaming: true, createdAt: Date.now() };
+  chat.messages.push(assistantMsg);
+  saveChats();
+  renderMessages();
+  return { chat, userMsg, assistantMsg };
+}
+function phaseIndicatorHtml(text) {
+  return '<div class="phase-indicator" aria-live="polite">'
+    + '<span class="phase-live" aria-hidden="true"><i></i><i></i><i></i></span>'
+    + '<span class="phase-text">' + escapeHtml(text || '思考中') + '</span>'
+    + '</div>';
+}
+function judgePhaseText(opts) {
+  opts = opts || {};
+  const parts = [];
+  if (opts.image) parts.push('生图');
+  if (opts.search) parts.push('联网');
+  if (opts.title) parts.push('标题');
+  if (!parts.length) return '正在判定';
+  return '正在判定是否' + parts.join('、');
+}
 function toast(msg, isError = false) {
   if (window.OCUI) return window.OCUI.toast(msg, isError ? 'error' : undefined);
   const t = document.createElement('div');
@@ -460,16 +531,116 @@ function loadChats() {
     state.chats = window.OCConversations.normalize(JSON.parse(localStorage.getItem('oc_chats_' + state.user.id) || '[]'));
     state.chats.forEach((c) => (c.messages || []).forEach((m) => { if (m && m.role === 'assistant') m._voteSent = m.vote || null; }));
   } catch (e) { state.chats = []; }
-  // 恢复本端删除墓碑(按用户隔离),防止刷新后又被云端合并回来
+  // 刷新/重进页面时,把上次没跑完的「流式回答 / 生图占位」定稿:普通对话请求没有服务端任务可续,
+  // 挂着 _streaming 会永远显示「思考中」,占位被合并丢掉后又只剩一条点不动的空白消息。
+  // 有 taskId 且仍在跑的交给 resumePendingTasks 续传,这里不动。
+  let healed = false;
+  state.chats.forEach((c) => (c.messages || []).forEach((m) => {
+    if (!m || m.role !== 'assistant') return;
+    if (m.taskId && m.taskStatus === 'running') return;
+    if (m._streaming) {
+      m._streaming = false;
+      m.interrupted = true;
+      healed = true;
+      if (!String(m.content || '').trim() && !m.reasoning) {
+        m.error = true;
+        m.failNote = '页面刷新，本次回答中断（未产生内容），可点击重试';
+      }
+    }
+    if (m.imagePending) {
+      m.imagePending = false;
+      m.error = true;
+      m.failNote = '页面刷新，生成已中断，请重新发送';
+      healed = true;
+    }
+  }));
+  if (healed) saveChats();
+  // 恢复删除状态(按用户隔离):
+  //  - 待推送删除(墓碑):刷新后继续把删除同步给云端
+  //  - 被删对话副本:随下次推送带给云端留档
+  //  - 云端墓碑:刷新后立刻把别处删掉的对话从列表里排除,不必等首次拉取
   try {
     const tombs = JSON.parse(localStorage.getItem('oc_chat_tombs_' + state.user.id) || '[]');
     state.deletedIds = Array.isArray(tombs) ? tombs.filter((x) => typeof x === 'string') : [];
   } catch (e) { state.deletedIds = []; }
+  try {
+    const copies = JSON.parse(localStorage.getItem('oc_chat_delcopies_' + state.user.id) || '{}');
+    state._deletedCopies = (copies && typeof copies === 'object' && !Array.isArray(copies)) ? copies : {};
+  } catch (e) { state._deletedCopies = {}; }
+  try {
+    const st = JSON.parse(localStorage.getItem('oc_chat_stombs_' + state.user.id) || '{}');
+    state.serverTombs = (st && typeof st === 'object' && !Array.isArray(st)) ? st : {};
+  } catch (e) { state.serverTombs = {}; }
+  state.chats = state.chats.filter((c) => c && !state.serverTombs[c.id] && !(state.deletedIds || []).includes(c.id));
   state.currentChatId = state.chats[0] ? state.chats[0].id : null;
 }
 function persistTombstones() {
   if (!state.user) return;
-  try { localStorage.setItem('oc_chat_tombs_' + state.user.id, JSON.stringify(state.deletedIds || [])); } catch (e) { /* 忽略 */ }
+  try {
+    // 与推送端点接受的上限一致:更早的删除即便丢了显式清单,
+    // 云端也能从「新列表里没有」推断出来并归档
+    if ((state.deletedIds || []).length > 500) state.deletedIds = state.deletedIds.slice(-500);
+    localStorage.setItem('oc_chat_tombs_' + state.user.id, JSON.stringify(state.deletedIds || []));
+  } catch (e) { /* 忽略 */ }
+}
+function persistDeletedCopies() {
+  if (!state.user) return;
+  try {
+    const entries = Object.entries(state._deletedCopies || {}).slice(-20);
+    state._deletedCopies = Object.fromEntries(entries);
+    localStorage.setItem('oc_chat_delcopies_' + state.user.id, JSON.stringify(state._deletedCopies));
+  } catch (e) { /* 存储已满等场景忽略,删除仍会随列表同步生效 */ }
+}
+function persistServerTombs() {
+  if (!state.user) return;
+  try {
+    // 只保留最近 2000 条(对象键序即写入序),与云端墓碑上限一致,避免本地存储无限膨胀
+    const all = Object.keys(state.serverTombs || {});
+    if (all.length > 2000) {
+      state.serverTombs = Object.fromEntries(all.slice(-2000).map((id) => [id, 1]));
+    }
+    localStorage.setItem('oc_chat_stombs_' + state.user.id, JSON.stringify(state.serverTombs || {}));
+  } catch (e) { /* 忽略 */ }
+}
+// 把云端墓碑合进本端:排除本地列表里对应对话。返回是否有内容被移除(用于决定是否重绘)
+function applyServerTombs(ids) {
+  if (!state.serverTombs || typeof state.serverTombs !== 'object') state.serverTombs = {};
+  const list = Array.isArray(ids) ? ids : Object.keys(ids || {});
+  if (!list.length) return false;
+  let added = false;
+  list.forEach((id) => {
+    if (typeof id !== 'string' || !id) return;
+    if (!state.serverTombs[id]) { state.serverTombs[id] = 1; added = true; }
+  });
+  if (!added) return false;
+  const before = (state.chats || []).length;
+  state.chats = (state.chats || []).filter((c) => c && !state.serverTombs[c.id]);
+  if (state.currentChatId && !state.chats.some((c) => c.id === state.currentChatId)) {
+    state.currentChatId = state.chats[0] ? state.chats[0].id : null;
+  }
+  persistServerTombs();
+  return state.chats.length !== before;
+}
+// 记录一条本端删除:进待推送清单,并暂存对话副本供云端留档
+function markChatDeleted(chat) {
+  if (!chat || !chat.id) return;
+  if (!(state.deletedIds || []).includes(chat.id)) state.deletedIds.push(chat.id);
+  if (!state._deletedCopies || typeof state._deletedCopies !== 'object') state._deletedCopies = {};
+  try {
+    // 只带近期若干条,避免刷新前最后一个大对话把 localStorage 撑满
+    const copy = JSON.parse(JSON.stringify(chat));
+    state._deletedCopies[chat.id] = copy;
+  } catch (e) { /* 结构不可序列化时跳过副本,服务端仍会自行留档 */ }
+  persistTombstones();
+  persistDeletedCopies();
+  // 云端墓碑立即生效:同一页面内的后续合并不会再把它捞回来
+  if (!state.serverTombs || typeof state.serverTombs !== 'object') state.serverTombs = {};
+  state.serverTombs[chat.id] = 1;
+  persistServerTombs();
+}
+// 同步进行中(流式/编辑/群聊回合):此时整套替换 state.chats 会打断正在写的回答
+function syncBusy() {
+  return !!(state.streaming || state._editingMsg || state._groupTurnActive || state.applyingCloudChats);
 }
 
 // 云同步：保存到本地 + 防抖推送云端
@@ -517,6 +688,28 @@ function syncNow() {
   if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
   return pushChatsToCloud();
 }
+// 推送载荷:列表 + 待归档的删除(id 清单 + 本端副本)
+function syncPayload() {
+  const deletedChats = Object.values(state._deletedCopies || {}).slice(0, 20);
+  return JSON.stringify({
+    chats: state.chats,
+    baseRevision: state.chatRevision || 0,
+    deletedIds: state.deletedIds || [],
+    deletedChats,
+  });
+}
+// 推送成功后清掉「已确认归档」的待删清单与副本(服务端返回的墓碑集合整体采纳)
+function ackDeleted(data) {
+  const serverIds = data && data.deletedIds ? Object.keys(data.deletedIds) : [];
+  if (serverIds.length) {
+    applyServerTombs(serverIds);
+  }
+  if ((state.deletedIds || []).length) { state.deletedIds = []; persistTombstones(); }
+  if (state._deletedCopies && Object.keys(state._deletedCopies).length) {
+    state._deletedCopies = {};
+    persistDeletedCopies();
+  }
+}
 async function pushChatsToCloud() {
   syncTimer = null;
   if (state._groupTurnActive) { scheduleCloudSync(); return; } // 群聊回合期间延后推送,回合结束再同步
@@ -524,13 +717,16 @@ async function pushChatsToCloud() {
     const r = await api('/api/sync/chats', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chats: state.chats, baseRevision: state.chatRevision || 0 }),
+      body: syncPayload(),
     });
     const data = await r.json().catch(() => ({}));
     if (r.status === 409) {
-      // 演示还原导致的冲突:整体采纳云端,不做按时间戳合并
+      // 演示还原导致的冲突:整体采纳云端,不做按时间戳合并。
+      // 流式/编辑/群聊回合期间不能整套替换(会把正在写的回答换掉,表现为不出字),延后到空闲再处理。
+      if (syncBusy()) { scheduleCloudSync(); return; }
       if (adoptDemoRevert(data)) return;
       const revision = Number(data.revision) || 0;
+      if (data.deletedIds) applyServerTombs(Object.keys(data.deletedIds));
       const prevId = state.currentChatId;
       const prev = (state.chats || []).find((c) => c.id === prevId) || null;
       const prevStamp = chatViewStamp(prev);
@@ -548,8 +744,8 @@ async function pushChatsToCloud() {
     if (!r.ok) throw new Error('sync failed');
     state.chatRevision = Number(data.revision) || state.chatRevision || 0;
     if (state.user) localStorage.setItem('oc_chat_rev_' + state.user.id, String(state.chatRevision));
-    // 推送成功:服务端已按本端列表落库(含删除),墓碑可清空
-    if ((state.deletedIds || []).length) { state.deletedIds = []; persistTombstones(); }
+    // 推送成功:服务端已按本端列表落库(含删除归档),待删清单可清空
+    ackDeleted(data);
   } catch (e) {
     // 静默失败,下次修改会重试
   }
@@ -559,10 +755,10 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && !state.streaming) pullChatsFromCloud();
 });
 window.addEventListener('focus', () => { if (!state.streaming) pullChatsFromCloud(); });
-// 已打开的页面不会收到焦点事件。只在可见、且没有待上传改动时对一下版本号。
+// 已打开的页面不会收到焦点事件。只在可见、且没有待上传改动、也没有正在进行的生成/编辑时对一下版本号。
 setInterval(() => {
   if (document.visibilityState !== 'visible') return;
-  if (syncTimer || state.streaming || state.applyingCloudChats) return;
+  if (syncTimer || syncBusy()) return;
   pullChatsFromCloud();
 }, 8000);
 window.addEventListener('beforeunload', () => {
@@ -575,7 +771,7 @@ window.addEventListener('beforeunload', () => {
         method: 'POST',
         keepalive: true,
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + state.token },
-        body: JSON.stringify({ chats: state.chats, baseRevision: state.chatRevision || 0 }),
+        body: syncPayload(),
       }).catch(() => {});
     } catch (e) { /* 降级:放弃本次冲刷 */ }
   }
@@ -609,7 +805,9 @@ function chatViewStamp(chat) {
       p.avatar || '',
     ].join(':');
   }).join('\n');
-  return [chat.id, msgs.length, chat._visibleCount || 0, body].join('|');
+  // 只比对云端也会回传的内容:像 _visibleCount 这类纯本地字段云端永远没有,
+  // 放进来会让每一轮同步都误判「有变化」,把消息列表整页重绘(正在编辑的输入框会被销毁)。
+  return [chat.id, msgs.length, body].join('|');
 }
 function applyCloudChats(chats, revision) {
   if (!state.user) return;
@@ -645,22 +843,29 @@ function adoptDemoRevert(data) {
   const seen = Number(localStorage.getItem(key) || 0);
   if (at <= seen) return false;
   applyCloudChats(data.chats || [], Number(data.revision) || 0);
-  // 服务端已把该账号的对话重置为基准:本地墓碑(待删除清单)随之作废
+  // 服务端已把该账号的对话重置为基准:本地墓碑(待删除清单)与云端墓碑随之作废
   state.deletedIds = [];
+  state._deletedCopies = {};
+  state.serverTombs = {};
   persistTombstones();
+  persistDeletedCopies();
+  persistServerTombs();
   try { localStorage.setItem(key, String(at)); } catch (e) { /* 存储不可用 */ }
   return true;
 }
 
 async function pullChatsFromCloud() {
   if (!state.token || !state.user) return;
-  if (state._groupTurnActive) return; // 群聊回合进行中:避免整体替换 state.chats 丢失成员发言
+  if (syncBusy()) return; // 流式/编辑/群聊回合进行中:整套替换 state.chats 会打断正在写的回答
   try {
     const r = await api('/api/sync/chats');
     if (!r.ok) return;
     const data = await r.json();
+    if (syncBusy()) return;
     if (adoptDemoRevert(data)) return;
     const revision = Number(data.revision) || 0;
+    // 云端墓碑先落地:A 设备删除的对话在这里让本端也删掉(不必等 revision 变化)
+    const tombChanged = data.deletedIds ? applyServerTombs(Object.keys(data.deletedIds)) : false;
     const seen = Number(localStorage.getItem('oc_chat_rev_' + state.user.id) || 0);
     if (revision !== seen) {
       const prevId = state.currentChatId;
@@ -678,12 +883,15 @@ async function pullChatsFromCloud() {
       return;
     }
     const cloud = data.chats || [];
-    if (!cloud.length && !(state.chats || []).length) return;
+    if (!cloud.length && !(state.chats || []).length) {
+      if (tombChanged) { saveChats(); renderChatList(); renderMessages(); }
+      return;
+    }
     const prevId = state.currentChatId;
     const prev = (state.chats || []).find((c) => c.id === prevId) || null;
     const prevStamp = chatViewStamp(prev);
     const merged = mergeChatLists(cloud, state.chats || []);
-    if (merged.length === (state.chats || []).length && chatViewStamp(merged.find((c) => c.id === prevId) || null) === prevStamp) {
+    if (!tombChanged && merged.length === (state.chats || []).length && chatViewStamp(merged.find((c) => c.id === prevId) || null) === prevStamp) {
       const sameIds = merged.every((c, i) => state.chats[i] && state.chats[i].id === c.id && (state.chats[i].updatedAt || 0) === (c.updatedAt || 0) && !!state.chats[i].pinned === !!c.pinned);
       if (sameIds) return;
     }
@@ -698,10 +906,24 @@ async function pullChatsFromCloud() {
   }
 }
 
+// 副本「信息量」:条数 + 可见内容总长。仅用于 updatedAt 完全相同时的决胜,
+// 让更完整的一份胜出(同一会话两个标签页时,旧标签页的短副本不会覆盖新写的长回答)。
+function chatRichness(chat) {
+  if (!chat) return 0;
+  const msgs = chat.messages || [];
+  let n = msgs.length * 1000;
+  for (const m of msgs) {
+    if (!m) continue;
+    n += String(m.content || '').length + String(m.reasoning || '').length;
+  }
+  return n;
+}
+
 function mergeChatLists(cloudChats, localChats) {
   // 合并云端与本端列表:云端有、本端没有的补进来(多端同步);
-  // 但本端**主动删除**的聊天要排除(tombstone),否则删除后再次合并会被云端版本复活。
-  const deleted = new Set(state.deletedIds || []);
+  // 但删除的聊天要排除:本端待推送删除(deletedIds)与云端墓碑(serverTombs)都不能复活,
+  // 否则删除后再次合并会被云端旧副本捞回来。
+  const deleted = new Set([...(state.deletedIds || []), ...Object.keys(state.serverTombs || {})]);
   const cloud = window.OCConversations.normalize(cloudChats || []).filter((c) => !deleted.has(c.id));
   const local = window.OCConversations.normalize(localChats || []).filter((c) => !deleted.has(c.id));
   const merged = cloud.slice();
@@ -711,8 +933,15 @@ function mergeChatLists(cloudChats, localChats) {
       merged.push(lc);
       return;
     }
-    if ((lc.updatedAt || 0) > (found.updatedAt || 0)) {
+    // 时间戳相同时:保留信息量更大的一份。回复刚写完、推送还没落地时两端 updatedAt 一样,
+    // 取云端旧副本会让刚生成的回答刷新后消失;取本地短副本则会在多标签页时把长回答推回旧版。
+    const lt = lc.updatedAt || 0;
+    const ft = found.updatedAt || 0;
+    if (lt > ft || (lt === ft && chatRichness(lc) >= chatRichness(found))) {
       merged[merged.indexOf(found)] = lc;
+    } else if ((found._visibleCount || 0) < (lc._visibleCount || 0)) {
+      // 云端副本赢了也不能丢本地已展开的分页进度
+      found._visibleCount = lc._visibleCount;
     }
   });
   merged.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.updatedAt || 0) - (a.updatedAt || 0));
@@ -721,6 +950,29 @@ function mergeChatLists(cloudChats, localChats) {
 
 function currentChat() {
   return state.chats.find((c) => c.id === state.currentChatId) || null;
+}
+// 云同步合并会整体替换 state.chats(连同消息对象),而消息操作栏/菜单回调里握着的是
+// 渲染那一刻的对象引用。生成前一律用这两个函数把引用换回「当前列表里的活对象」:
+// 否则写进旧对象的内容画不出来(表现为 @重答/编辑重答不出字),会话也会因为写错对象而丢更新。
+function liveChat(chat) {
+  if (!chat || !chat.id) return currentChat();
+  return (state.chats || []).find((c) => c.id === chat.id) || null;
+}
+function liveMessage(chat, msg) {
+  const live = liveChat(chat);
+  if (!live || !msg) return null;
+  const msgs = live.messages || [];
+  let idx = msgs.indexOf(msg);
+  if (idx >= 0) return { chat: live, msg, idx };
+  // 对象已被替换:先按「旧列表里的位置」取新列表同位置副本,再退回 createdAt+role 匹配
+  const staleIdx = (chat.messages || []).indexOf(msg);
+  const cand = staleIdx >= 0 ? msgs[staleIdx] : null;
+  if (cand && cand.role === msg.role && (!msg.createdAt || !cand.createdAt || cand.createdAt === msg.createdAt)) {
+    return { chat: live, msg: cand, idx: staleIdx };
+  }
+  const hit = msgs.findIndex((m) => m && m.role === msg.role && m.createdAt && msg.createdAt && m.createdAt === msg.createdAt);
+  if (hit >= 0) return { chat: live, msg: msgs[hit], idx: hit };
+  return null;
 }
 // API 对话是否显示在列表:用户偏好(默认开启),关闭后列表只显示网页端对话
 function showApiChats() { return !!uiPref('showApiChats', true); }
@@ -744,15 +996,14 @@ function renderChatList() {
     },
     onDelete: async (c) => {
       const ok = window.OCUI
-        ? await window.OCUI.confirm({ title: '删除对话', message: '确认删除此对话？删除后不可恢复。', danger: true, confirmText: '删除' })
-        : confirm('确认删除此对话?');
+        ? await window.OCUI.confirm({ title: '删除对话', message: '确认删除此对话？删除后本机与其它设备都会同步移除。', danger: true, confirmText: '删除' })
+        : confirm('确认删除此对话？删除后本机与其它设备都会同步移除。');
       if (!ok) return;
       // 正在流式输出的会话被删除:先停止,否则内容会画进切换后的新会话里
       if (state.streaming && state.currentChatId === c.id) stopStreaming();
       state.chats = state.chats.filter((x) => x.id !== c.id);
-      // 记墓碑:避免删除后与云端/其它页面合并时把这条又合并回来
-      if (!state.deletedIds.includes(c.id)) state.deletedIds.push(c.id);
-      persistTombstones();
+      // 软删除:内容进云端留档(管理员可查看/清理),并记墓碑让其它设备同步删除
+      markChatDeleted(c);
       if (state.currentChatId === c.id) state.currentChatId = state.chats[0] ? state.chats[0].id : null;
       saveChats(); renderChatList(); renderMessages();
       syncNow();
@@ -811,9 +1062,9 @@ function renderChatListSimple(list) {
 
 // 分支：从消息处创建（右键/悬浮菜单触发专用）
 function branchFromMessage(msg, chat) {
-  const idx = chat.messages.indexOf(msg);
-  if (idx < 0) return;
-  const branch = window.OCConversations.createBranch(chat, idx);
+  const live = liveMessage(chat, msg);
+  if (!live) return;
+  const branch = window.OCConversations.createBranch(live.chat, live.idx);
   state.chats.unshift(branch);
   state.currentChatId = branch.id;
   saveChats(); renderChatList(); renderMessages(); resetComposer();
@@ -824,9 +1075,10 @@ function branchFromMessage(msg, chat) {
 // 删除单条消息:用于清理无关上下文(用户消息与回答分别删除)
 function deleteMessage(msg, chat) {
   if (!msg || !chat) return;
-  const idx = chat.messages.indexOf(msg);
-  if (idx < 0) return;
-  chat.messages.splice(idx, 1);
+  const live = liveMessage(chat, msg);
+  if (!live) return;
+  chat = live.chat;
+  chat.messages.splice(live.idx, 1);
   chat.updatedAt = Date.now();
   saveChats(); renderChatList(); renderMessages();
   toast('已删除该消息');
@@ -1290,6 +1542,9 @@ function pushReplyVersion(msg) {
 
 function switchReplyVersion(msg, chat, delta) {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+  const live = liveMessage(chat, msg);
+  if (!live) return;
+  chat = live.chat; msg = live.msg;
   const versions = ensureReplyVersions(msg);
   if (versions.length < 2) return;
   persistCurrentReplyVersion(msg);
@@ -1297,6 +1552,7 @@ function switchReplyVersion(msg, chat, delta) {
   if (next === msg.versionIndex) return;
   msg.versionIndex = next;
   applyReplyVersion(msg, versions[next]);
+  chat.updatedAt = Date.now();
   saveChats();
   renderMessages();
 }
@@ -1305,6 +1561,10 @@ function finalizeReplyTiming(msg) {
   if (!msg || !msg._startTime) return;
   msg.elapsedMs = Math.max(0, Date.now() - msg._startTime);
   persistCurrentReplyVersion(msg);
+  // 回复写完必须把所属会话的时间戳推到最新:否则云端还留着「生成中/占位」那一版,
+  // 时间戳相同的旧副本会在下次合并(刷新/轮询)时把刚写好的回答覆盖掉。
+  const owner = (state.chats || []).find((c) => (c.messages || []).indexOf(msg) >= 0);
+  if (owner) owner.updatedAt = Date.now();
 }
 
 function formatElapsedMs(ms) {
@@ -1505,14 +1765,21 @@ function buildMsgNode(m, chat, idx) {
   const contentDiv = document.createElement('div');
   contentDiv.className = 'msg-content';
   if (m.error) {
+    // 失败的那次若是 @模型重答,这条消息上还挂着别的模型的回答:标签条要照常画出来。
+    // 否则报错会把之前那个模型的回答一起藏掉,再也切不回去。
+    if (Array.isArray(m.versions) && m.versions.length > 1) {
+      contentDiv.appendChild(buildReplyTabs(m, chat));
+    }
     const kept = stripInterruptMarks(m.content);
     const note = String(m.failNote || m.content || '请求出错');
-    contentDiv.innerHTML = (kept
+    const body = document.createElement('div');
+    body.innerHTML = (kept
       ? '<div class="msg-render-root md-prose"></div>'
       : '') + '<div class="msg-error">' + escapeHtml(note) + '</div>';
     if (kept && window.OCRenderer) {
-      window.OCRenderer.renderInto(contentDiv.querySelector('.msg-render-root'), kept);
+      window.OCRenderer.renderInto(body.querySelector('.msg-render-root'), kept);
     }
+    contentDiv.appendChild(body);
     if (role === 'assistant') {
       // 失败时提供重试按钮
       const retryRow = document.createElement('div');
@@ -1536,9 +1803,10 @@ function buildMsgNode(m, chat, idx) {
     }
   } else if (role === 'assistant') {
     if (m.imagePending && !m.content) {
-      // 生图/生视频占位:出图通常要 10–60 秒,出视频更久,给出明确的等待提示而不是空白气泡
-      const waiting = m.pendingKind === 'video' ? '正在生成视频（可能需要 1–5 分钟）…' : '正在生成图片…';
-      contentDiv.innerHTML = '<div class="phase-indicator"><span class="phase-spinner"></span><span class="phase-text">' + waiting + '</span></div>';
+      // 生图/生视频占位:出图通常要 10–60 秒,出视频更久,给出明确的等待提示而不是空白气泡。
+      // m.phase 优先(判定/改图等更具体的步骤),没有再按类型给兜底文案。
+      const waiting = m.phase || (m.pendingKind === 'video' ? '正在生成视频（可能需要 1–5 分钟）…' : '正在生成图片…');
+      contentDiv.innerHTML = phaseIndicatorHtml(waiting);
       div.appendChild(contentDiv);
       return div;
     }
@@ -1562,7 +1830,7 @@ function buildMsgNode(m, chat, idx) {
     // 新渲染管线：Markdown + 公式 + 代码 + Mermaid + 组件
     if (m.reasoning) upsertReasoningPanel(contentDiv, m, !!m._streaming);
     if (m._streaming) {
-      // 流式中先出头像+思考态,有字后再跟光标,避免首 token 前像没头像
+      // 流式中先出头像+当前步骤,有字后再跟光标,避免首 token 前像没头像
       if (m.content) {
         const root = document.createElement('div');
         root.className = 'stream-answer';
@@ -1574,7 +1842,7 @@ function buildMsgNode(m, chat, idx) {
           root.innerHTML = escapeHtml(m.content) + '<span class="stream-cursor"></span>';
         }
       } else if (!m.reasoning) {
-        contentDiv.innerHTML = '<div class="phase-indicator"><span class="phase-spinner"></span><span class="phase-text">思考中</span></div>';
+        contentDiv.innerHTML = phaseIndicatorHtml(m.phase || '思考中');
       }
     } else {
       const root = document.createElement('div');
@@ -1600,15 +1868,16 @@ function buildMsgNode(m, chat, idx) {
 
   // 操作栏 + 快捷指令（仅在非流式完成时）
   if (role === 'assistant' && !m._streaming && (m.content || m.reasoning || replyWasInterrupted(m))) {
-    window.OCMessages.attachActions(div, m, {
-      onRegenerate: (mm) => regenerateMessage(mm, chat),
-      onAt: (mm, btn) => openAtAnswerModal(mm, chat, btn),
-      onShare: (mm) => shareMessage(mm),
-      onVote: submitMessageVote,
-      onQuickAction: quickAction,
-      onBranch: (mm) => branchFromMessage(mm, chat),
-      onDelete: (mm) => deleteMessage(mm, chat),
-    });
+  window.OCMessages.attachActions(div, m, {
+    onRegenerate: (mm) => regenerateMessage(mm, chat),
+    onAt: (mm, btn) => openAtAnswerModal(mm, chat, btn),
+    onShare: (mm) => shareMessage(mm),
+    onSaveNote: (mm) => saveMessageToNotes(mm, chat),
+    onVote: submitMessageVote,
+    onQuickAction: quickAction,
+    onBranch: (mm) => branchFromMessage(mm, chat),
+    onDelete: (mm) => deleteMessage(mm, chat),
+  });
     // 跟进建议
     if (m.followUps && m.followUps.length) {
       window.OCMultimodal.renderFollowUps(div, m.followUps, applyFollowUp);
@@ -2337,6 +2606,7 @@ async function aiJudgeTools(text, ctx) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: ctx.signal,
     });
     if (!r.ok) return null;
     const data = await r.json();
@@ -2412,7 +2682,8 @@ async function sendMessage() {
     state.pendingAttachments = [];
     renderAttachments();
     updateSendBtn();
-    await sendImageTurn(text, imageAtts);
+    // 消息立刻进对话,生成进展写在 AI 回复那一格里
+    await sendImageTurn(text, imageAtts, { phase: imageAtts.length ? '正在按参考图改图' : '正在生成图片' });
     return;
   }
 
@@ -2424,7 +2695,7 @@ async function sendMessage() {
     state.pendingAttachments = [];
     renderAttachments();
     updateSendBtn();
-    await sendVideoTurn(text, imageAtts);
+    await sendVideoTurn(text, imageAtts, { phase: '正在生成视频' });
     return;
   }
 
@@ -2433,6 +2704,8 @@ async function sendMessage() {
   // off=关闭 | rough=粗略关键词识别 | auto=统一 AI 工具判定(更准,但多一次调用)。
   // 「联网=智能」时也复用同一次判定,避免再用主模型多判一次、也更省 token。
   const aim = autoImageMode();
+  // 判定阶段已发出去的那一轮(用户消息 + AI 占位):块外的发送收尾也要用,提升到外层作用域
+  let posted = null;
   {
     const imgAtts = attachments.filter((a) => a && a.type === 'image' && a.dataUrl).slice(0, 4);
     let prevImg = '';
@@ -2452,16 +2725,31 @@ async function sendMessage() {
     const needJudge = judgeOn && text && ((aim === 'auto' && hasImageModel) || searchReady || isFirstMsg);
     let verdict = null;
     if (needJudge) {
-      // 判定期间锁住发送,避免重复触发
+      // 判定期间锁住发送,避免重复触发。判定请求必须有超时:
+      // 它不走流式、也没有停止按钮,上游一挂起 streaming 就会一直为真,
+      // 再点发送只提示「正在生成中」。判定进展写在 AI 回复气泡里,消息即时进对话。
+      posted = postUserTurn(text, attachments);
+      setReplyPhase(posted.assistantMsg, judgePhaseText({ image: aim === 'auto' && hasImageModel, search: searchReady, title: isFirstMsg }));
       state.streaming = true; updateSendBtn();
+      const judgeAc = new AbortController();
+      const judgeTimer = setTimeout(() => judgeAc.abort(), 12000);
       try {
-        verdict = await aiJudgeTools(text, { imageEnabled: hasImageModel, searchEnabled: searchReady, prevImage: hasRef, wantTitle: isFirstMsg });
-      } finally { state.streaming = false; updateSendBtn(); }
+        verdict = await aiJudgeTools(text, { imageEnabled: hasImageModel, searchEnabled: searchReady, prevImage: hasRef, wantTitle: isFirstMsg, signal: judgeAc.signal });
+      } finally {
+        clearTimeout(judgeTimer);
+        state.streaming = false; updateSendBtn();
+      }
     }
     // 联网:判定成功则按结果显式开关;失败则回退后端启发式(body.webSearch 保持 'auto')
     state._toolSearch = (verdict && searchReady) ? !!verdict.search : null;
-    // 判定给出的标题:建对话时先用上(本地截取作为兜底)
-    state._judgeTitle = (verdict && verdict.title) ? verdict.title : '';
+    // 判定给出的标题:首条消息刚发出去时,用判定结果刷新自动标题
+    const judgeTitle = (verdict && verdict.title) ? String(verdict.title).trim() : '';
+    if (posted && judgeTitle && posted.chat && posted.chat._autoTitled) {
+      posted.chat.title = judgeTitle;
+      renderChatList();
+    }
+    // 标题已消费:正常路径的 postUserTurn 复用 posted 时不会再读它
+    state._judgeTitle = '';
     let isDraw = false, isEdit = false;
     if (aim !== 'off') {
       const feedback = wantsImageFeedback(text);
@@ -2501,7 +2789,7 @@ async function sendMessage() {
         const withRef = imgAtts.length > 0 || usePrevRef;
         toast((isEdit ? '识别到改图意图，已用生图模型「' : '识别到绘图意图，已用生图模型「') + (target.label || target.modelId) + '」' + (withRef ? '并带上参考图' : ''));
         try {
-          await sendImageTurn(text, imgAtts, { autoRef: usePrevRef });
+          await sendImageTurn(text, imgAtts, { autoRef: usePrevRef, posted, phase: isEdit ? '判定为改图，正在生成' : '判定为生图，正在生成' });
         } finally {
           // 无论出图成功或失败,都恢复到用户原本的对话模型
           state.currentProviderId = prevProviderId;
@@ -2515,44 +2803,23 @@ async function sendMessage() {
     }
   }
 
-  input.value = '';
-  autosizeInput();
-  state.pendingAttachments = [];
-  renderAttachments();
-  updateSendBtn();
-  // 没有当前会话时自动新建
-  let chat = currentChat();
-  if (!chat || !chat.id) {
-    chat = newChat();
+  // 消息立刻进对话(判定阶段已发过就复用),输入框随即清空;进展写在 AI 回复气泡里。
+  const turn = postUserTurn(text, attachments, posted);
+  const searching = state._toolSearch === true || webSearchMode() === 'on';
+  setReplyPhase(turn.assistantMsg, searching ? '正在联网检索' : '思考中');
+  try {
+    await requestAssistantReply(turn.chat, turn.userMsg);
+  } finally {
+    // 前置校验没过(无可用模型/额度不足等)时请求根本没开始:占位不能一直挂着「思考中」
+    const am = turn.assistantMsg;
+    if (am && am._streaming && !String(am.content || '').trim() && !am.error && !am.taskId && !state.streaming) {
+      am._streaming = false;
+      am.error = true;
+      am.failNote = am.failNote || '未能开始生成，请检查模型与额度后重试';
+      saveChats();
+      renderMessages();
+    }
   }
-  // 新会话给第一个消息生成标题:优先用统一工具判定已生成的标题(省一次调用),否则本地截取
-  if (chat.messages.length === 0 && autoTitleEnabled()) {
-    const seed = text || (attachments[0] && attachments[0].name) || '新对话';
-    chat.title = (state._judgeTitle && state._judgeTitle.trim()) || window.OCConversations.autoTitle(seed);
-    chat._autoTitled = true;
-    renderChatList();
-  }
-  state._judgeTitle = '';
-
-  const displayParts = [];
-  if (text) displayParts.push(text);
-  if (attachments.length && window.OCMultimodal) {
-    attachments.forEach((a) => displayParts.push(window.OCMultimodal.toMarkdown(a)));
-  }
-  const content = displayParts.join('\n\n') || '（附件）';
-
-  const userMsg = { role: 'user', content, text, attachments, createdAt: Date.now() };
-  chat.messages.push(userMsg);
-  jumpToLatestOnSend();
-  chat.updatedAt = Date.now();
-  saveChats(); renderMessages();
-
-  // 添加 assistant 占位并请求回复
-  const assistantMsg = { role: 'assistant', content: '' };
-  chat.messages.push(assistantMsg);
-  saveChats();
-  renderMessages();
-  await requestAssistantReply(chat, userMsg);
   await refreshMe();
   refreshModelHealth();
 }
@@ -2577,23 +2844,8 @@ async function streamRequest(format, body, chat, assistantMsg) {
   const ac = new AbortController();
   state.abortController = ac;
 
-  let phaseTimer = null;
-  const startPhases = () => {
-    const phases = (window.OCReasoning && window.OCReasoning.PHASES) || ['思考中', '整理中', '生成中'];
-    let i = 0;
-    phaseTimer = setInterval(() => {
-      i = (i + 1) % phases.length;
-      const focusSel = typeof state._streamFocusIdx === 'number'
-        ? '#messages .msg.assistant[data-idx="' + state._streamFocusIdx + '"] .phase-text'
-        : '#messages .msg.assistant:last-child .phase-text';
-      const label = document.querySelector(focusSel);
-      if (label) label.textContent = phases[i];
-    }, 2400);
-  };
-
-  // 渲染占位（待 AI 回复）
+  // 渲染占位（待 AI 回复）。文案保持这一步真正在做的事,不再轮播成「分析中 / 整理中」。
   renderMessages();
-  startPhases();
 
   try {
     const resp = await api(ENDPOINT_BY_FORMAT[format], {
@@ -2615,6 +2867,11 @@ async function streamRequest(format, body, chat, assistantMsg) {
       const text = await resp.text();
       const data = JSON.parse(text);
       assistantMsg.content = extractText(data, format);
+      // @ 到生图模型时后端会改走生图接口,返回 {images:[...]} 而不是 choices。
+      // 只按文本取会是空串,标签里就剩一个没有任何内容的空气泡:把图片渲染进这次回答。
+      if (!assistantMsg.content && data && Array.isArray(data.images) && data.images.length) {
+        assistantMsg.content = imageLinksFromResults(data.images, '生成图片');
+      }
       const think = extractReasoning(data, format);
       if (think) assistantMsg.reasoning = think;
       absorbThinkTags(assistantMsg, true);
@@ -2657,7 +2914,6 @@ async function streamRequest(format, body, chat, assistantMsg) {
       throw e;
     }
   } finally {
-    if (phaseTimer) clearInterval(phaseTimer);
     cancelStreamPaint();
     assistantMsg._streaming = false;
     if (assistantMsg.taskId) assistantMsg.taskStatus = assistantMsg.interrupted ? 'interrupted' : (assistantMsg.error ? 'failed' : 'completed');
@@ -2714,13 +2970,15 @@ function reRenderLastAssistant(assistantMsg) {
   // 重新挂载操作栏 + 快捷指令 + 跟进建议
   last.querySelectorAll('.msg-actions, .quick-actions, .follow-ups, .cite-sources').forEach((el) => el.remove());
   if (assistantMsg.content || assistantMsg.reasoning || replyWasInterrupted(assistantMsg)) {
-    window.OCMessages.attachActions(last, assistantMsg, {
-      onRegenerate: (mm) => regenerateMessage(mm, chat),
-      onShare: (mm) => shareMessage(mm),
-      onVote: submitMessageVote,
-      onQuickAction: quickAction,
-      onBranch: (mm) => branchFromMessage(mm, chat),
-    });
+  window.OCMessages.attachActions(last, assistantMsg, {
+    onRegenerate: (mm) => regenerateMessage(mm, chat),
+    onAt: (mm, btn) => openAtAnswerModal(mm, chat, btn),
+    onShare: (mm) => shareMessage(mm),
+    onSaveNote: (mm) => saveMessageToNotes(mm, chat),
+    onVote: submitMessageVote,
+    onQuickAction: quickAction,
+    onBranch: (mm) => branchFromMessage(mm, chat),
+  });
     if (assistantMsg.followUps && assistantMsg.followUps.length) {
       window.OCMultimodal.renderFollowUps(last, assistantMsg.followUps, applyFollowUp);
     }
@@ -3016,6 +3274,9 @@ function noteModelFailure(msg, reason) {
 async function continueInterrupted(msg, chat) {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
   if (!msg || !chat) return;
+  const live = liveMessage(chat, msg);
+  if (!live) { toast('找不到这条回答', true); return; }
+  chat = live.chat; msg = live.msg;
   // 通道级故障由请求失败路径统一提示(noteModelFailure),不再对特定模型名一刀切拒绝
   msg.content = stripInterruptMarks(msg.content);
   msg.interrupted = false;
@@ -3030,8 +3291,10 @@ async function continueInterrupted(msg, chat) {
 
 async function regenerateMessage(msg, chat) {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
-  const idx = chat.messages.indexOf(msg);
-  if (idx < 0) return;
+  const live = liveMessage(chat, msg);
+  if (!live) { toast('找不到这条回答', true); return; }
+  chat = live.chat; msg = live.msg;
+  const idx = live.idx;
   chat.messages = chat.messages.slice(0, idx + 1);
   persistCurrentReplyVersion(msg);
   pushReplyVersion(msg);
@@ -3046,6 +3309,8 @@ async function regenerateMessage(msg, chat) {
   msg.elapsedMs = null;
   msg._startTime = Date.now();
   msg.createdAt = Date.now();
+  // 重答会截断消息列表:时间戳必须跟着更新,否则旧的云端副本(含更长的历史)会赢下合并
+  chat.updatedAt = Date.now();
   saveChats();
   renderMessages();
   const lastUser = [...chat.messages.slice(0, idx)].reverse().find((m) => m.role === 'user');
@@ -3073,19 +3338,29 @@ function editAndResend(msg, chat, msgEl) {
   if (idx < 0) return toast('找不到这条消息', true);
   const target = msgEl || document.querySelector('#messages .msg.user[data-idx="' + idx + '"]');
   if (!target || !window.OCMessages) return;
+  // 编辑期间挂起云同步拉取:轮询合并会整段替换 state.chats 并重绘消息列表,
+  // 正在输入的编辑框会被连带销毁(表现为刚点编辑就自己弹回)。
+  state._editingMsg = msg;
   window.OCMessages.enterEditMode(target, msg, {
     onSaveEdit: async (newText) => {
+      state._editingMsg = null;
       const next = String(newText || '').trim();
       if (!next) return toast('消息不能为空', true);
+      // 编辑期间列表可能被合并替换过:保存时取回活对象,新回答才会写进画面上的那条消息
+      const live = liveMessage(chat, msg);
+      if (!live) { toast('该消息已不在当前对话中', true); return; }
+      chat = live.chat; msg = live.msg;
+      const at = live.idx;
       msg.content = next;
       if (msg.text !== undefined) msg.text = next;
-      chat.messages = chat.messages.slice(0, idx + 1);
+      chat.messages = chat.messages.slice(0, at + 1);
       chat.messages.push({ role: 'assistant', content: '' });
+      chat.updatedAt = Date.now();
       saveChats();
       renderMessages();
       await requestAssistantReply(chat, msg);
     },
-    onExitEdit: () => renderMessages(),
+    onExitEdit: () => { state._editingMsg = null; renderMessages(); },
   });
 }
 
@@ -3276,6 +3551,21 @@ function shareMessage() {
   shareConversation(currentChat());
 }
 
+// 保存到 AI 笔记:交给 notes.js 让 AI 整理归档(引用换回活对象,防止云同步替换后写丢)
+function saveMessageToNotes(msg, chat) {
+  const live = liveChat(chat) || chat;
+  const lm = live ? (liveMessage(live, msg) || { msg }).msg : msg;
+  if (!lm || !(lm.content || '').trim()) {
+    toast('这条回复还没有内容，无法保存到笔记', true);
+    return;
+  }
+  if (!window.OCNotes || !window.OCApp) {
+    toast('笔记模块尚未加载，请刷新页面后重试', true);
+    return;
+  }
+  window.OCNotes.archiveFromMessage(live, lm);
+}
+
 // 快捷指令
 function submitMessageVote(msg) {
   persistCurrentReplyVersion(msg);
@@ -3386,6 +3676,8 @@ function stopStreaming() {
   document.documentElement.classList.remove('oc-streaming');
   $('stop-btn').classList.add('hidden');
   $('send-btn').classList.remove('hidden');
+  // 停止后消息内容已定稿,时间戳同步推进,已写出的内容不会被云端旧副本合并覆盖
+  if (chat) chat.updatedAt = Date.now();
   saveChats();
 }
 
@@ -3968,6 +4260,7 @@ function syncPrefsPanel() {
       ? '一次判定同时决定：本轮要联网还是出图，并用同一个模型为新对话命名，不重复消耗。'
       : '判定已关闭：不再发起判定调用（省一次额度）。联网改用系统启发式判断，出图回退关键词粗略识别，标题改用本地截取。';
   }
+  syncAuxModelSelect('pref-notes-model', 'notesModel', '');
   syncAuxModelSelect('pref-followups-model', 'followupsModel', '');
   syncAuxModelSelect('pref-judge-model', 'judgeModel', '');
   syncImageModelSelect('pref-image-model', 'imageModel');
@@ -4201,6 +4494,7 @@ async function saveToolSource(patch) {
     if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('aiJudge', judgeEl.checked);
     syncPrefsPanel();
   });
+  bindAuxModelSelect('pref-notes-model', 'notesModel', 'notes');
   bindAuxModelSelect('pref-followups-model', 'followupsModel', 'followups');
   bindAuxModelSelect('pref-judge-model', 'judgeModel', '');
   bindImageModelSelect('pref-image-model', 'imageModel');
@@ -4349,18 +4643,25 @@ async function saveToolSource(patch) {
   bindFontChoice({ key: 'fontCjk', inputId: 'pref-font-cjk', selectId: 'pref-font-cjk-select', browseId: 'pref-font-cjk-browse', fallback: 'source-han-serif', options: ['source-han-serif', 'alibaba-puhuiti', 'system'], labels: { 'source-han-serif': '思源宋体', 'alibaba-puhuiti': 'AlibabaPuHuiTi', system: '系统字体' } });
   bindFontChoice({ key: 'fontLatin', inputId: 'pref-font-latin', selectId: 'pref-font-latin-select', browseId: 'pref-font-latin-browse', fallback: 'alibaba-sans', options: ['alibaba-sans', 'times-new-roman', 'helvetica', 'system'], labels: { 'times-new-roman': 'Times New Roman', helvetica: 'Helvetica', 'alibaba-sans': 'AlibabaSans', system: '系统字体' } });
 
-  // ---- 外观:主题色（色相条 + 明暗条）----
-  function hexToRgb(hex) {
+  // ---- 外观:主题色（色相 / 饱和度 / 明度 / 透明度）----
+  function hexToRgba(hex) {
     const m = String(hex || '').trim().match(/^#([0-9a-fA-F]{3,8})$/);
     if (!m) return null;
     let h = m[1];
     if (h.length === 3 || h.length === 4) h = h.split('').map((c) => c + c).join('');
     if (h.length !== 6 && h.length !== 8) return null;
-    return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16) };
+    return {
+      r: parseInt(h.slice(0, 2), 16),
+      g: parseInt(h.slice(2, 4), 16),
+      b: parseInt(h.slice(4, 6), 16),
+      a: h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1,
+    };
+  }
+  function pad2(n) {
+    return Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
   }
   function rgbToHex(r, g, b) {
-    const pad = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
-    return '#' + pad(r) + pad(g) + pad(b);
+    return '#' + pad2(r) + pad2(g) + pad2(b);
   }
   function rgbToHsl(r, g, b) {
     r /= 255; g /= 255; b /= 255;
@@ -4395,44 +4696,80 @@ async function saveToolSource(patch) {
     };
     return { r: tk(hue + 1 / 3) * 255, g: tk(hue) * 255, b: tk(hue - 1 / 3) * 255 };
   }
-  const accentState = { h: 221, s: 0.83, l: 0.53 };
+  const accentState = { h: 221, s: 0.83, l: 0.53, a: 1 };
   function currentAccentHex() {
     const rgb = hslToRgb(accentState.h, accentState.s, accentState.l);
-    return rgbToHex(rgb.r, rgb.g, rgb.b);
+    let hex = rgbToHex(rgb.r, rgb.g, rgb.b);
+    if (accentState.a < 0.999) hex += pad2(accentState.a * 255);
+    return hex.toUpperCase();
   }
-  function placeAccentThumbs() {
+  function paintAccent() {
+    const rgb = hslToRgb(accentState.h, accentState.s, accentState.l);
+    const solid = rgbToHex(rgb.r, rgb.g, rgb.b);
+    const css = 'rgba(' + Math.round(rgb.r) + ', ' + Math.round(rgb.g) + ', ' + Math.round(rgb.b) + ', ' + accentState.a + ')';
     const hueThumb = $('accent-hue-thumb');
+    const satThumb = $('accent-sat-thumb');
     const lightThumb = $('accent-light-thumb');
+    const alphaThumb = $('accent-alpha-thumb');
     if (hueThumb) hueThumb.style.left = ((accentState.h / 360) * 100) + '%';
+    if (satThumb) satThumb.style.left = (accentState.s * 100) + '%';
     if (lightThumb) lightThumb.style.left = (accentState.l * 100) + '%';
+    if (alphaThumb) alphaThumb.style.left = (accentState.a * 100) + '%';
     const hue = $('accent-hue');
+    const sat = $('accent-sat');
     const light = $('accent-light');
-    if (hue) {
-      hue.setAttribute('aria-valuenow', String(Math.round(accentState.h)));
-      hue.style.setProperty('--thumb', currentAccentHex());
+    const alpha = $('accent-alpha');
+    if (hue) hue.setAttribute('aria-valuenow', String(Math.round(accentState.h)));
+    if (sat) {
+      sat.setAttribute('aria-valuenow', String(Math.round(accentState.s * 100)));
+      const gray = hslToRgb(accentState.h, 0, accentState.l);
+      const full = hslToRgb(accentState.h, 1, accentState.l);
+      sat.style.background = 'linear-gradient(90deg, ' + rgbToHex(gray.r, gray.g, gray.b) + ', ' + rgbToHex(full.r, full.g, full.b) + ')';
     }
     if (light) {
       light.setAttribute('aria-valuenow', String(Math.round(accentState.l * 100)));
-      const mid = hslToRgb(accentState.h, Math.max(0.35, accentState.s), 0.5);
-      light.style.background = 'linear-gradient(90deg, #2a2d33 0%, ' + rgbToHex(mid.r, mid.g, mid.b) + ' 52%, #f4f5f7 100%)';
+      const mid = hslToRgb(accentState.h, accentState.s, 0.5);
+      light.style.background = 'linear-gradient(90deg, #141414, ' + rgbToHex(mid.r, mid.g, mid.b) + ' 50%, #fff)';
     }
-    const preview = $('accent-preview');
-    if (preview) preview.style.background = currentAccentHex();
+    if (alpha) {
+      alpha.setAttribute('aria-valuenow', String(Math.round(accentState.a * 100)));
+      alpha.style.setProperty('--accent-solid', solid);
+    }
+    const hueVal = $('accent-hue-val');
+    const satVal = $('accent-sat-val');
+    const lightVal = $('accent-light-val');
+    const alphaVal = $('accent-alpha-val');
+    if (hueVal) hueVal.textContent = Math.round(accentState.h) + '°';
+    if (satVal) satVal.textContent = Math.round(accentState.s * 100) + '%';
+    if (lightVal) lightVal.textContent = Math.round(accentState.l * 100) + '%';
+    if (alphaVal) alphaVal.textContent = Math.round(accentState.a * 100) + '%';
+    const fill = (el) => { if (el) el.style.setProperty('--swatch', css); };
+    fill($('accent-preview'));
+    fill($('accent-swatch'));
+    const entry = $('accent-entry-swatch');
+    if (entry) entry.style.setProperty('--swatch', css);
+    const entryHex = $('accent-entry-hex');
+    if (entryHex) entryHex.textContent = currentAccentHex();
     const hexEl = $('pref-accent-hex');
     if (hexEl && document.activeElement !== hexEl) hexEl.value = currentAccentHex();
+    const clearBtn = $('pref-accent-clear');
+    if (clearBtn) clearBtn.classList.toggle('is-clear', accentState.a < 0.01);
+  }
+  function commitAccent() {
+    if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('accent', currentAccentHex());
+    if (window.OCUI && window.OCUI.applyAppearance) window.OCUI.applyAppearance();
   }
   function applyAccentHex(hex, persist) {
-    const rgb = hexToRgb(hex);
-    if (!rgb) return;
-    const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+    const rgba = hexToRgba(hex);
+    if (!rgba) return false;
+    const hsl = rgbToHsl(rgba.r, rgba.g, rgba.b);
     accentState.h = hsl.h;
-    accentState.s = hsl.s || 0.65;
+    accentState.s = hsl.s;
     accentState.l = hsl.l;
-    placeAccentThumbs();
-    if (persist) {
-      if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('accent', currentAccentHex());
-      if (window.OCUI && window.OCUI.applyAppearance) window.OCUI.applyAppearance();
-    }
+    accentState.a = rgba.a;
+    paintAccent();
+    if (persist) commitAccent();
+    return true;
   }
   window.syncAccentPicker = function (hex) {
     applyAccentHex(hex || ((window.OCUI && window.OCUI.defaultAccent) || '#2563eb'), false);
@@ -4441,13 +4778,13 @@ async function saveToolSource(patch) {
     if (!el) return;
     const setFromEvent = (ev) => {
       const rect = el.getBoundingClientRect();
-      const t = Math.max(0, Math.min(1, ((ev.touches ? ev.touches[0].clientX : ev.clientX) - rect.left) / rect.width));
+      const t = Math.max(0, Math.min(1, ((ev.touches ? ev.touches[0].clientX : ev.clientX) - rect.left) / (rect.width || 1)));
       if (kind === 'hue') accentState.h = t * 360;
-      else accentState.l = t;
-      if (accentState.s < 0.28) accentState.s = 0.65;
-      placeAccentThumbs();
-      if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('accent', currentAccentHex());
-      if (window.OCUI && window.OCUI.applyAppearance) window.OCUI.applyAppearance();
+      else if (kind === 'sat') accentState.s = t;
+      else if (kind === 'light') accentState.l = t;
+      else accentState.a = t;
+      paintAccent();
+      commitAccent();
     };
     const onMove = (ev) => { ev.preventDefault(); setFromEvent(ev); };
     const onUp = () => {
@@ -4456,42 +4793,55 @@ async function saveToolSource(patch) {
     };
     el.addEventListener('pointerdown', (ev) => {
       ev.preventDefault();
-      el.setPointerCapture && el.setPointerCapture(ev.pointerId);
+      if (el.setPointerCapture) el.setPointerCapture(ev.pointerId);
       setFromEvent(ev);
       document.addEventListener('pointermove', onMove);
       document.addEventListener('pointerup', onUp);
     });
     el.addEventListener('keydown', (ev) => {
       const step = ev.shiftKey ? 8 : 2;
-      if (ev.key === 'ArrowLeft' || ev.key === 'ArrowDown') {
-        ev.preventDefault();
-        if (kind === 'hue') accentState.h = (accentState.h - step + 360) % 360;
-        else accentState.l = Math.max(0.08, accentState.l - step / 100);
-      } else if (ev.key === 'ArrowRight' || ev.key === 'ArrowUp') {
-        ev.preventDefault();
-        if (kind === 'hue') accentState.h = (accentState.h + step) % 360;
-        else accentState.l = Math.min(0.92, accentState.l + step / 100);
-      } else return;
-      placeAccentThumbs();
-      if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('accent', currentAccentHex());
-      if (window.OCUI && window.OCUI.applyAppearance) window.OCUI.applyAppearance();
+      const dir = (ev.key === 'ArrowLeft' || ev.key === 'ArrowDown') ? -1
+        : (ev.key === 'ArrowRight' || ev.key === 'ArrowUp') ? 1 : 0;
+      if (!dir) return;
+      ev.preventDefault();
+      if (kind === 'hue') accentState.h = (accentState.h + dir * step + 360) % 360;
+      else if (kind === 'sat') accentState.s = Math.max(0, Math.min(1, accentState.s + dir * step / 100));
+      else if (kind === 'light') accentState.l = Math.max(0, Math.min(1, accentState.l + dir * step / 100));
+      else accentState.a = Math.max(0, Math.min(1, accentState.a + dir * step / 100));
+      paintAccent();
+      commitAccent();
     });
   }
   bindAccentTrack($('accent-hue'), 'hue');
+  bindAccentTrack($('accent-sat'), 'sat');
   bindAccentTrack($('accent-light'), 'light');
+  bindAccentTrack($('accent-alpha'), 'alpha');
   const accHex = $('pref-accent-hex');
   if (accHex) {
-    accHex.addEventListener('change', () => applyAccentHex(accHex.value, true));
+    accHex.addEventListener('change', () => { if (!applyAccentHex(accHex.value, true)) paintAccent(); });
     accHex.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); applyAccentHex(accHex.value, true); accHex.blur(); }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (!applyAccentHex(accHex.value, true)) paintAccent();
+        accHex.blur();
+      }
     });
   }
-  const accReset = $('pref-accent-reset');
-  if (accReset) accReset.addEventListener('click', () => {
-    if (window.OCUI && window.OCUI.setPref) window.OCUI.setPref('accent', '');
-    if (window.OCUI && window.OCUI.applyAppearance) window.OCUI.applyAppearance();
-    applyAccentHex((window.OCUI && window.OCUI.defaultAccent) || '#2563eb', false);
+  const accClear = $('pref-accent-clear');
+  if (accClear) accClear.addEventListener('click', () => {
+    accentState.a = accentState.a < 0.01 ? 1 : 0;
+    paintAccent();
+    commitAccent();
   });
+  const accOpen = $('accent-open');
+  if (accOpen) accOpen.addEventListener('click', () => {
+    const stored = (window.OCUI && window.OCUI.getPref) ? window.OCUI.getPref('accent') : '';
+    applyAccentHex(stored || ((window.OCUI && window.OCUI.defaultAccent) || '#2563eb'), false);
+    if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal($('accent-modal'));
+  });
+  if (window.OCUI && window.OCUI.bindModal) {
+    window.OCUI.bindModal($('accent-modal'), { closeSelector: '#accent-modal-x, #accent-modal-done' });
+  }
 
 })();
 
@@ -4903,8 +5253,8 @@ async function saveToolSource(patch) {
   if (clearChats) clearChats.addEventListener('click', async () => {
     if (!state.chats.length) return toast('没有可清空的聊天记录');
     const ok = window.OCUI
-      ? await window.OCUI.confirm({ title: '清空聊天记录', message: '将删除本机与云端的全部对话记录,且不可恢复。确定继续吗?', danger: true, confirmText: '清空' })
-      : confirm('将删除本机与云端的全部对话记录,且不可恢复。确定继续吗?');
+      ? await window.OCUI.confirm({ title: '清空聊天记录', message: '将从本机与云端删除全部对话,所有设备同步清空。确定继续吗?', danger: true, confirmText: '清空' })
+      : confirm('将从本机与云端删除全部对话,所有设备同步清空。确定继续吗?');
     if (!ok) return;
     try {
       const r = await api('/api/sync/chats', { method: 'DELETE' });
@@ -4913,6 +5263,11 @@ async function saveToolSource(patch) {
       state.chats = [];
       state.currentChatId = null;
       state.chatRevision = Number(data.revision) || (Number(state.chatRevision) || 0) + 1;
+      // 服务端已把全部对话归档并立墓碑:本端待推送删除随即作废
+      state.deletedIds = [];
+      state._deletedCopies = {};
+      persistTombstones();
+      persistDeletedCopies();
       localStorage.setItem('oc_chats_' + state.user.id, '[]');
       localStorage.setItem('oc_chat_rev_' + state.user.id, String(state.chatRevision));
       renderChatList();
@@ -6532,11 +6887,27 @@ async function sendImageTurn(prompt, imageAtts, opts) {
   const parts = [];
   if (text) parts.push(text);
   if (refAtts.length && window.OCMultimodal) refAtts.forEach((a) => parts.push(window.OCMultimodal.toMarkdown(a)));
-  const userMsg = { role: 'user', content: parts.join('\n\n') || '（参考图）', text, attachments: refAtts, createdAt: Date.now() };
-  chat.messages.push(userMsg);
-  jumpToLatestOnSend();
-  const placeholder = { role: 'assistant', content: '', imagePending: true, model, providerId, createdAt: Date.now() };
-  chat.messages.push(placeholder);
+  // 判定阶段消息已进对话时复用它:只补齐参考图附件,不重复落一条用户消息
+  const reuse = opts.posted && opts.posted.userMsg && chat.messages.indexOf(opts.posted.userMsg) >= 0 ? opts.posted : null;
+  let userMsg;
+  let placeholder;
+  if (reuse) {
+    userMsg = reuse.userMsg;
+    userMsg.content = parts.join('\n\n') || '（参考图）';
+    userMsg.text = text;
+    userMsg.attachments = refAtts;
+    placeholder = reuse.assistantMsg;
+  } else {
+    userMsg = { role: 'user', content: parts.join('\n\n') || '（参考图）', text, attachments: refAtts, createdAt: Date.now() };
+    placeholder = { role: 'assistant', content: '', createdAt: Date.now() };
+    chat.messages.push(userMsg, placeholder);
+    jumpToLatestOnSend();
+  }
+  placeholder.imagePending = true;
+  placeholder.model = model;
+  placeholder.providerId = providerId;
+  placeholder.phase = opts.phase || (atts.length ? '正在按参考图改图' : '正在生成图片');
+  placeholder._streaming = true;
   if (chat.messages.filter((m) => m.role === 'user').length === 1) {
     chat.title = (hasRefs ? '改图' : '绘画') + ' · ' + String(text || '参考图').slice(0, 18);
     renderChatList();
@@ -6572,6 +6943,7 @@ async function sendImageTurn(prompt, imageAtts, opts) {
     const head = '**' + (hasRefs ? '修改要求' : '提示词') + '：** ' + (text || '参考图');
     placeholder.content = head + '\n\n' + links;
     placeholder.imagePending = false;
+    placeholder._streaming = false;
     placeholder.createdAt = Date.now();
     saveChats();
     renderMessages();
@@ -6579,6 +6951,7 @@ async function sendImageTurn(prompt, imageAtts, opts) {
     await refreshMe();
   } catch (e) {
     placeholder.imagePending = false;
+    placeholder._streaming = false;
     if (e && e.name === 'AbortError') {
       placeholder.content = '已停止生成。';
       saveChats();
@@ -6592,6 +6965,8 @@ async function sendImageTurn(prompt, imageAtts, opts) {
       toast('生图失败: ' + ((e && e.message) || '未知错误'), true);
     }
   } finally {
+    // 出图/失败都在这里定稿:时间戳推进,已生成的结果不会被云端旧副本合并覆盖
+    chat.updatedAt = Date.now();
     initStreamingState();
     refreshModelHealth();
   }
@@ -6618,7 +6993,8 @@ function videoLinksFromResults(videos, prompt) {
 }
 // 对话内生视频:视频模型下在输入框发指令(纯文本=文生视频,带图=以图生视频)。
 // 后端建任务并轮询到出片后返回视频地址;期间显示「正在生成视频…」占位。
-async function sendVideoTurn(prompt, imageAtts) {
+async function sendVideoTurn(prompt, imageAtts, opts) {
+  opts = opts || {};
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
   const model = state.currentModel;
   const providerId = state.currentProviderId;
@@ -6637,11 +7013,28 @@ async function sendVideoTurn(prompt, imageAtts) {
   const parts = [];
   if (text) parts.push(text);
   if (refAtts.length && window.OCMultimodal) refAtts.forEach((a) => parts.push(window.OCMultimodal.toMarkdown(a)));
-  const userMsg = { role: 'user', content: parts.join('\n\n') || '（参考图）', text, attachments: refAtts, createdAt: Date.now() };
-  chat.messages.push(userMsg);
-  jumpToLatestOnSend();
-  const placeholder = { role: 'assistant', content: '', imagePending: true, pendingKind: 'video', model, providerId, createdAt: Date.now() };
-  chat.messages.push(placeholder);
+  // 判定阶段消息已进对话时复用,不重复落用户消息
+  const reuse = opts.posted && opts.posted.userMsg && chat.messages.indexOf(opts.posted.userMsg) >= 0 ? opts.posted : null;
+  let userMsg;
+  let placeholder;
+  if (reuse) {
+    userMsg = reuse.userMsg;
+    userMsg.content = parts.join('\n\n') || '（参考图）';
+    userMsg.text = text;
+    userMsg.attachments = refAtts;
+    placeholder = reuse.assistantMsg;
+  } else {
+    userMsg = { role: 'user', content: parts.join('\n\n') || '（参考图）', text, attachments: refAtts, createdAt: Date.now() };
+    placeholder = { role: 'assistant', content: '', createdAt: Date.now() };
+    chat.messages.push(userMsg, placeholder);
+    jumpToLatestOnSend();
+  }
+  placeholder.imagePending = true;
+  placeholder.pendingKind = 'video';
+  placeholder.model = model;
+  placeholder.providerId = providerId;
+  placeholder.phase = opts.phase || '正在生成视频';
+  placeholder._streaming = true;
   if (chat.messages.filter((m) => m.role === 'user').length === 1) {
     chat.title = '视频 · ' + String(text || '参考图').slice(0, 18);
     renderChatList();
@@ -6675,6 +7068,7 @@ async function sendVideoTurn(prompt, imageAtts) {
     const head = '**' + (hasRefs ? '参考图视频' : '提示词') + '：** ' + (text || '参考图');
     placeholder.content = head + '\n\n' + links;
     placeholder.imagePending = false;
+    placeholder._streaming = false;
     placeholder.createdAt = Date.now();
     saveChats();
     renderMessages();
@@ -6682,6 +7076,7 @@ async function sendVideoTurn(prompt, imageAtts) {
     await refreshMe();
   } catch (e) {
     placeholder.imagePending = false;
+    placeholder._streaming = false;
     if (e && e.name === 'AbortError') {
       placeholder.content = '已停止生成。';
       saveChats();
@@ -6695,6 +7090,8 @@ async function sendVideoTurn(prompt, imageAtts) {
       toast('生视频失败: ' + ((e && e.message) || '未知错误'), true);
     }
   } finally {
+    // 视频定稿同样推进时间戳,防止云端旧副本把结果合并掉
+    chat.updatedAt = Date.now();
     initStreamingState();
     refreshModelHealth();
   }
@@ -7625,11 +8022,15 @@ function enterReadonlyHome() {
 // 切换到指定版本(绝对下标;供消息顶部的模型标签页使用)
 function switchReplyVersionTo(msg, chat, target) {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
+  const live = liveMessage(chat, msg);
+  if (!live) return;
+  chat = live.chat; msg = live.msg;
   const versions = ensureReplyVersions(msg);
   if (!Number.isInteger(target) || target < 0 || target >= versions.length || target === msg.versionIndex) return;
   persistCurrentReplyVersion(msg);
   msg.versionIndex = target;
   applyReplyVersion(msg, versions[target]);
+  chat.updatedAt = Date.now();
   saveChats();
   renderMessages();
 }
@@ -7717,30 +8118,48 @@ function buildReplyTabs(msg, chat) {
   });
 
   // 从左往右藏,直到当前标签和剩下的标签都能排进这一行
+  let fitting = false;
   const fit = () => {
-    tabs.forEach((tab) => { tab.hidden = false; });
-    more.hidden = true;
-    if (strip.scrollWidth <= strip.clientWidth + 1) return;
-    more.hidden = false;
-    let hidden = 0;
-    for (let i = 0; i < tabs.length; i++) {
-      if (strip.scrollWidth <= strip.clientWidth + 1) break;
-      if (i === idx) continue;
-      tabs[i].hidden = true;
-      hidden++;
+    // fit 会改子元素的 hidden,从而改变 strip 自身的宽度:不挡住重入,
+    // ResizeObserver 就会被自己触发的尺寸变化反复叫醒,标签条一直抖,
+    // 下面的操作栏(含 @)也跟着迟迟定不下来。
+    if (fitting) return;
+    fitting = true;
+    try {
+      tabs.forEach((tab) => { tab.hidden = false; });
+      more.hidden = true;
+      if (strip.scrollWidth <= strip.clientWidth + 1) return;
+      more.hidden = false;
+      let hidden = 0;
+      for (let i = 0; i < tabs.length; i++) {
+        if (strip.scrollWidth <= strip.clientWidth + 1) break;
+        if (i === idx) continue;
+        tabs[i].hidden = true;
+        hidden++;
+      }
+      // 当前标签自己就超宽时,它留在条上(文字省略),其余全部进列表
+      if (strip.scrollWidth > strip.clientWidth + 1) {
+        tabs.forEach((tab, i) => { if (i !== idx) tab.hidden = true; });
+      }
+      hidden = tabs.filter((tab) => tab.hidden).length;
+      const count = more.querySelector('.reply-tab-more-count');
+      if (count) count.textContent = hidden > 0 ? String(hidden) : '';
+      more.hidden = hidden === 0;
+      more.title = hidden > 0 ? ('还有 ' + hidden + ' 个回答') : '查看全部回答';
+    } finally {
+      fitting = false;
     }
-    // 当前标签自己就超宽时,它留在条上(文字省略),其余全部进列表
-    if (strip.scrollWidth > strip.clientWidth + 1) {
-      tabs.forEach((tab, i) => { if (i !== idx) tab.hidden = true; });
-    }
-    hidden = tabs.filter((tab) => tab.hidden).length;
-    const count = more.querySelector('.reply-tab-more-count');
-    if (count) count.textContent = hidden > 0 ? String(hidden) : '';
-    more.hidden = hidden === 0;
-    more.title = hidden > 0 ? ('还有 ' + hidden + ' 个回答') : '查看全部回答';
   };
   if (typeof ResizeObserver === 'function') {
-    const ro = new ResizeObserver(() => fit());
+    // 只对「可用宽度」变化重新排版。子元素增删导致的 strip 尺寸抖动不在此列,
+    // 否则隐藏/显示标签会再次触发观察,形成自我循环。
+    let lastWidth = -1;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries.length && entries[0].contentRect ? entries[0].contentRect.width : strip.clientWidth;
+      if (Math.abs(w - lastWidth) < 1) return;
+      lastWidth = w;
+      fit();
+    });
     ro.observe(strip);
   }
   requestAnimationFrame(fit);
@@ -7750,7 +8169,7 @@ function buildReplyTabs(msg, chat) {
 // 打开模型选择菜单:选中后以该模型重答当前问题
 function openAtAnswerModal(msg, chat, anchorBtn) {
   if (!chat) chat = currentChat();
-  if (!msg || chat.messages.indexOf(msg) < 0) return;
+  if (!msg || !chat || chat.messages.indexOf(msg) < 0) return;
   const items = availableModelItems();
   const total = items.reduce((n, g) => n + g.items.length, 0);
   if (!total) { toast('暂无可用模型', true); return; }
@@ -7774,8 +8193,12 @@ async function reanswerWithModel(msg, chat, providerId, modelId) {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
   if (!chat) chat = currentChat();
   if (!msg || !chat) return;
-  const n = chat.messages.indexOf(msg);
-  if (n < 0) { toast('找不到原回答', true); return; }
+  // 菜单打开期间云同步可能整段替换过 state.chats:把引用换回当前列表里的活对象,
+  // 否则新回答写进被丢弃的旧对象,界面上什么都不显示(表现为 @模型重答不出字)。
+  const live = liveMessage(chat, msg);
+  if (!live) { toast('找不到原回答', true); return; }
+  chat = live.chat; msg = live.msg;
+  const n = live.idx;
   if (!chat.messages.slice(0, n).some((m) => m && m.role === 'user')) { toast('找不到原始问题', true); return; }
   if (!providerId || !modelId) return;
   // 同一个模型也可以再答一次:每次 @ 都新开一个标签,再在这个标签里生成
@@ -7789,6 +8212,8 @@ async function reanswerWithModel(msg, chat, providerId, modelId) {
   msg.interrupted = false;
   msg.failNote = '';
   msg._startTime = Date.now();
+  // 新版本开始生成,会话时间戳随之更新,避免刚重答的内容被云端旧副本合并掉
+  chat.updatedAt = Date.now();
   saveChats();
   renderMessages();
   try {
@@ -7934,3 +8359,43 @@ async function requestGroupReply(chat, participant, stageInfo) {
     state._pendingRolePrompt = null;
   }
 }
+
+// ============ 对后加载模块(notes.js)的桥接 ============
+// notes.js 在 app.js 之后解析,这里把对话模块的能力收口成一个稳定出口;
+// aiComplete 是通用的单次非流式补全:辅助模型偏好(notesModel→followupsModel)→当前对话模型。
+async function aiComplete(messages, opts = {}) {
+  const aux = resolveAuxModel('notesModel') || resolveAuxModel('followupsModel');
+  const providerId = aux ? aux.providerId : state.currentProviderId;
+  const model = aux ? aux.model : state.currentModel;
+  const format = aux ? aux.format : providerFormat();
+  if (!providerId || !model) throw new Error('没有可用的模型，请先在模型选择器中选择');
+  const body = {
+    model,
+    providerId,
+    stream: false,
+    max_tokens: opts.maxTokens || 8192,
+    _purpose: opts.purpose || 'note',
+    messages,
+  };
+  const r = await api(ENDPOINT_BY_FORMAT[format] || ENDPOINT_BY_FORMAT.chat, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await readJsonSafe(r);
+  if (!r.ok) throw new Error((data.error && data.error.message) || ('请求失败（HTTP ' + r.status + '）'));
+  const text = extractText(data, format) || '';
+  if (!text.trim()) throw new Error('模型返回了空内容');
+  return text;
+}
+
+window.OCApp = {
+  state,
+  api,
+  toast,
+  extractText,
+  ENDPOINT_BY_FORMAT,
+  providerFormat,
+  resolveAuxModel,
+  aiComplete,
+};

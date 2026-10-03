@@ -515,6 +515,7 @@ UI.toggleTheme = function () {
       r: parseInt(h.slice(0, 2), 16),
       g: parseInt(h.slice(2, 4), 16),
       b: parseInt(h.slice(4, 6), 16),
+      a: h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1,
     };
   }
   function hexOf(c) {
@@ -525,7 +526,8 @@ UI.toggleTheme = function () {
     return { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t };
   }
   function rgbaOf(c, a) {
-    return 'rgba(' + Math.round(c.r) + ', ' + Math.round(c.g) + ', ' + Math.round(c.b) + ', ' + a + ')';
+    const alpha = c.a == null ? a : a * c.a;
+    return 'rgba(' + Math.round(c.r) + ', ' + Math.round(c.g) + ', ' + Math.round(c.b) + ', ' + Math.round(alpha * 1000) / 1000 + ')';
   }
   function applyAccentVars(root, hex, isDark) {
     const c = parseHexColor(hex);
@@ -534,18 +536,19 @@ UI.toggleTheme = function () {
       return;
     }
     const hover = isDark ? mixRgb(c, { r: 255, g: 255, b: 255 }, 0.28) : mixRgb(c, { r: 0, g: 0, b: 0 }, 0.18);
-    const acc = hexOf(c);
-    const hoverHex = hexOf(hover);
+    hover.a = c.a;
+    const acc = rgbaOf(c, 1);
+    const hoverCss = rgbaOf(hover, 1);
     root.style.setProperty('--accent', acc);
-    root.style.setProperty('--accent-hover', hoverHex);
+    root.style.setProperty('--accent-hover', hoverCss);
     root.style.setProperty('--brand', acc);
-    root.style.setProperty('--brand-hover', hoverHex);
+    root.style.setProperty('--brand-hover', hoverCss);
     root.style.setProperty('--brand-soft', rgbaOf(c, isDark ? 0.12 : 0.08));
     root.style.setProperty('--brand-soft-strong', rgbaOf(c, isDark ? 0.2 : 0.14));
     root.style.setProperty('--ring-brand', rgbaOf(c, isDark ? 0.3 : 0.2));
     root.style.setProperty('--primary', acc);
-    root.style.setProperty('--primary-hover', hoverHex);
-    root.style.setProperty('--active-text', isDark ? hoverHex : acc);
+    root.style.setProperty('--primary-hover', hoverCss);
+    root.style.setProperty('--active-text', isDark ? hoverCss : acc);
     root.style.setProperty('--active-bar', acc);
     root.style.setProperty('--bg-selected', rgbaOf(c, isDark ? 0.14 : 0.07));
   }

@@ -73,6 +73,8 @@ if ($method === 'GET' || $method === 'HEAD') {
         '/' => 'index.html',
         '/index.html' => 'index.html',
         '/chat' => 'index.html',
+        // AI 笔记独立地址:刷新后仍停留在笔记页(前端 boot 时检测该路径自动打开)
+        '/ainotes' => 'index.html',
         '/login' => 'login.html',
         '/login.html' => 'login.html',
         '/admin' => 'admin.html',
@@ -84,6 +86,11 @@ if ($method === 'GET' || $method === 'HEAD') {
     }
     if (preg_match('/^\/s\/[A-Za-z0-9]+$/', $path)) {
         tc_send_page('share.html');
+        exit;
+    }
+    // AI 笔记分享页(实时读取属主笔记,关闭分享即失效)
+    if (preg_match('/^\/n\/[A-Za-z0-9]+$/', $path)) {
+        tc_send_page('note-share.html');
         exit;
     }
     if ($path === '/agreement') {
@@ -169,6 +176,23 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/votes$#', 'tc_api_vote'),
         array('POST', '#^/api/shares$#', 'tc_api_create_share'),
         array('GET', '#^/api/shares/([^/]+)$#', 'tc_api_get_share'),
+        // AI 笔记:整文档同步 / 附件上传与签名输出 / 分享链接(实时读取,支持 edit-link)
+        array('GET', '#^/api/sync/notes$#', 'tc_api_notes_get'),
+        array('POST', '#^/api/sync/notes$#', 'tc_api_notes_save'),
+        array('POST', '#^/api/notes/upload$#', 'tc_api_note_attachment_upload'),
+        array('GET', '#^/api/notes/file$#', 'tc_api_note_attachment_serve'),
+        array('DELETE', '#^/api/notes/file$#', 'tc_api_note_attachment_delete'),
+        array('POST', '#^/api/notes/files/gc$#', 'tc_api_note_attachments_gc'),
+        array('GET', '#^/api/notes/usage$#', 'tc_api_notes_usage'),
+        array('POST', '#^/api/notes/ai/consume$#', 'tc_api_notes_ai_consume'),
+        // 管理端笔记:用户用量列表 / 审阅某用户笔记 / 清理
+        array('GET', '#^/api/admin/notes$#', 'tc_api_admin_notes_users'),
+        array('GET', '#^/api/admin/notes/view$#', 'tc_api_admin_notes_view'),
+        array('POST', '#^/api/admin/notes/purge$#', 'tc_api_admin_notes_purge'),
+        array('POST', '#^/api/notes/share$#', 'tc_api_note_share_create'),
+        array('DELETE', '#^/api/notes/share$#', 'tc_api_note_share_close'),
+        array('GET', '#^/api/notes/shared/([A-Za-z0-9]+)$#', 'tc_api_note_shared_get'),
+        array('POST', '#^/api/notes/shared/([A-Za-z0-9]+)$#', 'tc_api_note_shared_edit'),
         array('GET', '#^/api/assistants$#', 'tc_api_list_assistants'),
         array('POST', '#^/api/assistants/categories$#', 'tc_api_create_assistant_category'),
         array('POST', '#^/api/assistants/categories/([^/]+)$#', 'tc_api_update_assistant_category'),
@@ -211,6 +235,10 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/admin/backup/restore$#', 'tc_api_admin_backup_restore'),
         array('GET', '#^/api/admin/users$#', 'tc_api_admin_users'),
         array('GET', '#^/api/admin/users/chats$#', 'tc_api_admin_user_chats'),
+        // 已删除对话留档(A 设备删除后仍保留在云端,管理员可看可清)
+        array('GET', '#^/api/admin/chats/deleted$#', 'tc_api_admin_deleted_chats'),
+        array('GET', '#^/api/admin/chats/deleted/view$#', 'tc_api_admin_deleted_chat_view'),
+        array('POST', '#^/api/admin/chats/deleted/purge$#', 'tc_api_admin_deleted_chats_purge'),
         array('POST', '#^/api/admin/users$#', 'tc_api_admin_create_user'),
         array('POST', '#^/api/admin/users/update$#', 'tc_api_admin_update_user'),
         array('POST', '#^/api/admin/users/quota$#', 'tc_api_admin_set_quota'),

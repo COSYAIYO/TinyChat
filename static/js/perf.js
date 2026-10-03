@@ -27,8 +27,8 @@
 
   // 按需注入渲染引擎依赖。顺序敏感:markdown-it 基础 → 插件 → KaTeX/highlight。
   // 仅在文档解析阶段(本脚本在 <head> 同步执行)调用 document.write 才是安全的。
-  // 分享页在 /s/ 路径下,资源用绝对路径;主站用相对路径。
-  var base = (location.pathname.indexOf('/s/') === 0) ? '/vendor/' : './vendor/';
+  // 分享页在 /s/、/n/(笔记分享)路径下,资源用绝对路径;主站用相对路径。
+  var base = (location.pathname.indexOf('/s/') === 0 || location.pathname.indexOf('/n/') === 0) ? '/vendor/' : './vendor/';
   function ws(path) {
     // 静态资源走长缓存,发版靠 ?v= 刷新(theme-boot.js 从自身 URL 提取版本)
     var v = window.OC_ASSET_V ? '?v=' + encodeURIComponent(window.OC_ASSET_V) : '';
