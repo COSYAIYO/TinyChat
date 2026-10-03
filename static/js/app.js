@@ -2393,9 +2393,9 @@ function applyReasoningToBody(body, format) {
       body.output_config = { effort: effort };
       return body;
     }
-    const budget = effort === 'high' ? 16000 : effort === 'low' ? 2048 : 8000;
+    const budget = thinkingBudgetFor(effort);
     body.thinking = { type: 'enabled', budget_tokens: budget };
-    if (!body.max_tokens || body.max_tokens <= budget) body.max_tokens = budget + 2048;
+    reserveThinkingHeadroom(body, effort);
     return body;
   }
   if (format === 'responses') {
@@ -2415,13 +2415,29 @@ function applyReasoningToBody(body, format) {
     if (enabled) {
       // DeepSeek 官方映射：界面“中”对应实际 high，不能直接发送 medium/max。
       body.reasoning_effort = deepseekEffort;
+      reserveThinkingHeadroom(body, effort);
     }
     return body;
   }
   if (!enabled) return body;
   // OpenAI Chat Completions and compatible gateways use the top-level field.
   body.reasoning_effort = effort;
+  reserveThinkingHeadroom(body, effort);
   return body;
+}
+
+// 推理型模型的 output_tokens 上限同时容纳思维链与正文。
+// 只开 thinking 而不抬高 max_tokens，会让模型把预算全部耗在推理上、
+// 正文一个字都写不出来（finish_reason 仍是正常结束，前端表现为“答到一半就停”）。
+// 返回本次要求的输出下限，呼叫方据此放宽自身的钳制。
+function thinkingBudgetFor(effort) {
+  return effort === 'high' ? 16000 : effort === 'low' ? 2048 : 8000;
+}
+function reserveThinkingHeadroom(body, effort) {
+  const budget = thinkingBudgetFor(effort);
+  const floor = budget + 2048;
+  body._thinkingFloor = floor;
+  return floor;
 }
 function buildRequestBody(chatMessages, format, chat, extra) {
   const msgs = outgoingMessages(chatMessages, chat);
@@ -2440,7 +2456,10 @@ function buildRequestBody(chatMessages, format, chat, extra) {
     if (system) body.system = system;
     if (state.currentProviderId) body.providerId = state.currentProviderId;
     const readyA = attachWebSearchFlag(applyReasoningToBody(body, format));
-    if (!readyA.max_tokens || readyA.max_tokens > cap) readyA.max_tokens = cap;
+    const floorA = Number(readyA._thinkingFloor) || 0;
+    delete readyA._thinkingFloor;
+    const limitA = Math.max(cap, floorA);
+    if (!readyA.max_tokens || readyA.max_tokens > limitA) readyA.max_tokens = limitA;
     return stampContext(readyA, msgs);
   }
   if (format === 'responses') {
@@ -2480,7 +2499,12 @@ function buildRequestBody(chatMessages, format, chat, extra) {
   }, format);
   if (state.currentProviderId) body.providerId = state.currentProviderId;
   const ready = attachWebSearchFlag(body);
-  if (!ready.max_tokens || ready.max_tokens > cap) ready.max_tokens = cap;
+  // 思考预留是硬下限:开启思考时输出上限取 max(全局上限, 思考预算+正文预留),
+  // 避免思维链耗尽预算后正文无从输出;已显式配置的更大值不受影响。
+  const floor = Number(ready._thinkingFloor) || 0;
+  delete ready._thinkingFloor;
+  const limit = Math.max(cap, floor);
+  if (!ready.max_tokens || ready.max_tokens > limit) ready.max_tokens = limit;
   if (extra && extra.continueFrom) ready.webSearch = 'off';
   return stampContext(ready, msgs);
 }
@@ -2696,6 +2720,20 @@ async function sendMessage() {
     renderAttachments();
     updateSendBtn();
     await window.OCGroup.sendGroupTurn(text, attachments);
+    await refreshMe();
+    refreshModelHealth();
+    return;
+  }
+
+  // 多模型并答:用户先在入口勾好 2–3 个模型,这里把问题依次问它们,回答成为可切换的标签页。
+  // 放在生图/视频分支之前:这是用户的显式选择,应优先于「画图意图」的自动识别。
+  if (Array.isArray(state._compareModels) && state._compareModels.length >= 2) {
+    input.value = '';
+    autosizeInput();
+    state.pendingAttachments = [];
+    renderAttachments();
+    updateSendBtn();
+    await sendCompareTurn(text, attachments);
     await refreshMe();
     refreshModelHealth();
     return;
@@ -3467,6 +3505,8 @@ async function requestAssistantReply(chat, userMsg, extra) {
       return true;
     });
   const body = buildRequestBody(source, format, chat, continuing ? { continueFrom: assistantMsg } : null);
+  // 调用方自定义计费用途(如多模型对比记为 «多模型对比»);不传则沿用默认的对话计费
+  if (extra && extra._purpose) body._purpose = extra._purpose;
   assistantMsg.contextCount = body._contextCount || 0;
   assistantMsg.contextLimit = body._contextLimit || assistantMsg.contextCount;
   delete body._contextCount;
@@ -7199,43 +7239,61 @@ function imageSourceToDataUrl(src) {
 }
 
 // ============ 多模型并答对比 ============
-// 独立于流式管线:非流式并行请求,结果并排展示并支持投票(计入模型评价)。每个所选模型各计费一次。
+// 这里只负责「选模型」:选好后问题照常从输入框发,各模型的回答以标签页呈现在同一轮对话里
+// (与「@模型重答」同一套 UI),点标签切换对比。每个所选模型各计费一次(用途记为「多模型对比」)。
+function compareChatModels() {
+  const items = [];
+  (availableModelItems() || []).forEach((group) => {
+    (group.items || []).forEach((it) => {
+      // 只列对话模型:拿生图/生视频模型对比没有意义
+      if (it.isImage || it.isVideo) return;
+      items.push(it);
+    });
+  });
+  return items;
+}
+
 function openCompareDialog() {
   if (state.streaming) { toast('正在生成中，请稍候', true); return; }
-  const models = availableModels();
-  if (models.length < 2) return toast('至少需要两个可用模型才能对比', true);
+  const models = compareChatModels();
+  if (models.length < 2) return toast('至少需要两个对话模型才能对比', true);
+  const picked = {};
+  (state._compareModels || []).forEach((p) => { picked[p.providerId + '\n' + p.model] = true; });
+  const hasSaved = Array.isArray(state._compareModels) && state._compareModels.length > 0;
   const mask = document.createElement('div');
   mask.className = 'modal-mask';
   const options = models.map((item) => {
-    const on = item.providerId === state.currentProviderId && item.model === state.currentModel;
-    return '<label class="compare-model-opt"><input type="checkbox" value="' + escapeHtml(item.providerId + '\n' + item.model) + '"' + (on ? ' checked' : '') + '>'
-      + '<span>' + escapeHtml(item.provider + ' · ' + item.model) + '</span></label>';
+    const on = hasSaved
+      ? !!picked[item.providerId + '\n' + item.modelId]
+      : (item.providerId === state.currentProviderId && item.modelId === state.currentModel);
+    return '<label class="compare-model-opt"><input type="checkbox" value="' + escapeHtml(item.providerId + '\n' + item.modelId) + '"' + (on ? ' checked' : '') + '>'
+      + (item.icon && window.OC && OC.logoImg ? OC.logoImg(item.icon, 'compare-model-logo') : '')
+      + '<span>' + escapeHtml(item.label) + '</span></label>';
   }).join('');
   mask.innerHTML =
-    '<div class="modal modal-lg compare-modal" role="dialog" aria-modal="true">'
-    + '<div class="modal-header"><h3>多模型对比</h3>'
+    '<div class="modal compare-modal" role="dialog" aria-modal="true">'
+    + '<div class="modal-header"><h3>多模型并答</h3>'
     + '<button class="icon-btn" type="button" data-act="close" aria-label="关闭">' + (window.OC ? OC.icon('close', 16) : '×') + '</button></div>'
     + '<div class="modal-body" id="compare-body">'
-    + '<label class="field"><span>问题（发送给每个所选模型，各自按标准计费）</span><textarea id="compare-q" rows="3" style="resize:vertical"></textarea></label>'
-    + '<div class="section-title">选择模型（2–3 个）</div>'
+    + '<p class="muted small" style="margin:0 0 8px">勾选 2–3 个对话模型。选好后在输入框输入问题发送，各模型的回答会成为这一轮对话里的标签页，点标签即可切换对比。</p>'
     + '<div class="compare-model-list" id="compare-models">' + options + '</div>'
-    + '<div class="form-actions" style="margin-top:10px"><button class="btn primary" id="compare-run" type="button">开始对比</button><span class="muted small" id="compare-status"></span></div>'
-    + '<div class="compare-results" id="compare-results"></div>'
+    + '<div class="form-actions" style="margin-top:10px"><button class="btn primary" id="compare-run" type="button">用这些模型回答</button><span class="muted small" id="compare-status"></span></div>'
     + '</div></div>';
   document.body.appendChild(mask);
-  const qEl = mask.querySelector('#compare-q');
-  const input = $('input');
-  if (qEl && input && input.value.trim()) qEl.value = input.value.trim();
-  if (qEl) setTimeout(() => qEl.focus(), 60);
   // 纳入统一弹窗栈:支持 Esc 关闭
   const rawClose = () => mask.remove();
   const closeCompare = (window.OCUI && window.OCUI.adoptModal) ? window.OCUI.adoptModal(mask, rawClose) : rawClose;
   mask.addEventListener('click', (e) => {
     if (e.target === mask || e.target.closest('[data-act="close"]')) closeCompare();
   });
-  mask.querySelector('#compare-run').addEventListener('click', async () => {
-    const question = (qEl && qEl.value.trim()) || '';
-    if (!question) return toast('请先输入问题', true);
+  const status = mask.querySelector('#compare-status');
+  const syncStatus = () => {
+    const n = mask.querySelectorAll('#compare-models input:checked').length;
+    if (status) status.textContent = n >= 2 ? ('已选 ' + n + ' 个模型') : '请勾选 2–3 个模型';
+  };
+  mask.querySelectorAll('#compare-models input').forEach((inp) => inp.addEventListener('change', syncStatus));
+  syncStatus();
+  mask.querySelector('#compare-run').addEventListener('click', () => {
     const picks = [];
     mask.querySelectorAll('#compare-models input:checked').forEach((inp) => {
       const [providerId, model] = inp.value.split('\n');
@@ -7243,71 +7301,12 @@ function openCompareDialog() {
     });
     if (picks.length < 2) return toast('请至少勾选 2 个模型', true);
     if (picks.length > 3) return toast('最多对比 3 个模型', true);
-    const runBtn = mask.querySelector('#compare-run');
-    const status = mask.querySelector('#compare-status');
-    const results = mask.querySelector('#compare-results');
-    runBtn.disabled = true;
-    status.textContent = '正在并行询问 ' + picks.length + ' 个模型…';
-    results.innerHTML = picks.map((p, i) =>
-      '<div class="compare-card" data-ci="' + i + '"><div class="compare-card-head"><b>' + escapeHtml(p.model) + '</b><span class="muted small" data-el="' + i + '">生成中…</span></div><div class="compare-card-body muted">…</div>'
-      + '<div class="compare-card-actions hidden"><button class="btn small" data-vote="up" type="button">👍 这个更好</button><button class="btn small" data-copy type="button">复制</button></div></div>'
-    ).join('');
-    const cap = Math.min(128000, Math.max(256, Number((state.chatLimits || {}).maxOutputTokens) || 8192));
-    const started = Date.now();
-    const answers = picks.map((p) => {
-      const prov = (state.providers || []).find((x) => x.id === p.providerId);
-      const format = (prov && prov.apiFormat) || 'chat';
-      const body = { model: p.model, providerId: p.providerId, stream: false, max_tokens: cap, _purpose: 'compare', messages: [{ role: 'user', content: question }] };
-      return api(ENDPOINT_BY_FORMAT[format] || '/api/proxy/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      }).then(async (r) => {
-        const data = await r.json();
-        if (!r.ok) throw new Error((data.error && data.error.message) || ('HTTP ' + r.status));
-        return extractText(data, format) || '（空回复）';
-      }).catch((e) => ({ error: (e && e.message) || '请求失败' }));
-    });
-    const settled = await Promise.all(answers.map((p) => p.catch(() => ({ error: '请求失败' }))));
-    const elapsed = Date.now() - started;
-    settled.forEach((res, i) => {
-      const card = results.querySelector('[data-ci="' + i + '"]');
-      if (!card) return;
-      const el = card.querySelector('[data-el]');
-      const bodyEl = card.querySelector('.compare-card-body');
-      const isErr = res && typeof res === 'object' && res.error;
-      if (el) el.textContent = isErr ? '失败' : (elapsed + ' ms');
-      if (bodyEl) {
-        if (isErr) { bodyEl.textContent = '请求失败：' + res.error; bodyEl.classList.add('muted'); }
-        else { bodyEl.textContent = res; bodyEl.classList.remove('muted'); }
-      }
-      const actions = card.querySelector('.compare-card-actions');
-      if (actions && !isErr) {
-        actions.classList.remove('hidden');
-        const voteBtn = actions.querySelector('[data-vote]');
-        if (voteBtn) voteBtn.addEventListener('click', async () => {
-          voteBtn.disabled = true;
-          voteBtn.textContent = '投票中…';
-          try {
-            await api('/api/votes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: picks[i].model, to: 'up' }) });
-            voteBtn.textContent = '已投票 ✓';
-          } catch (e) {
-            voteBtn.disabled = false;
-            voteBtn.textContent = '👍 这个更好';
-            toast('投票失败，请稍后再试', true);
-          }
-        });
-        const copyBtn = actions.querySelector('[data-copy]');
-        if (copyBtn) copyBtn.addEventListener('click', async () => {
-          const ok = (window.OCUI && OCUI.copyText) ? await OCUI.copyText(res) : false;
-          if (ok) { copyBtn.textContent = '已复制'; toast('已复制'); setTimeout(() => { copyBtn.textContent = '复制'; }, 1600); }
-          else toast('复制失败，请手动选择文本复制', true);
-        });
-      }
-    });
-    status.textContent = '完成，用时 ' + elapsed + ' ms。点击"这个更好"为满意的模型投票（计入模型评价）。';
-    runBtn.disabled = false;
-    runBtn.textContent = '再来一轮';
+    // 只记住这次选择:问题由输入框正常发送时据此依次问这些模型
+    state._compareModels = picks;
+    closeCompare();
+    toast('已选 ' + picks.length + ' 个模型，输入问题发送即可对比');
+    const input = $('input');
+    if (input) input.focus();
   });
 }
 
@@ -8565,6 +8564,69 @@ async function reanswerWithModel(msg, chat, providerId, modelId) {
   renderMessages();
   try {
     await requestAssistantReply(chat, { role: 'user', content: '' }, { target: msg, upToIdx: n + 1 });
+  } finally {
+    state.currentProviderId = savedProv;
+    state.currentModel = savedModel;
+    renderProviderLabel();
+    renderModelPicker();
+  }
+}
+
+// 多模型并答:一条用户消息,依次问选中的每个模型,各自成为该回答的一个可切换标签。
+// 必须串行(requestAssistantReply 有 state.streaming 守卫),好处是全程走流式管线:
+// 出字可见、可随时停止,与「@模型重答」体验一致。每个模型各计费一次(用途「多模型对比」)。
+async function sendCompareTurn(text, attachments) {
+  const picks = (state._compareModels || []).slice(0, 3);
+  // 一次性:发送后即失效,后续消息恢复单模型,不会一直问多个模型
+  state._compareModels = null;
+  const turn = postUserTurn(text, attachments);
+  const chat = turn.chat;
+  const msg = turn.assistantMsg;
+  const savedProv = state.currentProviderId;
+  const savedModel = state.currentModel;
+  try {
+    for (let i = 0; i < picks.length; i++) {
+      // 第 2 个及以后:在当前回答上追加一个空白版本(标签),写法与 @模型重答一致
+      if (i > 0) {
+        const live = liveMessage(chat, msg);
+        if (!live) break;
+        persistCurrentReplyVersion(live.msg);
+        pushReplyVersion(live.msg);
+        live.msg.error = false;
+        live.msg.interrupted = false;
+        live.msg.failNote = '';
+        live.msg._startTime = Date.now();
+        chat.updatedAt = Date.now();
+        saveChats();
+        renderMessages();
+      }
+      // pushReplyVersion 与 requestAssistantReply 都从全局 state 取模型,这里临时切换
+      state.currentProviderId = picks[i].providerId;
+      state.currentModel = picks[i].model;
+      renderProviderLabel();
+      renderModelPicker();
+      const live = liveMessage(chat, msg);
+      if (!live) break;
+      const n = live.idx;
+      try {
+        // 单个模型失败不回滚整轮:requestAssistantReply 内部会把该版本标成 error,
+        // 标签条照常渲染(带重试按钮),继续问下一个模型。
+        await requestAssistantReply(chat, turn.userMsg, {
+          target: live.msg,
+          upToIdx: n + 1,
+          _purpose: 'compare',
+        });
+      } catch (e) { /* 已由内部标记为错误版本,继续下一个 */ }
+    }
+    // 全部答完停在第一个模型的回答上,标签顺序即勾选顺序
+    const live = liveMessage(chat, msg);
+    if (live && Array.isArray(live.msg.versions) && live.msg.versions.length) {
+      live.msg.versionIndex = 0;
+      applyReplyVersion(live.msg, live.msg.versions[0]);
+    }
+    chat.updatedAt = Date.now();
+    saveChats();
+    renderMessages();
   } finally {
     state.currentProviderId = savedProv;
     state.currentModel = savedModel;
