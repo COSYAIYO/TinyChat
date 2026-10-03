@@ -46,7 +46,7 @@
   border: 1px solid var(--border, rgba(128, 128, 128, 0.3));
   background: var(--bg-input, transparent);
   color: var(--text);
-  font-size: 13px;
+  font-size: 0.929rem;
 }
 .group-create input:focus { outline: none; border-color: var(--accent); }
 .group-create .btn { align-self: flex-start; }
@@ -60,7 +60,7 @@
   border: 1px solid var(--border, rgba(128, 128, 128, 0.3));
   background: var(--bg-input, transparent);
   color: var(--text);
-  font-size: 13px;
+  font-size: 0.929rem;
 }
 .group-create-row input:focus { outline: none; border-color: var(--accent); }
 .group-list { display: flex; flex-direction: column; gap: 8px; }
@@ -77,9 +77,9 @@
 .group-item:hover { border-color: var(--accent); }
 .group-item.active { border-color: var(--accent); background: var(--bg-selected, rgba(41, 151, 255, 0.07)); }
 .group-item-main { flex: 1; min-width: 0; }
-.group-item-name { font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.group-item-name { font-size: 0.964rem; font-weight: 600; display: flex; align-items: center; gap: 6px; }
 .group-current-badge {
-  font-size: 10.5px;
+  font-size: 0.750rem;
   font-weight: 600;
   color: var(--accent);
   border: 1px solid var(--accent);
@@ -97,7 +97,7 @@
   align-items: center;
   gap: 12px;
   margin-bottom: 14px;
-  font-size: 13px;
+  font-size: 0.929rem;
 }
 .group-count-stepper {
   display: inline-flex;
@@ -113,12 +113,12 @@
   border: 0;
   background: transparent;
   color: var(--text);
-  font-size: 16px;
+  font-size: 1.143rem;
   cursor: pointer;
 }
 .group-count-stepper button:hover:not(:disabled) { background: var(--bg-selected, rgba(41, 151, 255, 0.1)); color: var(--accent); }
 .group-count-stepper button:disabled { opacity: 0.35; cursor: not-allowed; }
-.group-count-num { min-width: 28px; text-align: center; font-weight: 700; font-size: 14px; }
+.group-count-num { min-width: 28px; text-align: center; font-weight: 700; font-size: 1.000rem; }
 .group-member-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
@@ -135,7 +135,7 @@
   text-align: center;
 }
 .group-member-emoji {
-  font-size: 30px;
+  font-size: 2.143rem;
   line-height: 1;
   width: 52px;
   height: 52px;
@@ -145,7 +145,7 @@
   border-radius: 50%;
   background: var(--bg-selected, rgba(41, 151, 255, 0.08));
 }
-.group-member-emoji.small { font-size: 20px; width: 34px; height: 34px; }
+.group-member-emoji.small { font-size: 1.429rem; width: 34px; height: 34px; }
 .group-avatar-swap {
   border: 0;
   padding: 0;
@@ -160,7 +160,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: 0.857rem;
   color: var(--text-secondary, var(--text));
   cursor: pointer;
 }
@@ -175,14 +175,14 @@
   color: #e8c56b;
 }
 .group-member-name {
-  font-size: 13px;
+  font-size: 0.929rem;
   font-weight: 600;
   display: flex;
   align-items: center;
   gap: 6px;
 }
 .group-admin-badge {
-  font-size: 10px;
+  font-size: 0.714rem;
   color: #b45309;
   background: rgba(245, 158, 11, 0.16);
   border-radius: 999px;
@@ -201,7 +201,7 @@
   border-radius: 9px;
   background: var(--bg-input, transparent);
   color: var(--text);
-  font-size: 12px;
+  font-size: 0.857rem;
   cursor: pointer;
   transition: border-color 0.15s, color 0.15s;
 }
@@ -244,14 +244,14 @@
   border: 1px solid var(--border, rgba(128, 128, 128, 0.3));
   background: var(--bg-input, transparent);
   color: var(--text);
-  font-size: 13px;
+  font-size: 0.929rem;
   font-weight: 600;
 }
 .group-admin-radio {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: 0.857rem;
   color: var(--text-secondary, var(--text));
   white-space: nowrap;
   cursor: pointer;
@@ -265,7 +265,7 @@
   border: 1px solid var(--border, rgba(128, 128, 128, 0.3));
   background: var(--bg-input, transparent);
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 0.893rem;
   line-height: 1.55;
   font-family: inherit;
 }
@@ -278,7 +278,7 @@
   border: 1px solid var(--border, rgba(128, 128, 128, 0.3));
   background: var(--bg-input, transparent);
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 0.893rem;
 }
 .group-style-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .group-style {
@@ -287,7 +287,7 @@
   color: var(--text-secondary, var(--text));
   border-radius: 999px;
   padding: 3px 10px;
-  font-size: 12px;
+  font-size: 0.857rem;
   cursor: pointer;
 }
 .group-style:hover { border-color: var(--accent); color: var(--accent); }
@@ -304,7 +304,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  font-size: 13px;
+  font-size: 0.929rem;
 }
 .group-rule-pick {
   display: inline-flex;
@@ -317,7 +317,7 @@
   border: 1px solid var(--border, rgba(128, 128, 128, 0.3));
   background: var(--bg-input, transparent);
   color: var(--text);
-  font-size: 13px;
+  font-size: 0.929rem;
   cursor: pointer;
 }
 .group-rule-pick::after {
@@ -343,9 +343,9 @@
 }
 .group-mode-card:hover { border-color: var(--accent); }
 .group-mode-card.active { border-color: var(--accent); background: var(--bg-selected, rgba(41, 151, 255, 0.07)); }
-.group-mode-title { font-size: 13.5px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.group-mode-title { font-size: 0.964rem; font-weight: 700; display: flex; align-items: center; gap: 8px; }
 .group-mode-check { color: var(--accent); }
-.group-mode-desc { margin-top: 5px; font-size: 12.5px; line-height: 1.6; color: var(--text-secondary, var(--text)); }
+.group-mode-desc { margin-top: 5px; font-size: 0.893rem; line-height: 1.6; color: var(--text-secondary, var(--text)); }
 .group-mode-hint { margin-top: 10px; }
 
 /* ---------- 群聊消息:成员名牌与头像 ---------- */
@@ -355,7 +355,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 21px;
+  font-size: 1.500rem;
   border-radius: 50%;
   background: var(--bg-selected, rgba(41, 151, 255, 0.1));
 }
@@ -380,7 +380,7 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  font-size: 11.5px;
+  font-size: 0.821rem;
   font-weight: 600;
   color: var(--accent);
   background: var(--bg-selected, rgba(41, 151, 255, 0.08));
@@ -404,7 +404,7 @@
   border: 0;
   background: transparent;
   color: var(--text-secondary, var(--text));
-  font-size: 11px;
+  font-size: 0.786rem;
   font-weight: 600;
   cursor: pointer;
   padding: 0;
@@ -428,7 +428,7 @@
   border-radius: 10px;
   background: var(--bg-selected, rgba(41, 151, 255, 0.08));
   color: var(--accent);
-  font-size: 12.5px;
+  font-size: 0.893rem;
   font-weight: 600;
 }
 .group-phase.hidden { display: none; }
@@ -466,7 +466,7 @@
   border-radius: 7px;
   background: color-mix(in srgb, var(--text) 8%, transparent);
   color: var(--text-secondary, #6e6e73);
-  font-size: 12px;
+  font-size: 0.857rem;
   font-weight: 650;
   line-height: 1;
   cursor: pointer;
@@ -497,7 +497,7 @@
   border-radius: 10px 10px 0 0;
   background: transparent;
   color: var(--text-secondary, #6e6e73);
-  font-size: 12.5px;
+  font-size: 0.893rem;
   font-weight: 500;
   line-height: 1;
   cursor: pointer;
@@ -553,7 +553,7 @@ button.reply-tab:active { transform: none; }
 .reply-tab.active + .reply-tab:not(.active)::before { background: transparent; }
 .msg-action .at-glyph {
   font-weight: 800;
-  font-size: 13px;
+  font-size: 0.929rem;
   line-height: 1;
   display: inline-block;
   transform: translateY(-0.5px);

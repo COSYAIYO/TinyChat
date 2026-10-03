@@ -7404,8 +7404,10 @@ function toggleSidebar() {
   // ============ 侧边栏拖拽调宽 ============
   const resizer = $('sidebar-resizer');
   if (resizer && sidebar) {
-    const MIN_W = 200;
-    const MAX_W = 480;
+    // 侧栏宽度上下限跟随「外观 → 字号」等比缩放(基准 14px)
+    const rootFs = parseFloat(getComputedStyle(document.documentElement).fontSize) || 14;
+    const MIN_W = Math.round(200 * rootFs / 14);
+    const MAX_W = Math.round(480 * rootFs / 14);
     // 恢复上次宽度
     const savedW = parseInt(localStorage.getItem('oc_sidebar_width') || '', 10);
     if (savedW >= MIN_W && savedW <= MAX_W) {
@@ -7863,9 +7865,6 @@ function removeNoteMention(id) {
 }
 // 首行缩进:让正文第一行从 @ 行之后开始,折行后回到最左侧(悬挂缩进)。
 // 宽度取 @ 行实际渲染宽度,并在 @ 行变化时同步。
-window.addEventListener('resize', () => {
-  if (typeof syncComposerIndent === 'function') syncComposerIndent();
-});
 function syncComposerIndent() {
   const row = $('composer-at-row');
   const inp = $('input');
@@ -7874,12 +7873,24 @@ function syncComposerIndent() {
     || (row.querySelector('#note-mention-row') && !row.querySelector('#note-mention-row').classList.contains('hidden'));
   if (!hasAt) { inp.style.textIndent = ''; return; }
   // 用 next frame 测量:chip 刚插入 DOM 时宽度尚未确定,直接测量会偏小/为 0
+  // 缩进量按 @ 行实际宽度换算成 em(相对输入字号):
+  // 字号变化 / 页面缩放(Zoom)时缩进都随之等比缩放,无需重新测量。
+  // 但 @ 行宽度本身会因字号/字体/助手名变化而变,所以还要在布局变化后重测:
+  // 用 ResizeObserver 盯住 @ 行,任何尺寸变化都重新换算一次。
   const apply = () => {
-    const w = Math.ceil(row.getBoundingClientRect().width);
-    if (w > 0) inp.style.textIndent = (w + 8) + 'px';
+    const w = row.getBoundingClientRect().width;
+    if (w <= 0) return;
+    const fs = parseFloat(window.getComputedStyle(inp).fontSize) || 14;
+    const gap = fs * 0.57;              // 约 8px @ 14px 字号
+    inp.style.textIndent = ((w + gap) / fs).toFixed(3) + 'em';
   };
   apply();
   requestAnimationFrame(apply);
+  // 只挂一次:观察 @ 行的尺寸变化(助手名/笔记数/字号/缩放都会触发)
+  if (!row._indentObserver && typeof ResizeObserver === 'function') {
+    row._indentObserver = new ResizeObserver(() => apply());
+    row._indentObserver.observe(row);
+  }
 }
 
 function renderNoteMentions() {
