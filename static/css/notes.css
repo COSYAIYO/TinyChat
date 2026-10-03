@@ -24,7 +24,7 @@
 /* ---------- 顶部工具条 ---------- */
 .notes-fs-head {
   display: grid;
-  grid-template-columns: minmax(252px, 304px) 1fr;
+  grid-template-columns: var(--notes-side-w, 280px) 1fr;
   align-items: center;
   padding: 6px 14px 6px 10px;
   border-bottom: 1px solid var(--hairline);
@@ -259,8 +259,9 @@
 .notes-fs-body {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(252px, 304px) 1fr;
+  grid-template-columns: var(--notes-side-w, 280px) 1fr;
   min-height: 0;
+  position: relative;
 }
 
 /* ---------- 左栏:文件夹 + 笔记 树 ---------- */
@@ -280,20 +281,47 @@
   flex-wrap: wrap;
 }
 .notes-tree { flex: 1; overflow-y: auto; padding: 4px 8px 20px; }
-/* 侧栏左下角:附件空间剩余 */
-.notes-usage {
+/* 侧栏左下角:附件空间剩余 + AI 编辑设置齿轮 */
+.notes-usage-row {
   flex-shrink: 0;
   display: flex;
   align-items: center;
+  gap: 6px;
+  padding: 6px 8px 6px 12px;
+  border-top: 1px solid var(--hairline);
+  min-height: 34px;
+}
+.notes-usage {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
   gap: 5px;
-  padding: 8px 12px 10px;
   font-size: 11.5px;
   color: var(--text-tertiary);
-  border-top: 1px solid var(--hairline);
   font-variant-numeric: tabular-nums;
-  min-height: 30px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .notes-usage .oc-icon { flex-shrink: 0; opacity: .75; }
+.notes-gear { width: 26px; height: 26px; flex-shrink: 0; }
+/* 侧栏拖拽调宽(与首页侧边栏同款手感) */
+.notes-side-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--notes-side-w, 280px);
+  width: 7px;
+  margin-left: -3px;
+  cursor: col-resize;
+  z-index: 26;
+  transition: background .13s;
+}
+.notes-side-resizer:hover { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+.notes-fs.resizing { cursor: col-resize; }
+.notes-fs.resizing .notes-side-resizer { background: color-mix(in srgb, var(--accent) 34%, transparent); }
+.notes-fs.resizing .notes-fs-body { user-select: none; }
 /* 整栏折叠:只收起左侧面板,编辑器占满剩余空间(不能把列宽压成 0,否则编辑器会被挤没) */
 .notes-fs.side-collapsed .notes-fs-body { grid-template-columns: 1fr; }
 .notes-fs.side-collapsed .notes-side { display: none; }
@@ -812,4 +840,73 @@
   .neb-save-state { display: none; }
   .neb-title { width: 110px; }
   .nfh-right { padding-left: 12px; }
+}
+
+
+/* ---------- 正文选区右键:AI 编辑菜单 ---------- */
+.notes-ctx-menu {
+  position: fixed;
+  z-index: 10060; /* 高于 .oc-tip(10050),右键菜单永远最顶 */
+  min-width: 208px;
+  max-width: 280px;
+  padding: 5px;
+  background: var(--bg-app);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  box-shadow: var(--shadow-pop);
+  animation: ncmIn .12s ease;
+}
+[data-theme="dark"] .notes-ctx-menu { background: var(--bg-surface); }
+@keyframes ncmIn { from { opacity: 0; transform: translateY(-3px) scale(.985); } to { opacity: 1; transform: none; } }
+.ncm-head {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: .04em;
+  color: var(--text-tertiary);
+  padding: 5px 10px 4px;
+  text-transform: uppercase;
+}
+.ncm-item {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background .12s;
+}
+.ncm-item:hover { background: var(--bg-hover); }
+.ncm-item span { font-size: 13px; font-weight: 550; }
+.ncm-item i { font-style: normal; font-size: 11px; color: var(--text-tertiary); }
+.ncm-empty { font-size: 12px; color: var(--text-tertiary); padding: 8px 10px; }
+
+/* AI 处理中的浮标(右下角,不遮挡正在编辑的区域) */
+.notes-ai-busy {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  box-shadow: var(--shadow-md);
+}
+.nab-spin {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--bg-hover);
+  border-top-color: var(--accent);
+  animation: naiSpin .8s linear infinite;
 }

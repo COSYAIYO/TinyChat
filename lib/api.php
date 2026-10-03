@@ -5126,7 +5126,8 @@ function tc_api_note_shared_get($token) {
 // GET /api/admin/notes:正在使用笔记的用户列表(笔记数/附件用量/最近更新),支持搜索
 function tc_api_admin_notes_users() {
     tc_with_db(false, function ($db) {
-        tc_require_admin($db);
+        // 用户笔记属于个人内容,演示管理员不可查看(与「不可查看用户对话」一致)
+        tc_demo_guard(tc_require_admin($db), '演示管理员不可查看用户笔记');
         $q = tc_query();
         $kw = strtolower(trim((string) (isset($q['q']) ? $q['q'] : '')));
         $quota = tc_note_quota_bytes($db);
@@ -5174,6 +5175,7 @@ function tc_api_admin_notes_users() {
 function tc_api_admin_notes_view() {
     tc_with_db(false, function ($db) {
         $admin = tc_require_admin($db);
+        tc_demo_guard($admin, '演示管理员不可查看用户笔记');
         $q = tc_query();
         $uid = substr(trim((string) (isset($q['userId']) ? $q['userId'] : '')), 0, 64);
         if ($uid === '') tc_fail(400, '缺少用户 ID');

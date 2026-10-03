@@ -1749,6 +1749,14 @@ assert_contains "关闭仅正文后分享页可下载附件" "$(curl -s -o /dev/
 assert_contains "伪造分享令牌仍被拒" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE$Z2&share=deadbeef")" "404"
 # 非属主即使拿到链接与真实令牌之外的信息也取不到(无令牌)
 assert_contains "无令牌的其他用户仍被拒" "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $NMT" "$BASE$Z2")" "404"
+
+# 演示管理员:不可查看用户笔记列表 / 审阅 / 清理
+curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"demoa1","password":"demoa12345","quota":50,"admin":true,"demo":true}' > /dev/null
+DMT=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"demoa1","password":"demoa12345"}' | jget token)
+assert_contains "演示管理员不可查看笔记用户列表" "$(curl -s "$BASE/api/admin/notes" -H "Authorization: Bearer $DMT")" '演示管理员不可查看用户笔记'
+assert_contains "演示管理员不可审阅用户笔记" "$(curl -s "$BASE/api/admin/notes/view?userId=$AUID" -H "Authorization: Bearer $DMT")" '演示管理员不可查看用户笔记'
+assert_contains "演示管理员不可清理用户笔记" "$(curl -s -X POST "$BASE/api/admin/notes/purge" -H "Authorization: Bearer $DMT" -H "Content-Type: application/json" -d "{\"userId\":\"$AUID\"}")" '演示管理员不能清理用户笔记'
+assert_has "真实管理员仍可查看笔记用户" "$(curl -s "$BASE/api/admin/notes" -H "$AUTH")" '"users":['
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":true}' > /dev/null
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":true}' > /dev/null
 
