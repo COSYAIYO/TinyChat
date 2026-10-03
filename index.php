@@ -86,6 +86,11 @@ if ($method === 'GET' || $method === 'HEAD') {
         tc_send_page('share.html');
         exit;
     }
+    // AI 笔记分享页(实时读取属主笔记,关闭分享即失效)
+    if (preg_match('/^\/n\/[A-Za-z0-9]+$/', $path)) {
+        tc_send_page('note-share.html');
+        exit;
+    }
     if ($path === '/agreement') {
         tc_api_agreement_page();
         exit;
@@ -169,6 +174,15 @@ function tc_dispatch($method, $path) {
         array('POST', '#^/api/votes$#', 'tc_api_vote'),
         array('POST', '#^/api/shares$#', 'tc_api_create_share'),
         array('GET', '#^/api/shares/([^/]+)$#', 'tc_api_get_share'),
+        // AI 笔记:整文档同步 / 附件上传与签名输出 / 分享链接(实时读取,支持 edit-link)
+        array('GET', '#^/api/sync/notes$#', 'tc_api_notes_get'),
+        array('POST', '#^/api/sync/notes$#', 'tc_api_notes_save'),
+        array('POST', '#^/api/notes/upload$#', 'tc_api_note_attachment_upload'),
+        array('GET', '#^/api/notes/file$#', 'tc_api_note_attachment_serve'),
+        array('POST', '#^/api/notes/share$#', 'tc_api_note_share_create'),
+        array('DELETE', '#^/api/notes/share$#', 'tc_api_note_share_close'),
+        array('GET', '#^/api/notes/shared/([A-Za-z0-9]+)$#', 'tc_api_note_shared_get'),
+        array('POST', '#^/api/notes/shared/([A-Za-z0-9]+)$#', 'tc_api_note_shared_edit'),
         array('GET', '#^/api/assistants$#', 'tc_api_list_assistants'),
         array('POST', '#^/api/assistants/categories$#', 'tc_api_create_assistant_category'),
         array('POST', '#^/api/assistants/categories/([^/]+)$#', 'tc_api_update_assistant_category'),

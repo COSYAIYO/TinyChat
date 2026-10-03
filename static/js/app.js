@@ -1868,15 +1868,16 @@ function buildMsgNode(m, chat, idx) {
 
   // 操作栏 + 快捷指令（仅在非流式完成时）
   if (role === 'assistant' && !m._streaming && (m.content || m.reasoning || replyWasInterrupted(m))) {
-    window.OCMessages.attachActions(div, m, {
-      onRegenerate: (mm) => regenerateMessage(mm, chat),
-      onAt: (mm, btn) => openAtAnswerModal(mm, chat, btn),
-      onShare: (mm) => shareMessage(mm),
-      onVote: submitMessageVote,
-      onQuickAction: quickAction,
-      onBranch: (mm) => branchFromMessage(mm, chat),
-      onDelete: (mm) => deleteMessage(mm, chat),
-    });
+  window.OCMessages.attachActions(div, m, {
+    onRegenerate: (mm) => regenerateMessage(mm, chat),
+    onAt: (mm, btn) => openAtAnswerModal(mm, chat, btn),
+    onShare: (mm) => shareMessage(mm),
+    onSaveNote: (mm) => saveMessageToNotes(mm, chat),
+    onVote: submitMessageVote,
+    onQuickAction: quickAction,
+    onBranch: (mm) => branchFromMessage(mm, chat),
+    onDelete: (mm) => deleteMessage(mm, chat),
+  });
     // 跟进建议
     if (m.followUps && m.followUps.length) {
       window.OCMultimodal.renderFollowUps(div, m.followUps, applyFollowUp);
@@ -2969,14 +2970,15 @@ function reRenderLastAssistant(assistantMsg) {
   // 重新挂载操作栏 + 快捷指令 + 跟进建议
   last.querySelectorAll('.msg-actions, .quick-actions, .follow-ups, .cite-sources').forEach((el) => el.remove());
   if (assistantMsg.content || assistantMsg.reasoning || replyWasInterrupted(assistantMsg)) {
-    window.OCMessages.attachActions(last, assistantMsg, {
-      onRegenerate: (mm) => regenerateMessage(mm, chat),
-      onAt: (mm, btn) => openAtAnswerModal(mm, chat, btn),
-      onShare: (mm) => shareMessage(mm),
-      onVote: submitMessageVote,
-      onQuickAction: quickAction,
-      onBranch: (mm) => branchFromMessage(mm, chat),
-    });
+  window.OCMessages.attachActions(last, assistantMsg, {
+    onRegenerate: (mm) => regenerateMessage(mm, chat),
+    onAt: (mm, btn) => openAtAnswerModal(mm, chat, btn),
+    onShare: (mm) => shareMessage(mm),
+    onSaveNote: (mm) => saveMessageToNotes(mm, chat),
+    onVote: submitMessageVote,
+    onQuickAction: quickAction,
+    onBranch: (mm) => branchFromMessage(mm, chat),
+  });
     if (assistantMsg.followUps && assistantMsg.followUps.length) {
       window.OCMultimodal.renderFollowUps(last, assistantMsg.followUps, applyFollowUp);
     }
@@ -3547,6 +3549,21 @@ async function shareConversation(chat) {
 
 function shareMessage() {
   shareConversation(currentChat());
+}
+
+// 保存到 AI 笔记:交给 notes.js 让 AI 整理归档(引用换回活对象,防止云同步替换后写丢)
+function saveMessageToNotes(msg, chat) {
+  const live = liveChat(chat) || chat;
+  const lm = live ? (liveMessage(live, msg) || { msg }).msg : msg;
+  if (!lm || !(lm.content || '').trim()) {
+    toast('这条回复还没有内容，无法保存到笔记', true);
+    return;
+  }
+  if (!window.OCNotes || !window.OCApp) {
+    toast('笔记模块尚未加载，请刷新页面后重试', true);
+    return;
+  }
+  window.OCNotes.archiveFromMessage(live, lm);
 }
 
 // 快捷指令
@@ -8340,3 +8357,43 @@ async function requestGroupReply(chat, participant, stageInfo) {
     state._pendingRolePrompt = null;
   }
 }
+
+// ============ 对后加载模块(notes.js)的桥接 ============
+// notes.js 在 app.js 之后解析,这里把对话模块的能力收口成一个稳定出口;
+// aiComplete 是通用的单次非流式补全:辅助模型偏好(notesModel→followupsModel)→当前对话模型。
+async function aiComplete(messages, opts = {}) {
+  const aux = resolveAuxModel('notesModel') || resolveAuxModel('followupsModel');
+  const providerId = aux ? aux.providerId : state.currentProviderId;
+  const model = aux ? aux.model : state.currentModel;
+  const format = aux ? aux.format : providerFormat();
+  if (!providerId || !model) throw new Error('没有可用的模型，请先在模型选择器中选择');
+  const body = {
+    model,
+    providerId,
+    stream: false,
+    max_tokens: opts.maxTokens || 8192,
+    _purpose: opts.purpose || 'note',
+    messages,
+  };
+  const r = await api(ENDPOINT_BY_FORMAT[format] || ENDPOINT_BY_FORMAT.chat, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await readJsonSafe(r);
+  if (!r.ok) throw new Error((data.error && data.error.message) || ('请求失败（HTTP ' + r.status + '）'));
+  const text = extractText(data, format) || '';
+  if (!text.trim()) throw new Error('模型返回了空内容');
+  return text;
+}
+
+window.OCApp = {
+  state,
+  api,
+  toast,
+  extractText,
+  ENDPOINT_BY_FORMAT,
+  providerFormat,
+  resolveAuxModel,
+  aiComplete,
+};

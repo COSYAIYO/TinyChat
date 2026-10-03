@@ -2043,6 +2043,8 @@ function tc_storage_categories() {
               'desc' => '生图结果本地留存（防止上游链接过期）'),
         array('key' => 'imgcache', 'name' => '图片代理缓存', 'path' => $data . '/imgcache',
               'desc' => '同源代理抓取的图片缓存'),
+        array('key' => 'notefiles', 'name' => '笔记附件', 'path' => $data . '/notes-files',
+              'desc' => 'AI 笔记上传的图片与附件文件'),
         array('key' => 'backup', 'name' => '数据备份', 'path' => $data . '/backup',
               'desc' => '后台备份产生的数据快照'),
         array('key' => 'tasks', 'name' => '任务记录', 'path' => $data . '/tasks',
@@ -2304,6 +2306,9 @@ function tc_api_admin_storage_clean() {
         } elseif ($target === 'images') {
             $label = '生图留存';
             $rmDir($data . '/imgstore');
+        } elseif ($target === 'notefiles') {
+            $label = '笔记附件';
+            $rmDir($data . '/notes-files');
         } elseif ($target === 'backups') {
             $label = '数据备份';
             $rmDir($data . '/backup');
@@ -3643,6 +3648,8 @@ function tc_purge_user(&$db, $id) {
     $delMap = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array());
     unset($delMap[$id]);
     $db['userDeletedChats'] = tc_object_map($delMap);
+    // 笔记文档、修订号与分享链接一并清除
+    tc_drop_user_notes($db, $id);
     $ownIds = array();
     foreach ($db['providers'] as $p) if (isset($p['ownerId']) && $p['ownerId'] === $id) $ownIds[] = $p['id'];
     foreach ($ownIds as $pid) tc_remove_provider($db, $pid);
@@ -3682,6 +3689,7 @@ function tc_soft_delete_user(&$db, $id) {
         $delMap = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : array());
         unset($delMap[$id]);
         $db['userDeletedChats'] = tc_object_map($delMap);
+        tc_drop_user_notes($db, $id);
         $ownIds = array();
         foreach ($db['providers'] as $p) if (isset($p['ownerId']) && $p['ownerId'] === $id) $ownIds[] = $p['id'];
         foreach ($ownIds as $pid) tc_remove_provider($db, $pid);
@@ -4467,5 +4475,465 @@ function tc_api_parse_document() {
             'chars' => $chars,
             'limits' => $limits,
         ));
+    });
+}
+
+// ============ AI 笔记 ============
+// 数据流与对话同步同构:客户端持有完整文档(folders/notes/tombs),通过 /api/sync/notes
+// 带 baseRevision 乐观并发推送;服务器按用户拆行存储(note:{uid}),不做逐字段合并。
+// 附件落盘 data/notes-files/(整目录禁网),通过签名 URL 由 /api/notes/file 输出。
+
+function tc_utf_cut($s, $n) {
+    $s = (string) $s;
+    return function_exists('mb_substr') ? mb_substr($s, 0, $n) : substr($s, 0, $n);
+}
+
+function tc_note_file_dir() {
+    $dir = tc_data_dir() . '/notes-files';
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    return $dir;
+}
+function tc_note_file_token($id) {
+    return substr(hash_hmac('sha256', 'noteattach:' . (string) $id, tc_secret()), 0, 24);
+}
+function tc_note_file_path($id) {
+    return '/api/notes/file?id=' . rawurlencode((string) $id) . '&s=' . tc_note_file_token($id);
+}
+
+function tc_notes_of($db, $userId) {
+    $map = tc_assoc(isset($db['userNotes']) ? $db['userNotes'] : array());
+    $doc = isset($map[$userId]) && is_array($map[$userId]) ? $map[$userId] : array();
+    return array(
+        'folders' => isset($doc['folders']) && is_array($doc['folders']) ? $doc['folders'] : array(),
+        'notes' => isset($doc['notes']) && is_array($doc['notes']) ? $doc['notes'] : array(),
+        'tombs' => tc_assoc(isset($doc['tombs']) ? $doc['tombs'] : array()),
+    );
+}
+function tc_notes_revision_of($db, $userId) {
+    $map = tc_assoc(isset($db['userNoteRevisions']) ? $db['userNoteRevisions'] : array());
+    return isset($map[$userId]) ? (int) $map[$userId] : 0;
+}
+function tc_bump_notes_revision(&$db, $userId) {
+    $revs = tc_assoc(isset($db['userNoteRevisions']) ? $db['userNoteRevisions'] : array());
+    $revs[$userId] = tc_notes_revision_of($db, $userId) + 1;
+    $db['userNoteRevisions'] = tc_object_map($revs);
+}
+function tc_set_notes(&$db, $userId, $doc) {
+    $map = tc_assoc(isset($db['userNotes']) ? $db['userNotes'] : array());
+    $map[$userId] = $doc;
+    $db['userNotes'] = tc_object_map($map);
+    tc_bump_notes_revision($db, $userId);
+}
+// 注销/删除用户时清理笔记数据(硬删与软删共用)
+function tc_drop_user_notes(&$db, $id) {
+    $noteMap = tc_assoc(isset($db['userNotes']) ? $db['userNotes'] : array());
+    unset($noteMap[$id]);
+    $db['userNotes'] = tc_object_map($noteMap);
+    $revs = tc_assoc(isset($db['userNoteRevisions']) ? $db['userNoteRevisions'] : array());
+    unset($revs[$id]);
+    $db['userNoteRevisions'] = tc_object_map($revs);
+    $shares = tc_assoc(isset($db['noteShares']) ? $db['noteShares'] : array());
+    foreach ($shares as $t => $s) {
+        if ((string) ($s['ownerId'] ?? '') === (string) $id) unset($shares[$t]);
+    }
+    $db['noteShares'] = tc_object_map($shares);
+}
+
+function tc_sanitize_note_tags($tags) {
+    $out = array();
+    foreach ((array) $tags as $t) {
+        $t = trim((string) $t);
+        if ($t === '') continue;
+        $out[] = tc_utf_cut($t, 24);
+        if (count($out) >= 20) break;
+    }
+    return array_values(array_unique($out));
+}
+
+function tc_sanitize_note_folder($f) {
+    if (!is_array($f)) return null;
+    $id = substr(trim((string) (isset($f['id']) ? $f['id'] : '')), 0, 64);
+    if ($id === '') return null;
+    $name = trim((string) (isset($f['name']) ? $f['name'] : ''));
+    if ($name === '') return null;
+    $parentId = substr(trim((string) (isset($f['parentId']) ? $f['parentId'] : '')), 0, 64);
+    return array(
+        'id' => $id,
+        'parentId' => $parentId !== '' ? $parentId : null,
+        'name' => tc_utf_cut($name, 80),
+        'description' => tc_utf_cut(trim((string) (isset($f['description']) ? $f['description'] : '')), 200),
+        'createdAt' => (float) (isset($f['createdAt']) ? $f['createdAt'] : tc_now()),
+        'updatedAt' => (float) (isset($f['updatedAt']) ? $f['updatedAt'] : tc_now()),
+    );
+}
+
+function tc_sanitize_note_row($n) {
+    if (!is_array($n)) return null;
+    $id = substr(trim((string) (isset($n['id']) ? $n['id'] : '')), 0, 64);
+    if ($id === '') return null;
+    $title = trim((string) (isset($n['title']) ? $n['title'] : ''));
+    $atts = array();
+    $rawAtts = isset($n['attachments']) && is_array($n['attachments']) ? $n['attachments'] : array();
+    foreach (array_slice($rawAtts, 0, 50) as $a) {
+        if (!is_array($a)) continue;
+        $url = (string) (isset($a['url']) ? $a['url'] : '');
+        if ($url === '' || strlen($url) > 600) continue;
+        $atts[] = array(
+            'id' => substr(trim((string) (isset($a['id']) ? $a['id'] : '')), 0, 64),
+            'name' => tc_utf_cut((string) (isset($a['name']) ? $a['name'] : 'file'), 200),
+            'url' => $url,
+            'mimeType' => substr((string) (isset($a['mimeType']) ? $a['mimeType'] : ''), 0, 100),
+            'size' => (int) (isset($a['size']) ? $a['size'] : 0),
+            'createdAt' => (float) (isset($a['createdAt']) ? $a['createdAt'] : tc_now()),
+        );
+    }
+    $src = isset($n['source']) && is_array($n['source']) ? $n['source'] : null;
+    $shareMode = (string) (isset($n['shareMode']) ? $n['shareMode'] : 'private');
+    if (!in_array($shareMode, array('private', 'view-link', 'edit-link'), true)) $shareMode = 'private';
+    $note = array(
+        'id' => $id,
+        'folderId' => substr(trim((string) (isset($n['folderId']) ? $n['folderId'] : '')), 0, 64),
+        'title' => tc_utf_cut($title !== '' ? $title : '无标题', 200),
+        'content' => (string) (isset($n['content']) ? $n['content'] : ''),
+        'tags' => tc_sanitize_note_tags(isset($n['tags']) ? $n['tags'] : array()),
+        'attachments' => $atts,
+        'isPinned' => !empty($n['isPinned']),
+        'shareMode' => $shareMode,
+        'shareToken' => substr(trim((string) (isset($n['shareToken']) ? $n['shareToken'] : '')), 0, 64),
+        'createdAt' => (float) (isset($n['createdAt']) ? $n['createdAt'] : tc_now()),
+        'updatedAt' => (float) (isset($n['updatedAt']) ? $n['updatedAt'] : tc_now()),
+    );
+    if ($note['folderId'] === '') $note['folderId'] = 'uncat';
+    if ($note['content'] !== '') $note['content'] = substr($note['content'], 0, 200000);
+    if (is_array($src)) {
+        $note['source'] = array(
+            'conversationId' => substr(trim((string) (isset($src['conversationId']) ? $src['conversationId'] : '')), 0, 64),
+            'messageId' => substr(trim((string) (isset($src['messageId']) ? $src['messageId'] : '')), 0, 64),
+            'userQuestion' => substr((string) (isset($src['userQuestion']) ? $src['userQuestion'] : ''), 0, 2000),
+            'generatedByAI' => !empty($src['generatedByAI']),
+        );
+    }
+    return $note;
+}
+
+function tc_sanitize_notes_doc($doc) {
+    if (!is_array($doc)) $doc = array();
+    $folders = array();
+    $seen = array();
+    $rawFolders = isset($doc['folders']) && is_array($doc['folders']) ? $doc['folders'] : array();
+    foreach (array_slice($rawFolders, 0, 300) as $f) {
+        $row = tc_sanitize_note_folder($f);
+        if ($row === null || isset($seen[$row['id']])) continue;
+        $seen[$row['id']] = true;
+        $folders[] = $row;
+    }
+    $notes = array();
+    $rawNotes = isset($doc['notes']) && is_array($doc['notes']) ? $doc['notes'] : array();
+    foreach (array_slice($rawNotes, 0, 2000) as $n) {
+        $row = tc_sanitize_note_row($n);
+        if ($row === null) continue;
+        $notes[] = $row;
+    }
+    $tombs = array();
+    $rawTombs = isset($doc['tombs']) && is_array($doc['tombs']) ? $doc['tombs'] : array();
+    foreach (array_slice($rawTombs, 0, 500, true) as $tid => $ts) {
+        $tid = substr(trim((string) $tid), 0, 64);
+        if ($tid === '') continue;
+        $tombs[$tid] = (int) $ts;
+    }
+    return array('folders' => $folders, 'notes' => $notes, 'tombs' => tc_object_map($tombs));
+}
+
+function tc_note_shares_of($db, $userId) {
+    $out = array();
+    foreach (tc_assoc(isset($db['noteShares']) ? $db['noteShares'] : array()) as $s) {
+        if (!is_array($s) || (string) ($s['ownerId'] ?? '') !== (string) $userId) continue;
+        $out[] = array(
+            'noteId' => (string) ($s['noteId'] ?? ''),
+            'token' => (string) ($s['token'] ?? ''),
+            'mode' => (string) ($s['mode'] ?? 'view-link'),
+            'createdAt' => (float) ($s['createdAt'] ?? 0),
+        );
+    }
+    usort($out, function ($a, $b) { return ((int) $a['createdAt']) <=> ((int) $b['createdAt']); });
+    return $out;
+}
+
+function tc_note_share_find($db, $token) {
+    $map = tc_assoc(isset($db['noteShares']) ? $db['noteShares'] : array());
+    $s = isset($map[(string) $token]) ? $map[(string) $token] : null;
+    return (is_array($s) && (string) ($s['token'] ?? '') === (string) $token) ? $s : null;
+}
+
+function tc_note_find_in_doc($doc, $noteId) {
+    foreach ((array) ($doc['notes'] ?? array()) as $i => $n) {
+        if (is_array($n) && (string) ($n['id'] ?? '') === (string) $noteId) return array($i, $n);
+    }
+    return array(-1, null);
+}
+
+// GET /api/sync/notes:拉取当前用户笔记文档 + 修订号 + 分享状态(分享状态以服务端为准)
+function tc_api_notes_get() {
+    tc_with_db(false, function ($db) {
+        $user = tc_require_auth($db);
+        tc_json(200, array(
+            'doc' => tc_sanitize_notes_doc(tc_notes_of($db, $user['id'])),
+            'revision' => tc_notes_revision_of($db, $user['id']),
+            'shares' => tc_note_shares_of($db, $user['id']),
+        ));
+    });
+}
+
+// POST /api/sync/notes:整文档推送(baseRevision 乐观并发;冲突时 409 带回云端文档)
+function tc_api_notes_save() {
+    tc_with_db(true, function (&$db) {
+        $user = tc_require_auth($db);
+        if (!tc_rate_limit_check('notesync:' . $user['id'], 60)) {
+            tc_fail(429, '同步过于频繁，请稍后再试');
+        }
+        $b = tc_read_json_body(8 * 1024 * 1024);
+        $current = tc_notes_revision_of($db, $user['id']);
+        $base = isset($b['baseRevision']) ? (int) $b['baseRevision'] : $current;
+        if ($base !== $current) {
+            tc_json(409, array(
+                'error' => array('message' => '笔记已在其他页面更新'),
+                'doc' => tc_sanitize_notes_doc(tc_notes_of($db, $user['id'])),
+                'revision' => $current,
+                'shares' => tc_note_shares_of($db, $user['id']),
+            ));
+        }
+        $doc = tc_sanitize_notes_doc(isset($b['doc']) ? $b['doc'] : array());
+        tc_set_notes($db, $user['id'], $doc);
+        tc_json(200, array('ok' => true, 'revision' => tc_notes_revision_of($db, $user['id'])));
+    });
+}
+
+// POST /api/notes/upload:multipart 附件上传(图片 + 常见文档),返回签名 URL
+function tc_api_note_attachment_upload() {
+    tc_with_db(true, function (&$db) {
+        $user = tc_require_auth($db);
+        if (!tc_rate_limit_check('noteupload:' . $user['id'], 60, 3600000)) {
+            tc_fail(429, '上传过于频繁，请稍后再试');
+        }
+        if (empty($_FILES['file']) || !is_array($_FILES['file'])) tc_fail(400, '缺少上传文件');
+        $f = $_FILES['file'];
+        $err = (int) (isset($f['error']) ? $f['error'] : 0);
+        if ($err !== UPLOAD_ERR_OK || empty($f['tmp_name']) || !is_uploaded_file($f['tmp_name'])) {
+            tc_fail(400, $err === UPLOAD_ERR_INI_SIZE ? '文件超过服务器上传上限' : '上传失败（错误码 ' . $err . '）');
+        }
+        $name = trim((string) (isset($f['name']) ? $f['name'] : ''));
+        $name = str_replace(array("\r", "\n", '/'), '', $name !== '' ? $name : 'file');
+        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        $images = array(
+            'png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg',
+            'gif' => 'image/gif', 'webp' => 'image/webp', 'svg' => 'image/svg+xml',
+        );
+        $docs = array(
+            'pdf' => 'application/pdf', 'txt' => 'text/plain', 'md' => 'text/markdown',
+            'csv' => 'text/csv', 'json' => 'application/json', 'zip' => 'application/zip',
+            'doc' => 'application/msword',
+            'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'xls' => 'application/vnd.ms-excel',
+            'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'ppt' => 'application/vnd.ms-powerpoint',
+            'pptx' => 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        );
+        $isImage = isset($images[$ext]);
+        if (!$isImage && !isset($docs[$ext])) tc_fail(400, '不支持的文件类型: .' . $ext);
+        $max = $isImage ? 10 * 1024 * 1024 : 25 * 1024 * 1024;
+        $size = (int) (isset($f['size']) ? $f['size'] : 0);
+        if ($size <= 0 || $size > $max) tc_fail(400, '文件大小超出限制（' . round($max / 1048576) . 'MB）');
+        $mime = $isImage ? $images[$ext] : $docs[$ext];
+        $body = (string) @file_get_contents($f['tmp_name']);
+        if (strlen($body) === 0 || strlen($body) !== $size) tc_fail(400, '文件读取不完整');
+        $dir = tc_note_file_dir();
+        if (!is_dir($dir) || !is_writable($dir)) tc_fail(500, '附件目录不可写，请检查 data/ 目录权限');
+        $id = tc_uid(12);
+        $ct = $mime;
+        $head = chr(strlen($ct)) . $ct;
+        if (@file_put_contents($dir . '/' . $id . '.bin', $head . $body, LOCK_EX) === false) {
+            tc_fail(500, '附件保存失败');
+        }
+        tc_json(200, array(
+            'id' => $id,
+            'name' => $name,
+            'mimeType' => $mime,
+            'size' => $size,
+            'url' => tc_note_file_path($id),
+            'createdAt' => tc_now(),
+        ));
+    });
+}
+
+// GET /api/notes/file?id=&s=:签名鉴权输出附件。data/ 整目录禁网,必须经此路由;
+// CSP sandbox 使 SVG 被直接打开时也无法执行脚本(作为 <img> 引用时本就不执行)。
+function tc_api_note_attachment_serve() {
+    $q = tc_query();
+    $id = preg_replace('/[^a-f0-9]/', '', (string) (isset($q['id']) ? $q['id'] : ''));
+    $sig = (string) (isset($q['s']) ? $q['s'] : '');
+    if ($id === '' || $sig === '' || !hash_equals(tc_note_file_token($id), $sig)) {
+        http_response_code(403);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '签名无效';
+        exit;
+    }
+    $f = tc_note_file_dir() . '/' . $id . '.bin';
+    if (!is_file($f)) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '附件不存在';
+        exit;
+    }
+    $raw = (string) @file_get_contents($f);
+    if (strlen($raw) < 2) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo '附件不存在';
+        exit;
+    }
+    $len = ord($raw[0]);
+    $ctype = substr($raw, 1, $len);
+    $body = substr($raw, 1 + $len);
+    if ($ctype === '' || strpos($ctype, '/') === false) $ctype = 'application/octet-stream';
+    header('Content-Type: ' . $ctype);
+    header('Content-Length: ' . strlen($body));
+    header('X-Content-Type-Options: nosniff');
+    header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox");
+    header('Cache-Control: public, max-age=31536000, immutable');
+    echo $body;
+    exit;
+}
+
+// POST /api/notes/share:为笔记生成分享链接(同一笔记重复调用即重新生成,旧链接失效)
+function tc_api_note_share_create() {
+    tc_with_db(true, function (&$db) {
+        $user = tc_require_auth($db);
+        if (!tc_rate_limit_check('noteshare:' . $user['id'], 30, 3600000)) {
+            tc_fail(429, '创建分享过于频繁，请稍后再试');
+        }
+        $b = tc_read_json_body();
+        $noteId = substr(trim((string) (isset($b['noteId']) ? $b['noteId'] : '')), 0, 64);
+        $mode = (string) (isset($b['mode']) ? $b['mode'] : 'view-link');
+        if (!in_array($mode, array('view-link', 'edit-link'), true)) $mode = 'view-link';
+        if ($noteId === '') tc_fail(400, '缺少笔记 ID');
+        $doc = tc_notes_of($db, $user['id']);
+        list($idx, $note) = tc_note_find_in_doc($doc, $noteId);
+        if ($idx < 0) tc_fail(404, '笔记不存在或已被删除');
+        // 每用户最多 200 条分享:超出时轮出最早的一条(FIFO,同对话分享)
+        $shares = tc_assoc(isset($db['noteShares']) ? $db['noteShares'] : array());
+        $mine = array();
+        foreach ($shares as $t => $s) {
+            if ((string) ($s['ownerId'] ?? '') === (string) $user['id']) $mine[$t] = $s;
+        }
+        if (count($mine) >= 200) {
+            uasort($mine, function ($x, $y) { return ((int) ($x['createdAt'] ?? 0)) <=> ((int) ($y['createdAt'] ?? 0)); });
+            unset($shares[array_key_first($mine)]);
+        }
+        // 同笔记旧令牌全部作废(重新生成即失效)
+        foreach ($mine as $t => $s) {
+            if ((string) ($s['noteId'] ?? '') === $noteId) unset($shares[$t]);
+        }
+        $token = tc_uid(9);
+        $share = array(
+            'token' => $token,
+            'ownerId' => $user['id'],
+            'noteId' => $noteId,
+            'mode' => $mode,
+            'createdAt' => tc_now(),
+        );
+        $shares[$token] = $share;
+        $db['noteShares'] = tc_object_map($shares);
+        // 笔记本体同步分享状态(客户端展示用;权威状态始终以 noteShares 为准)
+        $doc['notes'][$idx]['shareMode'] = $mode;
+        $doc['notes'][$idx]['shareToken'] = $token;
+        $doc['notes'][$idx]['updatedAt'] = (float) ($doc['notes'][$idx]['updatedAt'] ?? tc_now());
+        $noteMap = tc_assoc(isset($db['userNotes']) ? $db['userNotes'] : array());
+        $noteMap[$user['id']] = $doc;
+        $db['userNotes'] = tc_object_map($noteMap);
+        tc_json(200, array(
+            'share' => array('noteId' => $noteId, 'token' => $token, 'mode' => $mode, 'createdAt' => $share['createdAt']),
+            'url' => '/n/' . $token,
+        ));
+    });
+}
+
+// DELETE /api/notes/share:关闭分享(带 noteId),对应笔记的分享链接全部失效
+function tc_api_note_share_close() {
+    tc_with_db(true, function (&$db) {
+        $user = tc_require_auth($db);
+        $b = tc_read_json_body();
+        $noteId = substr(trim((string) (isset($b['noteId']) ? $b['noteId'] : '')), 0, 64);
+        if ($noteId === '') tc_fail(400, '缺少笔记 ID');
+        $shares = tc_assoc(isset($db['noteShares']) ? $db['noteShares'] : array());
+        foreach ($shares as $t => $s) {
+            if ((string) ($s['ownerId'] ?? '') === (string) $user['id'] && (string) ($s['noteId'] ?? '') === $noteId) {
+                unset($shares[$t]);
+            }
+        }
+        $db['noteShares'] = tc_object_map($shares);
+        $doc = tc_notes_of($db, $user['id']);
+        list($idx, $note) = tc_note_find_in_doc($doc, $noteId);
+        if ($idx >= 0) {
+            $doc['notes'][$idx]['shareMode'] = 'private';
+            $doc['notes'][$idx]['shareToken'] = '';
+            $noteMap = tc_assoc(isset($db['userNotes']) ? $db['userNotes'] : array());
+            $noteMap[$user['id']] = $doc;
+            $db['userNotes'] = tc_object_map($noteMap);
+        }
+        tc_json(200, array('ok' => true));
+    });
+}
+
+// 笔记的公开投影:不泄露属主与分享令牌以外的内部字段
+function tc_public_shared_note($note, $mode) {
+    return array(
+        'id' => (string) ($note['id'] ?? ''),
+        'title' => (string) ($note['title'] ?? ''),
+        'content' => (string) ($note['content'] ?? ''),
+        'tags' => array_values((array) ($note['tags'] ?? array())),
+        'createdAt' => (float) ($note['createdAt'] ?? 0),
+        'updatedAt' => (float) ($note['updatedAt'] ?? 0),
+        'mode' => (string) $mode,
+        'editable' => $mode === 'edit-link',
+    );
+}
+
+// GET /api/notes/shared/{token}:公开读取(实时取属主笔记,关闭分享即失效)
+function tc_api_note_shared_get($token) {
+    tc_with_db(false, function ($db) use ($token) {
+        $share = tc_note_share_find($db, $token);
+        if (!$share) tc_fail(404, '分享不存在或已失效');
+        $doc = tc_notes_of($db, $share['ownerId']);
+        list($idx, $note) = tc_note_find_in_doc($doc, $share['noteId']);
+        if ($idx < 0) tc_fail(404, '笔记不存在或已被删除');
+        tc_json(200, array('note' => tc_public_shared_note($note, (string) $share['mode'])));
+    });
+}
+
+// POST /api/notes/shared/{token}:edit-link 模式下经链接修改属主笔记(最后写入胜出)
+function tc_api_note_shared_edit($token) {
+    tc_with_db(true, function (&$db) use ($token) {
+        if (!tc_rate_limit_check('noteshared:' . (string) $token, 30)) {
+            tc_fail(429, '保存过于频繁，请稍后再试');
+        }
+        $share = tc_note_share_find($db, $token);
+        if (!$share) tc_fail(404, '分享不存在或已失效');
+        if ((string) $share['mode'] !== 'edit-link') tc_fail(403, '该链接只允许查看');
+        $b = tc_read_json_body(2 * 1024 * 1024);
+        $doc = tc_notes_of($db, $share['ownerId']);
+        list($idx, $note) = tc_note_find_in_doc($doc, $share['noteId']);
+        if ($idx < 0) tc_fail(404, '笔记不存在或已被删除');
+        $title = tc_utf_cut(trim((string) (isset($b['title']) ? $b['title'] : '')), 200);
+        if ($title !== '') $doc['notes'][$idx]['title'] = $title;
+        if (isset($b['content']) && is_string($b['content'])) {
+            $doc['notes'][$idx]['content'] = substr($b['content'], 0, 200000);
+        }
+        if (isset($b['tags'])) $doc['notes'][$idx]['tags'] = tc_sanitize_note_tags($b['tags']);
+        $doc['notes'][$idx]['updatedAt'] = tc_now();
+        $noteMap = tc_assoc(isset($db['userNotes']) ? $db['userNotes'] : array());
+        $noteMap[$share['ownerId']] = $doc;
+        $db['userNotes'] = tc_object_map($noteMap);
+        tc_bump_notes_revision($db, $share['ownerId']);
+        tc_json(200, array('note' => tc_public_shared_note($doc['notes'][$idx], 'edit-link')));
     });
 }

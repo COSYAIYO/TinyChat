@@ -1,0 +1,1620 @@
+'use strict';
+/**
+ * notes.js — AI 笔记模块
+ *  - 侧栏「AI 笔记」入口 → 近全屏三栏弹窗(文件夹树 / 笔记列表 / 编辑与预览)
+ *  - Markdown 渲染复用聊天管线(renderer.js 的 OCRenderer.renderInto + .msg.assistant 结构)
+ *  - 图片/附件上传(粘贴、拖拽、选择文件)→ /api/notes/upload,签名 URL 内嵌预览
+ *  - 分享:仅自己可见 / 持链接查看 / 持链接可编辑(/n/{token},关闭或重新生成即失效)
+ *  - AI 归档:消息操作栏「保存到 AI 笔记」→ AI 判定文件夹/标题/标签并结构化,确认后保存
+ *  - 数据:本地 localStorage 为即时层,云端 /api/sync/notes 按 baseRevision 乐观并发同步
+ *    (删除走 tombs 墓碑,与对话云同步同构)
+ */
+(function () {
+  const UNCATA = 'uncat';
+  const MODES = ['edit', 'split', 'preview'];
+  const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'];
+  const DOC_EXT = ['pdf', 'txt', 'md', 'csv', 'json', 'zip', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
+
+  const N = {
+    ready: false,
+    doc: { folders: [], notes: [], tombs: {} },
+    revision: 0,
+    shares: [],
+    userId: null,
+    pushTimer: null,
+    pushBusy: false,
+    dirty: false,
+    ui: {
+      folderId: UNCATA,
+      search: '',
+      sort: 'updated',
+      mode: 'split',
+      expanded: {},
+      selNoteId: null,
+      maximized: false,
+    },
+    els: {},
+    editor: null, // {noteId, ta, preview, saveTimer, renderTimer, dirty}
+  };
+
+  // ============ 小工具 ============
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+  function uid(prefix) {
+    return (prefix || 'n') + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+  function icon(name, size) {
+    return (window.OC && window.OC.icon) ? window.OC.icon(name, size || 15) : '';
+  }
+  function toast(msg, isErr) {
+    if (window.OCUI && window.OCUI.toast) return window.OCUI.toast(msg, isErr ? 'error' : undefined);
+    if (typeof window.toast === 'function') return window.toast(msg, isErr);
+  }
+  function pad2(n) { return String(n).padStart(2, '0'); }
+  function fmtClock(ts) {
+    const d = new Date(Number(ts) || Date.now());
+    return pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  }
+  function fmtDate(ts) {
+    const d = new Date(Number(ts) || Date.now());
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+  function fmtTime(ts) {
+    if (!ts) return '';
+    const d = new Date(Number(ts));
+    const now = new Date();
+    if (d.getFullYear() === now.getFullYear()) {
+      if (d.getMonth() === now.getMonth() && d.getDate() === now.getDate()) return fmtClock(ts);
+      return pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+    }
+    return fmtDate(ts);
+  }
+  function fmtFull(ts) {
+    const d = new Date(Number(ts) || Date.now());
+    return fmtDate(ts) + ' ' + fmtClock(ts);
+  }
+  function fmtSize(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
+  function debounce(fn, ms) {
+    let t = null;
+    const wrapped = function () { clearTimeout(t); t = setTimeout(fn, ms); };
+    wrapped.now = function () { clearTimeout(t); fn(); };
+    return wrapped;
+  }
+  // 摘要:去掉 markdown 结构记号,取前 N 个字
+  function excerpt(md, n) {
+    let t = String(md || '');
+    t = t.replace(/```[\s\S]*?```/g, ' ');
+    t = t.replace(/`([^`]*)`/g, '$1');
+    t = t.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ');
+    t = t.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
+    t = t.replace(/^\s{0,3}#{1,6}\s+/gm, '');
+    t = t.replace(/^\s{0,3}>\s?/gm, '');
+    t = t.replace(/^\s*[-*+]\s+\[[ xX]\]\s*/gm, '');
+    t = t.replace(/^\s*[-*+]\s+/gm, '');
+    t = t.replace(/\|/g, ' ');
+    t = t.replace(/[*_~#]+/g, '');
+    t = t.replace(/\s+/g, ' ').trim();
+    return t.length > n ? t.slice(0, n) + '…' : t;
+  }
+  function apiUrlOf(path) {
+    return window.apiUrl ? window.apiUrl(path) : path;
+  }
+  function appState() { return (window.OCApp && window.OCApp.state) || null; }
+  function bearerToken() {
+    const s = appState();
+    return (s && s.token) || localStorage.getItem('oc_token') || '';
+  }
+  function apiFetch(path, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({ Authorization: 'Bearer ' + bearerToken() }, opts.headers || {});
+    return fetch(apiUrlOf(path), opts);
+  }
+
+  // ============ 存储层 ============
+  function lsDocKey() { return 'oc_notes_' + (N.userId || 'anon'); }
+  function lsUiKey() { return 'oc_notes_ui_' + (N.userId || 'anon'); }
+
+  function ensureUncat() {
+    if (N.doc.folders.some((f) => f.id === UNCATA)) return;
+    const now = Date.now();
+    N.doc.folders.unshift({
+      id: UNCATA, parentId: null, name: '未分类', description: '',
+      createdAt: now, updatedAt: now, system: true,
+    });
+  }
+  function persistLocal() {
+    try {
+      localStorage.setItem(lsDocKey(), JSON.stringify({ doc: N.doc, revision: N.revision, shares: N.shares }));
+    } catch (e) { /* 容量满时静默:下次同步会以云端为准 */ }
+  }
+  function persistUi() {
+    try { localStorage.setItem(lsUiKey(), JSON.stringify(N.ui)); } catch (e) {}
+  }
+  function loadLocal() {
+    try {
+      const raw = localStorage.getItem(lsDocKey());
+      if (!raw) return false;
+      const j = JSON.parse(raw);
+      if (!j || !j.doc || !Array.isArray(j.doc.notes)) return false;
+      N.doc = { folders: j.doc.folders || [], notes: j.doc.notes || [], tombs: j.doc.tombs || {} };
+      N.revision = Number(j.revision) || 0;
+      N.shares = Array.isArray(j.shares) ? j.shares : [];
+      ensureUncat();
+      return true;
+    } catch (e) { return false; }
+  }
+  function loadUi() {
+    try {
+      const raw = localStorage.getItem(lsUiKey());
+      if (!raw) return;
+      const j = JSON.parse(raw);
+      if (j && typeof j === 'object') Object.assign(N.ui, j);
+    } catch (e) {}
+    if (MODES.indexOf(N.ui.mode) < 0) N.ui.mode = 'split';
+  }
+
+  // 文档按条目 updatedAt 合并(新者胜),tombs 墓碑双向吸收并压制复活
+  function mergeDocs(local, remote) {
+    const tombs = Object.assign({}, local.tombs || {}, remote.tombs || {});
+    const pick = (a, b) => ((Number(b.updatedAt) || 0) > (Number(a.updatedAt) || 0) ? b : a);
+    const fMap = {};
+    (local.folders || []).forEach((f) => { fMap[f.id] = f; });
+    (remote.folders || []).forEach((f) => { fMap[f.id] = fMap[f.id] ? pick(fMap[f.id], f) : f; });
+    const nMap = {};
+    (local.notes || []).forEach((n) => { nMap[n.id] = n; });
+    (remote.notes || []).forEach((n) => { nMap[n.id] = nMap[n.id] ? pick(nMap[n.id], n) : n; });
+    const alive = (item) => !(item.id in tombs && Number(tombs[item.id]) >= (Number(item.updatedAt) || 0));
+    return {
+      folders: Object.values(fMap).filter(alive),
+      notes: Object.values(nMap).filter(alive),
+      tombs,
+    };
+  }
+
+  function schedulePush() {
+    N.dirty = true;
+    clearTimeout(N.pushTimer);
+    N.pushTimer = setTimeout(pushNow, 1500);
+  }
+  async function pushNow() {
+    clearTimeout(N.pushTimer);
+    if (!N.dirty || N.pushBusy || !N.userId) return;
+    N.pushBusy = true;
+    const baseRevision = N.revision;
+    try {
+      const r = await apiFetch('/api/sync/notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc: N.doc, baseRevision }),
+      });
+      if (r.status === 409) {
+        const data = await r.json().catch(() => ({}));
+        const remote = (data && data.doc) || { folders: [], notes: [], tombs: {} };
+        N.doc = mergeDocs(N.doc, remote);
+        N.revision = Number(data && data.revision) || N.revision;
+        if (Array.isArray(data && data.shares)) N.shares = data.shares;
+        ensureUncat();
+        persistLocal();
+        N.dirty = true;
+        schedulePush(); // 以新 baseRevision 重推本地合并结果
+        if (N.ready) renderAll();
+      } else if (r.ok) {
+        const data = await r.json().catch(() => ({}));
+        N.revision = Number(data.revision) || baseRevision + 1;
+        N.dirty = false;
+        persistLocal();
+        syncDot('ok');
+      } else {
+        syncDot('err');
+      }
+    } catch (e) {
+      syncDot('err');
+    } finally {
+      N.pushBusy = false;
+    }
+  }
+  async function pullFromCloud() {
+    try {
+      const r = await apiFetch('/api/sync/notes');
+      if (!r.ok) return;
+      const data = await r.json().catch(() => ({}));
+      if (!data || !data.doc) { N.revision = Number(data && data.revision) || 0; return; }
+      const hadLocal = N.doc.notes.length > 0 || N.doc.folders.length > 1;
+      N.doc = hadLocal ? mergeDocs(N.doc, data.doc) : {
+        folders: Array.isArray(data.doc.folders) ? data.doc.folders : [],
+        notes: Array.isArray(data.doc.notes) ? data.doc.notes : [],
+        tombs: data.doc.tombs || {},
+      };
+      N.revision = Number(data.revision) || 0;
+      N.shares = Array.isArray(data.shares) ? data.shares : [];
+      ensureUncat();
+      persistLocal();
+      if (N.ready) renderAll();
+    } catch (e) { /* 离线时继续用本地 */ }
+  }
+
+  // 所有变更经由 mutate:立即落本地 + 防抖推云端 + 重绘
+  function mutate(fn, opts) {
+    fn();
+    persistLocal();
+    schedulePush();
+    if (N.ready && !(opts && opts.noRender)) renderAll();
+  }
+
+  // ============ 数据操作 ============
+  function folderById(id) { return N.doc.folders.find((f) => f.id === id) || null; }
+  function noteById(id) { return N.doc.notes.find((n) => n.id === id) || null; }
+  function folderName(id) { const f = folderById(id); return f ? f.name : '未分类'; }
+  function noteCount(folderId) { return N.doc.notes.filter((n) => n.folderId === folderId).length; }
+  function childFolders(pid) { return N.doc.folders.filter((f) => f.parentId === pid); }
+  function folderDepth(id, guard) {
+    guard = guard || 0;
+    let d = 0;
+    let cur = folderById(id);
+    while (cur && cur.parentId && guard < 10) {
+      d++; guard++;
+      cur = folderById(cur.parentId);
+    }
+    return d;
+  }
+  function folderPath(id) {
+    const parts = [];
+    let cur = folderById(id);
+    let guard = 0;
+    while (cur && guard < 10) { parts.unshift(cur.name); cur = cur.parentId ? folderById(cur.parentId) : null; guard++; }
+    return parts.join(' / ') || '未分类';
+  }
+
+  function createFolder(name, parentId, opts) {
+    const now = Date.now();
+    const f = {
+      id: uid('f'), parentId: parentId || null, name: String(name || '').trim() || '新建文件夹',
+      description: '', createdAt: now, updatedAt: now,
+    };
+    N.doc.folders.push(f);
+    if (!(opts && opts.silent)) mutate(() => {});
+    return f;
+  }
+  function renameFolder(id, name) {
+    const f = folderById(id);
+    if (!f) return;
+    f.name = String(name || '').trim() || f.name;
+    f.updatedAt = Date.now();
+    mutate(() => {});
+  }
+  function deleteFolder(id) {
+    if (id === UNCATA) return;
+    const f = folderById(id);
+    if (!f) return;
+    const now = Date.now();
+    // 子文件夹上提一级,笔记全部落入「未分类」
+    N.doc.folders.forEach((x) => { if (x.parentId === id) { x.parentId = f.parentId || null; x.updatedAt = now; } });
+    N.doc.notes.forEach((n) => { if (n.folderId === id) { n.folderId = UNCATA; n.updatedAt = now; } });
+    N.doc.tombs[id] = now;
+    N.doc.folders = N.doc.folders.filter((x) => x.id !== id);
+    if (N.ui.folderId === id) N.ui.folderId = UNCATA;
+    mutate(() => {});
+    persistUi();
+  }
+  function createNote(folderId, data) {
+    const now = Date.now();
+    const n = {
+      id: uid('n'),
+      folderId: folderById(folderId) ? folderId : UNCATA,
+      title: String((data && data.title) || '').trim() || '无标题笔记',
+      content: String((data && data.content) || ''),
+      tags: Array.isArray(data && data.tags) ? data.tags.filter(Boolean).slice(0, 20) : [],
+      attachments: Array.isArray(data && data.attachments) ? data.attachments : [],
+      isPinned: false,
+      shareMode: 'private',
+      shareToken: '',
+      source: (data && data.source) || null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    N.doc.notes.push(n);
+    if (!(data && data.silent)) mutate(() => {});
+    else { persistLocal(); schedulePush(); }
+    return n;
+  }
+  function updateNote(id, patch) {
+    const n = noteById(id);
+    if (!n) return;
+    Object.assign(n, patch, { updatedAt: Date.now() });
+    mutate(() => {}, patch && patch._noRender ? { noRender: true } : undefined);
+  }
+  function deleteNote(id) {
+    const n = noteById(id);
+    if (!n) return;
+    const now = Date.now();
+    N.doc.tombs[id] = now;
+    N.doc.notes = N.doc.notes.filter((x) => x.id !== id);
+    if (N.ui.selNoteId === id) { N.ui.selNoteId = null; N.editor = null; }
+    mutate(() => {});
+    persistUi();
+  }
+  function togglePin(id) {
+    const n = noteById(id);
+    if (!n) return;
+    n.isPinned = !n.isPinned;
+    n.updatedAt = Date.now();
+    mutate(() => {});
+  }
+  function moveNote(id, folderId) {
+    const n = noteById(id);
+    if (!n || !folderById(folderId) || n.folderId === folderId) return;
+    n.folderId = folderId;
+    n.updatedAt = Date.now();
+    mutate(() => {});
+    toast('已移动到「' + folderName(folderId) + '」');
+  }
+
+  // ============ 云端分享状态对齐(服务端为准) ============
+  function shareOf(noteId) { return N.shares.find((s) => s.noteId === noteId) || null; }
+  function alignShareState() {
+    N.doc.notes.forEach((n) => {
+      const s = shareOf(n.id);
+      if (s) { n.shareMode = s.mode; n.shareToken = s.token; }
+      else { n.shareMode = 'private'; n.shareToken = ''; }
+    });
+  }
+
+  // ============ 模块初始化 ============
+  function ensureUser() {
+    const s = appState();
+    const id = s && s.user && s.user.id;
+    if (!id) return false;
+    if (N.userId !== id) {
+      N.userId = id;
+      N.ready = false;
+      N.doc = { folders: [], notes: [], tombs: {} };
+      N.revision = 0;
+      N.shares = [];
+      loadLocal();
+      loadUi();
+    }
+    return true;
+  }
+  async function ensureLoaded() {
+    if (!ensureUser()) return false;
+    if (!N.ready) {
+      N.ready = true;
+      alignShareState();
+      pullFromCloud();
+    }
+    return true;
+  }
+
+  // ============ 弹窗骨架 ============
+  function buildModal() {
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask notes-mask hidden';
+    mask.innerHTML =
+      '<div class="notes-modal" role="dialog" aria-modal="true" aria-label="AI 笔记">'
+      + '<header class="notes-head">'
+      + '<div class="notes-head-title">' + icon('notebook', 17) + '<span>AI 笔记</span>'
+      + '<span class="notes-sync" id="notes-sync-dot" data-tip="云同步状态"></span></div>'
+      + '<div class="notes-search">'
+      + '<span class="notes-search-icon">' + icon('search', 14) + '</span>'
+      + '<input id="notes-search-input" type="search" placeholder="搜索标题、内容或标签（当前文件夹之外也会搜到）" autocomplete="off" spellcheck="false">'
+      + '</div>'
+      + '<div class="notes-head-actions">'
+      + '<button class="notes-icon-btn" data-act="maximize" data-tip="最大化 / 还原">' + icon('maximize', 15) + '</button>'
+      + '<button class="notes-icon-btn" data-act="close" data-tip="关闭（Esc）">' + icon('close', 16) + '</button>'
+      + '</div>'
+      + '</header>'
+      + '<div class="notes-body">'
+      + '<aside class="notes-side" id="notes-side">'
+      + '<div class="notes-side-tools">'
+      + '<button class="notes-mini-btn" id="notes-folder-new">' + icon('folderPlus', 14) + '新建文件夹</button>'
+      + '</div>'
+      + '<div class="notes-tree" id="notes-tree"></div>'
+      + '</aside>'
+      + '<section class="notes-list-pane">'
+      + '<div class="notes-list-head">'
+      + '<button class="notes-icon-btn notes-side-toggle" id="notes-side-toggle" data-tip="文件夹">' + icon('panelLeft', 15) + '</button>'
+      + '<div class="notes-list-title" id="notes-list-title">未分类</div>'
+      + '<span class="notes-list-count" id="notes-list-count"></span>'
+      + '<span class="flex-sp"></span>'
+      + '<button class="notes-icon-btn" id="notes-sort-btn" data-tip="排序">' + icon('menu', 15) + '</button>'
+      + '<button class="notes-new-btn" id="notes-new-btn">' + icon('plus', 14) + '新建笔记</button>'
+      + '</div>'
+      + '<div class="notes-list" id="notes-list"></div>'
+      + '</section>'
+      + '<section class="notes-editor-pane" id="notes-editor-pane"></section>'
+      + '</div>'
+      + '<div class="notes-upload-bar hidden" id="notes-upload-bar"></div>'
+      + '</div>';
+    document.body.appendChild(mask);
+    N.els.mask = mask;
+    N.els.tree = mask.querySelector('#notes-tree');
+    N.els.list = mask.querySelector('#notes-list');
+    N.els.listTitle = mask.querySelector('#notes-list-title');
+    N.els.listCount = mask.querySelector('#notes-list-count');
+    N.els.editorPane = mask.querySelector('#notes-editor-pane');
+    N.els.searchInput = mask.querySelector('#notes-search-input');
+    N.els.syncDot = mask.querySelector('#notes-sync-dot');
+    N.els.uploadBar = mask.querySelector('#notes-upload-bar');
+
+    mask.addEventListener('mousedown', (e) => {
+      if (e.target === mask) flushEditor();
+    });
+    mask.querySelector('[data-act="close"]').addEventListener('click', close);
+    mask.querySelector('[data-act="maximize"]').addEventListener('click', toggleMaximize);
+    mask.querySelector('#notes-folder-new').addEventListener('click', () => promptNewFolder(null));
+    mask.querySelector('#notes-sort-btn').addEventListener('click', (e) => {
+      const items = [
+        { value: 'updated', label: '按更新时间（新→旧）' },
+        { value: 'created', label: '按创建时间（新→旧）' },
+        { value: 'title', label: '按标题（A→Z）' },
+      ];
+      window.OC.openSelect(e.currentTarget, items, {
+        selected: N.ui.sort,
+        onSelect: (v) => { N.ui.sort = v; persistUi(); renderList(); },
+      });
+    });
+    mask.querySelector('#notes-new-btn').addEventListener('click', (e) => openNewNoteDialog(e.currentTarget));
+    mask.querySelector('#notes-side-toggle').addEventListener('click', () => {
+      N.els.tree.parentElement.classList.toggle('collapsed');
+    });
+    N.els.searchInput.addEventListener('input', debounce(() => {
+      N.ui.search = N.els.searchInput.value.trim();
+      renderList();
+    }, 160));
+    // Esc 已由 modal 栈接管;Ctrl+S 手动保存
+    mask.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        flushEditor();
+        pushNow();
+        toast('已保存' + (N.dirty ? '（待同步）' : ''));
+      }
+    });
+  }
+
+  function syncDot(state) {
+    const dot = N.els.syncDot;
+    if (!dot) return;
+    dot.dataset.state = state || '';
+    dot.dataset.tip = state === 'err' ? '云同步失败，稍后自动重试' : (state === 'ok' ? '已同步到云端' : '云同步中');
+  }
+
+  function toggleMaximize() {
+    N.ui.maximized = !N.ui.maximized;
+    if (N.els.mask) N.els.mask.classList.toggle('maximized', N.ui.maximized);
+  }
+
+  async function open() {
+    if (!(await ensureLoaded())) { toast('请先登录后再使用 AI 笔记', true); return; }
+    if (!N.els.mask) buildModal();
+    flushEditor();
+    renderAll();
+    if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(N.els.mask);
+    else N.els.mask.classList.add('show');
+  }
+  function close() {
+    flushEditor();
+    if (window.OCUI && window.OCUI.closeModal) window.OCUI.closeModal(N.els.mask);
+    else N.els.mask.classList.remove('show');
+  }
+
+  // ============ 渲染 ============
+  function renderAll() {
+    renderTree();
+    renderList();
+    renderEditor();
+    alignShareState();
+  }
+
+  function renderTree() {
+    const tree = N.els.tree;
+    if (!tree) return;
+    tree.innerHTML = '';
+    tree.appendChild(folderRow(folderById(UNCATA) || { id: UNCATA, name: '未分类' }, 0));
+    const build = (pid, depth, host) => {
+      if (N.ui.expanded[pid] === false) return;
+      childFolders(pid).forEach((f) => {
+        if (f.id === UNCATA) return; // 未分类已固定在顶部,不再作为普通根节点出现
+        host.appendChild(folderRow(f, depth));
+        if (childFolders(f.id).length) build(f.id, depth + 1, host);
+      });
+    };
+    build(null, 1, tree);
+  }
+
+  function folderRow(f, depth) {
+    const row = document.createElement('div');
+    row.className = 'notes-folder-row' + (N.ui.folderId === f.id && !N.ui.search ? ' active' : '');
+    row.dataset.folderId = f.id;
+    row.style.paddingLeft = (10 + depth * 16) + 'px';
+    const kids = childFolders(f.id);
+    const chev = document.createElement('button');
+    chev.className = 'notes-chev' + (kids.length ? '' : ' leaf');
+    chev.innerHTML = icon('chevronRight', 13);
+    chev.dataset.tip = (N.ui.expanded[f.id] === false ? '展开' : '收起');
+    if (kids.length) {
+      row.classList.add('has-kids');
+      if (N.ui.expanded[f.id] === false) row.classList.add('collapsed-row');
+      chev.addEventListener('click', (e) => {
+        e.stopPropagation();
+        N.ui.expanded[f.id] = N.ui.expanded[f.id] === false ? true : false;
+        persistUi();
+        renderTree();
+      });
+    } else {
+      chev.disabled = true;
+    }
+    const ic = document.createElement('span');
+    ic.className = 'notes-folder-icon';
+    ic.innerHTML = icon('folder', 15);
+    const name = document.createElement('span');
+    name.className = 'notes-folder-name';
+    name.textContent = f.name;
+    const count = document.createElement('span');
+    count.className = 'notes-folder-count';
+    count.textContent = noteCount(f.id) || '';
+    const more = document.createElement('button');
+    more.className = 'notes-row-more';
+    more.innerHTML = icon('more', 14);
+    more.dataset.tip = '文件夹操作';
+    more.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const items = [];
+      if (f.id !== UNCATA) items.push({ value: 'sub', label: '新建子文件夹' });
+      if (f.id !== UNCATA) items.push({ value: 'rename', label: '重命名' });
+      if (f.id !== UNCATA) items.push({ value: 'delete', label: '删除文件夹' });
+      window.OC.openSelect(more, items, {
+        onSelect: async (v) => {
+          if (v === 'sub') promptNewFolder(f.id);
+          else if (v === 'rename') {
+            const name = await window.OCUI.prompt({ title: '重命名文件夹', value: f.name, maxlength: 80, confirmText: '保存' });
+            if (name && name.trim()) renameFolder(f.id, name.trim());
+          } else if (v === 'delete') {
+            const cnt = noteCount(f.id);
+            const ok = await window.OCUI.confirm({
+              title: '删除文件夹「' + f.name + '」？',
+              message: cnt ? ('其中 ' + cnt + ' 篇笔记将移动到「未分类」，子文件夹上提一级。') : '空文件夹将被删除。',
+              danger: true, confirmText: '删除',
+            });
+            if (ok) deleteFolder(f.id);
+          }
+        },
+      });
+    });
+    row.appendChild(chev); row.appendChild(ic); row.appendChild(name); row.appendChild(count); row.appendChild(more);
+    row.addEventListener('click', () => {
+      N.ui.folderId = f.id;
+      N.ui.search = '';
+      if (N.els.searchInput) N.els.searchInput.value = '';
+      persistUi();
+      renderAll();
+    });
+    // 拖拽笔记进文件夹
+    row.addEventListener('dragover', (e) => { e.preventDefault(); row.classList.add('drag-over'); });
+    row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+    row.addEventListener('drop', (e) => {
+      e.preventDefault();
+      row.classList.remove('drag-over');
+      const id = e.dataTransfer.getData('text/oc-note-id');
+      if (id) moveNote(id, f.id);
+    });
+    return row;
+  }
+
+  function promptNewFolder(parentId) {
+    window.OCUI.prompt({
+      title: parentId ? '新建子文件夹' : '新建文件夹',
+      message: '名称要语义明确、可长期使用，避免「其他」「杂项」这类泛化名称。',
+      value: '', maxlength: 80, confirmText: '创建',
+    }).then((name) => {
+      name = String(name || '').trim();
+      if (!name) return;
+      const f = createFolder(name, parentId);
+      N.ui.expanded[parentId || 'root'] = true;
+      if (parentId) N.ui.expanded[parentId] = true;
+      N.ui.folderId = f.id;
+      persistUi();
+      renderAll();
+    });
+  }
+
+  function visibleNotes() {
+    const q = N.ui.search.toLowerCase();
+    let notes = N.doc.notes.filter((n) => !(n.id in (N.doc.tombs || {})));
+    if (q) {
+      notes = notes.filter((n) =>
+        (n.title || '').toLowerCase().includes(q)
+        || (n.content || '').toLowerCase().includes(q)
+        || (n.tags || []).some((t) => String(t).toLowerCase().includes(q)));
+    } else {
+      notes = notes.filter((n) => n.folderId === N.ui.folderId);
+    }
+    const cmp = {
+      updated: (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0),
+      created: (a, b) => (b.createdAt || 0) - (a.createdAt || 0),
+      title: (a, b) => String(a.title).localeCompare(String(b.title), 'zh-Hans-CN'),
+    }[N.ui.sort] || ((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    return notes.sort((a, b) => ((b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0)) || cmp(a, b));
+  }
+
+  function renderList() {
+    const list = N.els.list;
+    if (!list) return;
+    const notes = visibleNotes();
+    if (N.ui.search) {
+      N.els.listTitle.textContent = '搜索：' + N.ui.search;
+      N.els.listCount.textContent = notes.length + ' 篇';
+    } else {
+      N.els.listTitle.textContent = folderName(N.ui.folderId);
+      N.els.listCount.textContent = notes.length ? notes.length + ' 篇' : '';
+    }
+    list.innerHTML = '';
+    if (!notes.length) {
+      list.innerHTML = '<div class="notes-empty">'
+        + icon('notebook', 26)
+        + '<p>' + (N.ui.search ? '没有匹配的笔记' : '这个文件夹还没有笔记') + '</p>'
+        + (N.ui.search ? '' : '<button class="notes-mini-btn" id="notes-empty-new">' + icon('plus', 13) + '新建一篇</button>')
+        + '</div>';
+      const btn = list.querySelector('#notes-empty-new');
+      if (btn) btn.addEventListener('click', () => openNewNoteDialog(N.els.mask.querySelector('#notes-new-btn')));
+      return;
+    }
+    notes.forEach((n) => list.appendChild(noteItem(n)));
+  }
+
+  function noteItem(n) {
+    const item = document.createElement('div');
+    item.className = 'notes-item' + (N.ui.selNoteId === n.id ? ' active' : '') + (n.isPinned ? ' pinned' : '');
+    item.draggable = true;
+    const cover = attachmentImageOf(n);
+    item.innerHTML =
+      (cover ? '<div class="ni-cover" style="background-image:url(' + esc(cover) + ')"></div>' : '')
+      + '<div class="ni-main">'
+      + '<div class="ni-title">' + (n.isPinned ? '<span class="ni-pin">' + icon('pin', 12) + '</span>' : '') + esc(n.title || '无标题笔记') + '</div>'
+      + '<div class="ni-excerpt">' + esc(excerpt(n.content, 72) || '（空笔记）') + '</div>'
+      + '<div class="ni-meta">'
+      + '<span class="ni-time">' + icon('clock', 11) + esc(fmtTime(n.updatedAt)) + '</span>'
+      + (N.ui.search ? '<span class="ni-folder">' + icon('folder', 11) + esc(folderName(n.folderId)) + '</span>' : '')
+      + (n.tags || []).slice(0, 3).map((t) => '<span class="ni-tag">#' + esc(t) + '</span>').join('')
+      + ((n.tags || []).length > 3 ? '<span class="ni-tag">…</span>' : '')
+      + '</div></div>';
+    const more = document.createElement('button');
+    more.className = 'notes-row-more ni-more';
+    more.innerHTML = icon('more', 14);
+    more.dataset.tip = '笔记操作';
+    more.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const s = shareOf(n.id);
+      const items = [
+        { value: 'pin', label: n.isPinned ? '取消置顶' : '置顶' },
+        { value: 'move', label: '移动到…' },
+        { value: 'rename', label: '重命名' },
+        { value: 'share', label: s ? '分享（已开启）' : '分享…' },
+        { value: 'export', label: '导出 .md' },
+        { value: 'delete', label: '删除笔记' },
+      ];
+      window.OC.openSelect(more, items, {
+        onSelect: async (v) => {
+          if (v === 'pin') togglePin(n.id);
+          else if (v === 'move') pickFolder((f) => moveNote(n.id, f));
+          else if (v === 'rename') {
+            const t = await window.OCUI.prompt({ title: '重命名笔记', value: n.title, maxlength: 200, confirmText: '保存' });
+            if (t && t.trim()) updateNote(n.id, { title: t.trim() });
+          } else if (v === 'share') openShareDialog(n.id);
+          else if (v === 'export') exportNote(n);
+          else if (v === 'delete') {
+            const ok = await window.OCUI.confirm({ title: '删除笔记「' + n.title + '」？', message: '删除后其他设备也会同步删除。', danger: true, confirmText: '删除' });
+            if (ok) deleteNote(n.id);
+          }
+        },
+      });
+    });
+    item.appendChild(more);
+    item.addEventListener('click', () => openNote(n.id));
+    item.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/oc-note-id', n.id);
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    return item;
+  }
+
+  function attachmentImageOf(n) {
+    const a = (n.attachments || []).find((x) => x && x.mimeType && x.mimeType.indexOf('image/') === 0);
+    return a ? a.url : '';
+  }
+
+  function pickFolder(cb, excludeId) {
+    if (!N.els.mask) return;
+    const items = N.doc.folders
+      .filter((f) => f.id !== excludeId)
+      .sort((a, b) => folderDepth(a.id) - folderDepth(b.id))
+      .map((f) => ({ value: f.id, label: '　'.repeat(folderDepth(f.id)) + f.name }));
+    const anchor = N.els.mask.querySelector('.notes-list-head') || N.els.mask;
+    window.OC.openSelect(anchor, items, { searchable: true, searchPlaceholder: '搜索文件夹…', onSelect: cb });
+  }
+
+  function exportNote(n) {
+    const blob = new Blob([n.content || ''], { type: 'text/markdown;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = (n.title || '笔记').replace(/[\\/:*?"<>|]/g, '_') + '.md';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 800);
+  }
+
+  // ============ 编辑器 ============
+  function openNote(id) {
+    flushEditor();
+    N.ui.selNoteId = id;
+    persistUi();
+    renderList();
+    renderEditor();
+  }
+
+  function renderEditor() {
+    const pane = N.els.editorPane;
+    if (!pane) return;
+    const n = N.ui.selNoteId ? noteById(N.ui.selNoteId) : null;
+    if (!n) {
+      N.editor = null;
+      pane.innerHTML = '<div class="notes-editor-empty">'
+        + icon('notebook', 34)
+        + '<h3>选择或新建一篇笔记</h3>'
+        + '<p>左侧选文件夹，中间选笔记；支持 Markdown、代码高亮、公式与 Mermaid 图表。</p>'
+        + '</div>';
+      return;
+    }
+    const mode = N.ui.mode;
+    pane.innerHTML =
+      '<div class="notes-editor">'
+      + '<div class="notes-editor-head">'
+      + '<input class="notes-title-input" id="ne-title" value="' + esc(n.title) + '" placeholder="无标题笔记" maxlength="200" spellcheck="false">'
+      + '<div class="notes-editor-meta">'
+      + '<button class="notes-crumb" id="ne-folder" data-tip="移动到其他文件夹">' + icon('folder', 12) + esc(folderPath(n.folderId)) + icon('chevronDown', 12) + '</button>'
+      + '<span class="ne-time">' + icon('clock', 12) + '更新于 ' + esc(fmtFull(n.updatedAt)) + '</span>'
+      + '<span class="ne-save-state" id="ne-save-state">已保存</span>'
+      + '</div>'
+      + '<div class="notes-tag-row" id="ne-tags"></div>'
+      + '<div class="notes-editor-toolbar">'
+      + '<div class="notes-mode-switch" id="ne-mode-switch">'
+      + '<button data-mode="edit" class="' + (mode === 'edit' ? 'active' : '') + '">编辑</button>'
+      + '<button data-mode="split" class="' + (mode === 'split' ? 'active' : '') + '">分屏</button>'
+      + '<button data-mode="preview" class="' + (mode === 'preview' ? 'active' : '') + '">预览</button>'
+      + '</div>'
+      + '<span class="flex-sp"></span>'
+      + '<button class="notes-icon-btn" data-act="image" data-tip="插入图片（也可直接粘贴 / 拖拽）">' + icon('image', 15) + '</button>'
+      + '<button class="notes-icon-btn" data-act="attach" data-tip="添加附件">' + icon('paperclip', 15) + '</button>'
+      + '<button class="notes-icon-btn" data-act="share" data-tip="分享设置">' + icon('link', 15) + '</button>'
+      + '<button class="notes-icon-btn" data-act="export" data-tip="导出 .md">' + icon('download', 15) + '</button>'
+      + '<button class="notes-icon-btn" data-act="delete" data-tip="删除笔记">' + icon('trash', 15) + '</button>'
+      + '</div>'
+      + '</div>'
+      + '<div class="notes-editor-panes mode-' + mode + '">'
+      + '<textarea class="notes-ta" id="ne-ta" spellcheck="false" placeholder="用 Markdown 书写…粘贴图片或拖入文件可直接上传。"></textarea>'
+      + '<div class="notes-preview-wrap"><div class="notes-preview msg assistant"><div class="msg-content" id="ne-preview"></div></div></div>'
+      + '</div>'
+      + '</div>';
+    const ta = pane.querySelector('#ne-ta');
+    const preview = pane.querySelector('#ne-preview');
+    ta.value = n.content || '';
+    N.editor = { noteId: n.id, ta, preview, dirty: false, saveTimer: null, renderTimer: null };
+    renderTagsRow(n);
+    renderPreview(n.content || '');
+
+    pane.querySelector('#ne-mode-switch').addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-mode]');
+      if (!b) return;
+      N.ui.mode = b.dataset.mode;
+      persistUi();
+      const panes = pane.querySelector('.notes-editor-panes');
+      ['edit', 'split', 'preview'].forEach((m) => panes.classList.toggle('mode-' + m, m === N.ui.mode));
+      pane.querySelectorAll('#ne-mode-switch button').forEach((x) => x.classList.toggle('active', x.dataset.mode === N.ui.mode));
+      if (N.ui.mode !== 'edit') renderPreview(ta.value);
+    });
+    pane.querySelector('#ne-folder').addEventListener('click', () => pickFolder((f) => moveNote(n.id, f), n.folderId));
+    pane.querySelector('[data-act="share"]').addEventListener('click', () => openShareDialog(n.id));
+    pane.querySelector('[data-act="export"]').addEventListener('click', () => exportNote(noteById(n.id) || n));
+    pane.querySelector('[data-act="delete"]').addEventListener('click', async () => {
+      const cur = noteById(n.id);
+      const ok = await window.OCUI.confirm({ title: '删除笔记「' + (cur ? cur.title : '') + '」？', message: '删除后其他设备也会同步删除。', danger: true, confirmText: '删除' });
+      if (ok) deleteNote(n.id);
+    });
+    pane.querySelector('[data-act="image"]').addEventListener('click', () => pickFiles(true));
+    pane.querySelector('[data-act="attach"]').addEventListener('click', () => pickFiles(false));
+
+    ta.addEventListener('input', () => {
+      N.editor.dirty = true;
+      setSaveState('editing');
+      clearTimeout(N.editor.saveTimer);
+      N.editor.saveTimer = setTimeout(saveEditor, 900);
+      clearTimeout(N.editor.renderTimer);
+      N.editor.renderTimer = setTimeout(() => renderPreview(ta.value), 450);
+    });
+    ta.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        saveEditor();
+        toast('已保存');
+      }
+      // Tab 缩进两个空格
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const s = ta.selectionStart, epos = ta.selectionEnd;
+        ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(epos);
+        ta.selectionStart = ta.selectionEnd = s + 2;
+        ta.dispatchEvent(new Event('input'));
+      }
+    });
+    // 粘贴 / 拖拽上传(编辑区 + 预览区都接)
+    [ta, pane.querySelector('.notes-preview-wrap')].forEach((zone) => {
+      zone.addEventListener('paste', (e) => {
+        const files = clipboardFiles(e);
+        if (files.length) { e.preventDefault(); uploadFiles(files); }
+      });
+    });
+    const panesEl = pane.querySelector('.notes-editor-panes');
+    panesEl.addEventListener('dragover', (e) => { e.preventDefault(); panesEl.classList.add('drag-over'); });
+    panesEl.addEventListener('dragleave', (e) => { if (!panesEl.contains(e.relatedTarget)) panesEl.classList.remove('drag-over'); });
+    panesEl.addEventListener('drop', (e) => {
+      e.preventDefault();
+      panesEl.classList.remove('drag-over');
+      const files = Array.from(e.dataTransfer.files || []);
+      if (files.length) uploadFiles(files);
+    });
+    if (N.ui.mode !== 'edit') setTimeout(() => { ta.blur(); }, 0);
+  }
+
+  function clipboardFiles(e) {
+    const out = [];
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return out;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].kind === 'file') {
+        const f = items[i].getAsFile();
+        if (f) out.push(f);
+      }
+    }
+    return out;
+  }
+
+  function setSaveState(state) {
+    const el = N.els.editorPane && N.els.editorPane.querySelector('#ne-save-state');
+    if (!el) return;
+    el.dataset.state = state;
+    if (state === 'editing') el.textContent = '正在编辑…';
+    else if (state === 'saving') el.textContent = '保存中…';
+    else if (state === 'syncing') el.textContent = '已保存，同步中…';
+    else el.textContent = '已保存 ' + fmtClock(Date.now());
+  }
+
+  function saveEditor() {
+    if (!N.editor || !N.editor.dirty) return;
+    const n = noteById(N.editor.noteId);
+    if (!n) return;
+    setSaveState('saving');
+    const ta = N.editor.ta;
+    const titleInput = N.els.editorPane.querySelector('#ne-title');
+    n.content = ta.value;
+    if (titleInput && titleInput.value.trim()) n.title = titleInput.value.trim();
+    n.updatedAt = Date.now();
+    N.editor.dirty = false;
+    persistLocal();
+    schedulePush();
+    setSaveState('syncing');
+    renderList();
+  }
+  function flushEditor() {
+    if (N.editor && N.editor.dirty) saveEditor();
+  }
+
+  function renderPreview(md) {
+    const preview = N.editor && N.editor.preview;
+    if (!preview) return;
+    if (window.OCRenderer && window.OCRenderer.renderInto) {
+      window.OCRenderer.renderInto(preview, md);
+    } else {
+      preview.textContent = md;
+    }
+  }
+
+  function renderTagsRow(n) {
+    const row = N.els.editorPane.querySelector('#ne-tags');
+    if (!row) return;
+    row.innerHTML = (n.tags || []).map((t, i) =>
+      '<span class="ne-tag" data-i="' + i + '">#' + esc(t) + '<button class="ne-tag-x" data-tip="移除标签">×</button></span>').join('')
+      + '<input id="ne-tag-input" placeholder="添加标签，回车确认" maxlength="24">';
+    row.querySelectorAll('.ne-tag-x').forEach((x) => {
+      x.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const i = Number(e.target.closest('.ne-tag').dataset.i);
+        const cur = noteById(n.id);
+        if (!cur) return;
+        const tags = (cur.tags || []).slice();
+        tags.splice(i, 1);
+        updateNote(n.id, { tags });
+        const fresh = noteById(n.id);
+        if (fresh) renderTagsRow(fresh);
+      });
+    });
+    const input = row.querySelector('#ne-tag-input');
+    input.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const v = input.value.trim();
+      if (!v) return;
+      const cur = noteById(n.id);
+      if (!cur) return;
+      const tags = (cur.tags || []).slice();
+      if (tags.indexOf(v) < 0) tags.push(v);
+      updateNote(n.id, { tags });
+      const fresh = noteById(n.id);
+      if (fresh) renderTagsRow(fresh);
+    });
+  }
+
+  // 标题输入单独挂(input 委托,编辑器重建间不丢)
+  document.addEventListener('input', (e) => {
+    if (!N.editor || !N.els.editorPane) return;
+    if (e.target && e.target.id === 'ne-title') {
+      N.editor.dirty = true;
+      setSaveState('editing');
+      clearTimeout(N.editor.saveTimer);
+      N.editor.saveTimer = setTimeout(saveEditor, 900);
+    }
+  });
+
+  // ============ 新建笔记 / 模板 ============
+  const TEMPLATES = [
+    { key: 'blank', name: '空白笔记', desc: '从零开始书写', body: '' },
+    {
+      key: 'meeting', name: '会议纪要', desc: '议题 / 结论 / 待办',
+      body: '## 会议信息\n\n- **时间**：\n- **参与人**：\n- **记录人**：\n\n## 议题与讨论\n\n1. \n\n## 结论\n\n- \n\n## 待办事项\n\n- [ ] 事项（负责人，截止时间）\n',
+    },
+    {
+      key: 'study', name: '学习笔记', desc: '概念 / 要点 / 示例',
+      body: '## 概念\n\n一句话说清它是什么。\n\n## 要点\n\n- \n\n## 示例\n\n```text\n\n```\n\n## 注意事项与疑问\n\n- \n',
+    },
+    {
+      key: 'project', name: '项目记录', desc: '背景 / 进展 / 风险',
+      body: '## 背景\n\n## 目标\n\n## 进展\n\n- [ ] \n\n## 风险与备注\n\n- \n',
+    },
+  ];
+
+  function templateBody(key) {
+    const t = TEMPLATES.find((x) => x.key === key);
+    return t ? t.body : '';
+  }
+
+  function openNewNoteDialog(anchor) {
+    const folderId = N.ui.folderId;
+    const items = TEMPLATES.map((t) => ({ value: t.key, label: t.name + ' · ' + t.desc }));
+    window.OC.openSelect(anchor || N.els.mask, items, {
+      fitWidth: true,
+      onSelect: async (key) => {
+        const t = TEMPLATES.find((x) => x.key === key);
+        const title = await window.OCUI.prompt({
+          title: '新建' + (t ? t.name : '笔记'),
+          message: '标题要可检索;标签用逗号分隔。创建时间会自动写进笔记开头。',
+          value: '', maxlength: 200, confirmText: '创建',
+        });
+        if (title === null) return;
+        const name = String(title || '').trim() || (t ? t.name : '无标题笔记');
+        const tags = name.match(/#(\S+)/g) ? [] : [];
+        const created = '> 🕒 创建于 ' + fmtFull(Date.now()) + '\n';
+        const content = created + (t && t.body ? '\n' + t.body : '');
+        const n = createNote(folderId, { title: name, content, tags });
+        openNote(n.id);
+        toast('已创建「' + n.title + '」');
+      },
+    });
+  }
+
+  // ============ 上传 ============
+  let fileInput = null;
+  function pickFiles(imageOnly) {
+    if (!fileInput) {
+      fileInput = document.createElement('input');
+      fileInput.type = 'file';
+      fileInput.multiple = true;
+      fileInput.style.display = 'none';
+      document.body.appendChild(fileInput);
+      fileInput.addEventListener('change', () => {
+        const files = Array.from(fileInput.files || []);
+        fileInput.value = '';
+        if (files.length) uploadFiles(files);
+      });
+    }
+    fileInput.accept = imageOnly ? 'image/png,image/jpeg,image/gif,image/webp,image/svg+xml' : '';
+    fileInput.click();
+  }
+
+  function extOf(name) { const m = String(name).toLowerCase().match(/\.([a-z0-9]+)$/); return m ? m[1] : ''; }
+  function validateFile(f) {
+    const ext = extOf(f.name);
+    if (IMAGE_EXT.indexOf(ext) >= 0) {
+      if (f.size > 10 * 1048576) return '图片不能超过 10MB';
+      return '';
+    }
+    if (DOC_EXT.indexOf(ext) >= 0) {
+      if (f.size > 25 * 1048576) return '附件不能超过 25MB';
+      return '';
+    }
+    return '不支持的类型: .' + ext + '（图片: PNG/JPG/JPEG/GIF/WEBP/SVG）';
+  }
+
+  function uploadFiles(files) {
+    if (!N.editor || !noteById(N.editor.noteId)) { toast('先选择一篇笔记再上传', true); return; }
+    files.forEach((f) => {
+      const err = validateFile(f);
+      if (err) { toast(f.name + '：' + err, true); return; }
+      uploadOne(f);
+    });
+  }
+
+  function uploadChip(file) {
+    const bar = N.els.uploadBar;
+    bar.classList.remove('hidden');
+    const chip = document.createElement('div');
+    chip.className = 'notes-upload-chip uploading';
+    chip.innerHTML =
+      '<span class="uc-icon">' + icon('upload', 14) + '</span>'
+      + '<span class="uc-name" title="' + esc(file.name) + '">' + esc(file.name) + '</span>'
+      + '<span class="uc-bar"><i style="width:0%"></i></span>'
+      + '<span class="uc-pct">0%</span>'
+      + '<button class="uc-act" data-a="cancel" data-tip="取消">' + icon('close', 13) + '</button>';
+    bar.appendChild(chip);
+    const remove = () => { chip.remove(); if (!bar.children.length) bar.classList.add('hidden'); };
+    chip.querySelector('[data-a="cancel"]').addEventListener('click', remove);
+    return {
+      progress(pct) {
+        chip.querySelector('.uc-bar i').style.width = pct + '%';
+        chip.querySelector('.uc-pct').textContent = Math.round(pct) + '%';
+      },
+      done() { chip.classList.remove('uploading'); chip.classList.add('done'); chip.querySelector('.uc-pct').textContent = '完成'; setTimeout(remove, 1400); },
+      fail(retry) {
+        chip.classList.remove('uploading');
+        chip.classList.add('failed');
+        chip.querySelector('.uc-pct').textContent = '失败';
+        const act = chip.querySelector('.uc-act');
+        act.dataset.a = 'retry';
+        act.dataset.tip = '重试';
+        act.innerHTML = icon('refresh', 13);
+        act.onclick = () => { remove(); retry(); };
+      },
+      remove,
+    };
+  }
+
+  function uploadOne(file, attempt) {
+    const noteId = N.editor && N.editor.noteId;
+    const chip = uploadChip(file);
+    const doUpload = () => {
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', apiUrlOf('/api/notes/upload'));
+      xhr.setRequestHeader('Authorization', 'Bearer ' + bearerToken());
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) chip.progress((e.loaded / e.total) * 100);
+      });
+      xhr.addEventListener('load', () => {
+        let data = {};
+        try { data = JSON.parse(xhr.responseText || '{}'); } catch (e) {}
+        if (xhr.status >= 200 && xhr.status < 300 && data.url) {
+          chip.done();
+          insertAttachment(noteId, file.name, data);
+        } else {
+          chip.fail(() => uploadOne(file));
+          toast((data && data.error && data.error.message) || ('上传失败（HTTP ' + xhr.status + '）'), true);
+        }
+      });
+      xhr.addEventListener('error', () => { chip.fail(() => uploadOne(file)); });
+      xhr.addEventListener('abort', () => chip.remove());
+      xhr.send(fd);
+    };
+    if (attempt === 'retry') doUpload();
+    else doUpload();
+  }
+
+  function insertAttachment(noteId, name, data) {
+    const n = noteById(noteId);
+    if (!n || !N.editor) return;
+    const isImage = data.mimeType && data.mimeType.indexOf('image/') === 0;
+    const snippet = isImage ? ('\n\n![' + name.replace(/[\[\]]/g, '') + '](' + data.url + ')\n\n')
+      : ('\n\n[📎 ' + name.replace(/[\[\]]/g, '') + '](' + data.url + ')\n\n');
+    const ta = N.editor.ta;
+    const pos = typeof ta.selectionStart === 'number' ? ta.selectionStart : ta.value.length;
+    ta.value = ta.value.slice(0, pos) + snippet.replace(/^\n+/, '\n\n') + ta.value.slice(ta.selectionEnd || pos);
+    const att = {
+      id: data.id || uid('a'), name: name, url: data.url,
+      mimeType: data.mimeType || '', size: Number(data.size) || 0,
+      createdAt: Number(data.createdAt) || Date.now(),
+    };
+    n.attachments = (n.attachments || []).concat([att]);
+    N.editor.dirty = true;
+    setSaveState('editing');
+    saveEditor();
+    renderPreview(ta.value);
+  }
+
+  // ============ 分享 ============
+  function openShareDialog(noteId) {
+    const n = noteById(noteId);
+    if (!n) return;
+    const s = shareOf(noteId);
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask notes-share-mask hidden';
+    mask.innerHTML =
+      '<div class="modal notes-share-modal" role="dialog" aria-modal="true">'
+      + '<div class="modal-header"><h3>分享「' + esc(n.title) + '」</h3>'
+      + '<button class="notes-icon-btn" data-close>' + icon('close', 15) + '</button></div>'
+      + '<div class="modal-body">'
+      + '<div class="ns-modes">'
+      + '<label class="ns-mode"><input type="radio" name="ns-mode" value="private" ' + (!s ? 'checked' : '') + '><div><b>仅自己可见</b><span>不生成任何链接</span></div></label>'
+      + '<label class="ns-mode"><input type="radio" name="ns-mode" value="view-link" ' + (s && s.mode === 'view-link' ? 'checked' : '') + '><div><b>持链接可查看</b><span>任何人拿到链接都能阅读这篇笔记</span></div></label>'
+      + '<label class="ns-mode"><input type="radio" name="ns-mode" value="edit-link" ' + (s && s.mode === 'edit-link' ? 'checked' : '') + '><div><b>持链接可编辑</b><span>拿到链接的人可以直接修改笔记内容</span></div></label>'
+      + '</div>'
+      + '<div class="ns-link-row' + (s ? '' : ' hidden') + '" id="ns-link-row">'
+      + '<input readonly id="ns-link" value="' + esc(s ? location.origin + '/n/' + s.token : '') + '">'
+      + '<button class="notes-mini-btn" id="ns-copy">' + icon('copy', 13) + '复制</button>'
+      + '</div>'
+      + '<p class="ns-hint" id="ns-hint">' + (s ? '链接实时显示笔记最新内容;重新生成会使旧链接立即失效。' : '开启后可随时关闭或重新生成链接。') + '</p>'
+      + '</div>'
+      + '<div class="modal-footer">'
+      + (s ? '<button class="btn danger" id="ns-close-share">关闭分享</button>' : '')
+      + '<button class="btn' + (s ? '' : ' hidden') + '" id="ns-regen">重新生成链接</button>'
+      + '<button class="btn primary" id="ns-apply">' + (s ? '保存设置' : '生成链接') + '</button>'
+      + '</div></div>';
+    document.body.appendChild(mask);
+    const closeDlg = () => { window.OCUI.closeModal(mask); setTimeout(() => mask.remove(), 340); };
+    mask.querySelector('[data-close]').addEventListener('click', closeDlg);
+    mask.addEventListener('mousedown', (e) => { if (e.target === mask) closeDlg(); });
+    const linkRow = mask.querySelector('#ns-link-row');
+    const regenBtn = mask.querySelector('#ns-regen');
+    const applyBtn = mask.querySelector('#ns-apply');
+    const hint = mask.querySelector('#ns-hint');
+    const currentMode = () => (mask.querySelector('input[name="ns-mode"]:checked') || {}).value || 'private';
+
+    mask.querySelector('#ns-copy').addEventListener('click', async () => {
+      const v = mask.querySelector('#ns-link').value;
+      let ok = false;
+      if (window.OCUI && window.OCUI.copyText) ok = await window.OCUI.copyText(v);
+      else { try { await navigator.clipboard.writeText(v); ok = true; } catch (e) {} }
+      toast(ok ? '链接已复制' : '复制失败,请手动选择复制', !ok);
+    });
+
+    const showShare = (share) => {
+      linkRow.classList.remove('hidden');
+      regenBtn.classList.remove('hidden');
+      mask.querySelector('#ns-link').value = location.origin + '/n/' + share.token;
+      hint.textContent = '链接实时显示笔记最新内容;重新生成会使旧链接立即失效。';
+    };
+
+    applyBtn.addEventListener('click', async () => {
+      const mode = currentMode();
+      applyBtn.disabled = true;
+      try {
+        if (mode === 'private') {
+          if (!s) { toast('已保持仅自己可见'); closeDlg(); return; }
+          const r = await apiFetch('/api/notes/share', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ noteId }) });
+          if (!r.ok) throw new Error('关闭分享失败');
+          N.shares = N.shares.filter((x) => x.noteId !== noteId);
+          alignShareState();
+          persistLocal();
+          toast('分享已关闭,旧链接全部失效');
+          closeDlg();
+        } else {
+          const r = await apiFetch('/api/notes/share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ noteId, mode }) });
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error((data.error && data.error.message) || '生成分享链接失败');
+          const share = data.share;
+          N.shares = N.shares.filter((x) => x.noteId !== noteId).concat([share]);
+          alignShareState();
+          persistLocal();
+          showShare(share);
+          applyBtn.textContent = '保存设置';
+          toast('分享已开启');
+        }
+      } catch (e) {
+        toast(e.message || '操作失败', true);
+      } finally {
+        applyBtn.disabled = false;
+        renderList();
+      }
+    });
+    regenBtn.addEventListener('click', async () => {
+      regenBtn.disabled = true;
+      try {
+        const mode = currentMode() === 'private' ? 'view-link' : currentMode();
+        const r = await apiFetch('/api/notes/share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ noteId, mode }) });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error((data.error && data.error.message) || '重新生成失败');
+        const share = data.share;
+        N.shares = N.shares.filter((x) => x.noteId !== noteId).concat([share]);
+        alignShareState();
+        persistLocal();
+        showShare(share);
+        toast('已重新生成,旧链接已失效');
+      } catch (e) {
+        toast(e.message || '操作失败', true);
+      } finally {
+        regenBtn.disabled = false;
+      }
+    });
+    const closeShareBtn = mask.querySelector('#ns-close-share');
+    if (closeShareBtn) {
+      closeShareBtn.addEventListener('click', async () => {
+        closeShareBtn.disabled = true;
+        try {
+          const r = await apiFetch('/api/notes/share', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ noteId }) });
+          if (!r.ok) throw new Error('关闭分享失败');
+          N.shares = N.shares.filter((x) => x.noteId !== noteId);
+          alignShareState();
+          persistLocal();
+          toast('分享已关闭');
+          closeDlg();
+        } catch (e) {
+          toast(e.message || '操作失败', true);
+        } finally { closeShareBtn.disabled = false; renderList(); }
+      });
+    }
+    if (window.OCUI) window.OCUI.openModal(mask);
+    else mask.classList.add('show');
+    renderList();
+  }
+
+  // ============ AI 归档:保存到 AI 笔记 ============
+  const ARCHIVE_SYSTEM_PROMPT = [
+    '你是 AI 笔记整理助手。请根据当前用户问题、AI 回答内容和已有笔记目录，',
+    '将有长期价值的信息整理为一篇可检索、可复用的 Markdown 笔记。',
+    '',
+    '要求：',
+    '1. 优先选择语义最匹配的已有文件夹。',
+    '2. 只有当现有文件夹均不合适时，才创建新文件夹。',
+    '3. 新文件夹名称必须简洁、明确、可长期使用，避免「其他」「杂项」「临时」等名称。',
+    '4. 新建笔记标题应准确概括核心内容，不得使用「AI 回答」「新笔记」等无意义标题。',
+    '5. 不要机械复制原回答；应提炼、分层、结构化，并保留关键细节、限制条件和行动项。',
+    '6. 不编造原回答中不存在的事实、数据、来源或结论。',
+    '7. 保留必要的代码、公式、表格和链接，并使用标准 Markdown。',
+    '8. 在文末添加「来源」区块，记录原始问题、生成时间和对话引用信息。',
+    '9. 输出 JSON，字段包括：',
+    '   - folderAction: "existing" 或 "create"',
+    '   - targetFolderId: 已有文件夹时填写 ID',
+    '   - newFolderName: 新建文件夹时填写名称',
+    '   - noteTitle',
+    '   - tags',
+    '   - markdownContent',
+    '   - reasoning: 简要说明归档原因',
+    '',
+    '只输出 JSON,不要输出任何其他文字或代码块围栏。',
+  ].join('\n');
+
+  function findUserQuestion(chat, msg) {
+    const msgs = (chat && chat.messages) || [];
+    let idx = msgs.indexOf(msg);
+    if (idx < 0) idx = msgs.length;
+    for (let i = idx - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m && m.role === 'user') {
+        let t = String(m.text || m.content || '').trim();
+        // 去掉附件卡片的 markdown 块,只留提问正文
+        t = t.replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\[📎[^\]]*\]\([^)]*\)/g, '');
+        return t.replace(/\s+/g, ' ').trim().slice(0, 400);
+      }
+    }
+    return '';
+  }
+
+  function folderTreePromptLines() {
+    const lines = [];
+    N.doc.folders.forEach((f) => {
+      const depth = folderDepth(f.id);
+      const titles = N.doc.notes.filter((n) => n.folderId === f.id).slice(0, 8).map((n) => n.title);
+      lines.push('- ' + '  '.repeat(depth) + f.name + '（id: ' + f.id + (f.description ? ', 说明: ' + f.description : '') + '）'
+        + (titles.length ? ' 已有笔记: ' + titles.join('、') : '（空）'));
+    });
+    return lines;
+  }
+
+  async function archiveFromMessage(chat, msg) {
+    if (!(await ensureLoaded())) { toast('请先登录后再使用 AI 笔记', true); return; }
+    const question = findUserQuestion(chat, msg);
+    const answer = String(msg.content || '');
+    const dlg = buildArchiveDialog();
+    showArchiveLoading(dlg);
+    const context = [
+      '## 当前对话主题',
+      (chat && chat.title) || '（无标题对话）',
+      '',
+      '## 用户问题',
+      question || '（未找到原始问题）',
+      '',
+      '## AI 回答全文',
+      answer.slice(0, 24000),
+      '',
+      '## 现有笔记文件夹树（含层级与已有笔记标题摘要）',
+      folderTreePromptLines().join('\n') || '（还没有任何文件夹,只有默认的「未分类」）',
+      '',
+      '## 用户指定文件夹',
+      '无',
+      '',
+      '请按系统要求输出 JSON。',
+    ].join('\n');
+
+    let plan = null;
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2 && !plan; attempt++) {
+      try {
+        const text = await window.OCApp.aiComplete(
+          [{ role: 'system', content: ARCHIVE_SYSTEM_PROMPT }, { role: 'user', content: context }],
+          { purpose: 'note', maxTokens: 8192 }
+        );
+        plan = parseArchivePlan(text);
+        if (!plan) lastErr = new Error('AI 返回的内容无法解析为结构化结果');
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (!plan) {
+      showArchiveError(dlg, (lastErr && lastErr.message) || '整理失败', () => {
+        return {
+          folderAction: 'create', newFolderName: '未分类', noteTitle: (question || '笔记').slice(0, 60),
+          tags: [], markdownContent: answer, reasoning: 'AI 整理失败,直接保存原文。',
+          _forceFolder: UNCATA,
+        };
+      }, question, answer, () => archiveFromMessage(chat, msg));
+      return;
+    }
+    showArchivePlan(dlg, plan, { chat, msg, question, answer });
+  }
+
+  function parseArchivePlan(text) {
+    let t = String(text || '').trim();
+    const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence) t = fence[1].trim();
+    const s = t.indexOf('{');
+    const e = t.lastIndexOf('}');
+    if (s < 0 || e <= s) return null;
+    let j = null;
+    try { j = JSON.parse(t.slice(s, e + 1)); } catch (e2) { return null; }
+    if (!j || typeof j !== 'object') return null;
+    const content = String(j.markdownContent || j.content || '').trim();
+    const title = String(j.noteTitle || j.title || '').trim();
+    if (!content) return null;
+    return {
+      folderAction: j.folderAction === 'create' ? 'create' : 'existing',
+      targetFolderId: String(j.targetFolderId || ''),
+      newFolderName: String(j.newFolderName || '').trim().slice(0, 80),
+      noteTitle: (title || '无标题笔记').slice(0, 200),
+      tags: Array.isArray(j.tags) ? j.tags.map((x) => String(x).trim()).filter(Boolean).slice(0, 20) : [],
+      markdownContent: content,
+      reasoning: String(j.reasoning || '').trim(),
+    };
+  }
+
+  function buildArchiveDialog() {
+    const old = document.getElementById('notes-ai-mask');
+    if (old) old.remove();
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask notes-ai-mask hidden';
+    mask.id = 'notes-ai-mask';
+    mask.innerHTML =
+      '<div class="modal notes-ai-modal" role="dialog" aria-modal="true">'
+      + '<div class="modal-header"><h3>' + icon('noteSave', 16) + ' AI 整理预览</h3>'
+      + '<button class="notes-icon-btn" data-close>' + icon('close', 15) + '</button></div>'
+      + '<div class="modal-body" id="nai-body"></div>'
+      + '<div class="modal-footer" id="nai-foot"></div>'
+      + '</div>';
+    document.body.appendChild(mask);
+    mask.querySelector('[data-close]').addEventListener('click', () => {
+      window.OCUI.closeModal(mask);
+      setTimeout(() => mask.remove(), 340);
+    });
+    mask.addEventListener('mousedown', (e) => { if (e.target === mask) mask.querySelector('[data-close]').click(); });
+    if (window.OCUI) window.OCUI.openModal(mask);
+    else mask.classList.add('show');
+    return mask;
+  }
+
+  function closeArchiveDialog(mask) {
+    window.OCUI.closeModal(mask);
+    setTimeout(() => mask.remove(), 340);
+  }
+
+  function showArchiveLoading(mask) {
+    mask.querySelector('#nai-body').innerHTML =
+      '<div class="nai-loading"><span class="nai-spinner"></span>'
+      + '<p>AI 正在整理回答并选择归档位置…</p>'
+      + '<p class="muted">它会根据现有笔记目录判断最合适的文件夹,并生成结构化笔记。</p></div>';
+    mask.querySelector('#nai-foot').innerHTML = '';
+  }
+
+  function showArchiveError(mask, message, fallbackPlanFn, question, answer, retryFn) {
+    const body = mask.querySelector('#nai-body');
+    const foot = mask.querySelector('#nai-foot');
+    body.innerHTML =
+      '<div class="nai-error"><p>' + esc(message) + '</p>'
+      + '<p class="muted">可以让 AI 重试,也可以把原始回答不做加工直接存入「未分类」。</p></div>';
+    foot.innerHTML =
+      '<button class="btn" id="nai-cancel">取消</button>'
+      + '<button class="btn" id="nai-raw">直接保存原文</button>'
+      + '<button class="btn primary" id="nai-retry">重试 AI 整理</button>';
+    foot.querySelector('#nai-cancel').addEventListener('click', () => closeArchiveDialog(mask));
+    foot.querySelector('#nai-raw').addEventListener('click', () => {
+      const plan = fallbackPlanFn();
+      plan._direct = true;
+      showArchivePlan(mask, plan, { chat: null, msg: null, question, answer });
+    });
+    foot.querySelector('#nai-retry').addEventListener('click', () => {
+      closeArchiveDialog(mask);
+      if (typeof retryFn === 'function') retryFn();
+    });
+  }
+
+  function showArchivePlan(mask, plan, ctx) {
+    const body = mask.querySelector('#nai-body');
+    const foot = mask.querySelector('#nai-foot');
+    // 文件夹选项:existing 计划若指向不存在的 id,自动降级为「新建」
+    let folderId = plan.targetFolderId;
+    if (plan.folderAction === 'existing' && !folderById(folderId)) {
+      plan.folderAction = 'create';
+      folderId = '';
+    }
+    const recommendedName = plan.folderAction === 'create'
+      ? (plan.newFolderName || (plan._forceFolder ? '未分类' : ''))
+      : folderName(folderId);
+    const direct = !!plan._direct;
+    body.innerHTML =
+      '<div class="nai-reason">' + icon('spark', 13) + ' ' + esc(plan.reasoning || '已根据内容主题选择归档位置。') + '</div>'
+      + '<div class="nai-grid">'
+      + '<label class="nai-field"><span>归档文件夹</span>'
+      + '<div class="nai-folder-row">'
+      + '<select id="nai-folder"></select>'
+      + '<input id="nai-newfolder" class="hidden" placeholder="新文件夹名称（如：前端开发）" maxlength="80">'
+      + '</div></label>'
+      + '<label class="nai-field"><span>笔记标题</span><input id="nai-title" value="' + esc(plan.noteTitle) + '" maxlength="200" ' + (direct ? 'readonly' : '') + '></label>'
+      + '<label class="nai-field"><span>标签（逗号分隔）</span><input id="nai-tags" value="' + esc(plan.tags.join(', ')) + '" ' + (direct ? 'readonly' : '') + '></label>'
+      + '</div>'
+      + '<div class="nai-content-head">'
+      + '<span>笔记内容</span>'
+      + '<button class="notes-mini-btn" id="nai-toggle">' + icon('eye', 13) + '查看 Markdown 源码</button>'
+      + '</div>'
+      + '<div class="nai-content">'
+      + '<div class="nai-preview msg assistant"><div class="msg-content" id="nai-preview"></div></div>'
+      + '<textarea id="nai-ta" class="hidden" spellcheck="false"></textarea>'
+      + '</div>'
+      + (direct ? '' : '<p class="nai-tip">文末会自动追加「来源」区块（原始问题、整理时间与对话引用），保存后可随时编辑。</p>');
+
+    const sel = body.querySelector('#nai-folder');
+    const newInput = body.querySelector('#nai-newfolder');
+    const ta = body.querySelector('#nai-ta');
+    const previewBox = body.querySelector('#nai-preview');
+    const fillFolderOptions = (selectedId) => {
+      const opts = [];
+      N.doc.folders.slice().sort((a, b) => folderDepth(a.id) - folderDepth(b.id)).forEach((f) => {
+        opts.push('<option value="' + esc(f.id) + '">' + '　'.repeat(folderDepth(f.id)) + esc(f.name) + '</option>');
+      });
+      opts.push('<option value="__create__">➕ 新建文件夹…</option>');
+      sel.innerHTML = opts.join('');
+      sel.value = selectedId || (plan._forceFolder || '');
+      if (!sel.value) sel.value = UNCATA;
+    };
+    fillFolderOptions(plan.folderAction === 'existing' ? folderId : (plan._forceFolder || '__create__'));
+    if (plan.folderAction === 'create' && !plan._forceFolder) {
+      sel.value = '__create__';
+      newInput.classList.remove('hidden');
+      newInput.value = recommendedName || '';
+    }
+    ta.value = plan.markdownContent;
+    if (window.OCRenderer) window.OCRenderer.renderInto(previewBox, plan.markdownContent);
+    else previewBox.textContent = plan.markdownContent;
+
+    sel.addEventListener('change', () => {
+      if (sel.value === '__create__') newInput.classList.remove('hidden');
+      else newInput.classList.add('hidden');
+    });
+    body.querySelector('#nai-toggle').addEventListener('click', () => {
+      const editing = !ta.classList.contains('hidden');
+      if (editing) {
+        ta.classList.add('hidden');
+        if (window.OCRenderer) window.OCRenderer.renderInto(previewBox, ta.value);
+        body.querySelector('#nai-toggle').innerHTML = icon('edit', 13) + '查看 Markdown 源码';
+      } else {
+        ta.classList.remove('hidden');
+        body.querySelector('#nai-toggle').innerHTML = icon('eye', 13) + '查看渲染效果';
+      }
+    });
+
+    const commit = async () => {
+      // 收集最终值(直接保存=AI 推荐;确认保存=表单当前值)
+      let targetId = sel.value;
+      if (targetId === '__create__') {
+        const name = (newInput.value || '').trim();
+        if (!name) { toast('请填写新文件夹名称', true); return; }
+        const exist = N.doc.folders.find((f) => f.name === name);
+        targetId = exist ? exist.id : createFolder(name, null, { silent: true }).id;
+      }
+      const title = (body.querySelector('#nai-title').value || '').trim() || plan.noteTitle;
+      const tags = (body.querySelector('#nai-tags').value || '').split(/[,，、]/).map((x) => x.trim()).filter(Boolean).slice(0, 20);
+      const md = ta.value;
+      const sourceLines = [];
+      if (ctx.question) sourceLines.push('- **原始问题**：' + ctx.question.replace(/\n/g, ' '));
+      sourceLines.push('- **整理时间**：' + fmtFull(Date.now()));
+      if (ctx.chat && ctx.chat.id) sourceLines.push('- **对话**：' + ((ctx.chat.title || '未命名对话') + '（ID: ' + ctx.chat.id + '）'));
+      const content = md + '\n\n---\n\n## 来源\n\n'
+        + sourceLines.join('\n') + '\n\n> 本笔记由 AI 自动整理生成,可直接修改。';
+      const note = createNote(targetId, {
+        title, tags, content,
+        source: {
+          conversationId: (ctx.chat && ctx.chat.id) || '',
+          messageId: '',
+          userQuestion: (ctx.question || '').slice(0, 2000),
+          generatedByAI: true,
+        },
+      });
+      pushNow();
+      closeArchiveDialog(mask);
+      toast('已保存到 AI 笔记「' + folderName(targetId) + ' / ' + title + '」');
+      // 若笔记弹窗开着,刷新视图并选中
+      if (N.els.mask && N.els.mask.classList.contains('show')) {
+        N.ui.folderId = targetId;
+        N.ui.search = '';
+        persistUi();
+        openNote(note.id);
+        renderAll();
+      }
+    };
+
+    foot.innerHTML = direct
+      ? '<button class="btn" id="nai-cancel">取消</button><button class="btn primary" id="nai-save">确认保存</button>'
+      : '<button class="btn" id="nai-cancel">取消</button>'
+        + '<button class="btn" id="nai-quick">直接保存（使用 AI 推荐）</button>'
+        + '<button class="btn primary" id="nai-save">确认保存</button>';
+    foot.querySelector('#nai-cancel').addEventListener('click', () => closeArchiveDialog(mask));
+    foot.querySelector('#nai-save').addEventListener('click', () => {
+      // 进入编辑态后的保存:把预览切回源码读取最新值
+      if (!ta.classList.contains('hidden')) { /* 源码可见,直接用 */ }
+      commit();
+    });
+    const quick = foot.querySelector('#nai-quick');
+    if (quick) {
+      quick.addEventListener('click', () => {
+        sel.value = plan.folderAction === 'existing' && folderById(plan.targetFolderId) ? plan.targetFolderId : (plan._forceFolder || sel.value);
+        if (plan.folderAction === 'create' && !plan._forceFolder) {
+          sel.value = '__create__';
+          newInput.value = plan.newFolderName || '';
+          newInput.classList.remove('hidden');
+        }
+        body.querySelector('#nai-title').value = plan.noteTitle;
+        body.querySelector('#nai-tags').value = plan.tags.join(', ');
+        ta.value = plan.markdownContent;
+        commit();
+      });
+    }
+  }
+
+  // ============ 入口 ============
+  function initEntry() {
+    const btn = document.getElementById('notes-entry-btn');
+    if (!btn) return;
+    const iconEl = document.getElementById('notes-entry-icon');
+    if (iconEl && window.OC && OC.icon) iconEl.innerHTML = OC.icon('notebook', 15);
+    btn.addEventListener('click', open);
+  }
+
+  window.OCNotes = {
+    open,
+    close,
+    archiveFromMessage,
+    _debug: N,
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initEntry);
+  else initEntry();
+})();
