@@ -7873,8 +7873,13 @@ function syncComposerIndent() {
   const hasAt = (row.querySelector('#composer-assistant') && !row.querySelector('#composer-assistant').classList.contains('hidden'))
     || (row.querySelector('#note-mention-row') && !row.querySelector('#note-mention-row').classList.contains('hidden'));
   if (!hasAt) { inp.style.textIndent = ''; return; }
-  const w = Math.ceil(row.getBoundingClientRect().width);
-  inp.style.textIndent = (w + 6) + 'px';
+  // 用 next frame 测量:chip 刚插入 DOM 时宽度尚未确定,直接测量会偏小/为 0
+  const apply = () => {
+    const w = Math.ceil(row.getBoundingClientRect().width);
+    if (w > 0) inp.style.textIndent = (w + 8) + 'px';
+  };
+  apply();
+  requestAnimationFrame(apply);
 }
 
 function renderNoteMentions() {
@@ -7899,6 +7904,7 @@ function renderNoteMentions() {
     + '<b>@</b>' + escapeHtml(x.title || '无标题笔记')
     + '<button type="button" class="nmc-x" aria-label="移除">×</button></span>').join('');
   box.innerHTML = folderHtml + noteHtml;
+  if (typeof syncComposerIndent === 'function') syncComposerIndent();
   box.querySelectorAll('.nmc-x').forEach((b) => {
     b.addEventListener('click', (e) => {
       e.preventDefault();

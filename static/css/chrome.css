@@ -404,7 +404,7 @@
 .composer-at {
   flex-shrink: 0;
   align-self: center;
-  max-width: min(42%, 220px);
+  max-width: none;       /* 助手名必须完整显示,不能截断 */
   margin: 0 2px 0 0;
   padding: 0;
   border: 0;
@@ -416,8 +416,6 @@
   line-height: 1.5;
   letter-spacing: 0.01em;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   cursor: pointer;
 }
 .composer-at:hover { color: var(--brand-hover, var(--brand)); }
@@ -4322,10 +4320,8 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  flex-wrap: nowrap;        /* 覆盖层内单行;过长由 JS 截断缩进量 */
+  flex-wrap: nowrap;
   min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
 }
 .note-mention-row.hidden { display: none; }
 /* 与 .composer-at 完全同款观感(同字号/粗细/基线),不加背景与边框 */
@@ -4538,14 +4534,18 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   left: 0;
   display: flex;
   align-items: center;
-  gap: 1px;
-  max-width: 100%;
+  gap: 2px;
   z-index: 2;         /* 覆盖在 textarea 之上,保证 @ 与 × 可点 */
   pointer-events: none;   /* 行本身不挡点击,内部元素恢复 */
+  white-space: nowrap;
 }
 .composer-at-row > * { pointer-events: auto; }
 .composer-at-row .composer-at,
-.composer-at-row .note-mention-row { flex: 0 0 auto; margin: 0; }
+.composer-at-row .note-mention-row {
+  flex: 0 0 auto;     /* 关键:不收缩、不被压缩,避免两个 @ 重叠 */
+  margin: 0;
+  min-width: 0;
+}
 /* textarea 占满整宽,首行缩进由 JS 写 text-indent */
 .composer-flow textarea {
   width: 100%;
