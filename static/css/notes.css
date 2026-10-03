@@ -847,7 +847,7 @@
 /* ---------- 正文选区右键:AI 编辑菜单 ---------- */
 .notes-ctx-menu {
   position: fixed;
-  z-index: 10060; /* 高于 .oc-tip(10050),右键菜单永远最顶 */
+  z-index: 10030; /* 低于 .oc-tip(10050):菜单项的悬停提示要能浮在菜单之上 */
   min-width: 208px;
   max-width: 280px;
   padding: 5px;
@@ -1149,7 +1149,7 @@
 /* ---------- Markdown 工具栏(可拖动悬浮窗) ---------- */
 .notes-mdbar {
   position: fixed;
-  z-index: 10055; /* 高于右键菜单,与提示同级但可交互 */
+  z-index: 10020; /* 低于 .oc-tip(10050):按钮悬停提示不能被浮窗挡住 */
   width: 268px;
   background: var(--bg-app);
   border: 1px solid var(--hairline);
