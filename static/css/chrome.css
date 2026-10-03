@@ -4316,37 +4316,51 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 .model-stale-hint { margin: 6px 0 8px; font-size: 12.5px; color: var(--text-secondary); line-height: 1.5; }
 
 
-/* ---------- @笔记(浅红色 chip 与候选高亮) ---------- */
-/* 输入区上方的待发送笔记引用 */
+/* 待发送的 @笔记:与 @助手(.composer-at)同款「内联文字流元素」,紧跟其后:
+   不占独立行、不改变输入框高度,视觉连读为「@助手 @笔记 提问内容」。 */
 .note-mention-row {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 6px 2px 2px;
+  gap: 4px;
+  flex-shrink: 1;
+  flex-wrap: nowrap;
+  align-self: center;
+  max-width: min(40%, 260px);
+  overflow: hidden;
+  min-width: 0;
 }
 .note-mention-row.hidden { display: none; }
+/* 与 .composer-at 完全同款观感(同字号/粗细/基线),不加背景与边框 */
 .note-mention-chip {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 3px 8px 3px 7px;
-  border-radius: 999px;
-  background: rgba(220, 38, 38, .10);
-  color: #b91c1c;
-  border: 1px solid rgba(220, 38, 38, .18);
-  font-size: 12px;
-  line-height: 1.6;
-  max-width: 240px;
+  gap: 1px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--brand);
+  font: inherit;
+  font-size: 14.5px;
+  font-weight: 650;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  cursor: pointer;
+  max-width: 100%;
 }
-.note-mention-chip b { font-weight: 700; opacity: .85; }
+.note-mention-chip:hover { color: var(--brand-hover, var(--brand)); text-decoration: underline; text-underline-offset: 3px; }
+.note-mention-chip b { font-weight: 650; opacity: .9; }
 [data-theme="dark"] .note-mention-chip {
   background: rgba(248, 113, 113, .16);
   color: #fca5a5;
   border-color: rgba(248, 113, 113, .28);
+}
+.note-mention-chip + .note-mention-chip::before {
+  content: "、";
+  opacity: .5;
+  margin-right: 1px;
 }
 .note-mention-chip .nmc-x {
   border: none;
@@ -4367,6 +4381,91 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   margin-top: 6px;
 }
 .note-ref-row .note-mention-chip { cursor: pointer; font-size: 11.5px; padding: 2px 8px; }
+/* @ 面板分类页签(助手 / 笔记) */
+/* 分类页签:下划线式(与笔记模块的编辑/分屏/预览一致),更贴合整体简洁风格 */
+.mention-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 10px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.mention-tab {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 8px 10px 7px;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color .13s, border-color .13s;
+}
+.mention-tab:hover { color: var(--text); }
+.mention-tab.active { color: var(--text); font-weight: 650; border-bottom-color: var(--accent); }
+.mention-tab-hint { margin-left: auto; font-size: 10.5px; color: var(--text-tertiary); padding-bottom: 4px; }
+.mention-body { max-height: 300px; overflow-y: auto; padding: 4px 5px 6px; }
+/* 笔记文件夹分组行(可展开/收起) */
+.mention-folder {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 8px;            /* 紧凑:文件夹行比笔记行矮 */
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+  transition: background .12s;
+}
+.mention-folder:hover { background: var(--bg-hover); }
+.mention-folder-chev { width: 11px; flex-shrink: 0; color: var(--text-tertiary); font-size: 10px; }
+.mention-folder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mention-folder-count { font-size: 10.5px; color: var(--text-tertiary); flex-shrink: 0; }
+.mention-folder + .mention-item { margin-left: 14px; }
+.mention-folder-row { display: flex; align-items: center; gap: 4px; }
+.mention-folder-row .mention-folder { flex: 1; min-width: 0; }
+.mention-folder-pick {
+  flex-shrink: 0;
+  border: none;
+  background: var(--bg-code);
+  color: var(--text-tertiary);
+  font-family: inherit;
+  font-size: 10.5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .12s, background .12s, color .12s;
+}
+.mention-folder-row:hover .mention-folder-pick { opacity: 1; }
+.mention-folder-pick:hover { background: var(--bg-active); color: var(--text); }
+.mention-folder-pick.picked { opacity: 1; background: rgba(220, 38, 38, .10); color: #b91c1c; }
+[data-theme="dark"] .mention-folder-pick.picked { background: rgba(248, 113, 113, .16); color: #fca5a5; }
+/* 文件夹 chip:与笔记 chip 同款内联文字流,带「文件夹」后缀以便区分 */
+.note-mention-chip.note-mention-folder { }
+/* 笔记项:单行紧凑(标题 + 弱化说明),整体高度明显小于助手项 */
+.mention-item.mention-note {
+  padding: 3px 8px;
+  gap: 7px;
+  align-items: center;
+}
+.mention-item.mention-note .mention-ico { font-size: 13px; }
+.mention-item.mention-note .mention-text {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+.mention-item.mention-note .mention-name { font-size: 12.5px; flex-shrink: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mention-item.mention-note .mention-desc { font-size: 11px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* @ 候选里的笔记项:淡红底以示区分 */
 .mention-item.mention-note { background: rgba(220, 38, 38, .05); }
 .mention-item.mention-note:hover,
@@ -4376,3 +4475,44 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 [data-theme="dark"] .mention-item.mention-note:hover,
 [data-theme="dark"] .mention-item.mention-note.active { background: rgba(248, 113, 113, .18); }
 [data-theme="dark"] .mention-item.mention-note .mention-name { color: #fca5a5; }
+
+
+/* ---------- 回答展示:@笔记 引用来源卡片 ---------- */
+.note-ref-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--hairline);
+}
+.note-ref-row::before {
+  content: "参考笔记";
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-right: 2px;
+}
+.note-ref-row .note-mention-chip {
+  cursor: pointer;
+  font-size: 11.5px;
+  padding: 3px 9px;
+  transition: background .13s, border-color .13s;
+}
+.note-ref-row .note-mention-chip:hover {
+  background: rgba(220, 38, 38, .16);
+  border-color: rgba(220, 38, 38, .3);
+}
+/* 助手回答基于笔记时的提示条 */
+.note-answer-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: #b91c1c;
+  background: rgba(220, 38, 38, .08);
+  border-radius: 999px;
+  padding: 2px 10px;
+  margin: 6px 0 0;
+}
+[data-theme="dark"] .note-answer-hint { color: #fca5a5; background: rgba(248, 113, 113, .14); }

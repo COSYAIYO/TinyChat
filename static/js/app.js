@@ -30,6 +30,7 @@ const state = {
   defaultAssistant: null,
   mention: { open: false, q: '', index: 0, start: -1 },
   noteMentions: [], // @笔记:待发送的笔记引用(发送后清空并挂到该条消息上)
+  noteFolderMentions: [], // @笔记文件夹:整目录引用(发送时展开为该目录全部笔记)
   clearAssistantAt: 0,
   webSearchAvailable: false,
   tools: null,
@@ -951,8 +952,9 @@ function mergeChatLists(cloudChats, localChats) {
 
 // 切换对话时清空待发送的 @笔记(不同对话不应共享引用)
 function resetNoteMentions() {
-  if ((state.noteMentions || []).length) {
+  if ((state.noteMentions || []).length || (state.noteFolderMentions || []).length) {
     state.noteMentions = [];
+    state.noteFolderMentions = [];
     renderNoteMentions();
   }
 }
@@ -1875,18 +1877,7 @@ function buildMsgNode(m, chat, idx) {
     const root = document.createElement('div');
     contentDiv.appendChild(root);
     window.OCRenderer.renderInto(root, shown);
-    if (Array.isArray(m.noteRefs) && m.noteRefs.length) {
-      const refs = document.createElement('div');
-      refs.className = 'note-ref-row';
-      refs.innerHTML = m.noteRefs.map((r) => '<span class="note-mention-chip" data-id="' + escapeHtml(r.id) + '">'
-        + '<b>@</b>' + escapeHtml(r.title || '无标题笔记') + '</span>').join('');
-      refs.querySelectorAll('.note-mention-chip').forEach((chip) => {
-        chip.addEventListener('click', () => {
-          if (window.OCNotes) window.OCNotes.open();
-        });
-      });
-      contentDiv.appendChild(refs);
-    }
+    // @笔记 的引用改在 AI 回答侧展示(避免与问题气泡重复)
   }
   div.appendChild(contentDiv);
 
@@ -1906,6 +1897,8 @@ function buildMsgNode(m, chat, idx) {
     if (m.followUps && m.followUps.length) {
       window.OCMultimodal.renderFollowUps(div, m.followUps, applyFollowUp);
     }
+    // @笔记 的回答:标注基于笔记并列出可点击的来源
+    appendNoteRefs(div, m);
     // 来源列表
     if (m.citations && m.citations.length && window.OCCitations) {
       window.OCCitations.renderSources(div, m.citations);
@@ -2839,10 +2832,13 @@ async function sendMessage() {
 
   // 消息立刻进对话(判定阶段已发过就复用),输入框随即清空;进展写在 AI 回复气泡里。
   const turn = postUserTurn(text, attachments, posted);
-  // @笔记:把提及记录到该条用户消息上(气泡下方显示来源 chip),并清空输入区的待发 chip
+  // @笔记:把提及记录到该条用户消息上(气泡下方显示来源 chip),并清空输入区的待发 chip。
+  // 同时给 AI 回答打标记,回答气泡里显示「基于笔记回答」并附来源卡片。
   if (noteRefs.length && turn && turn.userMsg) {
     turn.userMsg.noteRefs = noteRefs;
+    if (turn.assistantMsg) turn.assistantMsg.noteRefs = noteRefs;
     state.noteMentions = [];
+    state.noteFolderMentions = [];
     renderNoteMentions();
     renderMessages();
   }
@@ -2975,6 +2971,26 @@ async function streamRequest(format, body, chat, assistantMsg) {
   }
 }
 
+// @笔记 引用的展示(回答侧):「基于 N 篇笔记回答」提示 + 可点击来源卡片。
+// 两条渲染路径(renderMessages 全量 / reRenderLastAssistant 精准)共用,避免漏挂。
+function appendNoteRefs(container, msg) {
+  if (!Array.isArray(msg.noteRefs) || !msg.noteRefs.length) return;
+  const hint = document.createElement('div');
+  hint.className = 'note-answer-hint';
+  hint.innerHTML = '📒 基于 ' + msg.noteRefs.length + ' 篇笔记回答';
+  container.appendChild(hint);
+  const refs = document.createElement('div');
+  refs.className = 'note-ref-row';
+  refs.innerHTML = msg.noteRefs.map((r) => '<span class="note-mention-chip" data-id="' + escapeHtml(r.id) + '">'
+    + '<b>@</b>' + escapeHtml(r.title || '无标题笔记') + '</span>').join('');
+  refs.querySelectorAll('.note-mention-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      if (window.OCNotes) window.OCNotes.open();
+    });
+  });
+  container.appendChild(refs);
+}
+
 // 精准重绘最后一条 assistant 消息（流式结束后调用）
 function reRenderLastAssistant(assistantMsg) {
   const chat = currentChat();
@@ -3026,6 +3042,8 @@ function reRenderLastAssistant(assistantMsg) {
     if (assistantMsg.citations && assistantMsg.citations.length && window.OCCitations) {
       window.OCCitations.renderSources(last, assistantMsg.citations);
     }
+    // @笔记 来源(与全量渲染保持一致)
+    appendNoteRefs(last, assistantMsg);
     // 耗时显示(先清旧再渲染,避免重复叠加)
     if (typeof renderElapsed === 'function') renderElapsed(last, assistantMsg);
   }
@@ -7634,48 +7652,24 @@ function mentionCandidates(q) {
     if (ap !== bp) return ap - bp;
     return (a.sort - b.sort) || an.localeCompare(bn, 'zh');
   });
-  // @笔记:从本地笔记文档里按标题/标签/正文匹配,作为候选一并列出
-  const notes = noteMentionCandidates(kw).slice(0, 8);
-  return [none].concat(ranked.slice(0, notes.length ? 8 : 12), notes);
+  return [none].concat(ranked.slice(0, 12));
 }
 // 笔记候选(@笔记):标题命中优先,其次标签,最后正文。
 // 用户可能没打开过笔记模块,这里静默预热一次数据(仅一次)。
-function noteMentionCandidates(kw) {
-  if (!window.OCNotes) return [];
-  if (!window.OCNotes.isReady() && !state._notesWarming) {
-    state._notesWarming = true;
-    Promise.resolve(window.OCNotes.warmUp()).then(() => {
+// 确保笔记数据可用(用户可能从没打开过笔记模块):首次触发静默预热一次
+function ensureNotesForMention() {
+  if (!window.OCNotes) return;
+  if (window.OCNotes.isReady && window.OCNotes.isReady()) return;
+  if (state._notesWarming) return;
+  state._notesWarming = true;
+  Promise.resolve(window.OCNotes.warmUp && window.OCNotes.warmUp())
+    .then(() => {
       state._notesWarming = false;
-      // 数据到位后若候选面板还开着,刷新一次
       if (state.mention && state.mention.open) renderMention();
-    }).catch(() => { state._notesWarming = false; });
-    return [];
-  }
-  const dbg = window.OCNotes._debug;
-  if (!dbg || !dbg.doc || !Array.isArray(dbg.doc.notes)) return [];
-  const score = (n) => {
-    const t = String(n.title || '').toLowerCase();
-    const tags = (n.tags || []).join(' ').toLowerCase();
-    const body = String(n.content || '').toLowerCase();
-    if (!kw) return 1;
-    if (t.includes(kw)) return 0;
-    if (tags.includes(kw)) return 1;
-    if (body.includes(kw)) return 2;
-    return -1;
-  };
-  return dbg.doc.notes
-    .map((n) => ({ n: n, sc: score(n) }))
-    .filter((x) => x.sc >= 0)
-    .sort((a, b) => a.sc - b.sc || (b.n.updatedAt || 0) - (a.n.updatedAt || 0))
-    .map((x) => ({
-      id: x.n.id,
-      name: x.n.title || '无标题笔记',
-      desc: '来自 AI 笔记 · ' + (x.n.tags || []).slice(0, 3).map((t) => '#' + t).join(' ') || '来自 AI 笔记',
-      icon: '📒',
-      _note: true,
-      _noteId: x.n.id,
-    }));
+    })
+    .catch(() => { state._notesWarming = false; });
 }
+
 function closeMention() {
   state.mention = { open: false, q: '', index: 0, start: -1 };
   const pop = $('mention-pop');
@@ -7692,25 +7686,91 @@ function renderMention() {
     pop.innerHTML = '';
     return;
   }
-  const items = mentionCandidates(state.mention.q);
-  if (!items.length) {
-    pop.innerHTML = '<div class="mention-empty">没有匹配的助手</div>';
-    pop.classList.remove('hidden');
-    return;
-  }
+  // 分类页签:0=助手,1=笔记(Tab 键切换)
+  const tab = state.mention.tab === 1 ? 1 : 0;
+  state.mention.tab = tab;
+  const items = tab === 1 ? noteMentionItems(state.mention.q) : mentionCandidates(state.mention.q);
+  const pickable = items.filter((x) => !x._folder);
   if (state.mention.index < 0) state.mention.index = 0;
-  if (state.mention.index >= items.length) state.mention.index = items.length - 1;
-  const hasNote = items.some((x) => x._note);
-  pop.innerHTML = '<div class="mention-head"><b>选择' + (hasNote ? '助手或笔记' : '助手') + '</b><span>↑↓ 回车 · Esc</span></div>' + items.map((a, i) =>
-    '<button type="button" class="mention-item' + (i === state.mention.index ? ' active' : '') + (a._note ? ' mention-note' : '') + '" data-idx="' + i + '" role="option" aria-selected="' + (i === state.mention.index ? 'true' : 'false') + '">'
-    + '<span class="mention-ico">' + escapeHtml(a.icon || '✨') + '</span>'
-    + '<span class="mention-text"><span class="mention-name">' + escapeHtml(a.name || '') + '</span>'
-    + '<span class="mention-desc">' + escapeHtml(a.desc || assistantCatName(a.categoryId) || '') + '</span></span></button>'
-  ).join('');
+  if (state.mention.index >= pickable.length) state.mention.index = Math.max(0, pickable.length - 1);
+  // 把「可选项序号」写回 item,便于键盘与点击共用
+  let pi = 0;
+  items.forEach((x) => { if (!x._folder) x._pickIdx = pi++; });
+  pop.innerHTML = '<div class="mention-tabs">'
+    + '<button type="button" class="mention-tab' + (tab === 0 ? ' active' : '') + '" data-tab="0">助手</button>'
+    + '<button type="button" class="mention-tab' + (tab === 1 ? ' active' : '') + '" data-tab="1">笔记</button>'
+    + '<span class="mention-tab-hint">' + (tab === 1 ? '↑↓ 选择 · Tab 切换 · 点文件夹展开' : '↑↓ 选择 · Tab 切换') + '</span>'
+    + '</div>'
+    + '<div class="mention-body">' + mentionBodyHtml(items, tab) + '</div>';
   pop.classList.remove('hidden');
   const active = pop.querySelector('.mention-item.active');
   if (active && active.scrollIntoView) active.scrollIntoView({ block: 'nearest' });
 }
+
+// 笔记候选:按文件夹分组(可展开),搜索时平铺
+function noteMentionItems(q) {
+  const dbg = window.OCNotes && window.OCNotes._debug;
+  if (!dbg || !dbg.doc) return [];
+  const kw = String(q || '').trim().toLowerCase();
+  const notes = (dbg.doc.notes || []).filter((n) => {
+    if (!kw) return true;
+    return [n.title, (n.tags || []).join(' '), n.content].some((x) => String(x || '').toLowerCase().includes(kw));
+  }).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  if (kw) return notes.map((n) => noteMentionItem(n, folderNameOf(dbg, n.folderId)));
+  const openMap = state.mention.folderOpen || (state.mention.folderOpen = {});
+  const folders = (dbg.doc.folders || []).slice();
+  const known = {};
+  folders.forEach((f) => { known[f.id] = f; });
+  const out = [];
+  const pushGroup = (id, name, list) => {
+    if (!list.length) return;
+    const isOpen = openMap[id] === true; // 默认折叠:点文件夹才展开
+    out.push({ _folder: true, id: id, name: name, count: list.length, open: isOpen });
+    if (isOpen) list.forEach((n) => out.push(noteMentionItem(n, name)));
+  };
+  folders.forEach((f) => pushGroup(f.id, f.name, notes.filter((n) => n.folderId === f.id)));
+  pushGroup('__orphan', '未归类', notes.filter((n) => !known[n.folderId]));
+  return out;
+}
+function folderNameOf(dbg, fid) {
+  const f = (dbg.doc.folders || []).find((x) => x.id === fid);
+  return f ? f.name : '未归类';
+}
+function noteMentionItem(n, folderName) {
+  const tags = (n.tags || []).slice(0, 3).map((t) => '#' + t).join(' ');
+  return {
+    id: n.id,
+    name: n.title || '无标题笔记',
+    desc: (folderName ? folderName : '笔记') + (tags ? ' · ' + tags : ''),
+    icon: '📒',
+    _note: true,
+    _noteId: n.id,
+  };
+}
+// 候选主体(文件夹行与助手/笔记项)
+function mentionBodyHtml(items, tab) {
+  if (!items.length) return '<div class="mention-empty">' + (tab === 1 ? '还没有笔记，或没有匹配项' : '没有匹配的助手') + '</div>';
+  return items.map((a) => {
+    if (a._folder) {
+      const picked = (state.noteFolderMentions || []).some((x) => x.id === a.id);
+      return '<div class="mention-folder-row">'
+        + '<button type="button" class="mention-folder' + (a.open ? ' open' : '') + '" data-folder="' + escapeHtml(a.id) + '">'
+        + '<span class="mention-folder-chev">' + (a.open ? '▾' : '▸') + '</span>'
+        + '<span class="mention-folder-name">' + escapeHtml(a.name) + '</span>'
+        + '<span class="mention-folder-count">' + a.count + ' 篇</span></button>'
+        // 默认就是「选整个文件夹」——点这一项把目录下全部笔记加入引用
+        + '<button type="button" class="mention-folder-pick' + (picked ? ' picked' : '') + '" data-folder-pick="' + escapeHtml(a.id) + '" data-folder-name="' + escapeHtml(a.name) + '" data-tip="' + (picked ? '已选整个文件夹' : '选整个文件夹') + '">'
+        + (picked ? '✓ 整个文件夹' : '整个文件夹') + '</button>'
+        + '</div>';
+    }
+    const active = a._pickIdx === state.mention.index;
+    return '<button type="button" class="mention-item' + (active ? ' active' : '') + (a._note ? ' mention-note' : '') + '" data-idx="' + a._pickIdx + '" role="option" aria-selected="' + (active ? 'true' : 'false') + '">'
+      + '<span class="mention-ico">' + escapeHtml(a.icon || '✨') + '</span>'
+      + '<span class="mention-text"><span class="mention-name">' + escapeHtml(a.name || '') + '</span>'
+      + '<span class="mention-desc">' + escapeHtml(a.desc || assistantCatName(a.categoryId) || '') + '</span></span></button>';
+  }).join('');
+}
+
 function openMention(q, start) {
   state.mention = { open: true, q: q || '', index: 0, start: start == null ? -1 : start };
   renderMention();
@@ -7721,10 +7781,19 @@ function syncMentionFromInput() {
     if (state.mention.open) closeMention();
     return;
   }
+  ensureNotesForMention();
+  const wasOpen = state.mention.open;
   state.mention.open = true;
   state.mention.q = hit.q;
   state.mention.start = hit.start;
-  if (!state.mention.index) state.mention.index = 0;
+  state.mention.index = 0;
+  if (!wasOpen) {
+    // 刚打开面板:已经选过助手时直接给「笔记」页签(常见诉求是 @ 笔记),
+    // 没选助手则先给「助手」。
+    const hasAssistant = !!(currentChat() && currentChat().assistantId);
+    state.mention.tab = hasAssistant ? 1 : 0;
+    if (hasAssistant) ensureNotesForMention();
+  }
   renderMention();
 }
 function pickMention(item) {
@@ -7739,7 +7808,7 @@ function pickMention(item) {
     }
     closeMention();
     addNoteMention(item._noteId, item.name);
-    autosizeInput();
+    // 不调用 autosizeInput:chip 不在 textarea 内,重算高度只会让输入框莫名变高
     updateSendBtn();
     if (el) el.focus();
     return;
@@ -7763,10 +7832,27 @@ const NOTE_CTX_SEP = String.fromCharCode(10, 10, 45, 45, 45, 10);
 // 与「保存到 AI 笔记」共用笔记文档;这里只记录 id,发送时检索正文注入上下文。
 function addNoteMention(id, title) {
   if (!id) return;
+  // 防御:标题不能是文件夹名(历史脏数据会显示成 @默认分类)
+  const dbg = window.OCNotes && window.OCNotes._debug;
+  const n = dbg && dbg.doc ? (dbg.doc.notes || []).find((x) => x.id === id) : null;
+  if (n) title = n.title || '无标题笔记';
   state.noteMentions = state.noteMentions || [];
   if (state.noteMentions.some((x) => x.id === id)) { toast('已经 @ 过这篇笔记了'); return; }
   state.noteMentions.push({ id: id, title: title || '无标题笔记' });
   renderNoteMentions();
+}
+// 整文件夹引用:@ 一个目录 = 引用其中全部笔记(发送时展开)
+function toggleFolderMention(fid, name) {
+  if (!fid) return;
+  state.noteFolderMentions = state.noteFolderMentions || [];
+  const i = state.noteFolderMentions.findIndex((x) => x.id === fid);
+  if (i >= 0) { state.noteFolderMentions.splice(i, 1); toast('已取消引用文件夹「' + name + '」'); }
+  else {
+    state.noteFolderMentions.push({ id: fid, name: name || '文件夹' });
+    toast('已引用整个文件夹「' + name + '」');
+  }
+  renderNoteMentions();
+  updateSendBtn();
 }
 function removeNoteMention(id) {
   state.noteMentions = (state.noteMentions || []).filter((x) => x.id !== id);
@@ -7776,17 +7862,30 @@ function renderNoteMentions() {
   const box = $('note-mention-row');
   if (!box) return;
   const list = state.noteMentions || [];
-  if (!list.length) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  const folders = state.noteFolderMentions || [];
+  if (!list.length && !folders.length) { box.classList.add('hidden'); box.innerHTML = ''; return; }
   box.classList.remove('hidden');
-  box.innerHTML = list.map((x) => ''
+  // 顺序:@助手 在前,随后是 @文件夹 与 @笔记,连读为「@助手 @笔记 提问内容」
+  const folderHtml = folders.map((f) => ''
+    + '<span class="note-mention-chip note-mention-folder" data-fid="' + escapeHtml(f.id) + '" title="整个文件夹的笔记都会作为参考，点 × 移除">'
+    + '<b>@</b>' + escapeHtml(f.name) + ' 文件夹'
+    + '<button type="button" class="nmc-x" aria-label="移除">×</button></span>').join('');
+  const noteHtml = list.map((x) => ''
     + '<span class="note-mention-chip" data-id="' + escapeHtml(x.id) + '" title="基于这篇笔记提问，点 × 移除">'
     + '<b>@</b>' + escapeHtml(x.title || '无标题笔记')
     + '<button type="button" class="nmc-x" aria-label="移除">×</button></span>').join('');
+  box.innerHTML = folderHtml + noteHtml;
   box.querySelectorAll('.nmc-x').forEach((b) => {
     b.addEventListener('click', (e) => {
       e.preventDefault();
       const chip = e.target.closest('.note-mention-chip');
-      if (chip) removeNoteMention(chip.dataset.id);
+      if (!chip) return;
+      if (chip.dataset.fid) {
+        state.noteFolderMentions = (state.noteFolderMentions || []).filter((x) => x.id !== chip.dataset.fid);
+        renderNoteMentions();
+      } else {
+        removeNoteMention(chip.dataset.id);
+      }
       updateSendBtn();
     });
   });
@@ -7794,21 +7893,34 @@ function renderNoteMentions() {
 // 发送前把 @笔记 的内容拼成上下文(供 AI 引用);返回 null 表示没有 @笔记
 function noteMentionsContext(limitPerNote) {
   const list = state.noteMentions || [];
-  if (!list.length) return null;
+  const folders = state.noteFolderMentions || [];
+  if (!list.length && !folders.length) return null;
   const dbg = window.OCNotes && window.OCNotes._debug;
   const found = [];
-  list.forEach((m) => {
-    const n = dbg && dbg.doc ? dbg.doc.notes.find((x) => x.id === m.id) : null;
-    if (n) found.push(n);
-  });
+  const seen = {};
+  if (dbg && dbg.doc) {
+    // 整文件夹引用:展开为该目录下全部笔记(已在列表里的不重复)
+    folders.forEach((f) => {
+      (dbg.doc.notes || []).filter((n) => n.folderId === f.id).forEach((n) => {
+        if (!seen[n.id]) { seen[n.id] = 1; found.push(n); }
+      });
+    });
+    list.forEach((m) => {
+      const n = (dbg.doc.notes || []).find((x) => x.id === m.id);
+      if (n && !seen[n.id]) { seen[n.id] = 1; found.push(n); }
+    });
+  }
   if (!found.length) return null;
   const cap = limitPerNote || 4000;
-  const parts = found.map((n, i) => '【笔记' + (i + 1) + '】' + (n.title || '无标题') + '\n'
+  // 整文件夹引用可能命中很多篇:取最近更新的前 N 篇,避免上下文爆炸
+  const MAX_NOTES = 20;
+  const picked = found.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, MAX_NOTES);
+  const parts = picked.map((n, i) => '【笔记' + (i + 1) + '】' + (n.title || '无标题') + '\n'
     + String(n.content || '').slice(0, cap));
   return {
-    notes: found,
+    notes: picked,
     text: parts.join('\n\n'),
-    instruction: '用户 @ 了 ' + found.length + ' 篇笔记，请只根据下面提供的笔记内容回答；'
+    instruction: '用户 @ 了 ' + picked.length + ' 篇笔记，请只根据下面提供的笔记内容回答；'
       + '笔记里没有的信息要明确说明「笔记里没有相关内容」，不要编造。回答后不要自行编造引用编号。',
   };
 }
@@ -7819,19 +7931,61 @@ function ensureAssistantsLoaded() {
 const mentionPop = $('mention-pop');
 if (mentionPop) {
   mentionPop.addEventListener('mousedown', (e) => {
+    const tabBtn = e.target.closest('.mention-tab');
+    if (tabBtn) {
+      e.preventDefault();
+      state.mention.tab = Number(tabBtn.dataset.tab) === 1 ? 1 : 0;
+      state.mention.index = 0;
+      if (state.mention.tab === 1) ensureNotesForMention();
+      renderMention();
+      return;
+    }
+    const pickBtn = e.target.closest('[data-folder-pick]');
+    if (pickBtn) {
+      e.preventDefault();
+      toggleFolderMention(pickBtn.dataset.folderPick, pickBtn.dataset.folderName);
+      return;
+    }
+    const folderBtn = e.target.closest('.mention-folder');
+    if (folderBtn) {
+      e.preventDefault();
+      const fid = folderBtn.dataset.folder;
+      const openMap = state.mention.folderOpen || (state.mention.folderOpen = {});
+      // 默认折叠:点击在「展开 / 折叠」之间切换
+      openMap[fid] = openMap[fid] !== true;
+      renderMention();
+      return;
+    }
     const btn = e.target.closest('.mention-item');
     if (!btn) return;
     e.preventDefault();
-    const items = mentionCandidates(state.mention.q);
-    pickMention(items[Number(btn.dataset.idx)]);
+    // data-idx 是「可选项序号」(文件夹行不参与编号),按它查找而不是数组下标
+    const want = Number(btn.dataset.idx);
+    const list = currentMentionItems().filter((x) => !x._folder);
+    pickMention(list[want] || list[0]);
   });
+}
+// 当前页签下的可选项(与 renderMention 的编号保持一致)
+function currentMentionItems() {
+  const tab = state.mention.tab === 1 ? 1 : 0;
+  return tab === 1 ? noteMentionItems(state.mention.q) : mentionCandidates(state.mention.q);
 }
 inputEl.addEventListener('keydown', (e) => {
   // 中文输入法组词期间的 Enter 是「确认候选词」,不能当成发送;
   // isComposing 之外的 keyCode===229 兜底旧版 Safari。
   if (e.isComposing || e.keyCode === 229) return;
   if (state.mention.open) {
-    const items = mentionCandidates(state.mention.q);
+    const all = currentMentionItems();
+    const items = all.filter((x) => !x._folder);
+    if (e.key === 'Tab') {
+      // Tab 在「助手 / 笔记」两个页签之间切换
+      e.preventDefault();
+      state.mention.tab = state.mention.tab === 1 ? 0 : 1;
+      state.mention.index = 0;
+      if (state.mention.tab === 1) ensureNotesForMention();
+      renderMention();
+      return;
+    }
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       state.mention.index = Math.min(items.length - 1, state.mention.index + 1);
@@ -7844,7 +7998,7 @@ inputEl.addEventListener('keydown', (e) => {
       renderMention();
       return;
     }
-    if (e.key === 'Enter' || e.key === 'Tab') {
+    if (e.key === 'Enter') {
       e.preventDefault();
       pickMention(items[state.mention.index] || items[0]);
       return;
