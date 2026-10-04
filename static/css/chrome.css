@@ -4621,14 +4621,53 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   padding: 0 0 0 3px;
 }
 .note-mention-chip .nmc-x:hover { opacity: 1; }
-/* 消息气泡下方的来源引用(可点开笔记) */
-.note-ref-row {
+/* 已发出消息里的 @ 引用回显:与输入框同款内联文字流,跟在问题正文之前连读。
+   助手沿用蓝色(.composer-at 的品牌色),笔记/文件夹沿用红色。 */
+.msg-mentions {
+  display: inline;
+  /* chip 之间可以折行(chip 自身整块换行),窄屏不撑破气泡 */
+  white-space: normal;
+}
+.msg-mentions .note-mention-chip { margin-right: 1px; }
+.msg-mentions .note-mention-chip.note-mention-assistant { color: var(--brand); }
+.msg-mentions::after { content: " "; }
+.msg-mentions .note-mention-chip.note-mention-assistant:hover { text-decoration: none; }
+.msg-mentions .note-mention-chip:not(.note-mention-assistant) { cursor: pointer; }
+/* 回答末尾的「参考笔记」来源行:列出这轮回答真正用到的笔记。
+   挂在 .msg-content 之内(与正文同宽),不再作为 .msg 的兄弟节点 ——
+   否则既会把正文挤窄,精准重绘时又清不掉、每重绘一次就多一份。 */
+.msg.assistant .msg-content .note-ref-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 6px;
+  align-items: baseline;
+  /* chip 之间的顿号由 .note-mention-chip + .note-mention-chip::before 生成,
+     间距取与输入框/提问气泡一致的小值,读起来是「@甲、@乙」而不是「@甲 、@乙」 */
+  gap: 2px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--hairline);
 }
-.note-ref-row .note-mention-chip { cursor: pointer; font-size: 0.821rem; padding: 2px 8px; }
+.msg.assistant .msg-content .note-ref-row::before {
+  content: "参考笔记";
+  font-size: 0.79em;
+  color: var(--text-tertiary);
+  margin-right: 8px;
+}
+.msg.assistant .msg-content .note-ref-row .note-mention-chip { cursor: pointer; }
+.msg.user .msg-content .msg-mentions .note-mention-chip {
+  /* inline-block 而非 inline-flex:笔记标题很长时能出省略号,不会顶破气泡 */
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: inherit;
+  font-weight: 650;
+  line-height: inherit;
+  /* overflow:hidden 的 inline-block 按 CSS 规定以「底边」当基线,再用 baseline
+     对齐会把整个 chip 抬高一整个行高,后面的正文就落在下方,一行看着两种高度。
+     chip 与正文行高一致,对齐底边即等于对齐基线,量表也回到单倍行高。 */
+  vertical-align: bottom;
+}
 /* @ 面板分类页签(助手 / 笔记) */
 /* 分类页签:下划线式(与笔记模块的编辑/分屏/预览一致),更贴合整体简洁风格 */
 .mention-tabs {
@@ -4733,47 +4772,6 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 [data-theme="dark"] .mention-item.mention-note.active { background: rgba(248, 113, 113, .12); }
 
 
-/* ---------- 回答展示:@笔记 引用来源卡片 ---------- */
-.note-ref-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-top: 10px;
-  padding-top: 9px;
-  border-top: 1px solid var(--hairline);
-}
-.note-ref-row::before {
-  content: "参考笔记";
-  font-size: 0.79em;
-  color: var(--text-tertiary);
-  margin-right: 2px;
-}
-.note-ref-row .note-mention-chip {
-  cursor: pointer;
-  font-size: 0.821rem;
-  padding: 3px 9px;
-  transition: background .13s, border-color .13s;
-}
-.note-ref-row .note-mention-chip:hover {
-  background: rgba(220, 38, 38, .16);
-  border-color: rgba(220, 38, 38, .3);
-}
-/* 助手回答基于笔记时的提示条 */
-.note-answer-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 0.82em;
-  color: #b91c1c;
-  background: rgba(220, 38, 38, .08);
-  border-radius: 999px;
-  padding: 2px 10px;
-  margin: 6px 0 0;
-}
-[data-theme="dark"] .note-answer-hint { color: #fca5a5; background: rgba(248, 113, 113, .14); }
-
-
 /* ---------- @助手 / @笔记:悬浮覆盖层 + 首行缩进(悬挂缩进)----------
    目标效果:第一行内容是「@助手 @笔记 提问文字…」,第一行放不下时自动折行,
    第二行从最左侧(@助手 正下方)继续 —— 而不是整块挪到下一行或缩在 @ 右边。
@@ -4826,46 +4824,7 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   height: 1.5em;      /* 高度随字号自动缩放(1.5 行高) */
   display: inline-flex;
   align-items: center;
-}/* ---------- 回答展示:@笔记 引用来源卡片 ---------- */
-.note-ref-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-top: 10px;
-  padding-top: 9px;
-  border-top: 1px solid var(--hairline);
 }
-.note-ref-row::before {
-  content: "参考笔记";
-  font-size: 0.79em;
-  color: var(--text-tertiary);
-  margin-right: 2px;
-}
-.note-ref-row .note-mention-chip {
-  cursor: pointer;
-  font-size: 0.821rem;
-  padding: 3px 9px;
-  transition: background .13s, border-color .13s;
-}
-.note-ref-row .note-mention-chip:hover {
-  background: rgba(220, 38, 38, .16);
-  border-color: rgba(220, 38, 38, .3);
-}
-/* 助手回答基于笔记时的提示条 */
-.note-answer-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 0.82em;
-  color: #b91c1c;
-  background: rgba(220, 38, 38, .08);
-  border-radius: 999px;
-  padding: 2px 10px;
-  margin: 6px 0 0;
-}
-[data-theme="dark"] .note-answer-hint { color: #fca5a5; background: rgba(248, 113, 113, .14); }
-
 /* ---- 模型元数据面板 ---- */
 /* 与「模型清单表格」同一套观感:单线分隔、表头吸顶、模型名吸附左侧、
    数值列等宽右对齐。区别是这里只读,所以行有斑马纹与悬停高亮。 */

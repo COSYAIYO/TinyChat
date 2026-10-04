@@ -33,6 +33,7 @@
       mode: 'split',
       expanded: {},
       selNoteId: null,
+      mobileSide: false,   // 窄屏抽屉是否展开(不持久化,见 setMobileSide)
     },
     els: {},
     editor: null, // {noteId, ta, preview, saveTimer, renderTimer, dirty}
@@ -486,6 +487,8 @@
       + '</header>'
       + '<button class="notes-side-float hidden" id="notes-side-float" data-tip="展开文件夹面板">' + icon('panelLeft', 15) + '</button>'
       + '<div class="notes-fs-body" id="notes-fs-body">'
+      // 窄屏抽屉遮罩:点空白收起文件夹面板(宽屏不显示)
+      + '<div class="notes-side-scrim" id="notes-side-scrim" aria-hidden="true"></div>'
       + '<aside class="notes-side" id="notes-side">'
       + '<div class="notes-side-tools">'
       + '<button class="notes-new-btn" id="notes-new-btn">' + icon('plus', 13) + '新建笔记</button>'
@@ -601,6 +604,12 @@
     // 仿对话首页的整栏侧栏折叠
     mask.querySelector('#notes-side-collapse').addEventListener('click', toggleSide);
     mask.querySelector('#notes-side-float').addEventListener('click', toggleSide);
+    // 窄屏抽屉:点遮罩收起(宽屏该遮罩不显示)
+    const scrim = mask.querySelector('#notes-side-scrim');
+    if (scrim) scrim.addEventListener('click', () => setMobileSide(false));
+    mask.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && N.ui.mobileSide) { e.stopPropagation(); setMobileSide(false); }
+    });
     N.els.searchInput.addEventListener('input', debounce(() => {
       N.ui.search = N.els.searchInput.value.trim();
       renderTree();
@@ -617,21 +626,36 @@
     applySideState();
   }
 
-  // 侧栏整栏折叠/展开(状态持久化,浮标恢复)
+  // 侧栏整栏折叠/展开:宽屏是「收起整栏」,窄屏是「抽屉推拉」。
+  // 窄屏下不能用 sideCollapsed 表达打开——CSS 里 .notes-side 在窄屏恒为
+  // translateX(-100%),只有 .mobile-side-open 才把它拉回屏内;若继续复用
+  // sideCollapsed,点浮标只会切换折叠类,侧栏永远停在屏外(表现为「侧栏加载不出来」)。
+  function isNarrow() { return window.innerWidth <= 760; }
   function toggleSide() {
+    if (isNarrow()) {
+      setMobileSide(!N.ui.mobileSide);
+      return;
+    }
     N.ui.sideCollapsed = !N.ui.sideCollapsed;
     persistUi();
+    applySideState();
+  }
+  // 窄屏抽屉开关(不持久化:每次进入都应是收起状态,避免恢复出半个屏幕的面板)
+  function setMobileSide(open) {
+    N.ui.mobileSide = !!open;
     applySideState();
   }
   function applySideState() {
     const fs = N.els.mask && N.els.mask.querySelector('.notes-fs');
     if (!fs) return;
+    const narrow = isNarrow();
     // 只折叠左侧面板:编辑器区域占满剩余宽度
-    fs.classList.toggle('side-collapsed', !!N.ui.sideCollapsed);
+    fs.classList.toggle('side-collapsed', !narrow && !!N.ui.sideCollapsed);
+    fs.classList.toggle('mobile-side-open', narrow && !!N.ui.mobileSide);
     const float = N.els.mask.querySelector('#notes-side-float');
-    // 窄屏(抽屉式侧栏)时浮标常显,否则用户找不到目录入口
-    const narrow = window.innerWidth <= 760;
-    if (float) float.classList.toggle('hidden', !N.ui.sideCollapsed && !narrow);
+    // 窄屏(抽屉式侧栏)时浮标常显,否则用户找不到目录入口;
+    // 抽屉已展开时藏起来——浮标是绝对定位,不收会压在抽屉内容上。
+    if (float) float.classList.toggle('hidden', narrow ? !!N.ui.mobileSide : !N.ui.sideCollapsed);
   }
 
   // 模块内的输入弹窗:圆角输入框、聚焦不做蓝色高亮(替代全局 OCUI.prompt)
@@ -1826,6 +1850,9 @@
     flushEditor();
     refreshUsage();
     maybeGcAttachments();
+    // 每次进入都从「抽屉收起」开始:窄屏下若沿用上次状态,一进来就是面板压住正文
+    N.ui.mobileSide = false;
+    applySideState();
     N.ui.search = '';
     N.els.searchInput.value = '';
     renderAll();
@@ -2158,9 +2185,12 @@
       N.ui.expanded[n.folderId] = true;
     }
     N.ui.selNoteId = id;
+    // 窄屏:选中即收起抽屉,否则文件夹面板会一直盖住刚打开的正文
+    if (isNarrow()) N.ui.mobileSide = false;
     persistUi();
     renderTree();
     renderEditor();
+    applySideState();
   }
 
   function renderEditor() {
@@ -3029,6 +3059,9 @@
   }
 
   // ============ AI 归档:保存到 AI 笔记 ============
+  // 系统提示分两档。首轮用完整 JSON 契约(信息最全);模型解析失败或输出被截断时,
+  // 降级到「分隔符文本」格式——不用转义、不用闭合括号,结尾被截断也照样能解析,
+  // 弱模型(小参数/小上下文)更容易照做。
   const ARCHIVE_SYSTEM_PROMPT = [
     '你是 AI 笔记整理助手。请根据当前用户问题、AI 回答内容和已有笔记目录，',
     '将有长期价值的信息整理为一篇可检索、可复用的 Markdown 笔记。',
@@ -3054,6 +3087,22 @@
     '只输出 JSON,不要输出任何其他文字或代码块围栏。',
   ].join('\n');
 
+  // 降级提示:纯文本 + 显式分隔行。字段顺序固定、正文最后写,
+  // 即使模型写不完被截断,前面已写出的字段仍然可用。
+  const ARCHIVE_SYSTEM_PROMPT_SIMPLE = [
+    '你是 AI 笔记整理助手。把下面的 AI 回答整理成一篇结构化、可检索的 Markdown 笔记。',
+    '',
+    '严格按下面格式输出，每一行都以标记开头，不要输出 JSON、不要代码块围栏、不要额外说明：',
+    '',
+    '文件夹ID：填现有文件夹的 id；没有合适的就留空这一行',
+    '新文件夹名：只有留空了文件夹ID时才填；否则这一行留空',
+    '标题：一句话概括内容',
+    '标签：标签1,标签2（最多 6 个，逗号分隔）',
+    '理由：一句话说明归档原因',
+    '内容：',
+    '（从这里开始写 Markdown 正文，提炼分层、保留关键事实与代码，不要复制原文）',
+  ].join('\n');
+
   function findUserQuestion(chat, msg) {
     const msgs = (chat && chat.messages) || [];
     let idx = msgs.indexOf(msg);
@@ -3070,15 +3119,71 @@
     return '';
   }
 
-  function folderTreePromptLines() {
+  // 文件夹树按 token 预算裁剪:文件夹多、笔记标题长时,这段提示本身就能吃掉弱模型的全部窗口
+  function folderTreePromptLines(budgetTokens) {
+    const all = N.doc.folders.map((f) => ({
+      f: f,
+      depth: folderDepth(f.id),
+      titles: N.doc.notes.filter((n) => n.folderId === f.id).slice(0, 6).map((n) => n.title),
+    }));
+    const head = all.filter((x) => x.depth === 0);
+    const rest = all.filter((x) => x.depth > 0);
     const lines = [];
-    N.doc.folders.forEach((f) => {
-      const depth = folderDepth(f.id);
-      const titles = N.doc.notes.filter((n) => n.folderId === f.id).slice(0, 8).map((n) => n.title);
-      lines.push('- ' + '  '.repeat(depth) + f.name + '（id: ' + f.id + (f.description ? ', 说明: ' + f.description : '') + '）'
-        + (titles.length ? ' 已有笔记: ' + titles.join('、') : '（空）'));
-    });
+    let used = 0;
+    const cap = budgetTokens || 1200;
+    // 顶层文件夹必须全部保留(它们是主要归档目标);子文件夹与笔记标题按预算追加
+    const push = (x, titles) => {
+      const line = '- ' + '  '.repeat(x.depth) + x.f.name + '（id: ' + x.f.id
+        + (x.f.description ? ', 说明: ' + String(x.f.description).slice(0, 40) : '') + '）'
+        + (titles.length ? ' 已有笔记: ' + titles.join('、') : '（空）');
+      const cost = estimateTokens(line);
+      if (used + cost > cap && lines.length) return false;
+      used += cost;
+      lines.push(line);
+      return true;
+    };
+    head.forEach((x) => push(x, x.titles.slice(0, 4)));
+    rest.forEach((x) => push(x, x.titles.slice(0, 2)));
     return lines;
+  }
+  function estimateTokens(s) {
+    if (window.OCApp && window.OCApp.estimateTextTokens) return window.OCApp.estimateTextTokens(s);
+    const str = String(s || '');
+    const cjk = (str.match(/[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7a3\uf900-\ufaf6\uff00-\uffef]/g) || []).length;
+    return Math.round(cjk + (str.length - cjk) / 4);
+  }
+  // 归档请求的输入预算:窗口 − 输出预留 − 提示词与文件夹树开销。
+  // 弱模型窗口可能只有 8k,这里必须真的按 token 裁,不能只按字符数切一刀。
+  // 返回值同时给出建议的输出上限:窗口很小时先把输出压下来,把位置让给输入,
+  // 否则「输入满 + 输出要 8192」会被上游直接拒绝(输入+输出超过窗口)。
+  function archiveBudgets(systemPrompt, folderLines) {
+    const caps = (window.OCApp && window.OCApp.modelCapsNow) ? window.OCApp.modelCapsNow() : { out: 8192, ctx: 131072 };
+    const ctx = Number(caps.ctx) > 0 ? Number(caps.ctx) : 131072;
+    const capOut = Number(caps.out) > 0 ? Number(caps.out) : 8192;
+    const overhead = estimateTokens(systemPrompt) + estimateTokens(folderLines.join('\n')) + 400;
+    const MIN_IN = 1500;   // 正文至少要留这么多,否则整理没有意义
+    let reserve = Math.min(capOut, 8192);
+    let budget = ctx - reserve - overhead;
+    if (budget < MIN_IN) {
+      reserve = Math.max(512, ctx - overhead - MIN_IN);
+      budget = ctx - reserve - overhead;
+    }
+    return { input: Math.max(512, budget), output: Math.max(512, Math.min(reserve, capOut)) };
+  }
+  // 按 token 预算截断长文本,尽量在段落边界收尾
+  function truncateToTokens(text, maxTokens) {
+    const src = String(text || '');
+    if (estimateTokens(src) <= maxTokens) return src;
+    const cjkChars = (src.match(/[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7a3\uf900-\ufaf6\uff00-\uffef]/g) || []).length;
+    // 按中文密度估算可保留的字符数(中文 1 字≈1 token,英文 4 字符≈1 token)
+    const ratio = src.length ? cjkChars / src.length : 0;
+    const perChar = ratio + (1 - ratio) / 4;
+    let chars = Math.max(200, Math.floor((maxTokens / Math.max(perChar, 0.2)) * 0.95));
+    if (chars >= src.length) return src;
+    let cut = src.slice(0, chars);
+    const br = cut.lastIndexOf('\n\n');
+    if (br > chars * 0.6) cut = cut.slice(0, br);
+    return cut + '\n\n……（内容过长，已截断。请就以上部分整理，不要编造被截断的内容）';
   }
 
   async function archiveFromMessage(chat, msg) {
@@ -3087,50 +3192,161 @@
     const answer = String(msg.content || '');
     const dlg = buildArchiveDialog();
     showArchiveLoading(dlg);
-    const context = [
-      '## 当前对话主题',
-      (chat && chat.title) || '（无标题对话）',
-      '',
-      '## 用户问题',
-      question || '（未找到原始问题）',
-      '',
-      '## AI 回答全文',
-      answer.slice(0, 24000),
-      '',
-      '## 现有笔记文件夹树（含层级与已有笔记标题摘要）',
-      folderTreePromptLines().join('\n') || '（还没有任何文件夹,只有默认的「默认分类」）',
-      '',
-      '## 用户指定文件夹',
-      '无',
-      '',
-      '请按系统要求输出 JSON。',
-    ].join('\n');
+
+    let cancelled = false;
+    dlg._onClose = () => { cancelled = true; };
+    // Esc 由 ui.js 的全局处理器直接关闭弹窗(不经过 _onClose),所以还要看
+    // 弹窗是否还在 DOM 里、以及是否已被重新加上 .hidden:任一不成立就说明
+    // 用户已经放弃这次整理,迟到的响应不得再往弹窗里写内容。
+    // (用 .hidden 而不是 .show——后者是打开动画下一帧才加上的。)
+    const alive = () => !cancelled && document.body.contains(dlg) && !dlg.classList.contains('hidden');
 
     let plan = null;
     let lastErr = null;
-    for (let attempt = 0; attempt < 2 && !plan; attempt++) {
+    // 两轮:第 1 轮完整 JSON 契约;第 2 轮换「分隔符文本」降级格式并缩短输入。
+    // 两轮用的是不同提示与不同输入长度,不是把同一个注定失败的请求重发一遍。
+    for (let attempt = 0; attempt < 2 && !plan && !cancelled; attempt++) {
+      const simple = attempt > 0;
+      const sys = simple ? ARCHIVE_SYSTEM_PROMPT_SIMPLE : ARCHIVE_SYSTEM_PROMPT;
+      const folderLines = folderTreePromptLines(simple ? 600 : 1200);
+      const budgets = archiveBudgets(sys, folderLines);
+      const answerForPrompt = truncateToTokens(answer, budgets.input);
+      const truncated = answerForPrompt.length < answer.length;
+      const context = [
+        '## 当前对话主题',
+        (chat && chat.title) || '（无标题对话）',
+        '',
+        '## 用户问题',
+        question || '（未找到原始问题）',
+        '',
+        '## AI 回答全文',
+        answerForPrompt,
+        '',
+        '## 现有笔记文件夹树（含层级与已有笔记标题摘要）',
+        folderLines.join('\n') || '（还没有任何文件夹,只有默认的「默认分类」）',
+        '',
+        '## 用户指定文件夹',
+        '无',
+        '',
+        simple ? '请按系统要求的纯文本格式输出。' : '请按系统要求输出 JSON。',
+      ].join('\n');
+
       try {
+        if (alive()) showArchiveLoading(dlg, simple);
         const text = await window.OCApp.aiComplete(
-          [{ role: 'system', content: ARCHIVE_SYSTEM_PROMPT }, { role: 'user', content: context }],
-          { purpose: 'note', maxTokens: 8192 }
+          [{ role: 'system', content: sys }, { role: 'user', content: context }],
+          { purpose: 'note', maxTokens: budgets.output }
         );
-        plan = parseArchivePlan(text);
-        if (!plan) lastErr = new Error('AI 返回的内容无法解析为结构化结果');
+        plan = simple ? parseArchivePlanLoose(text) : parseArchivePlan(text);
+        if (!plan) lastErr = new Error(simple ? 'AI 返回的内容无法解析为结构化结果' : 'AI 字段不完整，正在换一种更简单的格式重试');
+        else if (truncated) plan._truncated = true;
       } catch (e) {
         lastErr = e;
       }
     }
     if (!plan) {
-      showArchiveError(dlg, (lastErr && lastErr.message) || '整理失败', () => {
-        return {
-          folderAction: 'create', newFolderName: UNCATA_LABEL, noteTitle: (question || '笔记').slice(0, 60),
-          tags: [], markdownContent: answer, reasoning: 'AI 整理失败,直接保存原文。',
-          _forceFolder: UNCATA,
-        };
-      }, question, answer, () => archiveFromMessage(chat, msg));
+      if (cancelled || !alive()) return;
+      showArchiveError(dlg, (lastErr && lastErr.message) || '整理失败', () => ({
+        folderAction: 'create', newFolderName: UNCATA_LABEL, noteTitle: (question || '笔记').slice(0, 60),
+        tags: [], markdownContent: answer, reasoning: 'AI 整理失败,直接保存原文。',
+        _forceFolder: UNCATA,
+      }), question, answer, () => archiveFromMessage(chat, msg));
       return;
     }
+    if (cancelled || !alive()) return;
     showArchivePlan(dlg, plan, { chat, msg, question, answer });
+  }
+
+  // 从正文推导标题:优先一级/任意级标题,其次首个非空行(去掉 Markdown 标记)
+  function deriveTitle(content) {
+    const lines = String(content || '').split(/\r?\n/);
+    for (const line of lines) {
+      const h = line.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/);
+      if (h) return h[1].replace(/[*_`]/g, '').trim().slice(0, 60);
+    }
+    for (const line of lines) {
+      const t = line.replace(/^\s*(?:[-*+>]\s+|\d+[.、)]\s+)/, '').replace(/[*_`#]/g, '').trim();
+      if (t) return t.slice(0, 60);
+    }
+    return '';
+  }
+
+  // JSON 修复:弱模型常见的三种坏味道——字符串里有裸换行、尾逗号、括号没闭合(写一半被截断)。
+  // 修不好也不提前放弃:截断在正文中间时,补上引号与括号后仍能取回已写出的部分。
+  function repairJson(s) {
+    let out = '';
+    let inStr = false;
+    let esc = false;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (inStr) {
+        if (esc) { out += ch; esc = false; continue; }
+        if (ch === '\\') { out += ch; esc = true; continue; }
+        if (ch === '"') { inStr = false; out += ch; continue; }
+        if (ch === '\n') { out += '\\n'; continue; }
+        if (ch === '\r') { out += '\\r'; continue; }
+        if (ch === '\t') { out += '\\t'; continue; }
+        if (ch < ' ') { out += ' '; continue; }
+        out += ch;
+        continue;
+      }
+      if (ch === '"') { inStr = true; out += ch; continue; }
+      if (ch === ',') {
+        // 尾逗号:逗号后除空白外直接是 } 或 ] 时丢弃
+        let k = i + 1;
+        while (k < s.length && /\s/.test(s[k])) k++;
+        if (k < s.length && (s[k] === '}' || s[k] === ']')) continue;
+        out += ch;
+        continue;
+      }
+      out += ch;
+    }
+    if (inStr) out += '"';
+    // 补齐未闭合的括号(末尾被截断时的补救)
+    const stack = [];
+    let q = false;
+    let e2 = false;
+    for (let i = 0; i < out.length; i++) {
+      const ch = out[i];
+      if (q) {
+        if (e2) { e2 = false; continue; }
+        if (ch === '\\') { e2 = true; continue; }
+        if (ch === '"') q = false;
+        continue;
+      }
+      if (ch === '"') { q = true; continue; }
+      if (ch === '{' || ch === '[') stack.push(ch);
+      else if (ch === '}' || ch === ']') stack.pop();
+    }
+    while (stack.length) out += stack.pop() === '{' ? '}' : ']';
+    return out;
+  }
+
+  // 字段归一:两个解析器共用。容忍 tags 是字符串、标题缺失、folderAction 缺失等情况。
+  function normalizeArchivePlan(src) {
+    const content = String(src.content || '').trim();
+    if (!content) return null;
+    let tags = src.tags;
+    if (typeof tags === 'string') tags = tags.split(/[,，、;；\n]+/);
+    tags = Array.isArray(tags)
+      ? tags.map((x) => String(x).trim().replace(/^[#\-\s]+/, '')).filter(Boolean).slice(0, 20)
+      : [];
+    const newFolderName = String(src.newFolderName || '').trim().slice(0, 80);
+    const targetFolderId = String(src.targetFolderId || '').trim();
+    let action = String(src.folderAction || '').toLowerCase();
+    if (action !== 'create' && action !== 'existing') {
+      action = targetFolderId ? 'existing' : (newFolderName ? 'create' : 'existing');
+    }
+    const title = String(src.title || '').trim() || deriveTitle(content);
+    return {
+      folderAction: action,
+      targetFolderId: targetFolderId,
+      newFolderName: newFolderName,
+      noteTitle: (title || '无标题笔记').slice(0, 200),
+      tags: tags,
+      markdownContent: content,
+      reasoning: String(src.reasoning || '').trim(),
+    };
   }
 
   function parseArchivePlan(text) {
@@ -3138,23 +3354,83 @@
     const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
     if (fence) t = fence[1].trim();
     const s = t.indexOf('{');
+    if (s < 0) return null;
     const e = t.lastIndexOf('}');
-    if (s < 0 || e <= s) return null;
+    // 有闭合括号就取整段;没有(被截断)则从 { 一路取到尾交给修复器补括号
+    const body = (e > s) ? t.slice(s, e + 1) : t.slice(s);
     let j = null;
-    try { j = JSON.parse(t.slice(s, e + 1)); } catch (e2) { return null; }
+    try { j = JSON.parse(body); } catch (e1) { /* 落到修复解析 */ }
+    if (!j || typeof j !== 'object') {
+      try { j = JSON.parse(repairJson(body)); } catch (e2) { return null; }
+    }
     if (!j || typeof j !== 'object') return null;
-    const content = String(j.markdownContent || j.content || '').trim();
-    const title = String(j.noteTitle || j.title || '').trim();
+    return normalizeArchivePlan({
+      folderAction: j.folderAction,
+      targetFolderId: j.targetFolderId || j.folderId || j.folder_id || '',
+      newFolderName: j.newFolderName || j.folderName || j.new_folder_name || '',
+      title: j.noteTitle || j.title || j.note_title || '',
+      tags: j.tags || j.tag || [],
+      content: j.markdownContent || j.content || j.markdown || j.body || '',
+      reasoning: j.reasoning || j.reason || '',
+    });
+  }
+
+  // 降级解析:纯文本标记格式。不用转义、不用闭合括号,被截断也能拿到正文。
+  const LOOSE_KEYS = {
+    '文件夹id': 'targetFolderId', 'folderid': 'targetFolderId', 'folder_id': 'targetFolderId',
+    '目标文件夹': 'targetFolderId', 'folderaction': 'folderAction', 'folder_action': 'folderAction',
+    '新文件夹名': 'newFolderName', '新文件夹名称': 'newFolderName', '新文件夹': 'newFolderName',
+    '文件夹名': 'newFolderName', 'newfoldername': 'newFolderName', 'new_folder_name': 'newFolderName',
+    '标题': 'title', '笔记标题': 'title', 'title': 'title', 'notetitle': 'title', 'note_title': 'title',
+    '标签': 'tags', 'tags': 'tags', 'tag': 'tags',
+    '理由': 'reasoning', '归档理由': 'reasoning', 'reasoning': 'reasoning', 'reason': 'reasoning',
+    '内容': '__content', '正文': '__content', '笔记内容': '__content',
+    'markdowncontent': '__content', 'content': '__content', 'markdown': '__content',
+  };
+  function parseArchivePlanLoose(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return null;
+    let t = raw.replace(/^```[a-zA-Z]*\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
+    const lines = t.split(/\r?\n/);
+    const val = {};
+    let contentAt = -1;
+    let contentInline = '';
+    for (let i = 0; i < lines.length; i++) {
+      // 容忍:列表符号、**加粗**、中英文冒号、键名前后空格、snake_case 键名
+      const m = lines[i].match(/^\s*(?:[-*+]\s+|\d+[.、)]\s+)?(?:\*\*|__)?\s*([^：:*\n]{1,24}?)\s*(?:\*\*|__)?\s*[：:]\s*(.*)$/);
+      if (!m) continue;
+      const key = LOOSE_KEYS[m[1].replace(/\s+/g, '').toLowerCase()] || LOOSE_KEYS[m[1].replace(/\s+/g, '')];
+      if (!key) continue;
+      if (key === '__content') {
+        contentAt = i;
+        contentInline = m[2];
+        break;
+      }
+      if (val[key] === undefined) val[key] = m[2].trim();
+    }
+    let content;
+    if (contentAt >= 0) content = [contentInline].concat(lines.slice(contentAt + 1)).join('\n').trim();
+    else content = t.replace(/^```[a-zA-Z]*\s*/, '').trim();  // 没有标记:整段当正文(弱模型常直接写笔记)
     if (!content) return null;
-    return {
-      folderAction: j.folderAction === 'create' ? 'create' : 'existing',
-      targetFolderId: String(j.targetFolderId || ''),
-      newFolderName: String(j.newFolderName || '').trim().slice(0, 80),
-      noteTitle: (title || '无标题笔记').slice(0, 200),
-      tags: Array.isArray(j.tags) ? j.tags.map((x) => String(x).trim()).filter(Boolean).slice(0, 20) : [],
-      markdownContent: content,
-      reasoning: String(j.reasoning || '').trim(),
-    };
+    // 文件夹:先按 id 匹配,再按名称匹配(弱模型常回名字而不是 id)
+    let targetId = String(val.targetFolderId || '').trim();
+    if (targetId && !folderById(targetId)) {
+      const byName = N.doc.folders.find((f) => f.name === targetId);
+      if (byName) targetId = byName.id;
+      else if (!val.newFolderName) { val.newFolderName = targetId; targetId = ''; }
+      else targetId = '';
+    }
+    let action = String(val.folderAction || '').toLowerCase();
+    if (action !== 'create' && action !== 'existing') action = targetId ? 'existing' : (val.newFolderName ? 'create' : 'existing');
+    return normalizeArchivePlan({
+      folderAction: action,
+      targetFolderId: targetId,
+      newFolderName: val.newFolderName,
+      title: val.title,
+      tags: val.tags,
+      content: content,
+      reasoning: val.reasoning,
+    });
   }
 
   function buildArchiveDialog() {
@@ -3171,26 +3447,31 @@
       + '<div class="modal-footer" id="nai-foot"></div>'
       + '</div>';
     document.body.appendChild(mask);
-    mask.querySelector('[data-close]').addEventListener('click', () => {
-      window.OCUI.closeModal(mask);
-      setTimeout(() => mask.remove(), 340);
-    });
+    mask.querySelector('[data-close]').addEventListener('click', () => closeArchiveDialog(mask));
     mask.addEventListener('mousedown', (e) => { if (e.target === mask) mask.querySelector('[data-close]').click(); });
+    // Esc / 点遮罩关闭时把等待中的 AI 请求作废(见 archiveFromMessage 的 alive()):
+    // 否则请求回来后还会往已移除的弹窗里写内容,或反过来把用户关掉弹窗的动作当没发生。
     if (window.OCUI) window.OCUI.openModal(mask);
     else mask.classList.add('show');
     return mask;
   }
 
   function closeArchiveDialog(mask) {
-    window.OCUI.closeModal(mask);
+    if (!mask) return;
+    if (mask._onClose) { const fn = mask._onClose; mask._onClose = null; fn(); }
+    if (window.OCUI) window.OCUI.closeModal(mask);
     setTimeout(() => mask.remove(), 340);
   }
 
-  function showArchiveLoading(mask) {
+  function showArchiveLoading(mask, retryStage) {
     mask.querySelector('#nai-body').innerHTML =
       '<div class="nai-loading"><span class="nai-spinner"></span>'
-      + '<p>AI 正在整理回答并选择归档位置…</p>'
-      + '<p class="muted">它会根据现有笔记目录判断最合适的文件夹,并生成结构化笔记。</p></div>';
+      + (retryStage
+        ? '<p>正在换用更简单的格式重新整理…</p>'
+          + '<p class="muted">上次的返回格式无法解析，这次让模型直接输出纯文本笔记。</p>'
+        : '<p>AI 正在整理回答并选择归档位置…</p>'
+          + '<p class="muted">它会根据现有笔记目录判断最合适的文件夹,并生成结构化笔记。</p>')
+      + '</div>';
     mask.querySelector('#nai-foot').innerHTML = '';
   }
 
@@ -3225,12 +3506,21 @@
       plan.folderAction = 'create';
       folderId = '';
     }
+    // 既没给已有文件夹、也没给新文件夹名(弱模型只写了正文时的常见情形):
+    // 落「默认分类」即可保存;否则会弹「请填写新文件夹名称」把用户卡在这一步。
+    if (plan.folderAction === 'create' && !plan.newFolderName && !plan._forceFolder) {
+      plan.folderAction = 'existing';
+      folderId = UNCATA;
+    }
     const recommendedName = plan.folderAction === 'create'
       ? (plan.newFolderName || (plan._forceFolder ? UNCATA_LABEL : ''))
       : folderName(folderId);
     const direct = !!plan._direct;
     body.innerHTML =
       '<div class="nai-reason">' + icon('spark', 13) + ' ' + esc(plan.reasoning || '已根据内容主题选择归档位置。') + '</div>'
+      + (plan._truncated
+        ? '<p class="nai-warn">' + icon('wrench', 12) + ' 原回答较长,已按当前模型的上下文窗口截取前半部分整理。需要完整内容可改用上下文更大的模型,或直接「保存原文」。</p>'
+        : '')
       + '<div class="nai-grid">'
       + '<label class="nai-field"><span>归档文件夹</span>'
       + '<div class="nai-folder-row">'
@@ -3254,50 +3544,11 @@
     const newInput = body.querySelector('#nai-newfolder');
     const ta = body.querySelector('#nai-ta');
     const previewBox = body.querySelector('#nai-preview');
-    const fillFolderOptions = (selectedId) => {
-      const opts = [];
-      N.doc.folders.slice().sort((a, b) => folderDepth(a.id) - folderDepth(b.id)).forEach((f) => {
-        opts.push('<option value="' + esc(f.id) + '">' + '　'.repeat(folderDepth(f.id)) + esc(f.name) + '</option>');
-      });
-      opts.push('<option value="__create__">➕ 新建文件夹…</option>');
-      sel.innerHTML = opts.join('');
-      sel.value = selectedId || (plan._forceFolder || '');
-      if (!sel.value) sel.value = UNCATA;
-      if (typeof syncFolderBox === 'function') syncFolderBox();
-    };
-    fillFolderOptions(plan.folderAction === 'existing' ? folderId : (plan._forceFolder || '__create__'));
-    // 归档文件夹下拉同样是原生 select:换成站内控件(选项由 fillFolderOptions 动态填充)
+    // 归档文件夹下拉是原生 select,换成站内控件;syncFolderBox 必须在使用它的
+    // fillFolderOptions 之前声明——否则 const 的暂时性死区会让 fillFolderOptions
+    // 抛 ReferenceError,弹窗只画出空内容区、底部按钮永远不生成。
     let folderBox = null;
     const syncFolderBox = () => { if (folderBox && folderBox.syncLabel) folderBox.syncLabel(); };
-    if (window.OC && window.OC.enhanceSelect) {
-      folderBox = window.OC.enhanceSelect(sel, { className: 'nai-folder-box' });
-      syncFolderBox();
-    }
-    if (plan.folderAction === 'create' && !plan._forceFolder) {
-      sel.value = '__create__';
-      newInput.classList.remove('hidden');
-      newInput.value = recommendedName || '';
-      if (typeof syncFolderBox === 'function') syncFolderBox();
-    }
-    ta.value = plan.markdownContent;
-    if (window.OCRenderer) window.OCRenderer.renderInto(previewBox, plan.markdownContent);
-    else previewBox.textContent = plan.markdownContent;
-
-    sel.addEventListener('change', () => {
-      if (sel.value === '__create__') newInput.classList.remove('hidden');
-      else newInput.classList.add('hidden');
-    });
-    body.querySelector('#nai-toggle').addEventListener('click', () => {
-      const editing = !ta.classList.contains('hidden');
-      if (editing) {
-        ta.classList.add('hidden');
-        if (window.OCRenderer) window.OCRenderer.renderInto(previewBox, ta.value);
-        body.querySelector('#nai-toggle').innerHTML = icon('edit', 13) + '查看 Markdown 源码';
-      } else {
-        ta.classList.remove('hidden');
-        body.querySelector('#nai-toggle').innerHTML = icon('eye', 13) + '查看渲染效果';
-      }
-    });
 
     const commit = async () => {
       // 收集最终值(直接保存=AI 推荐;确认保存=表单当前值)
@@ -3339,17 +3590,15 @@
       }
     };
 
+    // 先挂底部操作按钮,再做其余渲染:即便下拉/预览环节出错,用户仍有「取消 / 直接保存」可用,
+    // 不会留下一个既没内容又没按钮的死弹窗。
     foot.innerHTML = direct
       ? '<button class="btn" id="nai-cancel">取消</button><button class="btn primary" id="nai-save">确认保存</button>'
       : '<button class="btn" id="nai-cancel">取消</button>'
         + '<button class="btn" id="nai-quick">直接保存（使用 AI 推荐）</button>'
         + '<button class="btn primary" id="nai-save">确认保存</button>';
     foot.querySelector('#nai-cancel').addEventListener('click', () => closeArchiveDialog(mask));
-    foot.querySelector('#nai-save').addEventListener('click', () => {
-      // 进入编辑态后的保存:把预览切回源码读取最新值
-      if (!ta.classList.contains('hidden')) { /* 源码可见,直接用 */ }
-      commit();
-    });
+    foot.querySelector('#nai-save').addEventListener('click', () => { commit(); });
     const quick = foot.querySelector('#nai-quick');
     if (quick) {
       quick.addEventListener('click', () => {
@@ -3363,6 +3612,65 @@
         body.querySelector('#nai-tags').value = plan.tags.join(', ');
         ta.value = plan.markdownContent;
         commit();
+      });
+    }
+
+    // 正文先落到 textarea:它是保存时的取值来源,必须无条件写入;
+    // 渲染预览属于「锦上添花」,失败不影响保存内容。
+    ta.value = plan.markdownContent;
+    const fillFolderOptions = (selectedId) => {
+      const opts = [];
+      N.doc.folders.slice().sort((a, b) => folderDepth(a.id) - folderDepth(b.id)).forEach((f) => {
+        opts.push('<option value="' + esc(f.id) + '">' + '　'.repeat(folderDepth(f.id)) + esc(f.name) + '</option>');
+      });
+      opts.push('<option value="__create__">➕ 新建文件夹…</option>');
+      sel.innerHTML = opts.join('');
+      sel.value = selectedId || (plan._forceFolder || '');
+      if (!sel.value) sel.value = UNCATA;
+      syncFolderBox();
+    };
+    try {
+      if (window.OC && window.OC.enhanceSelect) {
+        folderBox = window.OC.enhanceSelect(sel, { className: 'nai-folder-box' });
+      }
+      // 选项必须在 enhanceSelect 之后填充:enhanceSelect 会劫持 value 的 setter,
+      // 先填充则显示文字停留在空选项上(下拉看着是空的)。
+      fillFolderOptions(plan.folderAction === 'existing' ? folderId : (plan._forceFolder || '__create__'));
+      if (plan.folderAction === 'create' && !plan._forceFolder) {
+        sel.value = '__create__';
+        newInput.classList.remove('hidden');
+        newInput.value = recommendedName || '';
+        syncFolderBox();
+      }
+      sel.addEventListener('change', () => {
+        if (sel.value === '__create__') newInput.classList.remove('hidden');
+        else newInput.classList.add('hidden');
+      });
+    } catch (e) {
+      // 下拉装载失败不能拖垮整个弹窗:退回原生 select,至少还能选文件夹保存
+      try { fillFolderOptions(plan.folderAction === 'existing' ? folderId : (plan._forceFolder || '__create__')); } catch (e2) {}
+    }
+    try {
+      if (window.OCRenderer) window.OCRenderer.renderInto(previewBox, plan.markdownContent);
+      else previewBox.textContent = plan.markdownContent;
+    } catch (e) {
+      previewBox.textContent = plan.markdownContent;
+    }
+    const toggleBtn = body.querySelector('#nai-toggle');
+    if (toggleBtn) {
+      toggleBtn.addEventListener('click', () => {
+        const editing = !ta.classList.contains('hidden');
+        if (editing) {
+          ta.classList.add('hidden');
+          try {
+            if (window.OCRenderer) window.OCRenderer.renderInto(previewBox, ta.value);
+            else previewBox.textContent = ta.value;
+          } catch (e) { previewBox.textContent = ta.value; }
+          toggleBtn.innerHTML = icon('edit', 13) + '查看 Markdown 源码';
+        } else {
+          ta.classList.remove('hidden');
+          toggleBtn.innerHTML = icon('eye', 13) + '查看渲染效果';
+        }
       });
     }
   }
@@ -3396,7 +3704,12 @@
       boot();
     }
     // 浏览器前进/后退:地址与模块状态保持一致
-    window.addEventListener('resize', () => { if (N.ready) applySideState(); });
+    window.addEventListener('resize', () => {
+      if (!N.ready) return;
+      // 变宽后抽屉状态没有意义(宽屏是常驻侧栏),清掉免得回到窄屏时"半开"
+      if (!isNarrow()) N.ui.mobileSide = false;
+      applySideState();
+    });
     window.addEventListener('popstate', () => {
       const shown = N.els.mask && N.els.mask.classList.contains('show');
       if (isNotesPath() && !shown) open();
@@ -3429,6 +3742,10 @@
     listNotes: () => (N.doc.notes || []).map((n) => ({ id: n.id, title: n.title, tags: n.tags || [], content: n.content || '', updatedAt: n.updatedAt })),
     searchNotes: (q, limit) => recallNotes(q, limit || 5).map((h) => ({ id: h.note.id, title: h.note.title, content: h.note.content })),
     _debug: N,
+    // 供 tests/notes-archive.js 直接验证解析器:弱模型的输出千奇百怪,
+    // 解析必须能在无浏览器环境下被穷举回归。
+    _parse: { strict: parseArchivePlan, loose: parseArchivePlanLoose, repairJson, truncateToTokens, estimateTokens },
+    _budgets: archiveBudgets,
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initEntry);
   else initEntry();

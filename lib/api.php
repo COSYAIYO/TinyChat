@@ -414,6 +414,39 @@ function tc_sanitize_chats($chats) {
                 }
                 if (isset($msg['contextCount'])) $msg['contextCount'] = max(0, (int) $msg['contextCount']);
                 if (isset($msg['contextLimit'])) $msg['contextLimit'] = max(0, (int) $msg['contextLimit']);
+                // @助手/@笔记 引用快照:气泡里的 @ 回显据此渲染。不放行会被同步丢字段,
+                // 表现为「刷新/换设备后引用消失」(内容本身不受影响)。
+                if (isset($m['mentions']) && is_array($m['mentions'])) {
+                    $mts = array();
+                    foreach (array_slice($m['mentions'], 0, 30) as $mt) {
+                        if (!is_array($mt)) continue;
+                        $kind = isset($mt['kind']) && in_array($mt['kind'], array('assistant', 'folder', 'note'), true) ? $mt['kind'] : '';
+                        if ($kind === '') continue;
+                        $one = array(
+                            'kind' => $kind,
+                            'name' => substr((string) (isset($mt['name']) ? $mt['name'] : ''), 0, 200),
+                            'id' => substr((string) (isset($mt['id']) ? $mt['id'] : ''), 0, 64),
+                        );
+                        if ($one['name'] === '' && $one['id'] === '') continue;
+                        $mts[] = $one;
+                    }
+                    if ($mts) $msg['mentions'] = $mts;
+                }
+                // 回答末尾「参考笔记」来源行:记录这轮真正喂给模型的笔记。
+                // 与 mentions 同理,不放行会被同步丢字段,表现为刷新/换设备后来源行消失。
+                if (isset($m['noteRefs']) && is_array($m['noteRefs'])) {
+                    $nrs = array();
+                    foreach (array_slice($m['noteRefs'], 0, 30) as $nr) {
+                        if (!is_array($nr)) continue;
+                        $one = array(
+                            'id' => substr((string) (isset($nr['id']) ? $nr['id'] : ''), 0, 64),
+                            'title' => substr((string) (isset($nr['title']) ? $nr['title'] : ''), 0, 200),
+                        );
+                        if ($one['id'] === '' && $one['title'] === '') continue;
+                        $nrs[] = $one;
+                    }
+                    if ($nrs) $msg['noteRefs'] = $nrs;
+                }
                 if (isset($m['versions']) && is_array($m['versions'])) {
                     $vers = array();
                     foreach (array_slice($m['versions'], -12) as $v) {
