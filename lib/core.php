@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.118');
+define('TC_VERSION', '2.0.119');
 // 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
 define('TC_NOTE_MAX_CHARS', 500000);
 define('TC_DB_VERSION', 2);
@@ -14,6 +14,14 @@ define('TC_PBKDF2_ITER', 120000);
 define('TC_LOG_LIMIT', 500);
 // 邮件默认模板版本:升级默认样式时 +1,旧默认(或为空)会自动换成新版,自定义模板不受影响
 define('TC_MAIL_TPL_VERSION', 2);
+
+// 输出上限与上下文窗口的唯一来源是「模型元数据」表(按模型名匹配,全站渠道共用)。
+// 表里没有该模型时,取数处会按这两个常量自动补一条并标记「待人工复核」,
+// 管理员复核后即成为该模型的正式上限。
+//   输出上限 8192:推理模型的思维链与正文共用这个额度,取值需为正文留余量;
+//   上下文窗口 131072:128K 是当前主流模型的常见窗口,偏保守以免高估小模型。
+define('TC_MODEL_META_AUTO_OUTPUT', 8192);
+define('TC_MODEL_META_AUTO_CONTEXT', 131072);
 
 // 默认邮件模板:同一套卡片式外壳,占位符 {siteName} {name} {link} {expires}
 function tc_mail_default_templates() {
@@ -108,10 +116,8 @@ $TC_SETTINGS_DEFAULTS = array(
     'defaultGroupId' => '',
     'contextMessages' => 12,
     'maxContextMessages' => 200,
-    // 单次输出上限。推理模型(思维链)的思考过程与正文共用这个额度,
-    // 8192 常被思维链吃光导致正文为空(实测 deepseek-v4.1-flash 8192 全用于 reasoning)。
-    // 默认抬到 32000,给思考留出余量;上限仍受「模型元数据/渠道 maxTokens」约束。
-    'maxOutputTokens' => 32000,
+    // 说明:单次输出上限与上下文窗口不再有全局设置,统一由「模型元数据」表按模型名控制
+    // (见 $TC_MODEL_META_AUTO_* 常量与该表的 ensure/取数逻辑)。
     // 全局采样温度: null = 不发送该参数(用模型默认);设置后 0-2
     'temperature' => null,
     // 数据备份:每日自动备份整库快照到 data/backup/,保留最近 N 份
@@ -665,7 +671,10 @@ function tc_litellm_index($raw) {
 //   cache_read_input_token_cost -> cacheReadCostPerToken,
 //   cache_creation_input_token_cost -> cacheWriteCostPerToken。
 // 价格统一按「每 token」存(与 litellm 一致),展示时由前端换算成百万 token。
-// 三个 token 上限为 0 表示「未配置」,交由调用方回退到全局设置。
+// source 三态:
+//   manual —— 管理员手工维护,同步不覆盖;
+//   litellm —— 从公开价格表同步;
+//   auto   —— 模型没匹配到本表时自动补的兜底值,带 needsReview 待人工复核。
 function tc_model_meta_key($name) {
     return strtolower(trim((string) $name));
 }
@@ -686,7 +695,8 @@ function tc_normalize_model_meta_item($raw) {
     $cRead = $num(isset($raw['cacheReadCostPerToken']) ? $raw['cacheReadCostPerToken'] : null, 0, 1000);
     $cWrite = $num(isset($raw['cacheWriteCostPerToken']) ? $raw['cacheWriteCostPerToken'] : null, 0, 1000);
     if ($input === 0 && $output === 0 && $pIn <= 0 && $pOut <= 0 && $cRead <= 0 && $cWrite <= 0) return null;
-    $source = (isset($raw['source']) && $raw['source'] === 'manual') ? 'manual' : 'litellm';
+    $srcRaw = isset($raw['source']) ? (string) $raw['source'] : '';
+    $source = in_array($srcRaw, array('manual', 'auto'), true) ? $srcRaw : 'litellm';
     return array(
         'maxInputTokens' => $input,
         'maxOutputTokens' => $output,
@@ -699,6 +709,8 @@ function tc_normalize_model_meta_item($raw) {
         'provider' => substr((string) (isset($raw['provider']) ? $raw['provider'] : ''), 0, 60),
         'mode' => substr((string) (isset($raw['mode']) ? $raw['mode'] : ''), 0, 40),
         'source' => $source,
+        // 自动补的兜底值需人工复核:管理员确认或编辑后清除该标记
+        'needsReview' => $source === 'auto' && !empty($raw['needsReview']),
         // 是否启用:停用的条目不参与窗口计算,但保留数据便于复查
         'enabled' => !array_key_exists('enabled', $raw) || !empty($raw['enabled']),
         'updatedAt' => isset($raw['updatedAt']) && is_numeric($raw['updatedAt']) ? (int) $raw['updatedAt'] : tc_now(),
@@ -726,6 +738,38 @@ function tc_model_meta_get($db, $model, $onlyEnabled = true) {
     $item = $db['modelMeta'][$key];
     if ($onlyEnabled && empty($item['enabled'])) return null;
     return $item;
+}
+
+// 某模型的输出上限/上下文窗口(唯一取数入口)。
+// 元数据表按模型名命中即用其值;未命中(或该侧为 0)时用常量兜底不写库,
+// 因此即使表被删空,请求也不会失去上限。$meta 可传入已取好的条目避免重复查找。
+function tc_model_meta_caps($meta) {
+    $out = ($meta !== null && !empty($meta['maxOutputTokens'])) ? (int) $meta['maxOutputTokens'] : TC_MODEL_META_AUTO_OUTPUT;
+    $ctx = ($meta !== null && !empty($meta['maxInputTokens'])) ? (int) $meta['maxInputTokens'] : TC_MODEL_META_AUTO_CONTEXT;
+    return array($out, $ctx);
+}
+
+// 模型加进供应商后,若元数据表里还没有它,自动补一条兜底值并标记「待人工复核」。
+// 让新加的模型立刻出现在「模型元数据」表里(而不是静默沿用兜底值),便于管理员核对修正。
+function tc_model_meta_ensure_auto(&$db, $models) {
+    if (!isset($db['modelMeta']) || !is_array($db['modelMeta'])) $db['modelMeta'] = array();
+    $added = 0;
+    foreach ((array) $models as $m) {
+        $name = is_array($m) ? (isset($m['id']) ? (string) $m['id'] : '') : (string) $m;
+        $key = tc_model_meta_key($name);
+        if ($key === '' || strlen($key) > 200 || isset($db['modelMeta'][$key])) continue;
+        $db['modelMeta'][$key] = tc_normalize_model_meta_item(array(
+            'maxInputTokens' => TC_MODEL_META_AUTO_CONTEXT,
+            'maxOutputTokens' => TC_MODEL_META_AUTO_OUTPUT,
+            'source' => 'auto',
+            'needsReview' => true,
+            'enabled' => true,
+            'updatedAt' => tc_now(),
+        ));
+        $added++;
+        if (count($db['modelMeta']) >= 20000) break;
+    }
+    return $added;
 }
 
 function tc_normalize_settings($raw) {
@@ -815,8 +859,6 @@ function tc_normalize_settings($raw) {
     $s['maxContextMessages'] = min(500, max(2, $maxCtx ?: $TC_SETTINGS_DEFAULTS['maxContextMessages']));
     $ctx = isset($s['contextMessages']) ? (int) $s['contextMessages'] : $TC_SETTINGS_DEFAULTS['contextMessages'];
     $s['contextMessages'] = min($s['maxContextMessages'], max(2, $ctx ?: $TC_SETTINGS_DEFAULTS['contextMessages']));
-    $out = isset($s['maxOutputTokens']) ? (int) $s['maxOutputTokens'] : $TC_SETTINGS_DEFAULTS['maxOutputTokens'];
-    $s['maxOutputTokens'] = min(128000, max(256, $out ?: $TC_SETTINGS_DEFAULTS['maxOutputTokens']));
     $temp = isset($s['temperature']) && $s['temperature'] !== '' && $s['temperature'] !== null ? (float) $s['temperature'] : null;
     $s['temperature'] = $temp === null ? null : min(2, max(0, $temp));
     $s['backupEnabled'] = !array_key_exists('backupEnabled', $s) || !empty($s['backupEnabled']);
@@ -1478,6 +1520,70 @@ function tc_migrate_db($raw) {
         }
     }
     $db['settingsMigrated52'] = true;
+    // 上限来源统一迁移(v2.0.119):此前 max_tokens/最大上下文可在「供应商模型项」与
+    // 「对话设置」两处各配一份,现全部收归「模型元数据」表。这里的迁移保证存量配置不丢:
+    //   1) 供应商里手填的 maxTokens/maxContext 写进元数据表(标 manual,不被同步覆盖);
+    //   2) 供应商里已启用、但表里没有的模型,补一条自动兜底值并标记「待人工复核」,
+    //      让它们立刻出现在后台表里可核对;
+    //   3) 全局 maxOutputTokens 仅当表里该模型没有输出上限时兜底写入,之后该键即废弃。
+    // 用独立标记键避免重复执行(该键会由逐键比对机制自动落库)。
+    if (empty($db['metaMigrated119'])) {
+        if (!isset($db['modelMeta']) || !is_array($db['modelMeta'])) $db['modelMeta'] = array();
+        $legacyGlobalOut = 0;
+        if (isset($db['settings']['maxOutputTokens']) && (int) $db['settings']['maxOutputTokens'] > 0) {
+            $legacyGlobalOut = min(128000, max(256, (int) $db['settings']['maxOutputTokens']));
+        }
+        $enabledModels = array();
+        foreach ((isset($db['providers']) && is_array($db['providers']) ? $db['providers'] : array()) as $p) {
+            if (!is_array($p) || !isset($p['models']) || !is_array($p['models'])) continue;
+            foreach ($p['models'] as $m) {
+                if (!is_array($m) || empty($m['id'])) continue;
+                $key = tc_model_meta_key($m['id']);
+                if ($key === '' || strlen($key) > 200) continue;
+                $mt = isset($m['maxTokens']) ? (int) $m['maxTokens'] : 0;
+                $mc = isset($m['maxContext']) ? (int) $m['maxContext'] : 0;
+                if ($mt > 0 || $mc > 0) {
+                    // 手填值优先:并进已有条目(手工声明的渠道约束比同步来的参考值更可信)
+                    $item = isset($db['modelMeta'][$key]) && is_array($db['modelMeta'][$key]) ? $db['modelMeta'][$key] : array();
+                    $item['source'] = 'manual';
+                    $item['needsReview'] = false;
+                    if ($mt > 0) $item['maxOutputTokens'] = min(128000, max(256, $mt));
+                    if ($mc > 0) $item['maxInputTokens'] = min(2000000, max(256, $mc));
+                    $item['updatedAt'] = tc_now();
+                    $db['modelMeta'][$key] = $item;
+                } else {
+                    // 没手填过:记下模型名,稍后统一补自动条目
+                    $enabledModels[] = (string) $m['id'];
+                }
+            }
+        }
+        // 供应商里已启用的模型凡是表里没有的,一律补一条自动兜底值(与实际加模型时同一逻辑)。
+        // 曾经生效的全局上限若还在,优先用它作为输出上限——迁移前后行为保持一致。
+        $missing = array();
+        foreach (array_unique($enabledModels) as $name) {
+            $key = tc_model_meta_key($name);
+            if ($key !== '' && !isset($db['modelMeta'][$key])) $missing[] = $name;
+        }
+        if ($missing) {
+            if ($legacyGlobalOut > 0) {
+                foreach ($missing as $name) {
+                    $key = tc_model_meta_key($name);
+                    $db['modelMeta'][$key] = tc_normalize_model_meta_item(array(
+                        'maxInputTokens' => TC_MODEL_META_AUTO_CONTEXT,
+                        'maxOutputTokens' => $legacyGlobalOut,
+                        'source' => 'auto',
+                        'needsReview' => true,
+                        'enabled' => true,
+                        'updatedAt' => tc_now(),
+                    ));
+                }
+            } else {
+                tc_model_meta_ensure_auto($db, $missing);
+            }
+        }
+        unset($db['settings']['maxOutputTokens']);
+        $db['metaMigrated119'] = true;
+    }
     $db['version'] = TC_DB_VERSION;
     foreach (array('users', 'providers', 'userGroups', 'accessRules', 'assistantCategories', 'assistants', 'packages', 'redemptionCodes', 'quotaLedger', 'inviteCodes') as $k) {
         $db[$k] = isset($db[$k]) && is_array($db[$k]) ? array_values($db[$k]) : array();

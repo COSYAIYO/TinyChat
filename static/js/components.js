@@ -322,8 +322,6 @@
       + '<th class="col-check"></th>'
       + '<th class="col-id">模型 ID</th>'
       + '<th class="col-name">显示名称</th>'
-      + '<th class="col-mtok" title="单次回答最多生成的 token，留空则跟随全局的单次输出上限">max_tokens</th>'
-      + '<th class="col-ctx" title="该模型的上下文窗口（token），留空则不做限制">最大上下文</th>'
       + costHead
       + keyHead
       + '<th class="col-img" title="标记为生图模型：调用对话接口时会自动改用 images/generations（未标记时按模型名自动判断）">生图</th>'
@@ -340,21 +338,6 @@
     }
     return '<span class="mname-static">' + escapeHtml(m.name || m.id)
       + (m.enabled ? '<em>已启用</em>' : '') + '</span>';
-  }
-
-  // 通用模型数字列:maxTokens(留空跟随全局)/maxContext(留空不限制)
-  const MODEL_NUM_COLS = [
-    { field: 'maxTokens', cls: 'mtokens', placeholder: '全局', min: 256, max: 128000 },
-    { field: 'maxContext', cls: 'mctx', placeholder: '不限', min: 256, max: 2000000 },
-  ];
-
-  function modelNumCell(m, col, editable) {
-    const v = parseInt(m[col.field], 10) > 0 ? parseInt(m[col.field], 10) : '';
-    if (editable) {
-      return '<input class="' + col.cls + '" type="number" min="' + col.min + '" max="' + col.max + '" step="1" data-mid="'
-        + escapeHtml(m.id) + '" value="' + v + '" placeholder="' + col.placeholder + '" autocomplete="off">';
-    }
-    return '<span class="' + col.cls + '-static">' + (v === '' ? '<i class="muted">' + col.placeholder + '</i>' : v) + '</span>';
   }
 
   // 单次调用扣减次数:留空 = 跟随供应商价格;填写后该模型单独计价
@@ -406,8 +389,6 @@
     opts = opts || {};
     const checked = opts.checked ? ' checked' : '';
     const attr = opts.stale ? 'data-stale' : 'data-mid';
-    const numCells = MODEL_NUM_COLS.map((col) => '<td class="' + (col.cls === 'mtokens' ? 'col-mtok' : 'col-ctx') + '">'
-      + modelNumCell(m, col, !opts.stale) + '</td>').join('');
     const costCell = opts.showCost === false ? '' : '<td class="col-cost">' + modelCostCell(m, !opts.stale) + '</td>';
     // 生图标记:显式 image 字段优先;未显式设置时按模型名给出建议默认值(仅用于勾选态展示)
     const isImage = Object.prototype.hasOwnProperty.call(m, 'image') ? !!m.image : (window.OC && OC.isImageModelName ? OC.isImageModelName(m.id) : false);
@@ -425,7 +406,6 @@
       + '<td class="col-check"><input type="checkbox" ' + attr + '="' + escapeHtml(m.id) + '"' + checked + '></td>'
       + '<td class="col-id"><span class="mid">' + escapeHtml(m.id) + '</span></td>'
       + '<td class="col-name">' + modelNameCell(m, !opts.stale) + '</td>'
-      + numCells
       + costCell
       + modelKeyCell(m, opts)
       + imageCell
@@ -453,7 +433,6 @@
 
     let catalog = [];
     const selected = new Set();
-    const NUM_FIELDS = MODEL_NUM_COLS.map((c) => c.field);
 
     function upsertCatalog(models, opts) {
       const selectNew = !!(opts && opts.selectNew);
@@ -463,13 +442,6 @@
         const id = String((m && (m.id || m.name)) || '').trim();
         if (!id) return;
         const incoming = String((m && m.name) || '').trim();
-        // 调用方携带数字字段时(已保存的模型/弹窗回传)才更新,上游拉取的原始列表没有这些字段
-        const incomingNums = {};
-        NUM_FIELDS.forEach((f) => {
-          if (m && Object.prototype.hasOwnProperty.call(m, f)) {
-            incomingNums[f] = parseInt(m[f], 10) || 0;
-          }
-        });
         // 生图标记只有调用方显式携带时才更新(上游拉取的原始列表没有该字段,不能覆盖已保存值)
         const hasImage = !!(m && Object.prototype.hasOwnProperty.call(m, 'image'));
         const incomingImage = hasImage ? !!m.image : undefined;
@@ -486,7 +458,6 @@
         if (found) {
           if (updateName && incoming) found.name = incoming;
           else if (incoming && (!found.name || found.name === found.id)) found.name = incoming;
-          Object.keys(incomingNums).forEach((f) => { found[f] = incomingNums[f]; });
           if (hasImage) found.image = incomingImage;
           if (hasVideo) found.video = incomingVideo;
           if (hasCost) found.cost = incomingCost;
@@ -495,7 +466,6 @@
           else { delete found.keyId; delete found.keyIds; }
         } else {
           const item = { id, name: incoming || id };
-          NUM_FIELDS.forEach((f) => { item[f] = incomingNums[f] !== undefined ? incomingNums[f] : 0; });
           if (hasImage) item.image = incomingImage;
           else if (window.OC && OC.isImageModelName) item.image = OC.isImageModelName(id);
           if (hasVideo) item.video = incomingVideo;
@@ -615,14 +585,6 @@
         }
         return;
       }
-      const numInp = e.target && e.target.closest
-        ? e.target.closest(MODEL_NUM_COLS.map((c) => 'input.' + c.cls).join(','))
-        : null;
-      if (numInp) {
-        const col = MODEL_NUM_COLS.find((c) => numInp.classList.contains(c.cls));
-        const item = catalog.find((x) => x.id === numInp.dataset.mid);
-        if (col && item) item[col.field] = parseInt(numInp.value, 10) || 0;
-      }
     });
 
     // 密钥链:移除某把 / 上移提高优先级
@@ -657,7 +619,7 @@
 
     listEl.addEventListener('keydown', (e) => {
       const cls = e.target && e.target.classList;
-      if (e.key === 'Enter' && cls && (cls.contains('mname') || cls.contains('mtokens') || cls.contains('mctx') || cls.contains('mcost'))) {
+      if (e.key === 'Enter' && cls && (cls.contains('mname') || cls.contains('mcost'))) {
         e.preventDefault();
         e.target.blur();
       }
@@ -722,9 +684,6 @@
       getCatalog() {
         return catalog.map((m) => {
           const row = { id: m.id, name: m.name || m.id, enabled: selected.has(m.id) };
-          MODEL_NUM_COLS.forEach((c) => {
-            if (parseInt(m[c.field], 10) > 0) row[c.field] = parseInt(m[c.field], 10);
-          });
           if (Object.prototype.hasOwnProperty.call(m, 'image')) row.image = !!m.image;
           if (Object.prototype.hasOwnProperty.call(m, 'video')) row.video = !!m.video;
           if (Object.prototype.hasOwnProperty.call(m, 'cost')) row.cost = m.cost;
@@ -738,9 +697,6 @@
           .filter((m) => selected.has(m.id))
           .map((m) => {
             const row = { id: m.id, name: m.name || m.id };
-            MODEL_NUM_COLS.forEach((c) => {
-              if (parseInt(m[c.field], 10) > 0) row[c.field] = parseInt(m[c.field], 10);
-            });
             if (Object.prototype.hasOwnProperty.call(m, 'image')) row.image = !!m.image;
             if (Object.prototype.hasOwnProperty.call(m, 'video')) row.video = !!m.video;
             if (Object.prototype.hasOwnProperty.call(m, 'cost')) row.cost = m.cost;
@@ -808,9 +764,6 @@
         let item = itemById(id);
         if (!item) {
           item = { id, name: (prev && prev.name) || upstream || id, enabled: !!(prev && prev.enabled) };
-          MODEL_NUM_COLS.forEach((c) => {
-            item[c.field] = (prev && parseInt(prev[c.field], 10) > 0) ? parseInt(prev[c.field], 10) : 0;
-          });
           if (Object.prototype.hasOwnProperty.call(prev || {}, 'image')) item.image = !!prev.image;
           if (Object.prototype.hasOwnProperty.call(prev || {}, 'video')) item.video = !!prev.video;
           if (prev && Object.prototype.hasOwnProperty.call(prev, 'cost')) item.cost = prev.cost;
@@ -858,17 +811,19 @@
     const summaryLine = '共 ' + items.length + ' 个模型'
       + (showKey ? ' · 本次密钥「' + escapeHtml(keyName(fetchedKeyId) || '默认密钥') + '」' : '');
     const noticeHtml = showKey
-      ? '<p><b>勾选要启用的模型</b>,并可直接修改前台显示名称、max_tokens（留空跟随全局）与最大上下文（留空不限制）。</p>'
+      ? '<p><b>勾选要启用的模型</b>,并可直接修改前台显示名称。输出上限与上下文窗口不在这里配置，统一到「模型元数据」按模型名维护。</p>'
         + '<p><b>密钥优先级链：</b>同一个模型可绑定多把密钥。上游用第一把失败时自动回退下一把，数字越小越优先。</p>'
         + '<ul>'
         + '<li>在「密钥」列点 <kbd>+ 加备用 Key</kbd> 追加，点 <kbd>↑</kbd> 提前优先级，点 <kbd>×</kbd> 移除。</li>'
         + '<li>切换上方「获取用 Key」再点「获取列表」，可拉取另一把 Key 下的模型；点「并入并继续获取」并入当前列表（同一模型自动合并为一条链）。</li>'
         + '<li>本轮没出现的已存模型会列在下方「已失效模型」里，默认勾选清除。</li>'
+        + '<li>新加的模型会自动出现在「模型元数据」表里并标注<b>待复核</b>，请到那里核对它的窗口与输出上限。</li>'
         + '</ul>'
-      : '<p><b>勾选要启用的模型</b>,并可直接修改前台显示名称、max_tokens（留空跟随全局）与最大上下文（留空不限制）。</p>'
+      : '<p><b>勾选要启用的模型</b>,并可直接修改前台显示名称。输出上限与上下文窗口不在这里配置，统一到「模型元数据」按模型名维护。</p>'
         + '<ul>'
         + '<li>表格较宽时<b>左右滑动</b>查看全部列；表头与「模型 ID」列会固定在左侧。</li>'
         + '<li>本轮没出现的已存模型会列在下方「已失效模型」里，默认勾选清除。</li>'
+        + '<li>新加的模型会自动出现在「模型元数据」表里并标注<b>待复核</b>，请到那里核对它的窗口与输出上限。</li>'
         + '</ul>';
     mask.innerHTML =
       '<div class="modal modal-lg model-fetch-modal" role="dialog" aria-modal="true">'
@@ -1065,18 +1020,19 @@
         if (item) item.name = nameInp.value;
         return;
       }
-      const numInp = e.target && e.target.closest
-        ? e.target.closest(MODEL_NUM_COLS.map((c) => 'input.' + c.cls).join(','))
-        : null;
-      if (numInp) {
-        const col = MODEL_NUM_COLS.find((c) => numInp.classList.contains(c.cls));
-        const item = itemById(numInp.dataset.mid);
-        if (col && item) item[col.field] = parseInt(numInp.value, 10) || 0;
+      const costInp = e.target && e.target.closest ? e.target.closest('input.mcost') : null;
+      if (costInp) {
+        const item = itemById(costInp.dataset.mid);
+        if (item) {
+          const raw = String(costInp.value || '').trim();
+          if (raw === '' || !isFinite(Number(raw))) delete item.cost;
+          else item.cost = Math.max(0, Math.min(1000, Number(raw)));
+        }
       }
     });
     listEl.addEventListener('keydown', (e) => {
       const cls = e.target && e.target.classList;
-      if (e.key === 'Enter' && cls && (cls.contains('mname') || cls.contains('mtokens') || cls.contains('mctx') || cls.contains('mcost'))) {
+      if (e.key === 'Enter' && cls && (cls.contains('mname') || cls.contains('mcost'))) {
         e.preventDefault();
         e.target.blur();
       }
@@ -1129,12 +1085,8 @@
     const close = (apply, action) => {
       if (apply && typeof opts.onApply === 'function') {
         const keepOpen = opts.onApply(
-          // 始终携带数字字段(可为 0),保证弹窗里清空后能覆盖旧值
           items.map((m) => {
             const row = { id: m.id, name: String(m.name || '').trim() || m.id, enabled: !!m.enabled };
-            MODEL_NUM_COLS.forEach((c) => {
-              row[c.field] = parseInt(m[c.field], 10) > 0 ? parseInt(m[c.field], 10) : 0;
-            });
             if (Array.isArray(m.keyIds) && m.keyIds.length) { row.keyIds = m.keyIds.map((x) => String(x)); row.keyId = String(m.keyIds[0]); }
             else if (m.keyId) row.keyId = String(m.keyId);
             return row;

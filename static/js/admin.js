@@ -1866,10 +1866,8 @@ function fillChatLimits(s) {
   const src = s || {};
   const maxCtx = Math.min(500, Math.max(2, parseInt(src.maxContextMessages, 10) || 200));
   const ctx = Math.min(maxCtx, Math.max(2, parseInt(src.contextMessages, 10) || 12));
-  const output = Math.min(128000, Math.max(256, parseInt(src.maxOutputTokens, 10) || 12800));
   if ($('chat-context-max')) $('chat-context-max').value = maxCtx;
   if ($('chat-context')) $('chat-context').value = ctx;
-  if ($('chat-output')) $('chat-output').value = output;
   if ($('chat-temperature')) {
     const t = parseFloat(src.temperature);
     $('chat-temperature').value = Number.isFinite(t) ? t : '';
@@ -1900,7 +1898,6 @@ function fillChatLimits(s) {
   save.addEventListener('click', async () => {
     const maxCtx = Math.min(500, Math.max(2, parseInt($('chat-context-max') && $('chat-context-max').value, 10) || 200));
     const ctx = Math.min(maxCtx, Math.max(2, parseInt($('chat-context') && $('chat-context').value, 10) || 40));
-    const output = Math.min(128000, Math.max(256, parseInt($('chat-output') && $('chat-output').value, 10) || 12800));
     const tempRaw = parseFloat(($('chat-temperature') && $('chat-temperature').value) || '');
     const temperature = Number.isFinite(tempRaw) ? Math.min(2, Math.max(0, tempRaw)) : null;
     const rateLimit = Math.min(600, Math.max(0, parseInt($('chat-ratelimit') && $('chat-ratelimit').value, 10) || 0));
@@ -1926,11 +1923,11 @@ function fillChatLimits(s) {
       const r = await api('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature, rateLimitPerMin: rateLimit, proxyTimeoutMs: timeoutSec * 1000, contextAutoLearn: contextLearn, persistChats, apiSaveChats, healthOkMin: healthOk, healthWarnMin: healthWarn, imageArchiveEnabled, imageArchiveQuotaMb, outboundProxy }),
+        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, temperature, rateLimitPerMin: rateLimit, proxyTimeoutMs: timeoutSec * 1000, contextAutoLearn: contextLearn, persistChats, apiSaveChats, healthOkMin: healthOk, healthWarnMin: healthWarn, imageArchiveEnabled, imageArchiveQuotaMb, outboundProxy }),
       });
       const data = await r.json();
       if (!r.ok) return toast((data.error && data.error.message) || '保存失败', true);
-      fillChatLimits(data.settings || { contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature });
+      fillChatLimits(data.settings || { contextMessages: ctx, maxContextMessages: maxCtx, temperature });
       toast('对话设置已保存');
     } catch (e) {
       toast('保存失败: ' + e.message, true);
@@ -4244,9 +4241,9 @@ function mmFmtTokens(v) {
   return escapeHtml(n.toLocaleString('en-US'));
 }
 function mmSourceBadge(item) {
-  return item.source === 'manual'
-    ? '<span class="mm-src manual" title="手工维护，同步不会覆盖">手工</span>'
-    : '<span class="mm-src sync" title="来自 litellm 价格表">同步</span>';
+  if (item.source === 'manual') return '<span class="mm-src manual" title="手工维护，同步不会覆盖">手工</span>';
+  if (item.source === 'auto') return '<span class="mm-src auto" title="模型未匹配到本表时自动补的兜底值，需人工复核">自动</span>';
+  return '<span class="mm-src sync" title="来自 litellm 价格表">同步</span>';
 }
 
 async function loadModelMeta() {
@@ -4291,10 +4288,23 @@ async function refreshModelMeta() {
     return;
   }
   MM_STATE.total = d.total || 0;
+  // 搜索/清空后总数变小,旧页码可能越界(显示"第 3 / 1 页"且表格为空):回夹到最后一页重取
+  const totalPages = Math.max(1, Math.ceil(MM_STATE.total / MM_STATE.perPage));
+  if (MM_STATE.page > totalPages) {
+    MM_STATE.page = totalPages;
+    return refreshModelMeta();
+  }
   const st = $('mm-status');
   if (st) {
     const synced = d.syncedAt ? new Date(d.syncedAt).toLocaleString('zh-CN') : '从未同步';
     st.textContent = '共 ' + (d.storedCount || 0) + ' 个模型（源表 ' + (d.sourceCount || 0) + ' 条）· 上次同步：' + synced;
+  }
+  // 待复核提示条:自动补的兜底值数量(不随搜索/分页变化,来自服务端全表统计)
+  const reviewNote = $('mm-review-note');
+  if (reviewNote) {
+    const rc = Number(d.reviewCount) || 0;
+    reviewNote.hidden = rc <= 0;
+    if (rc > 0 && $('mm-review-count')) $('mm-review-count').textContent = String(rc);
   }
   const items = d.items || [];
   if (!items.length) {
@@ -4314,16 +4324,17 @@ async function refreshModelMeta() {
       + '</tr>';
     const rows = items.map((it) => {
       const name = escapeHtml(it.model);
-      const raw = String(it.model || '');
+      const rowCls = [it.inUse ? 'mm-inuse' : '', it.needsReview ? 'mm-needs-review' : ''].filter(Boolean);
       // 未配置的数值显示为淡灰「—」,比空白更明确地表示"没有这项数据"
       const cell = (v) => mmFmtTokens(v);
       const price = (v) => {
         const s = mmPricePerMillion(v);
         return s === '' ? '<span class="mm-none">—</span>' : s;
       };
-      return '<tr' + (it.inUse ? ' class="mm-inuse"' : '') + '>'
+      return '<tr' + (rowCls.length ? ' class="' + rowCls.join(' ') + '"' : '') + '>'
         + '<td class="mm-col-name"><span class="mm-name" title="' + name + '">' + name + '</span>'
-        + (it.inUse ? '<span class="mm-inuse-tag" title="当前供应商配置里正在使用">在用</span>' : '') + '</td>'
+        + (it.inUse ? '<span class="mm-inuse-tag" title="当前供应商配置里正在使用">在用</span>' : '')
+        + (it.needsReview ? '<span class="mm-review-tag" title="系统自动补的兜底值，未经人工核对">待复核</span>' : '') + '</td>'
         + '<td>' + cell(it.maxInputTokens) + '</td>'
         + '<td>' + cell(it.maxOutputTokens) + '</td>'
         + '<td>' + price(it.inputCostPerToken) + '</td>'
@@ -4331,7 +4342,9 @@ async function refreshModelMeta() {
         + '<td>' + price(it.cacheReadCostPerToken) + '</td>'
         + '<td>' + price(it.cacheWriteCostPerToken) + '</td>'
         + '<td>' + mmSourceBadge(it) + (it.enabled === false ? '<span class="mm-off" title="该条不参与窗口计算，但数据保留">已停用</span>' : '') + '</td>'
-        + '<td class="mm-ops"><button class="btn small" type="button" data-mm-edit="' + name + '" title="编辑 ' + name + '">编辑</button>'
+        + '<td class="mm-ops">'
+        + (it.needsReview ? '<button class="btn small primary" type="button" data-mm-confirm="' + name + '" title="数值无误，去掉待复核标记">确认</button>' : '')
+        + '<button class="btn small" type="button" data-mm-edit="' + name + '" title="编辑 ' + name + '">编辑</button>'
         + '<button class="btn small danger" type="button" data-mm-del="' + name + '" title="删除 ' + name + '">删除</button></td>'
         + '</tr>';
     }).join('');
@@ -4358,10 +4371,25 @@ async function refreshModelMeta() {
       const model = btn.getAttribute('data-mm-edit');
       editModelMeta(items.find((x) => x.model === model) || null);
     }));
+    wrap.querySelectorAll('[data-mm-confirm]').forEach((btn) => btn.addEventListener('click', async () => {
+      const model = btn.getAttribute('data-mm-confirm');
+      btn.disabled = true;
+      try {
+        const r = await api('/api/admin/model-meta', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, confirm: true }) });
+        const rd = await r.json();
+        if (!r.ok) return toast((rd.error && rd.error.message) || '确认失败', true);
+        toast('已确认 ' + model);
+        refreshModelMeta();
+      } catch (e) {
+        toast('确认失败: ' + e.message, true);
+      } finally {
+        btn.disabled = false;
+      }
+    }));
     wrap.querySelectorAll('[data-mm-del]').forEach((btn) => btn.addEventListener('click', async () => {
       const model = btn.getAttribute('data-mm-del');
       const ok = window.OCUI && window.OCUI.confirm
-        ? await window.OCUI.confirm({ title: '删除模型元数据', message: '确认删除「' + model + '」的窗口与价格数据？删除后该模型回退到全局上限。', danger: true, confirmText: '删除' })
+        ? await window.OCUI.confirm({ title: '删除模型元数据', message: '确认删除「' + model + '」的窗口与价格数据？删除后该模型不再有单独上限（请求时按兜底值处理）。', danger: true, confirmText: '删除' })
         : window.confirm('确认删除「' + model + '」？');
       if (!ok) return;
       const r = await api('/api/admin/model-meta', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }) });
@@ -4388,7 +4416,8 @@ function editModelMeta(item) {
     + '<div class="modal-header"><h3>' + (isNew ? '新增模型元数据' : '编辑模型元数据') + '</h3>'
     + '<button class="icon-btn" type="button" data-close aria-label="关闭">✕</button></div>'
     + '<div class="modal-body">'
-    + '<p class="muted small">按「每百万 token」填价格（如 gpt-4o 输入 2.5）。留空＝不配置该项。手工保存的条目标记为「手工」，后续同步不会覆盖它。</p>'
+    + '<p class="muted small">按「每百万 token」填价格（如 gpt-4o 输入 2.5）。留空＝不配置该项。手工保存的条目标记为「手工」，后续同步不会覆盖它。'
+    + (item && item.needsReview ? '<br><b>该条目前是自动补的兜底值</b>，保存后即视为已复核，标记会消失。' : '') + '</p>'
     + '<label class="field"><span>模型名（与供应商里的模型 ID 一致）</span><input id="mm-edit-model" type="text" maxlength="200" value="' + escapeHtml(isNew ? '' : item.model) + '"' + (isNew ? '' : ' readonly') + '></label>'
     + '<div class="pkg-form-grid">'
     + '<label class="field"><span>输入窗口（token）</span><input id="mm-edit-maxin" type="number" min="0" step="1" value="' + v(item && item.maxInputTokens ? item.maxInputTokens : '') + '"></label>'
@@ -4475,7 +4504,7 @@ async function syncModelMeta(btn) {
 
 async function clearModelMeta() {
   const ok = window.OCUI && window.OCUI.confirm
-    ? await window.OCUI.confirm({ title: '清空同步数据', message: '确认清空所有来自 litellm 的数据？手工维护的条目会保留。清空后相关模型回退到全局上限。', danger: true, confirmText: '清空' })
+    ? await window.OCUI.confirm({ title: '清空同步数据', message: '确认清空所有来自 litellm 的数据？手工维护的条目会保留。清空后这些模型不再有单独上限（请求时按兜底值处理）。', danger: true, confirmText: '清空' })
     : window.confirm('确认清空同步数据？手工条目会保留。');
   if (!ok) return;
   const r = await api('/api/admin/model-meta/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
