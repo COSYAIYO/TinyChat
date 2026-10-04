@@ -2418,6 +2418,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         if ($modHit !== '') tc_fail(400, '消息包含被禁止的内容，请修改后重试');
         // 用户自备供应商(自己的 Key):不扣站点次数,也不设额度门槛
         if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
+        // 内部「AI 工具判定」(生图/联网/标题的调度预检)不向用户计费:它是用户看不见的
+        // 基础步骤,对用户而言一条消息就是一次对话;上游成本由站点承担。
+        // 仅限网页端内部调用 —— 开放 API 的外部请求不能靠自带 _purpose=judge 绕过计费。
+        $reqPurpose = isset($b['_purpose']) ? (string) $b['_purpose'] : '';
+        if ($reqPurpose === 'judge' && $apiKeyOwner === null) $cost = 0;
         // 额度预扣:检查与扣减放在同一个写事务里完成,避免并发请求都读到同一笔余额后全部放行。
         // 实际费用要等上游返回才知道(按 token 计费),所以先按预估费用扣,结算时再多退少补。
         $reserveOk = false;

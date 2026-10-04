@@ -31,8 +31,13 @@
     const logo = c.groupId
       ? (window.OC && OC.icon ? OC.icon('group', 15) : I.chat)
       : (window.OC && OC.chatLogo && OC.logoImg ? OC.logoImg(OC.chatLogo(c), 'chat-logo') : (c.pinned ? I.pin : I.chat));
+    // 置顶标识:模型 logo 会盖住旧的 pin 图标方案,这里独立挂在标题后,始终可见
+    const pinMark = c.pinned
+      ? '<span class="chat-pin-mark" data-tip="已置顶" aria-label="已置顶">' + (window.OC && OC.icon ? OC.icon('pinMark', 12) : I.pin) + '</span>'
+      : '';
     return '<span class="chat-icon">' + logo + '</span>'
-      + '<span class="chat-title">' + escapeHtml(c.title || '新对话') + '</span>';
+      + '<span class="chat-title">' + escapeHtml(c.title || '新对话') + '</span>'
+      + pinMark;
   };
   const MENU_HTML = '<button class="menu-btn more-btn" data-act="more" data-tip="更多操作" aria-label="更多操作">' + ic('more', 16) + '</button>';
 

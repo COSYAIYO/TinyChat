@@ -1032,6 +1032,7 @@ function renderChatList() {
       c.pinned = !c.pinned;
       c.updatedAt = Date.now();
       saveChats(); renderChatList();
+      toast(c.pinned ? '已置顶「' + (c.title || '新对话') + '」' : '已取消置顶');
     },
     onShare: (c) => shareConversation(c),
     onBranch: (c) => {
@@ -1276,9 +1277,17 @@ function resetComposer() {
 function renderMessages() {
   const chat = currentChat();
   const box = $('messages');
+  // 重建前后保持阅读位置:innerHTML 重建的瞬间内容会变矮(图片/公式/高亮异步渲染),
+  // 浏览器把 scrollTop 夹进变小的高度,表现为"切换回答标签/重答后跳到会话顶部"。
+  // 同一会话内重建时按高度差恢复;原本就在底部则继续跟底。
+  const area = $('chat-area');
+  const sameChat = !!(chat && area && state._renderedChatId === chat.id);
+  const prevTop = sameChat ? area.scrollTop : 0;
+  const prevH = sameChat ? area.scrollHeight : 0;
+  const wasAtBottom = sameChat && (area.scrollHeight - area.scrollTop - area.clientHeight < 80);
   box.innerHTML = '';
   renderEmptyState();
-  if (!chat) return;
+  if (!chat) { state._renderedChatId = null; return; }
   // 长对话分页:默认渲染最近 100 条,「加载更早」每次增量展开 100 条。
   // 不再一次性渲染全部 —— 几千条消息的会话点一下按钮会连 DOM 带高亮全部重建,直接卡死。
   const MAX_VISIBLE = 100;
@@ -1310,7 +1319,11 @@ function renderMessages() {
   if (state._scrollHistoryToBottom) {
     state._scrollHistoryToBottom = false;
     scrollToBottom();
+  } else if (sameChat && prevH > 0) {
+    if (wasAtBottom) scrollToBottom();
+    else area.scrollTop = Math.max(0, prevTop + (area.scrollHeight - prevH));
   }
+  state._renderedChatId = chat.id;
 }
 function scrollToBottom() {
   const area = document.getElementById('chat-area');
@@ -1878,7 +1891,9 @@ function buildMsgNode(m, chat, idx) {
     const shown = String(m.content || '').split(NOTE_CTX_SEP)[0];
     const root = document.createElement('div');
     contentDiv.appendChild(root);
-    window.OCRenderer.renderInto(root, shown);
+    // 用户输入的 HTML 按字面显示而不是解析:先转义再走 Markdown(表格/代码/公式仍正常),
+    // 否则 <script> 会被清洗到整段消失、<img src=x> 渲染成裂图,和用户输入不一致
+    window.OCRenderer.renderInto(root, escapeHtml(shown));
     // @笔记 的引用改在 AI 回答侧展示(避免与问题气泡重复)
   }
   div.appendChild(contentDiv);
