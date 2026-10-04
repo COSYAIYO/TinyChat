@@ -6,7 +6,7 @@
  *   其余资源(图片/字体/图标)仍用 stale-while-revalidate,省流量、加载快。
  * HTML 页面 / API / SSE 流式 / /v1 出口一律直连,绝不缓存(登录态与流式响应不可缓存)。
  */
-const CACHE = 'tinychat-static-2.0.122';
+const CACHE = 'tinychat-static-2.0.123';
 
 self.addEventListener('install', () => self.skipWaiting());
 
