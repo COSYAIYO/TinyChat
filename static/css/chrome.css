@@ -2319,13 +2319,18 @@ body.share-page {
   /* 吸附列的定位基准:勾选列宽必须与此值一致 */
   --mt-check-w: 38px;
   --row-bg: var(--bg-surface);
+  /* 吸附列/表头的底色必须完全不透明:--bg-hover 是半透明色(亮色 rgba(0,0,0,.045)),
+     拿它 color-mix 出来的背景只有约 2-4% 不透明度,滚动内容会从吸附列与表头下面
+     透出来(鬼影)。这里改用不透明的 --text 调出同等强度的灰/亮调。 */
+  --mt-tint-head: color-mix(in srgb, var(--text) 3%, var(--bg-surface));
+  --mt-tint-row: color-mix(in srgb, var(--text) 2%, var(--bg-surface));
 }
 .model-table thead th {
   position: sticky;
   top: 0;
   z-index: 3;
   padding: 9px 10px;
-  background: color-mix(in srgb, var(--bg-hover) 62%, var(--bg-surface));
+  background: var(--mt-tint-head, var(--bg-surface));
   border-bottom: 1px solid var(--hairline);
   color: var(--text-tertiary);
   font-size: 0.821rem;
@@ -2365,9 +2370,9 @@ body.share-page {
 .model-table thead th.col-check,
 .model-table thead th.col-id { z-index: 5; }
 /* 表头的吸附列要比表头更高一层,同时保持自己的底色,避免被表头盖住 */
-.model-table thead th.col-check { background: color-mix(in srgb, var(--bg-hover) 62%, var(--bg-surface)); }
+.model-table thead th.col-check { background: var(--mt-tint-head, var(--bg-surface)); }
 .model-table thead th.col-id {
-  background: color-mix(in srgb, var(--bg-hover) 62%, var(--bg-surface));
+  background: var(--mt-tint-head, var(--bg-surface));
 }
 /* 滑出内容提示:只在"右边还有内容"时出现 */
 .model-table .col-id { transition: box-shadow 0.18s ease; }
@@ -2421,8 +2426,9 @@ body.share-page {
 .model-table select.mkey { width: 100%; min-height: 30px; padding: 3px 6px; border: 1px solid var(--hairline); border-radius: 7px; background: var(--bg-surface); color: var(--text); font-size: 0.893rem; }
 
 .model-table tbody tr { --row-bg: var(--bg-surface); }
-/* 斑马纹:长列表横向对齐阅读更省力 */
-.model-table tbody tr:nth-child(even) { --row-bg: color-mix(in srgb, var(--bg-hover) 45%, var(--bg-surface)); }
+/* 斑马纹:长列表横向对齐阅读更省力。同样必须不透明(--mt-tint-row),否则偶数行的
+   吸附列背景近全透明,横向滑动时下方单元格透出来 */
+.model-table tbody tr:nth-child(even) { --row-bg: var(--mt-tint-row, var(--bg-surface)); }
 .model-table tbody tr:hover { --row-bg: color-mix(in srgb, var(--brand, var(--accent)) 7%, var(--bg-surface)); }
 .model-table tbody tr.is-on { --row-bg: color-mix(in srgb, var(--brand, var(--accent)) 5%, var(--bg-surface)); }
 .model-table tbody td {
@@ -4902,13 +4908,16 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   --row-bg: var(--bg-surface);
   /* 模型名吸附列的宽度:表头与单元格共用 */
   --mm-name-w: 226px;
+  /* 吸附表头/吸附列的底色必须不透明(理由同 .model-table) */
+  --mt-tint-head: color-mix(in srgb, var(--text) 3%, var(--bg-surface));
+  --mt-tint-row: color-mix(in srgb, var(--text) 2%, var(--bg-surface));
 }
 .mm-table thead th {
   position: sticky;
   top: 0;
   z-index: 3;
   padding: 9px 10px;
-  background: color-mix(in srgb, var(--bg-hover) 62%, var(--bg-surface));
+  background: var(--mt-tint-head, var(--bg-surface));
   border-bottom: 1px solid var(--hairline);
   color: var(--text-tertiary);
   font-size: 0.821rem;
@@ -4931,7 +4940,7 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   text-align: left;
   background: var(--row-bg);
 }
-.mm-table thead th.mm-col-name { z-index: 5; background: color-mix(in srgb, var(--bg-hover) 62%, var(--bg-surface)); }
+.mm-table thead th.mm-col-name { z-index: 5; background: var(--mt-tint-head, var(--bg-surface)); }
 /* 滑动到右边时,吸附列右缘给一道阴影,提示下方内容被它盖住 */
 .mm-wrap.is-pan-x .mm-table td.mm-col-name,
 .mm-wrap.is-pan-x .mm-table thead th.mm-col-name {
@@ -4954,7 +4963,7 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 }
 .mm-table tbody tr > *:last-child { border-right: 0; }
 .mm-table tbody tr:last-child > td { border-bottom: 0; }
-.mm-table tbody tr:nth-child(even) { --row-bg: color-mix(in srgb, var(--bg-hover) 45%, var(--bg-surface)); }
+.mm-table tbody tr:nth-child(even) { --row-bg: var(--mt-tint-row, var(--bg-surface)); }
 .mm-table tbody tr:hover { --row-bg: color-mix(in srgb, var(--brand, var(--accent)) 7%, var(--bg-surface)); }
 /* 正在被供应商使用的模型:最左侧一道品牌色条,一眼看出该先维护哪些 */
 .mm-table tbody tr.mm-inuse td.mm-col-name { box-shadow: inset 3px 0 0 var(--brand, var(--accent)); }
@@ -5020,7 +5029,7 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   white-space: nowrap;
   text-align: right;
 }
-.mm-table thead th.mm-ops { z-index: 5; background: color-mix(in srgb, var(--bg-hover) 62%, var(--bg-surface)); }
+.mm-table thead th.mm-ops { z-index: 5; background: var(--mt-tint-head, var(--bg-surface)); }
 .mm-wrap.is-pan-x .mm-table td.mm-ops,
 .mm-wrap.is-pan-x .mm-table thead th.mm-ops {
   box-shadow: -10px 0 12px -10px rgba(0, 0, 0, 0.22);
@@ -5076,3 +5085,30 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 .mm-help > summary:hover { color: var(--primary, #3b82f6); }
 /* 展开后正文与标题之间留白,并与四周内边距对齐 */
 .mm-help > div { padding: 0 14px 12px; }
+
+/* ---------- 后台:导航吸顶 + 概览数值防溢出 ---------- */
+/* 一二级导航随页面滚动会消失,下滚后找不到入口;吸顶并垫不透明底色 */
+.admin-tabs {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 30 !important;
+  /* 旧规则里有 background: transparent !important,这里必须同等强度才能盖住 */
+  background: var(--bg-app) !important;
+  /* 顶部留出与页头的间距感,同时盖住下滚内容 */
+  padding-top: 10px !important;
+  margin-top: -10px !important;
+}
+[data-theme="dark"] .admin-tabs { background: var(--bg-app); }
+/* 概览大数字:超长时截断而非撑破卡片,完整值在 title 悬浮提示里 */
+.stat-card { min-width: 0; overflow: hidden; }
+.stat-card .stat-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* sticky 吸顶修正:body.admin-body 的 overflow:auto(style.css)让 body 成为
+   "内容与自身等高的滚动容器"—— 它永远不会滚,而 sticky 相对最近的滚动祖先
+   定位,于是永远不吸附。后台页面的滚动实际由 html 承担(见上方
+   html:has(body.admin-body) 规则),这里把 body 改回 visible。 */
+body.admin-body { overflow: visible !important; }

@@ -123,6 +123,11 @@
   flex: 1 1 auto;
   min-width: 0;
   height: 34px;
+  /* 移动端/窄屏控件放不下时横向滚动,保证 AI/问笔记等入口可达 */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  padding-bottom: 2px;
 }
 .notes-editor-bar .notes-icon-btn { width: 28px; height: 28px; }
 /* 撤销/重做:不可用时降低存在感,不隐藏(保持工具栏稳定) */
@@ -197,6 +202,14 @@
 }
 .neb-tags-btn:hover { background: var(--bg-hover); color: var(--text); }
 .neb-tags-btn .oc-icon { color: var(--text-tertiary); }
+/* 保存状态:不换行不收缩 —— 空间不足时按断点整体隐藏(见响应式),而不是被挤成竖排溢出 */
+.ne-save-state {
+  font-size: 0.857em;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
 .neb-time {
   font-size: 0.857em;
   color: var(--text-tertiary);
@@ -840,7 +853,7 @@
   .notes-editor-panes.mode-split, .notes-editor-panes.mode-preview { grid-template-columns: 1fr; }
   .notes-editor-panes.mode-split .notes-ta { display: none; }
   .notes-editor-panes.mode-split .notes-preview-wrap { display: block; }
-  .neb-save-state { display: none; }
+  .ne-save-state { display: none; }
   .neb-title { width: 110px; }
   .nfh-right { padding-left: 12px; }
 }

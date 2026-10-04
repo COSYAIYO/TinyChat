@@ -214,8 +214,22 @@ async function loadSystemBoard() {
 // 两块数据来自不同接口(系统看板给用户与调用,统计接口给额度),谁先到都先渲染一次,
 // 后到的补齐;这样单独刷新任一边都不会把另一边的格子抹掉。
 const OV = { sys: null, stats: null };
-function ovCard(label, value, sub) {
-  return '<div class="stat-card"><div class="stat-value">' + escapeHtml(String(value)) + '</div>'
+// 大数字缩写:额度类数值动辄上亿,原始数字既读不了也会撑破概览卡片(悬停可见完整值)
+function fmtBigNum(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v ?? '');
+  const abs = Math.abs(n);
+  const cut = (x) => String(Math.round(x * 100) / 100);
+  if (abs >= 1e16) return cut(n / 1e16) + ' 亿亿';
+  if (abs >= 1e12) return cut(n / 1e12) + ' 万亿';
+  if (abs >= 1e8)  return cut(n / 1e8) + ' 亿';
+  if (abs >= 1e4)  return cut(n / 1e4) + ' 万';
+  return n.toLocaleString('en-US');
+}
+function ovCard(label, value, sub, full) {
+  return '<div class="stat-card"><div class="stat-value"'
+    + (full != null && full !== String(value) ? ' title="' + escapeHtml(full) + '"' : '')
+    + '>' + escapeHtml(String(value)) + '</div>'
     + '<div class="stat-label">' + escapeHtml(label) + '</div>'
     + (sub ? '<div class="stat-sub">' + escapeHtml(sub) + '</div>' : '') + '</div>';
 }
@@ -236,8 +250,10 @@ function renderOverviewGrid() {
     cards.push(['助手数', content.assistants]);
   }
   if (OV.stats) {
-    cards.push(['已发放额度', s.totalQuotaGiven || 0]);
-    cards.push(['注册默认额度', OV.stats.freeQuotaUnlimited ? '不限' : (OV.stats.freeQuota || 0)]);
+    const given = s.totalQuotaGiven || 0;
+    cards.push(['已发放额度', fmtBigNum(given), '', String(given)]);
+    const freeQ = OV.stats.freeQuotaUnlimited ? '不限' : fmtBigNum(OV.stats.freeQuota || 0);
+    cards.push(['注册默认额度', freeQ, '', OV.stats.freeQuotaUnlimited ? '' : String(OV.stats.freeQuota || 0)]);
   }
   el.innerHTML = cards.map((c) => ovCard(c[0], c[1], c[2])).join('');
 }
@@ -4704,7 +4720,8 @@ async function viewUserNotes(userId) {
 }
 
 const ADMIN_GROUPS = {
-  overview: [{ id: 'overview', label: '概览' }, { id: 'usage', label: '用量分析' }, { id: 'announce', label: '全站公告' }, { id: 'logs', label: '运行日志' }],
+  // 二级首项叫「运营数据」,避免与上方一级分组「概览」重名让人分不清
+  overview: [{ id: 'overview', label: '运营数据' }, { id: 'usage', label: '用量分析' }, { id: 'announce', label: '全站公告' }, { id: 'logs', label: '运行日志' }],
   users: [{ id: 'users', label: '用户' }, { id: 'groups', label: '用户组' }, { id: 'access', label: '模型授权' }, { id: 'verify', label: '用户验证' }, { id: 'invite', label: '邀请码' }],
   billing: [
     { id: 'packages', label: '额度套餐' },

@@ -243,6 +243,19 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.18); }
 }
 
 /* 会话项:只在悬停时露出一个「更多」按钮,不再常驻四个图标挡标题 */
+/* 置顶标识:紧跟标题之后,不随悬停显隐 —— 否则用户无法看出哪些会话被置顶 */
+.chat-pin-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin-left: 3px;
+  color: var(--accent);
+  opacity: .75;
+}
+.chat-pin-mark .oc-icon { width: 12px; height: 12px; }
 .chat-item-menu {
   position: absolute;
   right: 4px;
