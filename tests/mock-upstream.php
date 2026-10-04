@@ -226,6 +226,51 @@ if ($echoSystem) {
     ));
     return;
 }
+if (is_array($body) && isset($body['model']) && $body['model'] === 'mock-archive') {
+    // 「保存到 AI 笔记」的归档步骤:返回合法 JSON 计划,供 GUI 用例验证预览弹窗与保存链路。
+    // mock-archive-bad 复现弱模型的坏输出(字符串内裸换行 + 被 max_tokens 截断):
+    // 客户端必须能修复解析并仍然完成保存,而不是把整条笔记丢掉。
+    $isBad = false;
+    if (isset($body['messages']) && is_array($body['messages'])) {
+        foreach ($body['messages'] as $mm) {
+            $c = is_array($mm) && isset($mm['content']) ? (is_string($mm['content']) ? $mm['content'] : json_encode($mm['content'])) : '';
+            if (strpos($c, '弱模型复现') !== false) { $isBad = true; break; }
+        }
+    }
+    if ($isBad) {
+        // 故意不转义换行、不闭合括号(截断在正文中间);仍包在标准 chat 响应里
+        $badContent = '{"noteTitle":"弱模型整理结果","tags":["火锅"],"markdownContent":"# 凑凑火锅\n\n呷哺呷哺旗下中高端品牌\n\n- 客单价约 150 元\n\n第二段写到一半就';
+        echo json_encode(array(
+            'id' => 'mock-archive-bad',
+            'object' => 'chat.completion',
+            'model' => 'mock-archive',
+            'choices' => array(array('index' => 0, 'message' => array(
+                'role' => 'assistant',
+                'content' => $badContent,
+            ), 'finish_reason' => 'length')),
+            'usage' => array('prompt_tokens' => 1500, 'completion_tokens' => 500),
+        ));
+        return;
+    }
+    echo json_encode(array(
+        'id' => 'mock-archive',
+        'object' => 'chat.completion',
+        'model' => 'mock-archive',
+        'choices' => array(array('index' => 0, 'message' => array(
+            'role' => 'assistant',
+            'content' => json_encode(array(
+                'folderAction' => 'create',
+                'newFolderName' => '餐饮品牌',
+                'noteTitle' => '凑凑火锅:呷哺呷哺旗下中高端火锅品牌',
+                'tags' => array('凑凑火锅', '呷哺呷哺', '餐饮品牌'),
+                'reasoning' => '现有文件夹均与餐饮消费品牌无关,新建「餐饮品牌」长期复用。',
+                'markdownContent' => "# 凑凑火锅\n\n呷哺呷哺旗下中高端火锅品牌,主打「火锅+茶饮」双业态。\n\n## 关键信息\n\n- 客单价约 150 元\n- 门店集中在一二线城市\n",
+            ), JSON_UNESCAPED_UNICODE),
+        ), 'finish_reason' => 'stop')),
+        'usage' => array('prompt_tokens' => 1500, 'completion_tokens' => 500),
+    ));
+    return;
+}
 if (is_array($body) && !empty($body['stream'])) {
     $slowModel = isset($body['model']) ? (string) $body['model'] : '';
     // 慢速流(mock-slow-stream):逐词输出并停顿,供「生成到一半刷新/中断」的回归测试。

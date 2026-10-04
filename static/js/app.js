@@ -331,6 +331,9 @@ function postUserTurn(text, attachments, existing) {
   }
   const content = displayParts.join('\n\n') || '（附件）';
   const userMsg = { role: 'user', content, text, attachments, createdAt: Date.now() };
+  // 发送那一刻的 @助手 / @文件夹 / @笔记 快照:气泡里按输入框的样子回显引用
+  userMsg.mentions = mentionsSnapshot(chat);
+  clearNoteMentionsAfterSend();
   chat.messages.push(userMsg);
   jumpToLatestOnSend();
   chat.updatedAt = Date.now();
@@ -1884,17 +1887,24 @@ function buildMsgNode(m, chat, idx) {
       if (window.OCCitations && m.citations && m.citations.length) {
         window.OCCitations.enhanceCitations(root, m.citations);
       }
+      // 末尾「参考笔记」来源行(仅回答侧;挂在 contentDiv 内,不挤正文也不会重复)
+      appendNoteRefs(contentDiv, m);
     }
   } else {
     // 用户消息：走渲染管线以支持附件（图片/文件卡片），但限制富文本能力
-    // @笔记 引用只用于注入上下文,展示时从正文里剥掉,改在气泡下方以 chip 呈现
-    const shown = String(m.content || '').split(NOTE_CTX_SEP)[0];
+    // @笔记 引用只用于注入上下文,展示时从正文里剥掉,改在气泡内回显引用
+    const raw = String(m.content || '');
+    let shown = raw.split(NOTE_CTX_SEP)[0];
+    // 早期版本点「整个文件夹」会漏删输入框里正在输入的 @,于是消息开头多一个孤立的 @
+    // (现已修)。按「带笔记上下文 + 开头是孤立 @」识别,用户自己写的 @未分类 不受影响。
+    if (raw.indexOf(NOTE_CTX_SEP) >= 0) shown = shown.replace(/^\s*@(?=\s|$)\s*/, '');
     const root = document.createElement('div');
     contentDiv.appendChild(root);
     // 用户输入的 HTML 按字面显示而不是解析:先转义再走 Markdown(表格/代码/公式仍正常),
     // 否则 <script> 会被清洗到整段消失、<img src=x> 渲染成裂图,和用户输入不一致
     window.OCRenderer.renderInto(root, escapeHtml(shown));
-    // @笔记 的引用改在 AI 回答侧展示(避免与问题气泡重复)
+    // 回显这条提问选中的 @助手 / @文件夹 / @笔记(与输入框同一套配色)
+    appendMsgMentions(root, m.mentions);
   }
   div.appendChild(contentDiv);
 
@@ -1914,8 +1924,6 @@ function buildMsgNode(m, chat, idx) {
     if (m.followUps && m.followUps.length) {
       window.OCMultimodal.renderFollowUps(div, m.followUps, applyFollowUp);
     }
-    // @笔记 的回答:标注基于笔记并列出可点击的来源
-    appendNoteRefs(div, m);
     // 来源列表
     if (m.citations && m.citations.length && window.OCCitations) {
       window.OCCitations.renderSources(div, m.citations);
@@ -2725,6 +2733,7 @@ async function sendMessage() {
   const noteCtx = noteMentionsContext(4000);
   let noteRefs = [];
   if (noteCtx) {
+    // 回答末尾「参考笔记」来源行用:记录这轮真正注入的笔记(整文件夹已展开成具体笔记)
     noteRefs = noteCtx.notes.map((n) => ({ id: n.id, title: n.title || '无标题' }));
     text = (text || '请总结这些笔记的内容。') + '\n\n---\n'
       + noteCtx.instruction + '\n\n' + noteCtx.text;
@@ -2890,16 +2899,9 @@ async function sendMessage() {
 
   // 消息立刻进对话(判定阶段已发过就复用),输入框随即清空;进展写在 AI 回复气泡里。
   const turn = postUserTurn(text, attachments, posted);
-  // @笔记:把提及记录到该条用户消息上(气泡下方显示来源 chip),并清空输入区的待发 chip。
-  // 同时给 AI 回答打标记,回答气泡里显示「基于笔记回答」并附来源卡片。
-  if (noteRefs.length && turn && turn.userMsg) {
-    turn.userMsg.noteRefs = noteRefs;
-    if (turn.assistantMsg) turn.assistantMsg.noteRefs = noteRefs;
-    state.noteMentions = [];
-    state.noteFolderMentions = [];
-    renderNoteMentions();
-    renderMessages();
-  }
+  // 回答末尾的「参考笔记」来源行跟着这一轮回答走(与提问气泡里的 @ 回显互补:
+  // 气泡回显的是用户选了什么,@来源行列出真正喂给模型的笔记)
+  if (noteRefs.length && turn && turn.assistantMsg) turn.assistantMsg.noteRefs = noteRefs;
   const searching = state._toolSearch === true || webSearchMode() === 'on';
   setReplyPhase(turn.assistantMsg, searching ? '正在联网检索' : '思考中');
   try {
@@ -3029,24 +3031,81 @@ async function streamRequest(format, body, chat, assistantMsg) {
   }
 }
 
-// @笔记 引用的展示(回答侧):「基于 N 篇笔记回答」提示 + 可点击来源卡片。
-// 两条渲染路径(renderMessages 全量 / reRenderLastAssistant 精准)共用,避免漏挂。
-function appendNoteRefs(container, msg) {
-  if (!Array.isArray(msg.noteRefs) || !msg.noteRefs.length) return;
-  const hint = document.createElement('div');
-  hint.className = 'note-answer-hint';
-  hint.innerHTML = '📒 基于 ' + msg.noteRefs.length + ' 篇笔记回答';
-  container.appendChild(hint);
+// 引用已快照进这条用户消息:清空输入区的待发 chip(所有发送路径共用,避免漏清)
+function clearNoteMentionsAfterSend() {
+  if (!(state.noteMentions || []).length && !(state.noteFolderMentions || []).length) return;
+  state.noteMentions = [];
+  state.noteFolderMentions = [];
+  renderNoteMentions();
+}
+
+// 记录这条提问选中的 @助手 / @整文件夹 / @笔记(发送那一刻的快照)。
+// 用户气泡据此回显「@助手 @文件夹 @笔记 问题正文」,与输入框里的连排观感一致;
+// 引用被移除后重发也不再改历史消息,历史消息忠实于当时发出去的样子。
+function mentionsSnapshot(chat) {
+  const mentions = [];
+  const c = chat || currentChat();
+  const name = c && c.assistantName ? String(c.assistantName).trim() : '';
+  if (name) mentions.push({ kind: 'assistant', name: name });
+  (state.noteFolderMentions || []).forEach((f) => {
+    mentions.push({ kind: 'folder', id: f.id, name: f.name || '文件夹' });
+  });
+  (state.noteMentions || []).forEach((n) => {
+    mentions.push({ kind: 'note', id: n.id, name: n.title || '无标题笔记' });
+  });
+  return mentions;
+}
+
+// 用户消息气泡里的 @ 回显:与输入框同一套 chip(助手蓝、笔记/文件夹红),可点开笔记
+function appendMsgMentions(root, mentions) {
+  if (!Array.isArray(mentions) || !mentions.length) return;
+  const row = document.createElement('span');
+  row.className = 'msg-mentions';
+  mentions.forEach((m) => {
+    const chip = document.createElement('span');
+    chip.className = 'note-mention-chip' + (m.kind === 'assistant' ? ' note-mention-assistant' : '')
+      + (m.kind === 'folder' ? ' note-mention-folder' : '');
+    chip.innerHTML = '<b>@</b>' + escapeHtml(m.name || '') + (m.kind === 'folder' ? ' 文件夹' : '');
+    if (m.kind === 'assistant') {
+      chip.title = '这条提问使用的助手';
+    } else {
+      chip.title = m.kind === 'folder'
+        ? '这轮提问引用了整个文件夹「' + (m.name || '') + '」的笔记，点击打开 AI 笔记'
+        : '这轮提问引用了这篇笔记，点击打开 AI 笔记';
+      chip.setAttribute('role', 'button');
+      chip.tabIndex = 0;
+      chip.addEventListener('click', () => { if (window.OCNotes) window.OCNotes.open(); });
+      chip.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (window.OCNotes) window.OCNotes.open(); }
+      });
+    }
+    row.appendChild(chip);
+  });
+  // 与正文连读为「@助手 @文件夹 @笔记 问题正文」:插到首个块级元素的开头,
+  // 而不是另起一行(气泡里第一行放不下时自然折行,后续行回到最左)。
+  const first = root.firstElementChild;
+  if (first && /^(P|DIV|LI|BLOCKQUOTE|H[1-6])$/.test(first.tagName)) first.insertBefore(row, first.firstChild);
+  else root.insertBefore(row, root.firstChild);
+}
+
+// 回答末尾的「参考笔记」来源行:列出这轮回答真正喂给模型的笔记,点击打开 AI 笔记。
+// 必须挂在 .msg-content 之内:一来与正文同宽(挂到 .msg 上会变成 flex 兄弟节点,
+// 把正文挤窄),二来随 contentEl 一起重建,精准重绘不会像从前那样每次多叠一份。
+function appendNoteRefs(contentEl, msg) {
+  if (!contentEl || !msg || !Array.isArray(msg.noteRefs) || !msg.noteRefs.length) return;
   const refs = document.createElement('div');
   refs.className = 'note-ref-row';
-  refs.innerHTML = msg.noteRefs.map((r) => '<span class="note-mention-chip" data-id="' + escapeHtml(r.id) + '">'
-    + '<b>@</b>' + escapeHtml(r.title || '无标题笔记') + '</span>').join('');
+  refs.innerHTML = msg.noteRefs.map((r) => '<span class="note-mention-chip" role="button" tabindex="0"'
+    + ' title="这轮回答引用了这篇笔记，点击打开 AI 笔记"><b>@</b>'
+    + escapeHtml(r.title || '无标题笔记') + '</span>').join('');
+  const openNotes = () => { if (window.OCNotes) window.OCNotes.open(); };
   refs.querySelectorAll('.note-mention-chip').forEach((chip) => {
-    chip.addEventListener('click', () => {
-      if (window.OCNotes) window.OCNotes.open();
+    chip.addEventListener('click', openNotes);
+    chip.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openNotes(); }
     });
   });
-  container.appendChild(refs);
+  contentEl.appendChild(refs);
 }
 
 // 精准重绘最后一条 assistant 消息（流式结束后调用）
@@ -3082,6 +3141,8 @@ function reRenderLastAssistant(assistantMsg) {
   if (window.OCCitations && assistantMsg.citations && assistantMsg.citations.length) {
     window.OCCitations.enhanceCitations(root, assistantMsg.citations);
   }
+  // 末尾「参考笔记」来源行重挂:contentEl 刚被清空重建,这里补回唯一一份
+  appendNoteRefs(contentEl, assistantMsg);
   // 重新挂载操作栏 + 快捷指令 + 跟进建议
   last.querySelectorAll('.msg-actions, .quick-actions, .follow-ups, .cite-sources').forEach((el) => el.remove());
   if (assistantMsg.content || assistantMsg.reasoning || replyWasInterrupted(assistantMsg)) {
@@ -3100,8 +3161,6 @@ function reRenderLastAssistant(assistantMsg) {
     if (assistantMsg.citations && assistantMsg.citations.length && window.OCCitations) {
       window.OCCitations.renderSources(last, assistantMsg.citations);
     }
-    // @笔记 来源(与全量渲染保持一致)
-    appendNoteRefs(last, assistantMsg);
     // 耗时显示(先清旧再渲染,避免重复叠加)
     if (typeof renderElapsed === 'function') renderElapsed(last, assistantMsg);
   }
@@ -7022,6 +7081,8 @@ async function sendImageTurn(prompt, imageAtts, opts) {
     chat.messages.push(userMsg, placeholder);
     jumpToLatestOnSend();
   }
+  if (!userMsg.mentions) userMsg.mentions = mentionsSnapshot(chat);
+  clearNoteMentionsAfterSend();
   placeholder.imagePending = true;
   placeholder.model = model;
   placeholder.providerId = providerId;
@@ -7148,6 +7209,8 @@ async function sendVideoTurn(prompt, imageAtts, opts) {
     chat.messages.push(userMsg, placeholder);
     jumpToLatestOnSend();
   }
+  if (!userMsg.mentions) userMsg.mentions = mentionsSnapshot(chat);
+  clearNoteMentionsAfterSend();
   placeholder.imagePending = true;
   placeholder.pendingKind = 'video';
   placeholder.model = model;
@@ -7818,16 +7881,23 @@ function syncMentionFromInput() {
   }
   renderMention();
 }
+// 从输入框里删掉正在输入的 @ 片段(连同光标之前的候选词),光标回到 @ 处。
+// @ 候选的三种选择(助手 / 笔记 / 整个文件夹)必须都走这里:
+// 漏掉任何一条都会在输入框里留下一个多余的 @,下一个 Enter 还会被 @ 面板吃掉。
+function stripMentionFromInput() {
+  const el = inputEl;
+  const start = state.mention ? state.mention.start : -1;
+  if (!el || !(start >= 0)) return;
+  const pos = typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length;
+  el.value = (el.value.slice(0, start) + el.value.slice(pos)).replace(/^\s+/, '');
+  el.selectionStart = el.selectionEnd = Math.max(0, start);
+}
+
 function pickMention(item) {
   const el = inputEl;
-  const start = state.mention.start;
   if (item && item._note) {
     // @笔记:把提及文本删掉,改在输入区上方显示浅红色 chip(可多个,可移除)
-    if (el && start >= 0) {
-      const pos = typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length;
-      el.value = (el.value.slice(0, start) + el.value.slice(pos)).replace(/^\s+/, '');
-      el.selectionStart = el.selectionEnd = Math.max(0, start);
-    }
+    stripMentionFromInput();
     closeMention();
     addNoteMention(item._noteId, item.name);
     // 不调用 autosizeInput:chip 不在 textarea 内,重算高度只会让输入框莫名变高
@@ -7835,11 +7905,13 @@ function pickMention(item) {
     if (el) el.focus();
     return;
   }
-  if (el && start >= 0) {
-    const pos = typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length;
-    el.value = el.value.slice(0, start) + el.value.slice(pos);
-    el.selectionStart = el.selectionEnd = start;
+  if (!item) {
+    // 候选为空(搜索无结果、笔记还没加载出来)时的 Enter:只收面板,不要顺手清掉当前助手
+    closeMention();
+    updateSendBtn();
+    return;
   }
+  stripMentionFromInput();
   closeMention();
   if (item && item._none) useAssistantOnChat(null);
   else if (item) useAssistantOnChat(item);
@@ -7880,6 +7952,18 @@ function removeNoteMention(id) {
   state.noteMentions = (state.noteMentions || []).filter((x) => x.id !== id);
   renderNoteMentions();
 }
+// 首行缩进变化会改变 placeholder / 正文的折行行数,输入框高度必须跟着重算。
+// 否则会停在按旧缩进算出的高度上:引用清空后输入框「莫名变高」、引用变宽后又被截断,
+// 都要等到下一次输入事件才恢复。
+function resyncInputHeight(inp) {
+  if (typeof autosizeInput !== 'function') return;
+  const prev = inp.style.height;
+  // 必须先归零再量:scrollHeight 不会小于 clientHeight,带着旧高度量会自我印证、永远收不回去
+  inp.style.height = 'auto';
+  const want = Math.min(inp.scrollHeight, 180);
+  if (Math.abs(want - (parseFloat(prev) || 0)) > 0.5) autosizeInput();
+  else inp.style.height = prev;
+}
 // 首行缩进:让正文第一行从 @ 行之后开始,折行后回到最左侧(悬挂缩进)。
 // 宽度取 @ 行实际渲染宽度,并在 @ 行变化时同步。
 function syncComposerIndent() {
@@ -7888,7 +7972,7 @@ function syncComposerIndent() {
   if (!row || !inp) return;
   const hasAt = (row.querySelector('#composer-assistant') && !row.querySelector('#composer-assistant').classList.contains('hidden'))
     || (row.querySelector('#note-mention-row') && !row.querySelector('#note-mention-row').classList.contains('hidden'));
-  if (!hasAt) { inp.style.textIndent = ''; return; }
+  if (!hasAt) { inp.style.textIndent = ''; resyncInputHeight(inp); return; }
   // 用 next frame 测量:chip 刚插入 DOM 时宽度尚未确定,直接测量会偏小/为 0
   // 缩进量按 @ 行实际宽度换算成 em(相对输入字号):
   // 字号变化 / 页面缩放(Zoom)时缩进都随之等比缩放,无需重新测量。
@@ -7900,6 +7984,7 @@ function syncComposerIndent() {
     const fs = parseFloat(window.getComputedStyle(inp).fontSize) || 14;
     const gap = fs * 0.57;              // 约 8px @ 14px 字号
     inp.style.textIndent = ((w + gap) / fs).toFixed(3) + 'em';
+    resyncInputHeight(inp);
   };
   apply();
   requestAnimationFrame(apply);
@@ -8001,7 +8086,13 @@ if (mentionPop) {
     const pickBtn = e.target.closest('[data-folder-pick]');
     if (pickBtn) {
       e.preventDefault();
+      // 与 @助手/@笔记 一致:选完把正在输入的 @ 片段从输入框删掉,
+      // 否则会残留一个孤零零的 @(接着按 Enter 还会被候选面板当成选择)
+      stripMentionFromInput();
+      closeMention();
       toggleFolderMention(pickBtn.dataset.folderPick, pickBtn.dataset.folderName);
+      updateSendBtn();
+      if (inputEl) inputEl.focus();
       return;
     }
     const folderBtn = e.target.closest('.mention-folder');
@@ -8825,4 +8916,11 @@ window.OCApp = {
   providerFormat,
   resolveAuxModel,
   aiComplete,
+  // 后加载模块(notes.js)拼提示词时要按模型真实窗口裁剪输入:
+  // 弱模型上下文只有 8k~32k,把整段回答硬塞进去会被上游直接拒绝。
+  modelCapsNow,
+  estimateTextTokens,
+  // 群聊自己构造用户消息:复用同一份 @ 引用快照,气泡里的回显与单模型一致
+  mentionsSnapshot,
+  clearNoteMentionsAfterSend,
 };

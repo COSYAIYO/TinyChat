@@ -498,8 +498,11 @@
       text,
       attachments,
       createdAt: Date.now(),
+      // 与单模型对话一致:气泡里回显这条提问选中的 @助手 / @笔记 引用
+      mentions: (window.OCApp && window.OCApp.mentionsSnapshot) ? window.OCApp.mentionsSnapshot(chat) : [],
     };
     chat.messages.push(userMsg);
+    if (window.OCApp && window.OCApp.clearNoteMentionsAfterSend) window.OCApp.clearNoteMentionsAfterSend();
     jumpToLatestOnSend();
     saveChats();
     renderMessages();
