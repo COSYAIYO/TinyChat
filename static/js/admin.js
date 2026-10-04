@@ -4229,8 +4229,8 @@ function mmFmtTokens(v) {
 }
 function mmSourceBadge(item) {
   return item.source === 'manual'
-    ? '<span class="badge" title="手工维护，同步不会覆盖">手工</span>'
-    : '<span class="badge muted" title="来自 litellm 价格表">同步</span>';
+    ? '<span class="mm-src manual" title="手工维护，同步不会覆盖">手工</span>'
+    : '<span class="mm-src sync" title="来自 litellm 价格表">同步</span>';
 }
 
 async function loadModelMeta() {
@@ -4284,23 +4284,60 @@ async function refreshModelMeta() {
   if (!items.length) {
     wrap.innerHTML = '<p class="muted small">' + (MM_STATE.q ? '没有匹配的模型。' : '还没有数据，点「从 litellm 同步」拉取。') + '</p>';
   } else {
-    const head = '<tr><th>模型</th><th>输入窗口</th><th>输出上限</th><th>输入 $/M</th><th>输出 $/M</th><th>缓存读 $/M</th><th>缓存写 $/M</th><th>来源</th><th></th></tr>';
+    // 列宽足够时全部并列展示;窗口很窄时横向滑动(表头吸顶、模型名与操作列吸附两侧)
+    const head = '<tr>'
+      + '<th class="mm-col-name">模型</th>'
+      + '<th title="模型一次能接收的最大 token 数（含对话历史）">输入窗口</th>'
+      + '<th title="模型一次最多能生成的 token 数，对应请求里的 max_tokens">输出上限</th>'
+      + '<th title="每百万输入 token 的价格，仅作估算参考">输入 $/M</th>'
+      + '<th title="每百万输出 token 的价格，仅作估算参考">输出 $/M</th>'
+      + '<th title="每百万缓存读取 token 的价格">缓存读 $/M</th>'
+      + '<th title="每百万缓存写入 token 的价格">缓存写 $/M</th>'
+      + '<th title="手工维护的条目不会被 litellm 同步覆盖">来源</th>'
+      + '<th class="mm-ops"></th>'
+      + '</tr>';
     const rows = items.map((it) => {
       const name = escapeHtml(it.model);
+      const raw = String(it.model || '');
+      // 未配置的数值显示为淡灰「—」,比空白更明确地表示"没有这项数据"
+      const cell = (v) => mmFmtTokens(v);
+      const price = (v) => {
+        const s = mmPricePerMillion(v);
+        return s === '' ? '<span class="mm-none">—</span>' : s;
+      };
       return '<tr' + (it.inUse ? ' class="mm-inuse"' : '') + '>'
-        + '<td><code>' + name + '</code>' + (it.inUse ? ' <span class="badge" title="当前供应商配置里正在使用">在用</span>' : '') + '</td>'
-        + '<td>' + mmFmtTokens(it.maxInputTokens) + '</td>'
-        + '<td>' + mmFmtTokens(it.maxOutputTokens) + '</td>'
-        + '<td>' + (mmPricePerMillion(it.inputCostPerToken) || '<span class="muted">—</span>') + '</td>'
-        + '<td>' + (mmPricePerMillion(it.outputCostPerToken) || '<span class="muted">—</span>') + '</td>'
-        + '<td>' + (mmPricePerMillion(it.cacheReadCostPerToken) || '<span class="muted">—</span>') + '</td>'
-        + '<td>' + (mmPricePerMillion(it.cacheWriteCostPerToken) || '<span class="muted">—</span>') + '</td>'
-        + '<td>' + mmSourceBadge(it) + (it.enabled === false ? ' <span class="badge muted">已停用</span>' : '') + '</td>'
-        + '<td class="mm-ops"><button class="btn small" type="button" data-mm-edit="' + name + '">编辑</button>'
-        + '<button class="btn small danger" type="button" data-mm-del="' + name + '">删除</button></td>'
+        + '<td class="mm-col-name"><span class="mm-name" title="' + name + '">' + name + '</span>'
+        + (it.inUse ? '<span class="mm-inuse-tag" title="当前供应商配置里正在使用">在用</span>' : '') + '</td>'
+        + '<td>' + cell(it.maxInputTokens) + '</td>'
+        + '<td>' + cell(it.maxOutputTokens) + '</td>'
+        + '<td>' + price(it.inputCostPerToken) + '</td>'
+        + '<td>' + price(it.outputCostPerToken) + '</td>'
+        + '<td>' + price(it.cacheReadCostPerToken) + '</td>'
+        + '<td>' + price(it.cacheWriteCostPerToken) + '</td>'
+        + '<td>' + mmSourceBadge(it) + (it.enabled === false ? '<span class="mm-off" title="该条不参与窗口计算，但数据保留">已停用</span>' : '') + '</td>'
+        + '<td class="mm-ops"><button class="btn small" type="button" data-mm-edit="' + name + '" title="编辑 ' + name + '">编辑</button>'
+        + '<button class="btn small danger" type="button" data-mm-del="' + name + '" title="删除 ' + name + '">删除</button></td>'
         + '</tr>';
     }).join('');
-    wrap.innerHTML = '<div class="table-wrap"><table class="table mm-table"><thead>' + head + '</thead><tbody>' + rows + '</tbody></table></div>';
+    wrap.innerHTML = '<div class="mm-wrap"><table class="mm-table"><thead>' + head + '</thead><tbody>' + rows + '</tbody></table></div>';
+    // 表格比容器宽时:吸附列加阴影提示,否则滑到中间时看不出模型名是浮在上层的
+    const scroller = wrap.querySelector('.mm-wrap');
+    if (scroller) {
+      let raf = 0;
+      const sync = () => {
+        const max = scroller.scrollWidth - scroller.clientWidth;
+        const canPan = max > 2;
+        const atEnd = canPan && scroller.scrollLeft >= max - 2;
+        scroller.classList.toggle('is-pan-x', canPan && !atEnd);
+      };
+      scroller.addEventListener('scroll', () => {
+        if (raf) return;
+        raf = requestAnimationFrame(() => { raf = 0; sync(); });
+      }, { passive: true });
+      if (typeof ResizeObserver === 'function') new ResizeObserver(sync).observe(scroller);
+      else window.addEventListener('resize', sync);
+      sync();
+    }
     wrap.querySelectorAll('[data-mm-edit]').forEach((btn) => btn.addEventListener('click', () => {
       const model = btn.getAttribute('data-mm-edit');
       editModelMeta(items.find((x) => x.model === model) || null);

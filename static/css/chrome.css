@@ -1474,9 +1474,10 @@ body.chat-resizing * { cursor: col-resize !important; }
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 .model-check-toolbar input {
-  flex: 1 1 auto;
+  flex: 1 1 12rem;
   min-width: 0;
 }
 .model-check-toolbar .btn { flex-shrink: 0; }
@@ -1485,6 +1486,7 @@ body.chat-resizing * { cursor: col-resize !important; }
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
 }
 .model-check-all {
   display: inline-flex;
@@ -1504,21 +1506,49 @@ body.chat-resizing * { cursor: col-resize !important; }
   accent-color: var(--accent);
   margin: 0;
 }
+/* 滚动容器:表头吸顶、首列吸附都发生在这里,所以它必须是滚动祖先 */
 .model-check-list {
-  max-height: 280px;
+  position: relative;
+  max-height: 320px;
   overflow: auto;
   overscroll-behavior: contain;
   border: 1px solid var(--hairline);
-  border-radius: 10px;
-  background: var(--bg-hover);
+  border-radius: 12px;
+  background: var(--bg-surface);
+  /* 横向滚动条常驻可见:否则触控板用户看不出右边还有列 */
+  scrollbar-width: thin;
 }
+.model-check-list::-webkit-scrollbar { width: 10px; height: 10px; }
+.model-check-list::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-tertiary) 38%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.model-check-list::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--text-tertiary) 58%, transparent); background-clip: content-box; }
+.model-check-list::-webkit-scrollbar-track { background: transparent; }
 .model-check-empty {
-  padding: 18px 12px;
+  padding: 22px 14px;
   text-align: center;
   color: var(--text-tertiary);
   font-size: 0.893rem;
-  line-height: 1.5;
+  line-height: 1.6;
 }
+
+/* 可横向滑动的表格:给容器一个"还能往右看"的提示条,滑到底自动消失。
+   注意 [hidden] 必须显式补回:本规则用了 display:flex,
+   优先级高于浏览器默认的 [hidden]{display:none},不加就永远显示。 */
+.mt-scroll-tip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 6px;
+  font-size: 0.821rem;
+  color: var(--text-tertiary);
+  user-select: none;
+}
+.mt-scroll-tip[hidden] { display: none; }
+.mt-scroll-tip .oc-icon { width: 13px; height: 13px; flex: none; }
 .probe-box {
   margin: 4px 0 14px;
   padding: 12px;
@@ -1973,49 +2003,108 @@ body.share-page {
 }
 
 /* ---------- 19. 获取模型弹窗：勾选 + 改前台显示名 ---------- */
-/* 获取模型弹窗比通用 lg 更宽:列多(含密钥/生图/视频)时不被挤到横向滚动 */
-.model-fetch-modal.modal { width: min(1040px, 96vw); }
+/* 列多(密钥/生图/视频),弹窗给足宽度;窄屏时整表改为横向滑动(见 .model-table) */
+.model-fetch-modal.modal { width: min(1080px, 96vw); }
+/* 弹窗高度固定为视口比例:列表区自己滚,而不是整个弹窗跟着滚 */
+.model-fetch-modal {
+  max-height: min(88vh, 940px);
+  display: flex;
+  flex-direction: column;
+}
+.model-fetch-modal .modal-header {
+  align-items: flex-start;
+  gap: 12px;
+}
+.model-fetch-modal .modal-header h3 { font-size: 1.143rem; }
 
-/* 模型表:密钥链单元格 */
-.model-table .mk-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.model-table .mk-chip {
-  display: inline-flex; align-items: center; gap: 3px;
-  padding: 1px 6px 1px 4px; border-radius: 999px;
-  background: color-mix(in srgb, var(--brand, var(--accent)) 12%, transparent);
-  color: var(--text); font-size: 0.821rem; white-space: nowrap;
+/* 弹窗顶部的说明条:把长篇使用说明收进一个可折叠区,默认收起 —— 打开弹窗时
+   第一眼看到的是列表而不是三段文字 */
+.mf-notice {
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--bg-hover);
+  margin: 0 0 12px;
+  overflow: hidden;
 }
-.model-table .mk-chip b { font-weight: 700; color: var(--brand, var(--accent)); }
-.model-table .mk-chip button {
-  border: 0; background: transparent; color: var(--text-tertiary); cursor: pointer;
-  padding: 0 1px; font-size: 0.857rem; line-height: 1;
+.mf-notice > summary {
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  font-size: 0.893rem;
+  color: var(--text-secondary);
 }
-.model-table .mk-chip button:hover { color: var(--danger, #e5484d); }
-.model-table select.mk-add {
-  min-height: 24px; padding: 0 4px; border: 1px dashed var(--hairline); border-radius: 7px;
-  background: transparent; color: var(--text-tertiary); font-size: 0.821rem; cursor: pointer;
+.mf-notice > summary::-webkit-details-marker { display: none; }
+.mf-notice > summary::marker { content: ''; }
+.mf-notice > summary::after {
+  content: '展开';
+  margin-left: auto;
+  font-size: 0.821rem;
+  color: var(--text-tertiary);
+  flex: none;
+}
+.mf-notice[open] > summary::after { content: '收起'; }
+.mf-notice > summary .oc-icon { width: 14px; height: 14px; flex: none; }
+.mf-notice > summary b { color: var(--text); font-weight: 600; }
+.mf-notice[open] > summary { border-bottom: 1px solid var(--hairline); }
+.mf-notice-body {
+  padding: 10px 12px 12px;
+  font-size: 0.893rem;
+  line-height: 1.72;
+  color: var(--text-secondary);
+}
+.mf-notice-body p { margin: 0 0 8px; }
+.mf-notice-body p:last-child { margin-bottom: 0; }
+.mf-notice-body ul { margin: 6px 0 0; padding-left: 18px; }
+.mf-notice-body li { margin: 0 0 4px; }
+.mf-notice-body li:last-child { margin-bottom: 0; }
+.mf-notice-body kbd {
+  font-family: inherit;
+  font-size: 0.929em;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg-active);
+  color: var(--text);
 }
 
+/* 弹窗竖向三段:说明/工具条(固定高)+ 列表(吃掉剩余高度并自己滚)+ 页脚。
+   固定高的块必须写 flex:none —— 否则在高度受限的弹窗里它们会被压缩:
+   实测说明条会被挤成一条 12px 的灰线(overflow:hidden 把内容全裁掉)。 */
 .model-fetch-modal .modal-body {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
 }
+.model-fetch-modal .modal-body > .mf-notice,
+.model-fetch-modal .modal-body > .model-fetch-toolbar,
+.model-fetch-modal .modal-body > .mt-scroll-tip,
+.model-fetch-modal .modal-body > .model-stale-block {
+  flex: 0 0 auto;
+}
+
+/* 工具条:搜索与其余控件同排,空间不够时各自换行 —— 窄屏不再挤成一条 */
 .model-fetch-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  margin: 10px 0 12px;
+  gap: 8px;
+  margin: 0 0 10px;
 }
 .model-fetch-search {
-  flex: 1 1 auto;
+  /* 260px 起步:宽屏与 Key 选择器同排,窄屏自动换到独立一行 */
+  flex: 1 1 260px;
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 36px;
+  height: 38px;
   padding: 0 12px;
   border: 1px solid var(--hairline);
-  border-radius: 10px;
+  border-radius: var(--radius-sm, 10px);
   background: var(--bg-hover);
   color: var(--text-tertiary);
   box-shadow: none;
@@ -2056,22 +2145,120 @@ body.share-page {
   color: var(--text-secondary);
 }
 .model-fetch-toolbar .muted { flex-shrink: 0; white-space: nowrap; }
-/* 弹窗内切换获取用 Key(多 Key 时) */
+/* 弹窗内切换获取用 Key(多 Key 时)。
+   整组保持单行(宽屏时与搜索框同排,不能竖着堆成三行);
+   极窄屏靠 select 收缩让位,按钮本身始终完整不换行、不出界。 */
 .model-fetch-key {
-  display: flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0;
+  flex-wrap: nowrap;
 }
+.model-fetch-key > .muted { flex: none; }
 .model-fetch-key select {
-  height: 36px; padding: 0 8px; border: 1px solid var(--hairline); border-radius: 10px;
+  height: 34px; padding: 0 8px; border: 1px solid var(--hairline); border-radius: 9px;
   background: var(--bg-hover); color: var(--text); font: inherit; font-size: 0.929rem; cursor: pointer;
-  max-width: 200px;
+  max-width: 190px;
+  /* 关键:不写 min-width:0 时,select 的固有最小宽度(按最长 option 撑)会把
+     整组顶出弹窗;允许收缩后窄屏只是下拉变短,按钮仍完整可见。 */
+  min-width: 0;
+  flex: 0 1 auto;
 }
+/* 「切换并继续获取」:文字不换行,否则按钮被压成三行的方块 */
+.model-fetch-key .btn { white-space: nowrap; flex: none; }
+
+/* 极窄屏:藏掉「获取用 Key」这句提示文字。
+   select-box 的最小宽度由选项文字决定,无法再压;这行提示又和下拉里的 Key 名、
+   右侧按钮语义重复,让出这 74px 后整组才能在 320px 弹窗内单行放下。 */
+@media (max-width: 480px) {
+  .model-fetch-key > .muted { display: none; }
+}
+/* 工具条右侧的计数与全选:与左侧控件在同一行时自动靠右 */
+.model-fetch-toolbar .mfc-spacer { flex: 1 1 auto; }
+
+/* 弹窗底栏:计数可压缩换行,按钮始终保持单行 —— 窄屏时先挤文字,不挤按钮。
+   默认 flex-wrap:nowrap 下再加 min-width:0,长计数才不会把按钮顶出弹窗。 */
+.modal-footer > .muted,
+.modal-footer > .small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.modal-footer > .btn {
+  flex: 0 0 auto;
+}
+
+/* 列表区:滚动主体。表头吸顶、首列吸附都在这里生效 */
 .model-fetch-list {
-  max-height: min(52vh, 460px);
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
   overflow: auto;
   overscroll-behavior: contain;
   border: 1px solid var(--hairline);
-  border-radius: 10px;
-  background: var(--bg-hover);
+  border-radius: 12px;
+  background: var(--bg-surface);
+  scrollbar-width: thin;
+}
+.model-fetch-list::-webkit-scrollbar { width: 10px; height: 10px; }
+.model-fetch-list::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-tertiary) 38%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.model-fetch-list::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--text-tertiary) 58%, transparent); background-clip: content-box; }
+.model-fetch-list::-webkit-scrollbar-track { background: transparent; }
+
+/* 失效模型区:默认折叠成一行摘要,需要处理时再展开 —— 不抢正常列表的空间 */
+.model-stale-block {
+  flex: none;
+  margin-top: 12px;
+  border: 1px solid color-mix(in srgb, #d97706 26%, var(--hairline));
+  background: color-mix(in srgb, #d97706 5%, transparent);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.model-stale-block > summary {
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  font-size: 0.893rem;
+  font-weight: 600;
+  color: #b45309;
+}
+[data-theme="dark"] .model-stale-block > summary { color: #fbbf24; }
+.model-stale-block > summary::-webkit-details-marker { display: none; }
+.model-stale-block > summary::marker { content: ''; }
+.model-stale-block > summary::after {
+  content: '展开';
+  margin-left: auto;
+  font-size: 0.821rem;
+  font-weight: 400;
+  color: var(--text-tertiary);
+  flex: none;
+}
+.model-stale-block[open] > summary::after { content: '收起'; }
+.model-stale-block[open] > summary { border-bottom: 1px solid color-mix(in srgb, #d97706 22%, var(--hairline)); }
+.model-stale-body { padding: 0 12px 12px; }
+.model-table .mk-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.model-table .mk-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 1px 6px 1px 4px; border-radius: 999px;
+  background: color-mix(in srgb, var(--brand, var(--accent)) 12%, transparent);
+  color: var(--text); font-size: 0.821rem; white-space: nowrap;
+}
+.model-table .mk-chip b { font-weight: 700; color: var(--brand, var(--accent)); }
+.model-table .mk-chip button {
+  border: 0; background: transparent; color: var(--text-tertiary); cursor: pointer;
+  padding: 0 1px; font-size: 0.857rem; line-height: 1;
+}
+.model-table .mk-chip button:hover { color: var(--danger, #e5484d); }
+.model-table select.mk-add {
+  min-height: 24px; padding: 0 4px; border: 1px dashed var(--hairline); border-radius: 7px;
+  background: transparent; color: var(--text-tertiary); font-size: 0.821rem; cursor: pointer;
 }
 
 /* 多模型对比(入口只选模型,回答以消息顶部的标签页呈现) */
@@ -2106,26 +2293,43 @@ body.share-page {
 
 /* 全站公告已改为居中弹窗,样式见文件末尾 .announce-modal */
 
-/* 模型列表表格：勾选 | 模型 ID | 显示名称 | max_tokens | 最大上下文 */
+/* ----------------------------------------------------------------=========
+   模型清单表格(获取模型弹窗 / 供应商模型列表共用)
+   列:勾选 | 模型 ID | 显示名称 | max_tokens | 最大上下文 | 单次扣减 | 密钥 | 生图 | 视频
+   ------------------------------------------------------------------------
+   设计要点:
+   · 单线分隔 —— 只画右/下边 + separate/spacing:0,避免 collapse 模式下相邻
+     边框叠成双线;外圈末条线用 :last-child 去掉,圆角开在表上而不是单元格上。
+   · 窄容器横向滑动 —— 表头吸顶(top)、勾选列与模型 ID 列吸附左侧(left),
+     滑动到最右时行身份仍然可见;滑出内容用右缘阴影提示。
+   · 行底色只由 --row-bg 一处决定,吸附列同样使用它 —— 否则斑马纹/悬停/选中态
+     会把吸附列画成透明,滑动时下方单元格从缝里透出来。
+   ======================================================================== */
 .model-table {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  /* fixed 布局在窄弹窗里会让表头文字压到相邻列(截图中「显示名称/max_tokens」重叠)。
-     改用 auto 布局并按内容分配宽度,表头超长时用省略号而非溢出。 */
+  /* 表头文字超长时省略而不撑列;列宽仍按内容分配 */
   table-layout: auto;
   font-size: 0.893rem;
+  /* 注意:这里绝不能写 overflow:hidden。它会把表格变成一个新的滚动容器,
+     sticky 的吸附列/表头就改为相对这张表定位(而表本身不滚动),
+     结果吸附完全失效 —— 横向滑动时勾选列与模型 ID 列会跟着滑走。
+     圆角由外层 .model-check-list / .model-fetch-list 提供。 */
+  /* 吸附列的定位基准:勾选列宽必须与此值一致 */
+  --mt-check-w: 38px;
+  --row-bg: var(--bg-surface);
 }
 .model-table thead th {
   position: sticky;
   top: 0;
-  z-index: 1;
-  padding: 8px 10px;
-  background: var(--bg-hover);
+  z-index: 3;
+  padding: 9px 10px;
+  background: color-mix(in srgb, var(--bg-hover) 62%, var(--bg-surface));
   border-bottom: 1px solid var(--hairline);
   color: var(--text-tertiary);
   font-size: 0.821rem;
-  font-weight: 600;
+  font-weight: 650;
   letter-spacing: 0.02em;
   text-align: left;
   white-space: nowrap;
@@ -2133,29 +2337,73 @@ body.share-page {
   text-overflow: ellipsis;
   max-width: 160px;
 }
+/* 勾选列:固定宽 + 吸附左侧。宽度写死三处(width/min/max)是因为 auto 布局下
+   只给 width 时,表头与单元格的内容仍会把列撑宽 */
 .model-table .col-check {
-  width: 36px;
+  width: var(--mt-check-w);
+  min-width: var(--mt-check-w);
+  max-width: var(--mt-check-w);
   text-align: center;
-  padding-left: 8px;
-  padding-right: 4px;
+  padding: 6px 4px 6px 8px;
 }
+.model-table .col-check,
+.model-table thead th.col-check {
+  position: sticky;
+  left: 0;
+  z-index: 4;
+  background: var(--row-bg);
+}
+/* 模型 ID 列:吸附在勾选列右侧 —— 横向滑动到密钥/生图/视频时仍能认出是哪一行 */
 .model-table .col-id {
-  min-width: 150px;
-  max-width: 260px;
+  position: sticky;
+  left: var(--mt-check-w);
+  z-index: 4;
+  background: var(--row-bg);
+  min-width: 168px;
+  max-width: 230px;
 }
-.model-table .col-name {
-  min-width: 132px;
+.model-table thead th.col-check,
+.model-table thead th.col-id { z-index: 5; }
+/* 表头的吸附列要比表头更高一层,同时保持自己的底色,避免被表头盖住 */
+.model-table thead th.col-check { background: color-mix(in srgb, var(--bg-hover) 62%, var(--bg-surface)); }
+.model-table thead th.col-id {
+  background: color-mix(in srgb, var(--bg-hover) 62%, var(--bg-surface));
 }
-.model-table .col-mtok {
-  width: 92px;
+/* 滑出内容提示:只在"右边还有内容"时出现 */
+.model-table .col-id { transition: box-shadow 0.18s ease; }
+.model-check-list.is-pan-x .model-table .col-id,
+.model-check-list.is-pan-x .model-table thead th.col-id,
+.model-fetch-list.is-pan-x .model-table .col-id,
+.model-fetch-list.is-pan-x .model-table thead th.col-id {
+  box-shadow: 10px 0 12px -10px rgba(0, 0, 0, 0.22), 1px 0 0 var(--hairline);
 }
-.model-table .col-ctx {
-  width: 104px;
+[data-theme="dark"] .model-check-list.is-pan-x .model-table .col-id,
+[data-theme="dark"] .model-check-list.is-pan-x .model-table thead th.col-id,
+[data-theme="dark"] .model-fetch-list.is-pan-x .model-table .col-id,
+[data-theme="dark"] .model-fetch-list.is-pan-x .model-table thead th.col-id {
+  box-shadow: 10px 0 12px -10px rgba(0, 0, 0, 0.6), 1px 0 0 var(--hairline);
 }
+
+.model-table .col-name { min-width: 132px; }
+.model-table .col-mtok { width: 96px; }
+.model-table .col-ctx { width: 108px; }
+.model-table .col-cost { width: 92px; }
 /* 多密钥:模型绑定哪把 Key(仅配置多 Key 时出现) */
 .model-table .col-key {
   width: 168px;
   min-width: 140px;
+}
+/* 窄屏:吸附的两列各收窄一点,给中间内容留出更多可视宽度 */
+@media (max-width: 720px) {
+  .model-table { --mt-check-w: 34px; }
+  .model-table .col-id { min-width: 132px; max-width: 168px; }
+  .model-table .col-name { min-width: 108px; }
+  .model-table .col-mtok { width: 80px; }
+  .model-table .col-ctx { width: 88px; }
+  .model-table .col-cost { width: 78px; }
+  .model-table .col-key { width: 128px; min-width: 112px; }
+  .model-table thead th,
+  .model-table tbody td { padding-left: 7px; padding-right: 7px; }
 }
 /* 多密钥编辑器 */
 .ap-keys { display: flex; flex-direction: column; gap: 8px; }
@@ -2171,13 +2419,25 @@ body.share-page {
 }
 /* 模型表:密钥下拉 */
 .model-table select.mkey { width: 100%; min-height: 30px; padding: 3px 6px; border: 1px solid var(--hairline); border-radius: 7px; background: var(--bg-surface); color: var(--text); font-size: 0.893rem; }
+
+.model-table tbody tr { --row-bg: var(--bg-surface); }
+/* 斑马纹:长列表横向对齐阅读更省力 */
+.model-table tbody tr:nth-child(even) { --row-bg: color-mix(in srgb, var(--bg-hover) 45%, var(--bg-surface)); }
+.model-table tbody tr:hover { --row-bg: color-mix(in srgb, var(--brand, var(--accent)) 7%, var(--bg-surface)); }
+.model-table tbody tr.is-on { --row-bg: color-mix(in srgb, var(--brand, var(--accent)) 5%, var(--bg-surface)); }
 .model-table tbody td {
   padding: 6px 10px;
-  border-bottom: 1px solid color-mix(in srgb, var(--hairline) 70%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--hairline) 62%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--hairline) 62%, transparent);
   vertical-align: middle;
+  background: var(--row-bg);
 }
-.model-table tbody tr:last-child td { border-bottom: none; }
-.model-table tbody tr:hover td { background: var(--bg-surface); }
+.model-table tbody tr > *:last-child { border-right: 0; }
+.model-table tbody tr:last-child > td { border-bottom: 0; }
+/* 已启用的行:左侧色条,一眼看出哪些会被保存 */
+.model-table tbody tr.is-on td.col-check { box-shadow: inset 3px 0 0 var(--brand, var(--accent)); }
+.model-table tbody tr.is-on .mid,
+.model-table tbody tr.is-on .mname { font-weight: 600; }
 .model-table .mid {
   display: block;
   font-weight: 550;
@@ -2185,7 +2445,10 @@ body.share-page {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.857rem;
 }
+.model-table tbody tr.is-stale .mid { color: var(--text-secondary); }
 .model-table .mname {
   width: 100%;
   min-height: 30px;
@@ -2209,7 +2472,8 @@ body.share-page {
   white-space: nowrap;
 }
 .model-table .mtokens,
-.model-table .mctx {
+.model-table .mctx,
+.model-table .mcost {
   width: 100%;
   min-height: 30px;
   padding: 4px 8px;
@@ -2220,14 +2484,17 @@ body.share-page {
   font-size: 0.893rem;
   box-shadow: none;
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 .model-table .mtokens:focus,
-.model-table .mctx:focus {
+.model-table .mctx:focus,
+.model-table .mcost:focus {
   outline: none;
   border-color: color-mix(in srgb, var(--brand) 45%, var(--hairline));
 }
 .model-table .mtokens-static,
-.model-table .mctx-static {
+.model-table .mctx-static,
+.model-table .mcost-static {
   display: block;
   color: var(--text-secondary);
   overflow: hidden;
@@ -2236,7 +2503,8 @@ body.share-page {
   font-variant-numeric: tabular-nums;
 }
 .model-table .mtokens-static i,
-.model-table .mctx-static i {
+.model-table .mctx-static i,
+.model-table .mcost-static i {
   font-style: normal;
   color: var(--text-tertiary);
 }
@@ -2246,31 +2514,25 @@ body.share-page {
   font-size: 0.786rem;
   color: var(--danger, #c2410c);
 }
-.model-table tr.is-stale .mid { color: var(--text-secondary); }
-.model-stale-block {
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--hairline);
-}
 .model-stale-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-}
-.model-stale-title {
-  font-size: 0.929rem;
-  font-weight: 600;
-  color: var(--text);
+  flex-wrap: wrap;
 }
 .model-stale-hint {
-  margin: 6px 0 8px;
+  margin: 0;
   font-size: 0.857rem;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   line-height: 1.45;
 }
 .model-stale-list {
   max-height: min(28vh, 220px);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  overflow: auto;
 }
 
 /* ---------- 20. 用户管理 ---------- */
@@ -3261,6 +3523,16 @@ select,
 .msg-retry-row .btn {
   border: 0 !important;
   border-radius: 999px !important;
+}
+
+/* 按钮文字一律不换行。
+   flex 行里按钮默认 flex-shrink:1,一旦被压缩,没有这条规则的按钮就会把
+   文字逐字折行——「切换到另一把 Key 并继续获取」会被压成竖排三行的方块。
+   需要多行的按钮请显式声明 white-space:normal 覆盖。 */
+.btn,
+button.btn,
+a.btn {
+  white-space: nowrap;
 }
 .btn:not(.primary):not(.danger) {
   background: var(--bg-hover);
@@ -4274,46 +4546,14 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   pointer-events: none;
 }
 
-/* ============ 模型列表与「获取模型」弹窗:排版美化 ============ */
-/* 共同目标:表头更清晰、行更好扫读、选中行有明确反馈、窄屏不挤成一团 */
-.model-table {
-  border-spacing: 0;
-}
-.model-table thead th {
-  background: color-mix(in srgb, var(--bg-hover) 92%, var(--bg-surface));
-  border-bottom: 1px solid var(--hairline-strong, var(--hairline));
-  font-weight: 650;
-}
-/* 斑马纹:长列表更容易横向对齐阅读 */
-.model-table tbody tr:nth-child(even) td {
-  background: color-mix(in srgb, var(--bg-hover) 55%, transparent);
-}
-.model-table tbody tr:hover td {
-  background: color-mix(in srgb, var(--brand, var(--accent)) 6%, transparent);
-}
-/* 已启用的行:左侧色条 + 轻微底色,一眼看出哪些会被保存 */
-.model-table tbody tr.is-on td:first-child { box-shadow: inset 3px 0 0 var(--brand, var(--accent)); }
-.model-table tbody tr.is-on .mid,
-.model-table tbody tr.is-on .mname { font-weight: 600; }
-/* 模型 ID 用等宽字体,便于比对;过长省略 */
-.model-table .mid {
-  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
-  font-size: 0.857rem;
-  display: inline-block;
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: bottom;
-}
-/* 数字列右对齐,方便竖向比较数值 */
-.model-table .col-mtok, .model-table .col-ctx, .model-table .col-cost { text-align: right; }
-.model-table .col-mtok input, .model-table .col-ctx input, .model-table .col-cost input { text-align: right; }
-/* 操作列头(勾选/生图/视频)居中 */
-.model-table .col-check, .model-table .col-img { text-align: center; }
-.model-table tbody td .mcost, .model-table tbody td .mtokens, .model-table tbody td .mctx { width: 100%; }
-/* 勾选框做大一点,减少误点 */
+/* ============ 模型列表与「获取模型」弹窗:排版细节 ============ */
+/* 主结构见文件上方「模型清单表格」一段;这里只保留与容器相关的补充,
+   避免两处同时改一行的底色/边框而互相覆盖。 */
 .model-table input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+/* 操作列头(勾选/生图/视频)居中;数字列右对齐 */
+.model-table .col-check, .model-table .col-img { text-align: center; }
+.model-table .col-mtok, .model-table .col-ctx, .model-table .col-cost { text-align: right; }
+.model-table tbody td .mcost, .model-table tbody td .mtokens, .model-table tbody td .mctx { width: 100%; }
 
 /* 列表容器:顶部工具条与底部分页区的分隔更清楚 */
 .model-check-toolbar { padding-bottom: 2px; }
@@ -4321,20 +4561,15 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   padding: 6px 2px;
   border-top: 1px dashed color-mix(in srgb, var(--hairline) 85%, transparent);
 }
-.model-check-list { background: var(--bg-surface); }
 
-/* 「获取模型」弹窗:列表区更高、分组标题更醒目 */
-.model-fetch-list { max-height: min(52vh, 460px); }
-.model-fetch-list .model-table { background: var(--bg-surface); }
-.model-stale-block {
-  border: 1px solid color-mix(in srgb, #d97706 26%, var(--hairline));
-  background: color-mix(in srgb, #d97706 5%, transparent);
-  border-radius: 12px;
-  padding: 10px 12px;
+/* 「获取模型」弹窗的说明/分页等容器细节已在文件上方「获取模型弹窗」一段定义 */
+.model-stale-list {
+  max-height: min(28vh, 220px);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  overflow: auto;
 }
-.model-stale-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-.model-stale-title { font-weight: 600; font-size: 0.929rem; color: #b45309; }
-.model-stale-hint { margin: 6px 0 8px; font-size: 0.893rem; color: var(--text-secondary); line-height: 1.5; }
 
 
 /* 待发送的 @笔记:与 @助手(.composer-at)同款「内联文字流元素」,紧跟其后:
@@ -4638,17 +4873,185 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 [data-theme="dark"] .note-answer-hint { color: #fca5a5; background: rgba(248, 113, 113, .14); }
 
 /* ---- 模型元数据面板 ---- */
-.mm-table { font-size: 0.92em; }
-.mm-table th, .mm-table td { white-space: nowrap; padding: 8px 10px; }
-/* 模型名可能很长，允许换行，但操作列固定不换行 */
-.mm-table td:first-child { white-space: normal; word-break: break-word; min-width: 180px; }
-.mm-table .mm-ops { white-space: nowrap; }
-.mm-table .mm-ops .btn { margin-right: 6px; }
-.mm-table .mm-ops .btn:last-child { margin-right: 0; }
-/* 正在被供应商使用的模型：整行加一层淡色底，便于一眼看出该先维护哪些 */
-.mm-table tr.mm-inuse td { background: var(--bg-hover, rgba(59, 130, 246, .06)); }
-.mm-table code { font-size: 0.94em; }
+/* 与「模型清单表格」同一套观感:单线分隔、表头吸顶、模型名吸附左侧、
+   数值列等宽右对齐。区别是这里只读,所以行有斑马纹与悬停高亮。 */
+.mm-wrap {
+  position: relative;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--bg-surface);
+  overflow: auto;
+  overscroll-behavior: contain;
+  max-height: min(64vh, 720px);
+  scrollbar-width: thin;
+}.mm-wrap::-webkit-scrollbar { width: 10px; height: 10px; }
+.mm-wrap::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-tertiary) 38%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.mm-wrap::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--text-tertiary) 58%, transparent); background-clip: content-box; }
+.mm-wrap::-webkit-scrollbar-track { background: transparent; }
+
+.mm-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.893rem;
+  --row-bg: var(--bg-surface);
+  /* 模型名吸附列的宽度:表头与单元格共用 */
+  --mm-name-w: 226px;
+}
+.mm-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: 9px 10px;
+  background: color-mix(in srgb, var(--bg-hover) 62%, var(--bg-surface));
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-tertiary);
+  font-size: 0.821rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-align: right;
+  white-space: nowrap;
+}
+.mm-table thead th:first-child { text-align: left; }
+/* 模型名:吸附左侧。列宽固定(不是 min-width),否则 auto 布局会按最长模型名撑列,
+   长名字把整表推出可视区。名字本身在单元格内省略,悬停看全名。 */
+.mm-table th.mm-col-name,
+.mm-table td.mm-col-name {
+  position: sticky;
+  left: 0;
+  z-index: 4;
+  width: var(--mm-name-w);
+  min-width: var(--mm-name-w);
+  max-width: var(--mm-name-w);
+  text-align: left;
+  background: var(--row-bg);
+}
+.mm-table thead th.mm-col-name { z-index: 5; background: color-mix(in srgb, var(--bg-hover) 62%, var(--bg-surface)); }
+/* 滑动到右边时,吸附列右缘给一道阴影,提示下方内容被它盖住 */
+.mm-wrap.is-pan-x .mm-table td.mm-col-name,
+.mm-wrap.is-pan-x .mm-table thead th.mm-col-name {
+  box-shadow: 10px 0 12px -10px rgba(0, 0, 0, 0.22), 1px 0 0 var(--hairline);
+}
+[data-theme="dark"] .mm-wrap.is-pan-x .mm-table td.mm-col-name,
+[data-theme="dark"] .mm-wrap.is-pan-x .mm-table thead th.mm-col-name {
+  box-shadow: 10px 0 12px -10px rgba(0, 0, 0, 0.6), 1px 0 0 var(--hairline);
+}
+/* 数值列:等宽数字右对齐,便于竖向比较 */
+.mm-table tbody td {
+  padding: 7px 12px;
+  border-right: 1px solid color-mix(in srgb, var(--hairline) 62%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--hairline) 62%, transparent);
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  background: var(--row-bg);
+}
+.mm-table tbody tr > *:last-child { border-right: 0; }
+.mm-table tbody tr:last-child > td { border-bottom: 0; }
+.mm-table tbody tr:nth-child(even) { --row-bg: color-mix(in srgb, var(--bg-hover) 45%, var(--bg-surface)); }
+.mm-table tbody tr:hover { --row-bg: color-mix(in srgb, var(--brand, var(--accent)) 7%, var(--bg-surface)); }
+/* 正在被供应商使用的模型:最左侧一道品牌色条,一眼看出该先维护哪些 */
+.mm-table tbody tr.mm-inuse td.mm-col-name { box-shadow: inset 3px 0 0 var(--brand, var(--accent)); }
+.mm-table tbody tr.mm-inuse .mm-name { color: var(--text); font-weight: 600; }
+/* 模型名:等宽字体便于比对,超长省略 */
+.mm-table .mm-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.857rem;
+  color: var(--text);
+}
+.mm-table .mm-inuse-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 0.786rem;
+  font-weight: 550;
+  line-height: 1.6;
+  vertical-align: 1px;
+  background: color-mix(in srgb, var(--brand, var(--accent)) 14%, transparent);
+  color: var(--brand, var(--accent));
+}
+/* 未配置的项:淡灰 — 比单纯的「—」更明确地表示"没有这项数据" */
+.mm-table .mm-none { color: var(--text-tertiary); }
+.mm-table .mm-dim { color: var(--text-tertiary); font-size: 0.857rem; }
+/* 来源徽标:手工(醒目) / 同步(中性) */
+.mm-table .mm-src {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.786rem;
+  line-height: 1.7;
+  font-weight: 550;
+}
+.mm-table .mm-src.manual { background: color-mix(in srgb, #d97706 14%, transparent); color: #b45309; }
+[data-theme="dark"] .mm-table .mm-src.manual { color: #fbbf24; }
+.mm-table .mm-src.sync { background: var(--bg-active); color: var(--text-tertiary); }
+.mm-table .mm-off {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.786rem;
+  line-height: 1.7;
+  background: var(--bg-active);
+  color: var(--text-tertiary);
+}
+/* 操作列:吸附右侧,滑动时不用来回找「编辑」按钮 */
+.mm-table th.mm-ops,
+.mm-table td.mm-ops {
+  position: sticky;
+  right: 0;
+  z-index: 4;
+  width: 132px;
+  min-width: 132px;
+  background: var(--row-bg);
+  border-left: 1px solid color-mix(in srgb, var(--hairline) 62%, transparent);
+  border-right: 0;
+  white-space: nowrap;
+  text-align: right;
+}
+.mm-table thead th.mm-ops { z-index: 5; background: color-mix(in srgb, var(--bg-hover) 62%, var(--bg-surface)); }
+.mm-wrap.is-pan-x .mm-table td.mm-ops,
+.mm-wrap.is-pan-x .mm-table thead th.mm-ops {
+  box-shadow: -10px 0 12px -10px rgba(0, 0, 0, 0.22);
+}
+[data-theme="dark"] .mm-wrap.is-pan-x .mm-table td.mm-ops,
+[data-theme="dark"] .mm-wrap.is-pan-x .mm-table thead th.mm-ops {
+  box-shadow: -10px 0 12px -10px rgba(0, 0, 0, 0.6);
+}
+.mm-table .mm-ops .btn { padding: 3px 9px; font-size: 0.821rem; }
+.mm-table .mm-ops .btn + .btn { margin-left: 5px; }
 #panel-modelmeta .pkg-form-grid { margin-bottom: 6px; }
+/* 元数据面板底部的分页条:与用户列表的分页条同款(右对齐、紧凑) */
+.mm-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.mm-pager .mm-pageinfo { font-size: 0.893rem; color: var(--text-secondary); }
+/* 窄屏:吸附的模型名与操作列各占一半宽度就没法看了,把它们收窄,
+   中间的内容靠横向滑动去看 */
+@media (max-width: 720px) {
+  .mm-table { --mm-name-w: 168px; }
+  .mm-table th.mm-ops,
+  .mm-table td.mm-ops { width: 106px; min-width: 106px; }
+  .mm-table .mm-ops .btn { padding: 3px 7px; }
+  .mm-table thead th,
+  .mm-table tbody td { padding-left: 8px; padding-right: 8px; }
+}
 
 /* 面板顶部说明区:全站有 * { margin:0 } 重置,<p> 默认零间距,
    所以这里必须显式给纵向留白,否则相邻的高亮块会黏在一起。 */
