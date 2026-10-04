@@ -261,6 +261,53 @@
     return menu;
   }
 
+  // 表格比容器宽时:给一条"可以左右滑"的提示(只作首次发现用,一滑就收),
+  // 同时给吸附的首列加阴影,避免停止滚动时看不出内容被盖住。
+  // 放在模块级:获取模型弹窗与供应商表单里的模型清单共用同一套行为。
+  function bindScrollAffordance(scroller, tipEl) {
+    if (!scroller) return;
+    let raf = 0;
+    const sync = () => {
+      const max = scroller.scrollWidth - scroller.clientWidth;
+      const canPan = max > 2;
+      const atStart = scroller.scrollLeft <= 2;
+      const atEnd = canPan && scroller.scrollLeft >= max - 2;
+      scroller.classList.toggle('is-pan-x', canPan && !atEnd);
+      // 提示只在"还没滑动过"时出现:用户一动就知道能滑,不必常驻一行
+      if (tipEl) tipEl.hidden = !(canPan && atStart);
+    };
+    scroller.addEventListener('scroll', () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => { raf = 0; sync(); });
+    }, { passive: true });
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(sync);
+      ro.observe(scroller);
+      const inner = scroller.firstElementChild;
+      if (inner) ro.observe(inner);
+    } else {
+      window.addEventListener('resize', sync);
+    }
+    // 内容重绘后列数会变(搜索过滤、切换 Key 并入新模型),每次 render 都要重测
+    scroller.__syncScrollAffordance = sync;
+    sync();
+  }
+
+  // 给一个 .model-check-list 容器补上滑动提示条(若页面里还没写)并绑定行为
+  function wireModelCheckList(listEl) {
+    if (!listEl) return;
+    let tip = listEl.previousElementSibling;
+    if (!tip || !tip.classList || !tip.classList.contains('mt-scroll-tip')) {
+      tip = document.createElement('p');
+      tip.className = 'mt-scroll-tip';
+      tip.hidden = true;
+      tip.innerHTML = (window.OC && window.OC.icon ? window.OC.icon('chevronRight', 13) : '')
+        + '<span>表格可左右滑动查看全部列</span>';
+      listEl.parentNode.insertBefore(tip, listEl);
+    }
+    bindScrollAffordance(listEl, tip);
+  }
+
   function modelTableHtml(rowsHtml, opts) {
     opts = opts || {};
     const keyHead = opts.showKey
@@ -500,12 +547,14 @@
     function render() {
       if (!catalog.length) {
         listEl.innerHTML = '<div class="model-check-empty">点击「获取列表」从上游拉取，或在上方输入模型 ID 后添加</div>';
+        if (listEl.__syncScrollAffordance) listEl.__syncScrollAffordance();
         updateMeta();
         return;
       }
       const vis = visible();
       if (!vis.length) {
         listEl.innerHTML = '<div class="model-check-empty">没有匹配的模型</div>';
+        if (listEl.__syncScrollAffordance) listEl.__syncScrollAffordance();
         updateMeta();
         return;
       }
@@ -514,6 +563,7 @@
       ).join(''), { showKey: keyOptions.length > 1, showCost: cfg.showCost });
       // 「+ 加备用 Key」是动态渲染的原生 select:换成站内自定义下拉
       if (typeof enhanceSelects === 'function') enhanceSelects(listEl);
+      if (listEl.__syncScrollAffordance) listEl.__syncScrollAffordance();
       updateMeta();
     }
 
@@ -646,6 +696,8 @@
     if (addBtn) addBtn.addEventListener('click', addManual);
 
     render();
+    // 首屏就先绑上滑动提示:表列较多时立刻能看出右边还有内容
+    wireModelCheckList(listEl);
 
     return {
       setFromFetch(models) {
@@ -801,9 +853,23 @@
     const mask = document.createElement('div');
     mask.className = 'modal-mask';
     const showKey = keyList.length > 1;
-    const keyMsg = showKey
-      ? '共获取 ' + items.length + ' 个模型（本次使用密钥「' + escapeHtml(keyName(fetchedKeyId) || '默认密钥') + '」）。勾选要启用的，并修改前台显示名称、max_tokens（留空跟随全局）、最大上下文（留空不限制）。同一模型可绑定多把密钥组成优先级链：上游用第一把失败时自动回退下一把（数字越小越优先，可 ↑ 调序、× 移除）。切换上方「获取用 Key」点「获取列表」可拉取另一批模型，点「并入并继续获取」即并入当前列表。'
-      : '共获取 ' + items.length + ' 个模型。勾选要启用的，并修改前台显示名称、max_tokens（留空跟随全局）与最大上下文（留空不限制）。';
+    // 顶部摘要只留一行事实(数量 + 本次用的 Key),把用法说明收进可折叠区:
+    // 打开弹窗第一眼应该是列表,而不是三段使用说明。
+    const summaryLine = '共 ' + items.length + ' 个模型'
+      + (showKey ? ' · 本次密钥「' + escapeHtml(keyName(fetchedKeyId) || '默认密钥') + '」' : '');
+    const noticeHtml = showKey
+      ? '<p><b>勾选要启用的模型</b>,并可直接修改前台显示名称、max_tokens（留空跟随全局）与最大上下文（留空不限制）。</p>'
+        + '<p><b>密钥优先级链：</b>同一个模型可绑定多把密钥。上游用第一把失败时自动回退下一把，数字越小越优先。</p>'
+        + '<ul>'
+        + '<li>在「密钥」列点 <kbd>+ 加备用 Key</kbd> 追加，点 <kbd>↑</kbd> 提前优先级，点 <kbd>×</kbd> 移除。</li>'
+        + '<li>切换上方「获取用 Key」再点「获取列表」，可拉取另一把 Key 下的模型；点「并入并继续获取」并入当前列表（同一模型自动合并为一条链）。</li>'
+        + '<li>本轮没出现的已存模型会列在下方「已失效模型」里，默认勾选清除。</li>'
+        + '</ul>'
+      : '<p><b>勾选要启用的模型</b>,并可直接修改前台显示名称、max_tokens（留空跟随全局）与最大上下文（留空不限制）。</p>'
+        + '<ul>'
+        + '<li>表格较宽时<b>左右滑动</b>查看全部列；表头与「模型 ID」列会固定在左侧。</li>'
+        + '<li>本轮没出现的已存模型会列在下方「已失效模型」里，默认勾选清除。</li>'
+        + '</ul>';
     mask.innerHTML =
       '<div class="modal modal-lg model-fetch-modal" role="dialog" aria-modal="true">'
       + '<div class="modal-header"><h3>' + escapeHtml(opts.title || '获取到的模型') + '</h3>'
@@ -811,7 +877,11 @@
       + (window.OC && window.OC.icon ? window.OC.icon('close', 16) : '×')
       + '</button></div>'
       + '<div class="modal-body">'
-      + '<p class="confirm-message" data-role="msg">' + keyMsg + '</p>'
+      + '<details class="mf-notice">'
+      + '<summary>' + (window.OC && window.OC.icon ? window.OC.icon('table', 14) : '')
+      + '<span data-role="msg">' + summaryLine + '</span></summary>'
+      + '<div class="mf-notice-body" data-role="noticebody">' + noticeHtml + '</div>'
+      + '</details>'
       + '<div class="model-fetch-toolbar">'
       + '<label class="model-fetch-search">'
       + (window.OC && window.OC.icon ? window.OC.icon('search', 14) : '')
@@ -825,20 +895,27 @@
           + '<button class="btn small" type="button" data-role="refetch">切换并继续获取</button>'
           + '</label>'
         : '')
+      + '<span class="mfc-spacer"></span>'
       + '<label class="model-check-all"><input type="checkbox" data-act="all"> 全选当前列表</label>'
-      + '<span class="muted small" data-role="count"></span>'
       + '</div>'
+      + '<p class="mt-scroll-tip" data-role="scrolltip" hidden>'
+      + (window.OC && window.OC.icon ? window.OC.icon('chevronRight', 13) : '')
+      + '<span>表格可左右滑动查看全部列</span></p>'
       + '<div class="model-fetch-list" data-role="list"></div>'
-      + '<div class="model-stale-block" data-role="staleblock"' + (stale.length ? '' : ' hidden') + '>'
+      + '<details class="model-stale-block" data-role="staleblock"' + (stale.length ? '' : ' hidden') + '>'
+        + '<summary>已失效模型 <span class="muted small" data-role="stalecount">' + stale.length + '</span></summary>'
+        + '<div class="model-stale-body">'
         + '<div class="model-stale-head">'
-        + '<div class="model-stale-title">已失效模型 <span class="muted small" data-role="stalecount">' + stale.length + '</span></div>'
+        + '<p class="model-stale-hint">这些模型本轮获取都没出现（多个 Key 时按并集判断），勾选后会从本地目录移除。</p>'
         + '<label class="model-check-all"><input type="checkbox" data-act="stale-all" checked> 全选清除</label>'
         + '</div>'
-        + '<p class="model-stale-hint">这些模型本轮获取都没出现（多个 Key 时按并集判断），勾选后会从本地目录移除。</p>'
         + '<div class="model-fetch-list model-stale-list" data-role="stale"></div>'
-      + '</div>'
+        + '</div>'
+      + '</details>'
       + '</div>'
       + '<div class="modal-footer">'
+      + '<span class="muted small" data-role="footcount"></span>'
+      + '<span class="mfc-spacer"></span>'
       + '<button class="btn" type="button" data-act="cancel">取消</button>'
       + '<button class="btn primary" type="button" data-act="ok">应用到列表</button>'
       + '</div></div>';
@@ -855,15 +932,16 @@
     const fetchKeyEl = mask.querySelector('[data-role="fetchkey"]');
     const refetchBtn = mask.querySelector('[data-role="refetch"]');
     const countEl = mask.querySelector('[data-role="count"]');
+    const footCountEl = mask.querySelector('[data-role="footcount"]');
     const allEl = mask.querySelector('[data-act="all"]');
     const staleAllEl = mask.querySelector('[data-act="stale-all"]');
+    const scrollTipEl = mask.querySelector('[data-role="scrolltip"]');
     let filter = '';
 
     function updateMsg() {
       if (!msgEl) return;
-      msgEl.textContent = showKey
-        ? '共 ' + items.length + ' 个模型（本次使用密钥「' + (keyName(fetchedKeyId) || '默认密钥') + '」）。勾选要启用的，并修改前台显示名称、max_tokens（留空跟随全局）、最大上下文（留空不限制）。同一模型可绑定多把密钥组成优先级链：上游用第一把失败时自动回退下一把（数字越小越优先，可 ↑ 调序、× 移除）。在上方可切换「获取用 Key」再点「切换并继续获取」并入另一批模型。'
-        : '共获取 ' + items.length + ' 个模型。勾选要启用的，并修改前台显示名称、max_tokens（留空跟随全局）与最大上下文（留空不限制）。';
+      msgEl.textContent = '共 ' + items.length + ' 个模型'
+        + (showKey ? ' · 本次密钥「' + (keyName(fetchedKeyId) || '默认密钥') + '」' : '');
     }
 
     function visible() {
@@ -877,7 +955,13 @@
     function render() {
       const vis = visible();
       const n = vis.filter((m) => m.enabled).length;
-      if (countEl) countEl.textContent = '已选 ' + items.filter((m) => m.enabled).length + ' / ' + items.length;
+      const onCount = items.filter((m) => m.enabled).length;
+      if (countEl) countEl.textContent = '已选 ' + onCount + ' / ' + items.length;
+      if (footCountEl) {
+        footCountEl.textContent = vis.length === items.length
+          ? ('已选 ' + onCount + ' / ' + items.length)
+          : ('筛选出 ' + vis.length + ' 个 · 已选 ' + onCount + ' / ' + items.length);
+      }
       if (allEl) {
         allEl.checked = vis.length > 0 && n === vis.length;
         allEl.indeterminate = n > 0 && n < vis.length;
@@ -889,6 +973,7 @@
           modelRowHtml(m, { checked: m.enabled, keys: keyList, showCost })
         ).join(''), { showKey: showKey, showCost });
       }
+      if (listEl.__syncScrollAffordance) listEl.__syncScrollAffordance();
       renderStale();
       updateMsg();
     }
@@ -1074,6 +1159,9 @@
     });
 
     render();
+    // 表格渲染完才量得出真实宽度:绑定横向滑动提示 + 吸附列阴影
+    bindScrollAffordance(listEl, scrollTipEl);
+    bindScrollAffordance(staleEl, null);
     if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(mask);
     else mask.classList.add('show');
     if (qEl) setTimeout(() => qEl.focus(), 80);
@@ -1232,6 +1320,7 @@
   window.OC.isVideoModelName = isVideoModelName;
   window.OC.openSelect = openSelect;
   window.OC.closeSelect = closeOpenMenu;
+  window.OC.bindScrollAffordance = bindScrollAffordance;
   window.OC.bindModelChecklist = bindModelChecklist;
   window.OC.openFetchedModelsModal = openFetchedModelsModal;
   // ============ 原生 <select> → 站内自定义下拉 ============
