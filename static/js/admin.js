@@ -214,8 +214,22 @@ async function loadSystemBoard() {
 // 两块数据来自不同接口(系统看板给用户与调用,统计接口给额度),谁先到都先渲染一次,
 // 后到的补齐;这样单独刷新任一边都不会把另一边的格子抹掉。
 const OV = { sys: null, stats: null };
-function ovCard(label, value, sub) {
-  return '<div class="stat-card"><div class="stat-value">' + escapeHtml(String(value)) + '</div>'
+// 大数字缩写:额度类数值动辄上亿,原始数字既读不了也会撑破概览卡片(悬停可见完整值)
+function fmtBigNum(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v ?? '');
+  const abs = Math.abs(n);
+  const cut = (x) => String(Math.round(x * 100) / 100);
+  if (abs >= 1e16) return cut(n / 1e16) + ' 亿亿';
+  if (abs >= 1e12) return cut(n / 1e12) + ' 万亿';
+  if (abs >= 1e8)  return cut(n / 1e8) + ' 亿';
+  if (abs >= 1e4)  return cut(n / 1e4) + ' 万';
+  return n.toLocaleString('en-US');
+}
+function ovCard(label, value, sub, full) {
+  return '<div class="stat-card"><div class="stat-value"'
+    + (full != null && full !== String(value) ? ' title="' + escapeHtml(full) + '"' : '')
+    + '>' + escapeHtml(String(value)) + '</div>'
     + '<div class="stat-label">' + escapeHtml(label) + '</div>'
     + (sub ? '<div class="stat-sub">' + escapeHtml(sub) + '</div>' : '') + '</div>';
 }
@@ -236,8 +250,10 @@ function renderOverviewGrid() {
     cards.push(['助手数', content.assistants]);
   }
   if (OV.stats) {
-    cards.push(['已发放额度', s.totalQuotaGiven || 0]);
-    cards.push(['注册默认额度', OV.stats.freeQuotaUnlimited ? '不限' : (OV.stats.freeQuota || 0)]);
+    const given = s.totalQuotaGiven || 0;
+    cards.push(['已发放额度', fmtBigNum(given), '', String(given)]);
+    const freeQ = OV.stats.freeQuotaUnlimited ? '不限' : fmtBigNum(OV.stats.freeQuota || 0);
+    cards.push(['注册默认额度', freeQ, '', OV.stats.freeQuotaUnlimited ? '' : String(OV.stats.freeQuota || 0)]);
   }
   el.innerHTML = cards.map((c) => ovCard(c[0], c[1], c[2])).join('');
 }
@@ -1850,16 +1866,15 @@ function fillChatLimits(s) {
   const src = s || {};
   const maxCtx = Math.min(500, Math.max(2, parseInt(src.maxContextMessages, 10) || 200));
   const ctx = Math.min(maxCtx, Math.max(2, parseInt(src.contextMessages, 10) || 12));
-  const output = Math.min(128000, Math.max(256, parseInt(src.maxOutputTokens, 10) || 12800));
   if ($('chat-context-max')) $('chat-context-max').value = maxCtx;
   if ($('chat-context')) $('chat-context').value = ctx;
-  if ($('chat-output')) $('chat-output').value = output;
   if ($('chat-temperature')) {
     const t = parseFloat(src.temperature);
     $('chat-temperature').value = Number.isFinite(t) ? t : '';
   }
   if ($('chat-ratelimit')) $('chat-ratelimit').value = Math.min(600, Math.max(0, parseInt(src.rateLimitPerMin, 10) || 0));
   if ($('chat-timeout')) $('chat-timeout').value = Math.min(600, Math.max(5, Math.round((parseInt(src.proxyTimeoutMs, 10) || 120000) / 1000)));
+  if ($('chat-outbound-proxy')) $('chat-outbound-proxy').value = String(src.outboundProxy || '');
   if ($('chat-context-learn')) $('chat-context-learn').checked = src.contextAutoLearn !== false;
   if ($('chat-persist-chats')) $('chat-persist-chats').checked = src.persistChats !== false;
   if ($('chat-save-api')) $('chat-save-api').checked = src.apiSaveChats !== false;
@@ -1883,7 +1898,6 @@ function fillChatLimits(s) {
   save.addEventListener('click', async () => {
     const maxCtx = Math.min(500, Math.max(2, parseInt($('chat-context-max') && $('chat-context-max').value, 10) || 200));
     const ctx = Math.min(maxCtx, Math.max(2, parseInt($('chat-context') && $('chat-context').value, 10) || 40));
-    const output = Math.min(128000, Math.max(256, parseInt($('chat-output') && $('chat-output').value, 10) || 12800));
     const tempRaw = parseFloat(($('chat-temperature') && $('chat-temperature').value) || '');
     const temperature = Number.isFinite(tempRaw) ? Math.min(2, Math.max(0, tempRaw)) : null;
     const rateLimit = Math.min(600, Math.max(0, parseInt($('chat-ratelimit') && $('chat-ratelimit').value, 10) || 0));
@@ -1899,16 +1913,21 @@ function fillChatLimits(s) {
     if ($('chat-health-warn')) $('chat-health-warn').value = healthWarn;
     const imageArchiveEnabled = !!($('chat-img-archive') && $('chat-img-archive').checked);
     const imageArchiveQuotaMb = Math.min(10240, Math.max(50, parseInt($('chat-img-archive-quota') && $('chat-img-archive-quota').value, 10) || 500));
+    const outboundProxy = String(($('chat-outbound-proxy') && $('chat-outbound-proxy').value) || '').trim();
+    // 前端先挡一道:格式不对就不提交,避免保存后静默变空(后端也会再校验一次)
+    if (outboundProxy && !/^(https?|socks5h?):\/\/\S{1,300}$/i.test(outboundProxy)) {
+      return toast('出站代理格式不正确，应形如 http://127.0.0.1:2080 或 socks5h://127.0.0.1:1080', true);
+    }
     save.disabled = true;
     try {
       const r = await api('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature, rateLimitPerMin: rateLimit, proxyTimeoutMs: timeoutSec * 1000, contextAutoLearn: contextLearn, persistChats, apiSaveChats, healthOkMin: healthOk, healthWarnMin: healthWarn, imageArchiveEnabled, imageArchiveQuotaMb }),
+        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, temperature, rateLimitPerMin: rateLimit, proxyTimeoutMs: timeoutSec * 1000, contextAutoLearn: contextLearn, persistChats, apiSaveChats, healthOkMin: healthOk, healthWarnMin: healthWarn, imageArchiveEnabled, imageArchiveQuotaMb, outboundProxy }),
       });
       const data = await r.json();
       if (!r.ok) return toast((data.error && data.error.message) || '保存失败', true);
-      fillChatLimits(data.settings || { contextMessages: ctx, maxContextMessages: maxCtx, maxOutputTokens: output, temperature });
+      fillChatLimits(data.settings || { contextMessages: ctx, maxContextMessages: maxCtx, temperature });
       toast('对话设置已保存');
     } catch (e) {
       toast('保存失败: ' + e.message, true);
@@ -4204,6 +4223,298 @@ async function restoreBackup(name) {
   });
 })();
 
+// ============ 模型元数据(上下文窗口 / 价格) ============
+// 全站按模型名共享一份;与供应商解耦,同一模型在多个渠道下只维护一份。
+// 价格统一以「每 token」存储(与 litellm 一致),界面按「每百万 token」展示更好读。
+const MM_STATE = { q: '', page: 1, perPage: 100, total: 0 };
+
+// 每 token -> 每百万 token 的展示值;0 视为未配置,显示为「—」
+function mmPricePerMillion(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  // 保留 6 位有效小数,去掉尾部多余的 0(如 2.500000 -> 2.5)
+  return String(parseFloat((n * 1e6).toFixed(6)));
+}
+function mmFmtTokens(v) {
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n) || n <= 0) return '<span class="muted">—</span>';
+  return escapeHtml(n.toLocaleString('en-US'));
+}
+function mmSourceBadge(item) {
+  if (item.source === 'manual') return '<span class="mm-src manual" title="手工维护，同步不会覆盖">手工</span>';
+  if (item.source === 'auto') return '<span class="mm-src auto" title="模型未匹配到本表时自动补的兜底值，需人工复核">自动</span>';
+  return '<span class="mm-src sync" title="来自 litellm 价格表">同步</span>';
+}
+
+async function loadModelMeta() {
+  if (MM_STATE._init) return refreshModelMeta();
+  MM_STATE._init = true;
+  const search = $('mm-search');
+  if (search) {
+    // 输入防抖:避免每敲一个字都打一次接口(价格表有 2000+ 条)
+    let timer = null;
+    search.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { MM_STATE.q = search.value.trim(); MM_STATE.page = 1; refreshModelMeta(); }, 300);
+    });
+  }
+  if ($('mm-perpage')) $('mm-perpage').addEventListener('change', (e) => {
+    MM_STATE.perPage = parseInt(e.target.value, 10) || 100; MM_STATE.page = 1; refreshModelMeta();
+  });
+  if ($('mm-prev')) $('mm-prev').addEventListener('click', () => {
+    if (MM_STATE.page > 1) { MM_STATE.page--; refreshModelMeta(); }
+  });
+  if ($('mm-next')) $('mm-next').addEventListener('click', () => {
+    const maxPage = Math.max(1, Math.ceil(MM_STATE.total / MM_STATE.perPage));
+    if (MM_STATE.page < maxPage) { MM_STATE.page++; refreshModelMeta(); }
+  });
+  if ($('mm-sync')) $('mm-sync').addEventListener('click', () => syncModelMeta($('mm-sync')));
+  if ($('mm-clear-litellm')) $('mm-clear-litellm').addEventListener('click', clearModelMeta);
+  if ($('mm-new')) $('mm-new').addEventListener('click', () => editModelMeta(null));
+  await refreshModelMeta();
+}
+
+async function refreshModelMeta() {
+  const wrap = $('mm-table-wrap');
+  if (!wrap) return;
+  const qs = new URLSearchParams({ q: MM_STATE.q, page: MM_STATE.page, perPage: MM_STATE.perPage });
+  let d;
+  try {
+    const r = await api('/api/admin/model-meta?' + qs.toString());
+    d = await r.json();
+    if (!r.ok) { wrap.innerHTML = '<p class="muted small">' + escapeHtml((d.error && d.error.message) || '加载失败') + '</p>'; return; }
+  } catch (e) {
+    wrap.innerHTML = '<p class="muted small">加载失败：' + escapeHtml(e.message) + '</p>';
+    return;
+  }
+  MM_STATE.total = d.total || 0;
+  // 搜索/清空后总数变小,旧页码可能越界(显示"第 3 / 1 页"且表格为空):回夹到最后一页重取
+  const totalPages = Math.max(1, Math.ceil(MM_STATE.total / MM_STATE.perPage));
+  if (MM_STATE.page > totalPages) {
+    MM_STATE.page = totalPages;
+    return refreshModelMeta();
+  }
+  const st = $('mm-status');
+  if (st) {
+    const synced = d.syncedAt ? new Date(d.syncedAt).toLocaleString('zh-CN') : '从未同步';
+    st.textContent = '共 ' + (d.storedCount || 0) + ' 个模型（源表 ' + (d.sourceCount || 0) + ' 条）· 上次同步：' + synced;
+  }
+  // 待复核提示条:自动补的兜底值数量(不随搜索/分页变化,来自服务端全表统计)
+  const reviewNote = $('mm-review-note');
+  if (reviewNote) {
+    const rc = Number(d.reviewCount) || 0;
+    reviewNote.hidden = rc <= 0;
+    if (rc > 0 && $('mm-review-count')) $('mm-review-count').textContent = String(rc);
+  }
+  const items = d.items || [];
+  if (!items.length) {
+    wrap.innerHTML = '<p class="muted small">' + (MM_STATE.q ? '没有匹配的模型。' : '还没有数据，点「从 litellm 同步」拉取。') + '</p>';
+  } else {
+    // 列宽足够时全部并列展示;窗口很窄时横向滑动(表头吸顶、模型名与操作列吸附两侧)
+    const head = '<tr>'
+      + '<th class="mm-col-name">模型</th>'
+      + '<th title="模型一次能接收的最大 token 数（含对话历史）">输入窗口</th>'
+      + '<th title="模型一次最多能生成的 token 数，对应请求里的 max_tokens">输出上限</th>'
+      + '<th title="每百万输入 token 的价格，仅作估算参考">输入 $/M</th>'
+      + '<th title="每百万输出 token 的价格，仅作估算参考">输出 $/M</th>'
+      + '<th title="每百万缓存读取 token 的价格">缓存读 $/M</th>'
+      + '<th title="每百万缓存写入 token 的价格">缓存写 $/M</th>'
+      + '<th title="手工维护的条目不会被 litellm 同步覆盖">来源</th>'
+      + '<th class="mm-ops"></th>'
+      + '</tr>';
+    const rows = items.map((it) => {
+      const name = escapeHtml(it.model);
+      const rowCls = [it.inUse ? 'mm-inuse' : '', it.needsReview ? 'mm-needs-review' : ''].filter(Boolean);
+      // 未配置的数值显示为淡灰「—」,比空白更明确地表示"没有这项数据"
+      const cell = (v) => mmFmtTokens(v);
+      const price = (v) => {
+        const s = mmPricePerMillion(v);
+        return s === '' ? '<span class="mm-none">—</span>' : s;
+      };
+      return '<tr' + (rowCls.length ? ' class="' + rowCls.join(' ') + '"' : '') + '>'
+        + '<td class="mm-col-name"><span class="mm-name" title="' + name + '">' + name + '</span>'
+        + (it.inUse ? '<span class="mm-inuse-tag" title="当前供应商配置里正在使用">在用</span>' : '')
+        + (it.needsReview ? '<span class="mm-review-tag" title="系统自动补的兜底值，未经人工核对">待复核</span>' : '') + '</td>'
+        + '<td>' + cell(it.maxInputTokens) + '</td>'
+        + '<td>' + cell(it.maxOutputTokens) + '</td>'
+        + '<td>' + price(it.inputCostPerToken) + '</td>'
+        + '<td>' + price(it.outputCostPerToken) + '</td>'
+        + '<td>' + price(it.cacheReadCostPerToken) + '</td>'
+        + '<td>' + price(it.cacheWriteCostPerToken) + '</td>'
+        + '<td>' + mmSourceBadge(it) + (it.enabled === false ? '<span class="mm-off" title="该条不参与窗口计算，但数据保留">已停用</span>' : '') + '</td>'
+        + '<td class="mm-ops">'
+        + (it.needsReview ? '<button class="btn small primary" type="button" data-mm-confirm="' + name + '" title="数值无误，去掉待复核标记">确认</button>' : '')
+        + '<button class="btn small" type="button" data-mm-edit="' + name + '" title="编辑 ' + name + '">编辑</button>'
+        + '<button class="btn small danger" type="button" data-mm-del="' + name + '" title="删除 ' + name + '">删除</button></td>'
+        + '</tr>';
+    }).join('');
+    wrap.innerHTML = '<div class="mm-wrap"><table class="mm-table"><thead>' + head + '</thead><tbody>' + rows + '</tbody></table></div>';
+    // 表格比容器宽时:吸附列加阴影提示,否则滑到中间时看不出模型名是浮在上层的
+    const scroller = wrap.querySelector('.mm-wrap');
+    if (scroller) {
+      let raf = 0;
+      const sync = () => {
+        const max = scroller.scrollWidth - scroller.clientWidth;
+        const canPan = max > 2;
+        const atEnd = canPan && scroller.scrollLeft >= max - 2;
+        scroller.classList.toggle('is-pan-x', canPan && !atEnd);
+      };
+      scroller.addEventListener('scroll', () => {
+        if (raf) return;
+        raf = requestAnimationFrame(() => { raf = 0; sync(); });
+      }, { passive: true });
+      if (typeof ResizeObserver === 'function') new ResizeObserver(sync).observe(scroller);
+      else window.addEventListener('resize', sync);
+      sync();
+    }
+    wrap.querySelectorAll('[data-mm-edit]').forEach((btn) => btn.addEventListener('click', () => {
+      const model = btn.getAttribute('data-mm-edit');
+      editModelMeta(items.find((x) => x.model === model) || null);
+    }));
+    wrap.querySelectorAll('[data-mm-confirm]').forEach((btn) => btn.addEventListener('click', async () => {
+      const model = btn.getAttribute('data-mm-confirm');
+      btn.disabled = true;
+      try {
+        const r = await api('/api/admin/model-meta', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, confirm: true }) });
+        const rd = await r.json();
+        if (!r.ok) return toast((rd.error && rd.error.message) || '确认失败', true);
+        toast('已确认 ' + model);
+        refreshModelMeta();
+      } catch (e) {
+        toast('确认失败: ' + e.message, true);
+      } finally {
+        btn.disabled = false;
+      }
+    }));
+    wrap.querySelectorAll('[data-mm-del]').forEach((btn) => btn.addEventListener('click', async () => {
+      const model = btn.getAttribute('data-mm-del');
+      const ok = window.OCUI && window.OCUI.confirm
+        ? await window.OCUI.confirm({ title: '删除模型元数据', message: '确认删除「' + model + '」的窗口与价格数据？删除后该模型不再有单独上限（请求时按兜底值处理）。', danger: true, confirmText: '删除' })
+        : window.confirm('确认删除「' + model + '」？');
+      if (!ok) return;
+      const r = await api('/api/admin/model-meta', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }) });
+      const rd = await r.json();
+      if (!r.ok) return toast((rd.error && rd.error.message) || '删除失败', true);
+      toast('已删除 ' + model);
+      refreshModelMeta();
+    }));
+  }
+  const maxPage = Math.max(1, Math.ceil(MM_STATE.total / MM_STATE.perPage));
+  if ($('mm-pageinfo')) $('mm-pageinfo').textContent = '第 ' + MM_STATE.page + ' / ' + maxPage + ' 页，共 ' + MM_STATE.total + ' 条';
+  if ($('mm-prev')) $('mm-prev').disabled = MM_STATE.page <= 1;
+  if ($('mm-next')) $('mm-next').disabled = MM_STATE.page >= maxPage;
+}
+
+// 新增/编辑弹窗。item 为 null 时是新增。价格输入按「每百万 token」,提交前换算回每 token。
+function editModelMeta(item) {
+  const isNew = !item;
+  const v = (x) => (x === undefined || x === null ? '' : String(x));
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-mask';
+  wrap.innerHTML = ''
+    + '<div class="modal admin-modal" role="dialog" aria-modal="true">'
+    + '<div class="modal-header"><h3>' + (isNew ? '新增模型元数据' : '编辑模型元数据') + '</h3>'
+    + '<button class="icon-btn" type="button" data-close aria-label="关闭">✕</button></div>'
+    + '<div class="modal-body">'
+    + '<p class="muted small">按「每百万 token」填价格（如 gpt-4o 输入 2.5）。留空＝不配置该项。手工保存的条目标记为「手工」，后续同步不会覆盖它。'
+    + (item && item.needsReview ? '<br><b>该条目前是自动补的兜底值</b>，保存后即视为已复核，标记会消失。' : '') + '</p>'
+    + '<label class="field"><span>模型名（与供应商里的模型 ID 一致）</span><input id="mm-edit-model" type="text" maxlength="200" value="' + escapeHtml(isNew ? '' : item.model) + '"' + (isNew ? '' : ' readonly') + '></label>'
+    + '<div class="pkg-form-grid">'
+    + '<label class="field"><span>输入窗口（token）</span><input id="mm-edit-maxin" type="number" min="0" step="1" value="' + v(item && item.maxInputTokens ? item.maxInputTokens : '') + '"></label>'
+    + '<label class="field"><span>输出上限（token）</span><input id="mm-edit-maxout" type="number" min="0" step="1" value="' + v(item && item.maxOutputTokens ? item.maxOutputTokens : '') + '"></label>'
+    + '</div>'
+    + '<div class="pkg-form-grid">'
+    + '<label class="field"><span>输入价格（$/百万）</span><input id="mm-edit-pin" type="number" min="0" step="0.0001" value="' + (item ? mmPricePerMillion(item.inputCostPerToken) : '') + '"></label>'
+    + '<label class="field"><span>输出价格（$/百万）</span><input id="mm-edit-pout" type="number" min="0" step="0.0001" value="' + (item ? mmPricePerMillion(item.outputCostPerToken) : '') + '"></label>'
+    + '</div>'
+    + '<div class="pkg-form-grid">'
+    + '<label class="field"><span>缓存读价格（$/百万）</span><input id="mm-edit-cread" type="number" min="0" step="0.0001" value="' + (item ? mmPricePerMillion(item.cacheReadCostPerToken) : '') + '"></label>'
+    + '<label class="field"><span>缓存写价格（$/百万）</span><input id="mm-edit-cwrite" type="number" min="0" step="0.0001" value="' + (item ? mmPricePerMillion(item.cacheWriteCostPerToken) : '') + '"></label>'
+    + '</div>'
+    + '<label class="user-form-admin"><span class="switch"><input type="checkbox" id="mm-edit-enabled"' + (!item || item.enabled !== false ? ' checked' : '') + '><span class="slider"></span></span><span>启用（停用后该条不参与窗口计算，但数据保留）</span></label>'
+    + '</div>'
+    + '<div class="modal-footer"><button class="btn" type="button" data-close>取消</button><button class="btn primary" type="button" id="mm-edit-save">保存</button></div>'
+    + '</div>';
+  document.body.appendChild(wrap);
+  const rm = () => wrap.remove();
+  wrap.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', rm));
+  wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) rm(); });
+  if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(wrap);
+  const saveBtn = wrap.querySelector('#mm-edit-save');
+  saveBtn.addEventListener('click', async () => {
+    const model = String(wrap.querySelector('#mm-edit-model').value || '').trim();
+    if (!model) return toast('请填写模型名', true);
+    // 界面用「每百万」,存储用「每 token」——在这里换算,避免两边各自记一个单位
+    const perM = (id) => {
+      const raw = String(wrap.querySelector(id).value || '').trim();
+      if (raw === '') return 0;
+      const n = parseFloat(raw);
+      return Number.isFinite(n) && n > 0 ? n / 1e6 : 0;
+    };
+    const numOr0 = (id) => Math.max(0, parseInt(wrap.querySelector(id).value, 10) || 0);
+    const payload = {
+      model,
+      maxInputTokens: numOr0('#mm-edit-maxin'),
+      maxOutputTokens: numOr0('#mm-edit-maxout'),
+      inputCostPerToken: perM('#mm-edit-pin'),
+      outputCostPerToken: perM('#mm-edit-pout'),
+      cacheReadCostPerToken: perM('#mm-edit-cread'),
+      cacheWriteCostPerToken: perM('#mm-edit-cwrite'),
+      enabled: wrap.querySelector('#mm-edit-enabled').checked,
+    };
+    saveBtn.disabled = true;
+    try {
+      const r = await api('/api/admin/model-meta', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const rd = await r.json();
+      if (!r.ok) return toast((rd.error && rd.error.message) || '保存失败', true);
+      toast('已保存 ' + model);
+      rm();
+      refreshModelMeta();
+    } catch (e) {
+      toast('保存失败: ' + e.message, true);
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+}
+
+async function syncModelMeta(btn) {
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = '同步中…';
+  const st = $('mm-status');
+  if (st) st.textContent = '正在拉取 litellm 价格表…';
+  try {
+    const r = await api('/api/admin/model-meta/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    const d = await r.json();
+    if (!r.ok) {
+      toast((d.error && d.error.message) || '同步失败', true);
+      return refreshModelMeta();
+    }
+    toast('同步完成：新增 ' + d.added + '，更新 ' + d.updated + '，保留手工 ' + d.skipped);
+    await refreshModelMeta();
+  } catch (e) {
+    toast('同步失败: ' + e.message, true);
+    refreshModelMeta();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+async function clearModelMeta() {
+  const ok = window.OCUI && window.OCUI.confirm
+    ? await window.OCUI.confirm({ title: '清空同步数据', message: '确认清空所有来自 litellm 的数据？手工维护的条目会保留。清空后这些模型不再有单独上限（请求时按兜底值处理）。', danger: true, confirmText: '清空' })
+    : window.confirm('确认清空同步数据？手工条目会保留。');
+  if (!ok) return;
+  const r = await api('/api/admin/model-meta/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+  const d = await r.json();
+  if (!r.ok) return toast((d.error && d.error.message) || '清空失败', true);
+  toast('已清空（保留手工条目 ' + d.kept + ' 条）');
+  MM_STATE.page = 1;
+  refreshModelMeta();
+}
+
 const TAB_LOADERS = {
   notes: loadNotesSettings,
   overview: () => { loadStats(); loadSystemBoard(); },
@@ -4216,6 +4527,7 @@ const TAB_LOADERS = {
   },
   providers: () => loadProviders(),
   chat: () => loadChatSettings(),
+  modelmeta: () => loadModelMeta(),
   perf: () => loadPerfSettings(),
   search: () => loadSearchSettings(),
   docs: () => loadSearchSettings(),
@@ -4437,7 +4749,8 @@ async function viewUserNotes(userId) {
 }
 
 const ADMIN_GROUPS = {
-  overview: [{ id: 'overview', label: '概览' }, { id: 'usage', label: '用量分析' }, { id: 'announce', label: '全站公告' }, { id: 'logs', label: '运行日志' }],
+  // 二级首项叫「运营数据」,避免与上方一级分组「概览」重名让人分不清
+  overview: [{ id: 'overview', label: '运营数据' }, { id: 'usage', label: '用量分析' }, { id: 'announce', label: '全站公告' }, { id: 'logs', label: '运行日志' }],
   users: [{ id: 'users', label: '用户' }, { id: 'groups', label: '用户组' }, { id: 'access', label: '模型授权' }, { id: 'verify', label: '用户验证' }, { id: 'invite', label: '邀请码' }],
   billing: [
     { id: 'packages', label: '额度套餐' },
@@ -4445,7 +4758,7 @@ const ADMIN_GROUPS = {
     { id: 'codes-gen', label: '生成兑换码' },
     { id: 'codes-fixed', label: '添加固定兑换码' },
   ],
-  platform: [{ id: 'providers', label: '供应商' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'notes', label: '笔记' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'oauth', label: '第三方登录' }, { id: 'storage', label: '存储管理' }, { id: 'update', label: '版本更新' }],
+  platform: [{ id: 'providers', label: '供应商' }, { id: 'modelmeta', label: '模型元数据' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'notes', label: '笔记' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'oauth', label: '第三方登录' }, { id: 'storage', label: '存储管理' }, { id: 'update', label: '版本更新' }],
   thinking: [{ id: 'thinking', label: '思考策略' }],
   content: [{ id: 'assistants', label: '助手库' }],
 };
@@ -4541,6 +4854,7 @@ window.addEventListener('hashchange', () => {
       'th-default', 'th-mode', 'th-force',
       'account-deletion-mode', 'smtp-encryption',
       'pkg-code-package', 'codes-bulk-package', 'user-chats-select',
+      'mm-perpage',
     ]);
     localStorage.setItem('oc_user', JSON.stringify(data.user));
     ME_ID = data.user && data.user.id ? data.user.id : ME_ID;

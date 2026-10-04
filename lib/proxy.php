@@ -379,7 +379,7 @@ function tc_prepare_upstream_body($b, $provider, $format) {
     }
     $model = isset($out['model']) ? $out['model'] : (isset($provider['models'][0]['id']) ? $provider['models'][0]['id'] : null);
     if ($model) $out['model'] = $model;
-    if ($format === 'anthropic' && empty($out['max_tokens'])) $out['max_tokens'] = 8192;
+    // Anthropic 的 max_tokens 必填,缺省值留到钳制阶段按模型上限补(此处不定死小值)
     return $out;
 }
 
@@ -522,21 +522,15 @@ function tc_strip_reasoning_params(&$body, $names) {
     return $changed;
 }
 
-// $force=true 时无条件写入(模型级 max_tokens 覆盖),否则只在缺失或超上限时压回
+// $force=true 时无条件写入(硬覆盖),否则只在缺失或超上限时压回
 function tc_clamp_output_tokens(&$body, $format, $cap, $force = false) {
     $cap = (int) $cap;
     if ($cap < 256) return;
     if ($format === 'anthropic') {
-        $want = isset($body['max_tokens']) ? (int) $body['max_tokens'] : 1024;
-        if ($want <= 0) $want = 1024;
-        $body['max_tokens'] = $force ? $cap : min($cap, max(256, $want));
-        if (!empty($body['thinking']['budget_tokens'])) {
-            $budget = (int) $body['thinking']['budget_tokens'];
-            if ($budget >= $body['max_tokens']) {
-                if ($body['max_tokens'] < 2) $body['max_tokens'] = 2;
-                $body['thinking']['budget_tokens'] = $body['max_tokens'] - 1;
-            }
-        }
+        // max_tokens 是 Anthropic 的必填项。客户端没给就补成上限——补一个偏小的定值
+        // (旧实现补 8192)会把「未指定」误当成「只要这么多」，模型上限再大也用不上。
+        $want = isset($body['max_tokens']) ? (int) $body['max_tokens'] : 0;
+        $body['max_tokens'] = $force ? $cap : ($want > 0 ? min($cap, max(256, $want)) : $cap);
         return;
     }
     if ($format === 'responses') {
@@ -548,6 +542,27 @@ function tc_clamp_output_tokens(&$body, $format, $cap, $force = false) {
         $current = isset($body['max_tokens']) ? (int) $body['max_tokens'] : 0;
         if ($force || $current <= 0 || $current > $cap) $body['max_tokens'] = $cap;
     }
+}
+
+// 开启思考时,保证输出额度里给正文留出 $reserve:显式带了 thinking.budget_tokens 的
+// (Anthropic 及部分网关)直接压缩思维预算;只有 effort 档位的网关由上游自行分配额度,
+// 服务端不干预。思维链吃光额度会导致正文为空(实测 finish_reason=length、content 长度 0),
+// 所以这里宁可压缩思考也不让正文没有位置。$cap 为该模型的输出上限。
+function tc_fit_thinking_budget(&$body, $cap, $reserve = 2048) {
+    $cap = (int) $cap;
+    if ($cap < 256) return;
+    if (empty($body['thinking']) || !is_array($body['thinking'])) return;
+    if (isset($body['thinking']['type']) && $body['thinking']['type'] === 'disabled') return;
+    if (empty($body['thinking']['budget_tokens'])) return;
+    $budget = (int) $body['thinking']['budget_tokens'];
+    if ($budget <= 0) return;
+    // 实际生效的输出额度:Anthropic 的 max_tokens 优先,其余格式用上限
+    $limit = isset($body['max_tokens']) && (int) $body['max_tokens'] > 0 ? (int) $body['max_tokens'] : $cap;
+    $room = $limit - (int) $reserve;
+    if ($room < 1024) $room = 1024;          // 预算再小思考也没有意义
+    if ($room > $limit - 1) $room = $limit - 1; // Anthropic 要求 budget < max_tokens
+    if ($room < 1) $room = 1;
+    if ($budget > $room) $body['thinking']['budget_tokens'] = $room;
 }
 
 // 全局温度:管理员未设置(null)时不发送,避免影响不接受该参数的推理型模型
@@ -695,6 +710,14 @@ function tc_http_request($url, $method, $headers, $body, $timeoutMs, $stream = f
     );
     $ca = tc_cacert_path();
     if ($ca) $opts[CURLOPT_CAINFO] = $ca;
+    // 出站代理:管理员在「对话设置」配置后,所有出站请求(含拉取模型价格表)统一走它。
+    // 直连 raw.githubusercontent.com 在国内网络常下到一半卡死,代理能稳定完成。
+    $proxy = tc_outbound_proxy();
+    if ($proxy !== '') {
+        $opts[CURLOPT_PROXY] = $proxy;
+        // socks5h 表示由代理解析域名,避免本地 DNS 污染
+        if (stripos($proxy, 'socks5') === 0) $opts[CURLOPT_PROXYTYPE] = CURLPROXY_SOCKS5_HOSTNAME;
+    }
     curl_setopt_array($ch, $opts);
     if ($body !== null) curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
     if (!$sendExpect) curl_setopt($ch, CURLOPT_HTTPHEADER, array_merge($hdrs, array('Expect:', 'Content-Type:')));
@@ -2410,6 +2433,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         if ($modHit !== '') tc_fail(400, '消息包含被禁止的内容，请修改后重试');
         // 用户自备供应商(自己的 Key):不扣站点次数,也不设额度门槛
         if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
+        // 内部「AI 工具判定」(生图/联网/标题的调度预检)不向用户计费:它是用户看不见的
+        // 基础步骤,对用户而言一条消息就是一次对话;上游成本由站点承担。
+        // 仅限网页端内部调用 —— 开放 API 的外部请求不能靠自带 _purpose=judge 绕过计费。
+        $reqPurpose = isset($b['_purpose']) ? (string) $b['_purpose'] : '';
+        if ($reqPurpose === 'judge' && $apiKeyOwner === null) $cost = 0;
         // 额度预扣:检查与扣减放在同一个写事务里完成,避免并发请求都读到同一笔余额后全部放行。
         // 实际费用要等上游返回才知道(按 token 计费),所以先按预估费用扣,结算时再多退少补。
         $reserveOk = false;
@@ -2454,7 +2482,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             'timeout' => $db['settings']['proxyTimeoutMs'],
             'wantSearch' => (!empty($b['webSearch']) && $b['webSearch'] !== 'off' && $b['webSearch'] !== false) ? (string) $b['webSearch'] : '',
             'settings' => tc_user_search_settings($user, $db['settings']),
-            'maxOutputTokens' => isset($db['settings']['maxOutputTokens']) ? (int) $db['settings']['maxOutputTokens'] : 8192,
+            // 模型元数据(输出上限/上下文窗口)在这里取出:tc_with_db 结束后 $db 即释放,
+            // 而钳制逻辑在事务之外执行,拿不到库,只能提前带出来。
+            // 取数用 $costModel:请求没带 model 时它是供应商首个模型,与服务端补默认模型的
+            // 逻辑一致,否则「省略 model」的请求会取不到元数据、静默落到兜底值。
+            'modelMeta' => tc_model_meta_get($db, $costModel),
             'temperature' => isset($db['settings']['temperature']) ? $db['settings']['temperature'] : null,
             'thinking' => tc_normalize_thinking(isset($db['settings']['thinking']) ? $db['settings']['thinking'] : null),
             'imageGen' => $isImageModel,
@@ -2546,23 +2578,21 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             }
         }
     }
-    // 模型级 max_tokens / 最大上下文优先于全局输出上限;未配置时沿用全局钳制。
-    // 配置了最大上下文时,先粗估输入 token,输出上限压到「窗口 − 预估输入」内,避免总量超窗
-    $modelMaxTokens = 0;
-    $modelMaxContext = 0;
-    $reqModel = isset($body['model']) ? (string) $body['model'] : '';
-    foreach ((isset($provider['models']) ? $provider['models'] : array()) as $m) {
-        if (!is_array($m) || !isset($m['id']) || (string) $m['id'] !== $reqModel) continue;
-        if (!empty($m['maxTokens'])) $modelMaxTokens = (int) $m['maxTokens'];
-        if (!empty($m['maxContext'])) $modelMaxContext = (int) $m['maxContext'];
-        break;
-    }
-    $outCap = $modelMaxTokens > 0 ? $modelMaxTokens : (isset($ctx['maxOutputTokens']) ? (int) $ctx['maxOutputTokens'] : 8192);
-    if ($modelMaxContext > 0) {
-        $promptEst = tc_estimate_body_tokens($body);
-        $outCap = min($outCap, max(256, $modelMaxContext - $promptEst));
-    }
-    tc_clamp_output_tokens($body, $format, $outCap, $modelMaxTokens > 0 || $modelMaxContext > 0);
+    // 输出上限与上下文窗口的唯一来源:「模型元数据」表(后台按模型名维护,全站渠道共用)。
+    // 供应商模型项不再单独配置这两项;表里没有该模型时用兜底常量补齐,
+    // 因此这里始终能拿到确定值,不存在「无上限」的请求。
+    $meta = isset($ctx['modelMeta']) ? $ctx['modelMeta'] : null;
+    list($outCap, $ctxWindow) = tc_model_meta_caps($meta);
+    // 上下文窗:输入与输出共用一个总窗口,先粗估输入 token,把输出压进「窗口 − 预估输入」内
+    $promptEst = tc_estimate_body_tokens($body);
+    $outCap = min($outCap, max(256, $ctxWindow - $promptEst));
+    // 元数据值只做「补齐 + 压回上限」:请求没带 max_tokens 时补上,超了压回,更小则尊重用户意图
+    tc_clamp_output_tokens($body, $format, $outCap, false);
+    // 推理模型:开启思考时,思维链与正文共用输出额度。预算放不下时压缩思维链
+    // (而不是抬高输出上限——元数据里的值是该模型的能力天花板)。
+    // 顺序不能颠倒:必须等 max_tokens 被压回上限后再比对,否则读到的是用户原样传来的
+    // 大数(如 999999),预算看着「放得下」而实际生效额度只有 4096,思维链会把正文挤空。
+    tc_fit_thinking_budget($body, $outCap, 2048);
     tc_apply_temperature($body, $format, isset($ctx['temperature']) ? $ctx['temperature'] : null);
     tc_apply_thinking_rules($body, isset($ctx['thinking']) ? $ctx['thinking'] : null);
     $url = tc_upstream_path(rtrim((string) $provider['baseUrl'], '/'), $format);
@@ -2881,15 +2911,24 @@ function tc_context_learn($provider, $body, $errBody) {
     try {
         tc_with_db(true, function (&$db) use ($pid, $model, $limit) {
             if (empty($db['settings']['contextAutoLearn'])) return;
-            foreach ($db['providers'] as $pi => $p) {
-                if (!isset($p['id']) || $p['id'] !== $pid || empty($p['models']) || !is_array($p['models'])) continue;
-                foreach ($p['models'] as $mi => $m) {
-                    if (!is_array($m) || !isset($m['id']) || (string) $m['id'] !== $model) continue;
-                    if (empty($m['maxContext'])) $db['providers'][$pi]['models'][$mi]['maxContext'] = $limit;
-                    return;
-                }
-                return;
-            }
+            // 上限统一记在「模型元数据」表(全站渠道共用);供应商模型项已不再保存窗口
+            $key = tc_model_meta_key($model);
+            if ($key === '' || strlen($key) > 200) return;
+            if (!isset($db['modelMeta']) || !is_array($db['modelMeta'])) $db['modelMeta'] = array();
+            $cur = isset($db['modelMeta'][$key]) && is_array($db['modelMeta'][$key]) ? $db['modelMeta'][$key] : array();
+            // 上游亲口报出的窗口比表里的值可信:覆盖之。但手工条目是管理员的显式声明,
+            // 不覆盖手动设置这一条依然成立——手工条目仅在数值缺失时才补。
+            $isManual = isset($cur['source']) && $cur['source'] === 'manual';
+            $hasCtx = !empty($cur['maxInputTokens']);
+            if ($isManual && $hasCtx) return;
+            if ($hasCtx && (int) $cur['maxInputTokens'] === $limit) return;
+            $cur['maxInputTokens'] = $limit;
+            $cur['updatedAt'] = tc_now();
+            if (!isset($cur['source'])) $cur['source'] = 'auto';
+            // 学到真实窗口后仍需管理员核对:自动兜底值一律带待复核标记
+            if ($cur['source'] === 'auto') $cur['needsReview'] = true;
+            if (empty($cur['maxOutputTokens'])) $cur['maxOutputTokens'] = TC_MODEL_META_AUTO_OUTPUT;
+            $db['modelMeta'][$key] = $cur;
         });
     } catch (Throwable $e) {
     }

@@ -200,13 +200,8 @@ function tc_normalize_models($models) {
         $seen[$id] = true;
         $name = is_array($m) && !empty($m['name']) ? trim((string) $m['name']) : $id;
         $row = array('id' => $id, 'name' => $name ?: $id);
-        // 模型级最大输出/最大上下文(可选):留空/0 表示跟随全局或不限制
-        if (is_array($m) && isset($m['maxTokens']) && (int) $m['maxTokens'] > 0) {
-            $row['maxTokens'] = min(128000, max(256, (int) $m['maxTokens']));
-        }
-        if (is_array($m) && isset($m['maxContext']) && (int) $m['maxContext'] > 0) {
-            $row['maxContext'] = min(2000000, max(256, (int) $m['maxContext']));
-        }
+        // 输出上限与上下文窗口不在此配置:统一由「模型元数据」表按模型名提供
+        // (模型清单接口会带上表里的值;未匹配时由该接口用兜底常量补,并标记待复核)。
         // 生图模型标记(可选):true/false 显式声明;缺省时由模型名启发式判断(tc_model_is_image)
         if (is_array($m) && array_key_exists('image', $m)) {
             $row['image'] = !empty($m['image']);
@@ -1433,7 +1428,6 @@ function tc_api_list_providers() {
             'chatLimits' => array(
                 'contextMessages' => isset($db['settings']['contextMessages']) ? (int) $db['settings']['contextMessages'] : 40,
                 'maxContextMessages' => isset($db['settings']['maxContextMessages']) ? (int) $db['settings']['maxContextMessages'] : 200,
-                'maxOutputTokens' => isset($db['settings']['maxOutputTokens']) ? (int) $db['settings']['maxOutputTokens'] : 8192,
             ),
         ));
     });
@@ -1468,6 +1462,8 @@ function tc_api_create_provider() {
         }
         $db['providers'][] = $p;
         if ($wantGlobal) tc_grant_all_groups_provider($db, $p['id']);
+        // 新加的模型若不在模型元数据表里,自动补一条兜底值并标记「待人工复核」
+        tc_model_meta_ensure_auto($db, $p['models']);
         tc_json(200, array('provider' => tc_client_provider($p, true, !empty($user['admin']), !empty($user['demo']))));
     });
 }
@@ -1485,6 +1481,8 @@ function tc_api_update_provider($id) {
             tc_fail(500, '密钥加密失败，请检查服务器 openssl 环境');
         }
         tc_replace_by_id($db['providers'], $id, $next);
+        // 本次新增的模型同样补进模型元数据表(待人工复核),已有条目不覆盖
+        tc_model_meta_ensure_auto($db, $next['models']);
         tc_json(200, array('provider' => tc_client_provider($next, true, !empty($user['admin']), !empty($user['demo']))));
     });
 }
@@ -2701,6 +2699,179 @@ function tc_api_admin_get_settings() {
         tc_backup_maybe($db);
         tc_json(200, array('settings' => tc_admin_settings_public($db['settings'], tc_is_demo_user($admin))));
     });
+}
+
+// 列表:支持关键词搜索,并标注哪些被本地渠道实际使用。
+// 不提供「按公司筛选」:上游价格表的 litellm_provider 是托管平台(bedrock/azure/openrouter…),
+// 同一模型常同时挂在多个平台下,拿它当厂商会让用户误判,故不进列表也不做筛选维度。
+function tc_api_admin_model_meta_list() {
+    tc_with_db(false, function ($db) {
+        tc_require_admin($db);
+        $q = isset($_GET['q']) ? tc_model_meta_key($_GET['q']) : '';
+        $page = isset($_GET['page']) ? max(1, (int) $_GET['page']) : 1;
+        $perPage = isset($_GET['perPage']) ? min(200, max(10, (int) $_GET['perPage'])) : 50;
+
+        $meta = isset($db['modelMeta']) && is_array($db['modelMeta']) ? $db['modelMeta'] : array();
+        // 本地供应商实际用到的模型名:用于「在用」标记,同时让这些模型在默认排序里靠前
+        $inUse = array();
+        foreach ($db['providers'] as $p) {
+            foreach ((isset($p['models']) ? $p['models'] : array()) as $m) {
+                if (!is_array($m) || empty($m['id'])) continue;
+                $inUse[tc_model_meta_key($m['id'])] = true;
+            }
+        }
+        $rows = array();
+        // 待复核数量按整表统计,不受搜索/分页影响——管理员常按名字逐个复核,
+        // 若跟着搜索结果变,输入关键词的那一刻提示条就会缩水或整个消失。
+        $reviewCount = 0;
+        foreach ($meta as $item) {
+            if (!empty($item['needsReview'])) $reviewCount++;
+        }
+        foreach ($meta as $key => $item) {
+            if ($q !== '' && strpos($key, $q) === false) continue;
+            $row = $item;
+            $row['model'] = $key;
+            $row['inUse'] = !empty($inUse[$key]);
+            // provider 是上游托管平台标识,不作为「公司」对外暴露
+            unset($row['provider']);
+            $rows[] = $row;
+        }
+        // 在用的排前面,其余按模型名;便于管理员先处理真实配置过的模型
+        usort($rows, function ($a, $b) {
+            if ($a['inUse'] !== $b['inUse']) return $a['inUse'] ? -1 : 1;
+            return strcmp($a['model'], $b['model']);
+        });
+        $total = count($rows);
+        $slice = array_slice($rows, ($page - 1) * $perPage, $perPage);
+        tc_json(200, array(
+            'items' => array_values($slice),
+            'total' => $total,
+            'page' => $page,
+            'perPage' => $perPage,
+            'syncedAt' => isset($db['modelMetaSyncedAt']) ? (int) $db['modelMetaSyncedAt'] : 0,
+            'sourceCount' => isset($db['modelMetaSourceCount']) ? (int) $db['modelMetaSourceCount'] : 0,
+            'storedCount' => count($meta),
+            // 待人工复核的条目数(自动补的兜底值):前台据此提示管理员核对
+            'reviewCount' => $reviewCount,
+        ));
+    });
+}
+
+// 手工新增/修改单条。改写后标记为 manual,后续 litellm 同步不再覆盖它。
+function tc_api_admin_model_meta_save() {
+    tc_with_db(true, function (&$db) {
+        $admin = tc_require_admin($db);
+        if (tc_is_demo_user($admin)) tc_fail(403, '演示账号不能修改模型元数据');
+        $b = tc_read_json_body();
+        $model = tc_model_meta_key(isset($b['model']) ? $b['model'] : '');
+        if ($model === '' || strlen($model) > 200) tc_fail(400, '请填写模型名');
+        if (!isset($db['modelMeta']) || !is_array($db['modelMeta'])) $db['modelMeta'] = array();
+        // 复核确认:保留现有数值,只清「待复核」标记(自动兜底值被管理员认可)
+        if (!empty($b['confirm'])) {
+            if (!isset($db['modelMeta'][$model])) tc_fail(404, '该模型没有元数据');
+            $db['modelMeta'][$model]['needsReview'] = false;
+            $db['modelMeta'][$model]['source'] = 'manual';
+            $db['modelMeta'][$model]['updatedAt'] = tc_now();
+            tc_json(200, array('ok' => true, 'model' => $model, 'item' => $db['modelMeta'][$model]));
+        }
+        // 手工条目没有上游来源:清掉 provider/mode,避免沿用旧值或接受客户端传入的任意串
+        $b['provider'] = '';
+        $b['mode'] = '';
+        $item = tc_normalize_model_meta_item(array_merge($b, array('source' => 'manual', 'updatedAt' => tc_now())));
+        if ($item === null) tc_fail(400, '请至少填写一项有效的窗口或价格');
+        $item['source'] = 'manual';
+        $item['needsReview'] = false; // 管理员手工填写即视为已复核
+        $db['modelMeta'][$model] = $item;
+        tc_json(200, array('ok' => true, 'model' => $model, 'item' => $item));
+    });
+}
+
+function tc_api_admin_model_meta_delete() {
+    tc_with_db(true, function (&$db) {
+        $admin = tc_require_admin($db);
+        if (tc_is_demo_user($admin)) tc_fail(403, '演示账号不能删除模型元数据');
+        $b = tc_read_json_body();
+        $model = tc_model_meta_key(isset($b['model']) ? $b['model'] : '');
+        if ($model === '') tc_fail(400, '缺少模型名');
+        if (!isset($db['modelMeta'][$model])) tc_fail(404, '该模型没有元数据');
+        unset($db['modelMeta'][$model]);
+        tc_json(200, array('ok' => true));
+    });
+}
+
+// 清空整表(仅 litellm 来源;手工条目保留)
+function tc_api_admin_model_meta_clear() {
+    tc_with_db(true, function (&$db) {
+        $admin = tc_require_admin($db);
+        if (tc_is_demo_user($admin)) tc_fail(403, '演示账号不能清空模型元数据');
+        $kept = array();
+        foreach ((isset($db['modelMeta']) && is_array($db['modelMeta']) ? $db['modelMeta'] : array()) as $k => $v) {
+            if (isset($v['source']) && $v['source'] === 'manual') $kept[$k] = $v;
+        }
+        $db['modelMeta'] = $kept;
+        unset($db['modelMetaSyncedAt']);
+        tc_json(200, array('ok' => true, 'kept' => count($kept)));
+    });
+}
+
+function tc_api_admin_model_meta_sync() {
+    $b = tc_read_json_body();
+    $dryRun = !empty($b['dryRun']);
+    // 先鉴权(读事务),再拉网络,最后写库 —— 外部请求可能耗时数十秒,
+    // 不该占着数据库写锁;同时确保未授权用户不能借这个端点发外网请求。
+    tc_with_db(false, function ($db) {
+        $admin = tc_require_admin($db);
+        if (tc_is_demo_user($admin)) tc_fail(403, '演示账号不能同步模型元数据');
+    });
+    $res = tc_http_request(TC_LITELLM_PRICES_URL, 'GET', array(
+        'Accept' => 'application/json',
+        'User-Agent' => 'TinyChat/' . (defined('TC_VERSION') ? TC_VERSION : 'dev'),
+    ), null, 60000, false);
+    if (!$res['ok']) tc_fail($res['code'] === 504 ? 504 : 502, tc_upstream_fail_message($res));
+    if ($res['status'] >= 400) tc_fail(502, '拉取 litellm 价格表失败(HTTP ' . $res['status'] . ')');
+    $raw = json_decode($res['body'], true);
+    if (!is_array($raw)) tc_fail(502, 'litellm 价格表解析失败');
+    if ($dryRun) {
+        $index = tc_litellm_index($raw);
+        tc_json(200, array('ok' => true, 'dryRun' => true, 'source' => count($raw), 'usable' => count($index)));
+    }
+    $result = null;
+    tc_with_db(true, function (&$db) use ($raw, &$result) {
+        $admin = tc_require_admin($db);
+        if (tc_is_demo_user($admin)) tc_fail(403, '演示账号不能同步模型元数据');
+        $result = tc_model_meta_sync_indexed($db, $raw);
+    });
+    tc_json(200, array('ok' => true) + $result);
+}
+
+// 把已抓取的原始表合并进库(与网络请求分离,便于复用与测试)
+function tc_model_meta_sync_indexed(&$db, $raw) {
+    $index = tc_litellm_index($raw);
+    if (!$index) tc_fail(502, 'litellm 价格表里没有可用的模型条目');
+    $meta = isset($db['modelMeta']) && is_array($db['modelMeta']) ? $db['modelMeta'] : array();
+    $added = 0; $updated = 0; $skipped = 0; $reviewCleared = 0;
+    foreach ($index as $key => $item) {
+        if (isset($meta[$key]) && isset($meta[$key]['source']) && $meta[$key]['source'] === 'manual') { $skipped++; continue; }
+        // 已有条目上管理员手动停用过的,同步回来后保持停用(不能因为上游有数据就擅自重新启用)
+        if (isset($meta[$key])) {
+            $updated++;
+            if (array_key_exists('enabled', $meta[$key])) $item['enabled'] = !empty($meta[$key]['enabled']);
+            if (!empty($meta[$key]['needsReview'])) $reviewCleared++;
+        } else {
+            $added++;
+        }
+        // 同步取到的是上游真实值,不再是自动兜底值,「待复核」标记随之清除
+        $item['needsReview'] = false;
+        $meta[$key] = $item;
+    }
+    $db['modelMeta'] = tc_normalize_model_meta($meta);
+    $db['modelMetaSyncedAt'] = tc_now();
+    $db['modelMetaSourceCount'] = count($raw);
+    return array(
+        'added' => $added, 'updated' => $updated, 'skipped' => $skipped,
+        'reviewCleared' => $reviewCleared,
+        'total' => count($db['modelMeta']),
+    );
 }
 
 // 强制全站下线:会话纪元 +1,所有已签发的令牌立即失效
@@ -4322,6 +4493,8 @@ function tc_api_admin_update_provider($id) {
             if ($plain !== '' && !tc_provider_set_key($next, $plain)) tc_fail(500, '密钥加密失败，请检查服务器 openssl 环境');
         }
         tc_replace_by_id($db['providers'], $id, $next);
+        // 本次新增的模型补进模型元数据表(待人工复核);已有条目不覆盖
+        tc_model_meta_ensure_auto($db, $next['models']);
         // 全局供应商新增模型时,仅把"新出现的模型"补进已有授权清单;
         // 管理员此前刻意取消勾选的模型不会被重新授权,未授权该供应商的分组也不受影响
         if ((isset($next['scope']) ? $next['scope'] : '') === 'global') {
@@ -4371,8 +4544,18 @@ function tc_api_list_models() {
             if ($mid === '') continue;
             $costs[$mid] = tc_model_cost($target, $mid);
         }
+        // 输出上限/上下文窗口来自「模型元数据」表(按模型名匹配,全站渠道共用一份)。
+        // 表里没有的模型用兜底常量补上,前台因此始终拿到确定值,不必再回退全局设置。
+        $models = array();
+        foreach ((isset($vis['models']) ? $vis['models'] : array()) as $m) {
+            if (!is_array($m)) continue;
+            list($capOut, $capCtx) = tc_model_meta_caps(tc_model_meta_get($db, isset($m['id']) ? (string) $m['id'] : ''));
+            $m['maxTokens'] = $capOut;
+            $m['maxContext'] = $capCtx;
+            $models[] = $m;
+        }
         tc_json(200, array(
-            'models' => $vis['models'],
+            'models' => $models,
             'providerId' => $target['id'],
             'providerName' => $target['name'],
             'apiFormat' => isset($target['apiFormat']) ? $target['apiFormat'] : 'chat',
