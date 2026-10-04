@@ -2390,8 +2390,6 @@ body.share-page {
 }
 
 .model-table .col-name { min-width: 132px; }
-.model-table .col-mtok { width: 96px; }
-.model-table .col-ctx { width: 108px; }
 .model-table .col-cost { width: 92px; }
 /* 多密钥:模型绑定哪把 Key(仅配置多 Key 时出现) */
 .model-table .col-key {
@@ -2403,8 +2401,6 @@ body.share-page {
   .model-table { --mt-check-w: 34px; }
   .model-table .col-id { min-width: 132px; max-width: 168px; }
   .model-table .col-name { min-width: 108px; }
-  .model-table .col-mtok { width: 80px; }
-  .model-table .col-ctx { width: 88px; }
   .model-table .col-cost { width: 78px; }
   .model-table .col-key { width: 128px; min-width: 112px; }
   .model-table thead th,
@@ -2477,8 +2473,6 @@ body.share-page {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.model-table .mtokens,
-.model-table .mctx,
 .model-table .mcost {
   width: 100%;
   min-height: 30px;
@@ -2492,14 +2486,10 @@ body.share-page {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
-.model-table .mtokens:focus,
-.model-table .mctx:focus,
 .model-table .mcost:focus {
   outline: none;
   border-color: color-mix(in srgb, var(--brand) 45%, var(--hairline));
 }
-.model-table .mtokens-static,
-.model-table .mctx-static,
 .model-table .mcost-static {
   display: block;
   color: var(--text-secondary);
@@ -2508,8 +2498,6 @@ body.share-page {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-.model-table .mtokens-static i,
-.model-table .mctx-static i,
 .model-table .mcost-static i {
   font-style: normal;
   color: var(--text-tertiary);
@@ -4558,8 +4546,8 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 .model-table input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
 /* 操作列头(勾选/生图/视频)居中;数字列右对齐 */
 .model-table .col-check, .model-table .col-img { text-align: center; }
-.model-table .col-mtok, .model-table .col-ctx, .model-table .col-cost { text-align: right; }
-.model-table tbody td .mcost, .model-table tbody td .mtokens, .model-table tbody td .mctx { width: 100%; }
+.model-table .col-cost { text-align: right; }
+.model-table tbody td .mcost { width: 100%; }
 
 /* 列表容器:顶部工具条与底部分页区的分隔更清楚 */
 .model-check-toolbar { padding-bottom: 2px; }
@@ -5005,6 +4993,30 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 .mm-table .mm-src.manual { background: color-mix(in srgb, #d97706 14%, transparent); color: #b45309; }
 [data-theme="dark"] .mm-table .mm-src.manual { color: #fbbf24; }
 .mm-table .mm-src.sync { background: var(--bg-active); color: var(--text-tertiary); }
+/* 自动补的兜底值:用警示色,与「手工/同步」区分开 */
+.mm-table .mm-src.auto { background: color-mix(in srgb, #dc2626 12%, transparent); color: #b91c1c; }
+[data-theme="dark"] .mm-table .mm-src.auto { color: #fca5a5; }
+/* 待复核徽标:与「在用」并列显示在模型名旁 */
+.mm-table .mm-review-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 0.786rem;
+  font-weight: 550;
+  line-height: 1.6;
+  vertical-align: 1px;
+  background: color-mix(in srgb, #dc2626 12%, transparent);
+  color: #b91c1c;
+}
+[data-theme="dark"] .mm-table .mm-review-tag { color: #fca5a5; }
+/* 待复核行的左侧色条:长列表里一眼扫出哪些需要处理。
+   同行既在用又待复核时,后出现的这条覆盖上面 .mm-inuse 的品牌色条——待办优先于状态提示,
+   「在用」的信息仍由模型名旁的徽标承载。 */
+.mm-table tbody tr.mm-needs-review td.mm-col-name { box-shadow: inset 3px 0 0 #dc2626; }
+/* 操作列按内容宽度自适应:待复核行多一个「确认」按钮 */
+.mm-table td.mm-ops { white-space: nowrap; }
+.mm-table td.mm-ops .btn + .btn { margin-left: 6px; }
 .mm-table .mm-off {
   display: inline-block;
   margin-left: 5px;

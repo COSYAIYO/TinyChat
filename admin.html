@@ -9,16 +9,16 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
-<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.118">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.118" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.118">
-<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.118">
-<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.118">
-<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.118">
-<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.118">
-<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.118">
-<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.118">
-<script src="./static/js/theme-boot.min.js?v=2.0.118"></script>
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.119">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.119" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.119">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.119">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.119">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.119">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.119">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.119">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.119">
+<script src="./static/js/theme-boot.min.js?v=2.0.119"></script>
 </head>
 <body class="admin-body">
 <form id="admin-fields" autocomplete="off" style="display:contents">
@@ -101,7 +101,7 @@
   <div class="admin-panel" id="panel-chat">
     <div class="admin-card">
       <h2>对话</h2>
-      <p class="muted small">上下文条数 = 每次发给模型的最近消息数（系统提示词不计入）；输出上限 = 单次回答最多生成的 token（用户可在自己的设置里调低，不能超过这里的上限）。模型列表里可为单个模型设置 max_tokens 与最大上下文：max_tokens 留空跟随此处，最大上下文填该模型的窗口大小（token），发送时按「窗口 − 预估输入」自动压缩输出、并裁剪过长的历史消息。温度留空则不发送该参数；推理型模型（如 o 系列、DeepSeek R1）可能不接受 temperature，被拒时会自动去参重试。</p>
+      <p class="muted small">上下文条数 = 每次发给模型的最近消息数（系统提示词不计入）。<b>输出上限与上下文窗口不在本页配置</b>：它们按模型名统一维护在「模型元数据」表里，全站渠道共用一份，发送时按「窗口 − 预估输入」自动压缩输出、并裁剪过长的历史消息。温度留空则不发送该参数；推理型模型（如 o 系列、DeepSeek R1）可能不接受 temperature，被拒时会自动去参重试。</p>
       <label class="field"><span>默认上下文条数</span>
         <div class="stepper stepper-field">
           <button type="button" class="seg-btn" data-step="-1" data-target="chat-context" aria-label="减少默认上下文条数">−</button>
@@ -115,10 +115,6 @@
           <input type="text" inputmode="numeric" id="chat-context-max" value="200" aria-label="上下文条数上限" autocomplete="off">
           <button type="button" class="seg-btn" data-step="1" data-target="chat-context-max" aria-label="增加上下文条数上限">+</button>
         </div>
-      </label>
-      <label class="field"><span>单次输出上限（token，即 max_tokens）</span>
-          <input id="chat-output" type="number" min="256" max="128000" step="256" value="32000">
-          <span class="field-hint">单次回答最多生成的 token。推理模型的思维链与正文<b>共用</b>这个额度，设得太小会导致思维链吃光额度、正文为空。默认 32000。</span>
       </label>
       <label class="field"><span>温度 temperature（0–2，留空使用模型默认）</span>
           <input id="chat-temperature" type="number" min="0" max="2" step="0.1" placeholder="留空则不发送该参数">
@@ -159,10 +155,14 @@
       <h2>模型元数据</h2>
 
       <div class="mm-intro">
-      <p class="muted small"><b>一句话：输出上限三级取最低。</b>「供应商里手填的」→「本表」→「对话设置里的全局输出上限」，哪个最小就按哪个。本页主要管<b>单个模型的天花板</b>。</p>
+      <p class="muted small"><b>一句话：这里是全站输出上限与上下文窗口的唯一入口。</b>按<b>模型名</b>维护，所有渠道共用一份；供应商里不再单独配置，对话设置里也没有全局上限了。</p>
 
       <p class="muted small mm-note">
-        <b>⚠️ 推理模型（带思维链）必看：</b>思维链和正文<b>抢同一个额度</b>。额度太小（如 8192）会被思维链吃光，导致<b>正文空白、回答中途停止</b>。请到「对话设置」把<b>单次输出上限调大到 32000 或更高</b>。
+        <b>⚠️ 推理模型（带思维链）必看：</b>思维链和正文<b>抢同一个额度</b>。额度太小（如 8192）会被思维链吃光，导致<b>正文空白、回答中途停止</b>。给这类模型填 <b>32000 或更高</b>的输出上限；额度不够时系统会压缩思维预算保住正文。
+      </p>
+
+      <p class="muted small mm-note warn" id="mm-review-note" hidden>
+        <b>🔍 有 <span id="mm-review-count">0</span> 个模型待人工复核：</b>这些模型是加进渠道时<b>自动补的兜底值</b>，并非该模型的真实规格。请核对后点「确认」保留，或点「编辑」改成正确数值。
       </p>
 
       <p class="muted small mm-note warn">
@@ -176,23 +176,23 @@
 
           <p style="margin:0 0 6px"><b>三列分别是什么意思：</b></p>
           <ul style="margin:0 0 10px;padding-left:20px">
-            <li><b>输入窗口</b>：模型一次能「听」多少（含聊天历史）。防止内容太长塞不进去。</li>
+            <li><b>输入窗口</b>：模型一次能「听」多少（含聊天历史）。防止内容太长塞不进去；发送时按「窗口 − 预估输入」自动压缩输出。</li>
             <li><b>输出上限</b>：模型一次最多能「说」多少，对应请求里的 <code>max_tokens</code>。这是模型的<b>能力上限</b>，不是每次都必须说这么多。</li>
             <li><b>价格 $/M</b>：每<b>百万</b> token 的单价，只用于展示和估算花费，不影响回答。<code>—</code> 表示该模型没有这项或不提供。</li>
           </ul>
 
-          <p style="margin:0 0 6px"><b>「三级取最低」到底怎么算？</b>系统按顺序找上限，<b>谁最小听谁的</b>：</p>
-          <ol style="margin:0 0 10px;padding-left:20px">
-            <li>供应商里给这个模型<b>手填</b>的 max_tokens（针对该渠道的硬约束）</li>
-            <li><b>本表</b>里的「输出上限」</li>
-            <li><b>对话设置</b>里的「单次输出上限」（全局）</li>
-          </ol>
+          <p style="margin:0 0 6px"><b>没匹配到本表的模型会怎样？</b>把模型加进渠道时，如果表里还没有它，系统会<b>自动补一条兜底值</b>（输入窗口 131072、输出上限 8192；升级前若设过全局「单次输出上限」，则沿用那个值）并标注<b>待复核</b>，同时出现在本表里。你可以：</p>
+          <ul style="margin:0 0 10px;padding-left:20px">
+            <li>点<b>确认</b>：认下这组数值，去掉待复核标记；</li>
+            <li>点<b>编辑</b>：改成该模型的真实规格（推荐，兜底值通常偏保守）；</li>
+            <li>点<b>从 litellm 同步</b>：多数常见模型能从公开价格表里直接取到真实值。</li>
+          </ul>
 
-          <p style="margin:0 0 6px"><b>举个例子</b>（最容易踩的坑）：本表填了 1048576，但对话设置仍是 8192 —— 取最低＝按 <b>8192</b>。所以想提高输出，<b>对话设置那个全局值也必须一起调大</b>，光改本表没用。</p>
+          <p style="margin:0 0 6px"><b>「待复核」是怎么来的？</b>自动补的兜底值、以及从上游报错里自动学到的窗口，都会打上这个标记——它们是<b>猜的</b>，不是厂商规格。手工编辑或点确认后标记即消失。</p>
 
-          <p style="margin:0 0 6px">反过来，本表填 8192、全局填 32000 —— 取最低＝还是按 <b>8192</b>。本表是天花板，全局调多大都顶不破它。</p>
+          <p style="margin:0 0 6px"><b>来源三种标记：</b><b>手工</b>＝你自己填的，同步<b>不会</b>覆盖；<b>同步</b>＝来自 litellm 公开价格表；<b>自动</b>＝没匹配上时补的兜底值，需要复核。</p>
 
-          <p style="margin:0 0 6px"><b>数据从哪来？</b>点「从 litellm 同步」从 <a href="https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json" target="_blank" rel="noopener">litellm 的公开价格表</a>批量拉取，覆盖 4000+ 模型。你自己<b>手工改过</b>的条目标记为 <b>手工</b>，同步时<b>不会</b>被覆盖。</p>
+          <p style="margin:0 0 6px"><b>数据从哪来？</b>点「从 litellm 同步」从 <a href="https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json" target="_blank" rel="noopener">litellm 的公开价格表</a>批量拉取，覆盖 4000+ 模型。</p>
 
           <p style="margin:0 0 0"><b>为什么不显示「公司」？</b>上游表里的 <code>litellm_provider</code> 指的是托管平台（如 bedrock、azure、openrouter），同一个模型常同时挂在多个平台下，并不是模型厂商，所以不展示。同一模型多个平台报价不一致时，本表按<b>多数平台一致的值</b>取用。</p>
         </div>
@@ -1113,16 +1113,16 @@
   </div>
 </div>
 </form>
-<script defer src="./static/js/config.min.js?v=2.0.118"></script>
-<script defer src="./static/js/icons.min.js?v=2.0.118"></script>
-<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.118"></script>
-<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.118"></script>
-<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.118"></script>
-<script defer src="./vendor/katex/katex.min.js?v=2.0.118"></script>
-<script defer src="./vendor/highlight/highlight.min.js?v=2.0.118"></script>
-<script defer src="./static/js/ui.min.js?v=2.0.118"></script>
-<script defer src="./static/js/components.min.js?v=2.0.118"></script>
-<script defer src="./static/js/renderer.min.js?v=2.0.118"></script>
-<script defer src="./static/js/admin.min.js?v=2.0.118"></script>
+<script defer src="./static/js/config.min.js?v=2.0.119"></script>
+<script defer src="./static/js/icons.min.js?v=2.0.119"></script>
+<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.119"></script>
+<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.119"></script>
+<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.119"></script>
+<script defer src="./vendor/katex/katex.min.js?v=2.0.119"></script>
+<script defer src="./vendor/highlight/highlight.min.js?v=2.0.119"></script>
+<script defer src="./static/js/ui.min.js?v=2.0.119"></script>
+<script defer src="./static/js/components.min.js?v=2.0.119"></script>
+<script defer src="./static/js/renderer.min.js?v=2.0.119"></script>
+<script defer src="./static/js/admin.min.js?v=2.0.119"></script>
 </body>
 </html>

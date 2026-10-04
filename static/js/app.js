@@ -35,7 +35,7 @@ const state = {
   webSearchAvailable: false,
   tools: null,
   mineru: { enabled: true, mode: 'lite' },
-  chatLimits: { contextMessages: 12, maxContextMessages: 200, maxOutputTokens: 32000 },
+  chatLimits: { contextMessages: 12, maxContextMessages: 200 },
 };
 
 window.OCState = state;
@@ -2004,7 +2004,6 @@ async function loadProviders() {
     state.chatLimits = {
       contextMessages: Math.min(500, Math.max(2, Number(data.chatLimits.contextMessages) || 12)),
       maxContextMessages: Math.min(500, Math.max(2, Number(data.chatLimits.maxContextMessages) || 200)),
-      maxOutputTokens: Math.min(128000, Math.max(256, Number(data.chatLimits.maxOutputTokens) || 32000)),
     };
   }
   if (!state.tools) {
@@ -2337,12 +2336,13 @@ function outgoingMessages(chatMessages, chat) {
   const msgs = source.filter((m) => m && m.role !== 'system');
   const limit = contextLimitNow();
   let kept = msgs.length > limit ? msgs.slice(-limit) : msgs;
-  // 模型配置了最大上下文时,再做一轮 token 预算裁剪:输入 + 预留输出不超过窗口
+  // 模型的上下文窗口来自「模型元数据」表(随模型清单下发),再做一轮 token 预算裁剪:
+  // 输入 + 预留输出不超过窗口
   const spec = currentModelSpec();
   const maxCtx = spec && parseInt(spec.maxContext, 10) > 0 ? parseInt(spec.maxContext, 10) : 0;
   if (maxCtx > 0 && kept.length) {
-    const outCap = spec && parseInt(spec.maxTokens, 10) > 0 ? parseInt(spec.maxTokens, 10) : (Number((state.chatLimits || {}).maxOutputTokens) || 32000);
-    const reserve = Math.min(outCap, Math.max(256, Math.floor(maxCtx / 2)));
+    const outCap = spec && parseInt(spec.maxTokens, 10) > 0 ? parseInt(spec.maxTokens, 10) : 0;
+    const reserve = Math.min(outCap > 0 ? outCap : Math.floor(maxCtx / 2), Math.max(256, Math.floor(maxCtx / 2)));
     const budget = maxCtx - reserve;
     const sysTokens = estimateTextTokens(chatSystemPrompt(chat));
     const costs = kept.map((m) => estimateMessageTokens(m));
@@ -2408,9 +2408,7 @@ function applyReasoningToBody(body, format) {
       body.output_config = { effort: effort };
       return body;
     }
-    const budget = thinkingBudgetFor(effort);
-    body.thinking = { type: 'enabled', budget_tokens: budget };
-    reserveThinkingHeadroom(body, effort);
+    body.thinking = { type: 'enabled', budget_tokens: thinkingBudgetFor(effort) };
     return body;
   }
   if (format === 'responses') {
@@ -2430,33 +2428,44 @@ function applyReasoningToBody(body, format) {
     if (enabled) {
       // DeepSeek 官方映射：界面“中”对应实际 high，不能直接发送 medium/max。
       body.reasoning_effort = deepseekEffort;
-      reserveThinkingHeadroom(body, effort);
     }
     return body;
   }
   if (!enabled) return body;
   // OpenAI Chat Completions and compatible gateways use the top-level field.
   body.reasoning_effort = effort;
-  reserveThinkingHeadroom(body, effort);
   return body;
 }
 
-// 推理型模型的 output_tokens 上限同时容纳思维链与正文。
-// 只开 thinking 而不抬高 max_tokens，会让模型把预算全部耗在推理上、
-// 正文一个字都写不出来（finish_reason 仍是正常结束，前端表现为“答到一半就停”）。
-// 返回本次要求的输出下限，呼叫方据此放宽自身的钳制。
+// 当前模型的输出上限与上下文窗口:来自「模型元数据」表(随模型清单下发),
+// 供应商与对话设置里都不再配置这两项。清单接口保证有值,这里只做兜底。
+function modelCapsNow() {
+  const spec = currentModelSpec();
+  const out = spec && parseInt(spec.maxTokens, 10) > 0 ? parseInt(spec.maxTokens, 10) : 8192;
+  const ctx = spec && parseInt(spec.maxContext, 10) > 0 ? parseInt(spec.maxContext, 10) : 131072;
+  return { out, ctx };
+}
 function thinkingBudgetFor(effort) {
   return effort === 'high' ? 16000 : effort === 'low' ? 2048 : 8000;
 }
-function reserveThinkingHeadroom(body, effort) {
-  const budget = thinkingBudgetFor(effort);
-  const floor = budget + 2048;
-  body._thinkingFloor = floor;
-  return floor;
+// 思维链与正文共用输出额度:预算放不下时压缩思维预算,而不是抬高输出上限
+// (上限是模型能力的天花板)。服务端发出前还会再兜一次。
+function fitThinkingBudget(body, cap) {
+  const t = body && body.thinking;
+  if (!t || typeof t !== 'object' || t.type === 'disabled') return;
+  if (!t.budget_tokens) return;
+  const budget = parseInt(t.budget_tokens, 10) || 0;
+  if (budget <= 0) return;
+  const limit = parseFloat(cap) > 0 ? cap : budget + 2048;
+  let room = limit - 2048;
+  if (room < 1024) room = 1024;
+  if (room > limit - 1) room = limit - 1;
+  if (room < 1) room = 1;
+  if (budget > room) t.budget_tokens = room;
 }
 function buildRequestBody(chatMessages, format, chat, extra) {
   const msgs = outgoingMessages(chatMessages, chat);
-  const cap = Math.min(128000, Math.max(256, Number((state.chatLimits || {}).maxOutputTokens) || 32000));
+  const cap = modelCapsNow().out;
   const system = chatSystemPrompt(chat);
   if (format === 'anthropic') {
     const body = {
@@ -2471,10 +2480,7 @@ function buildRequestBody(chatMessages, format, chat, extra) {
     if (system) body.system = system;
     if (state.currentProviderId) body.providerId = state.currentProviderId;
     const readyA = attachWebSearchFlag(applyReasoningToBody(body, format));
-    const floorA = Number(readyA._thinkingFloor) || 0;
-    delete readyA._thinkingFloor;
-    const limitA = Math.max(cap, floorA);
-    if (!readyA.max_tokens || readyA.max_tokens > limitA) readyA.max_tokens = limitA;
+    fitThinkingBudget(readyA, cap);
     return stampContext(readyA, msgs);
   }
   if (format === 'responses') {
@@ -2514,12 +2520,9 @@ function buildRequestBody(chatMessages, format, chat, extra) {
   }, format);
   if (state.currentProviderId) body.providerId = state.currentProviderId;
   const ready = attachWebSearchFlag(body);
-  // 思考预留是硬下限:开启思考时输出上限取 max(全局上限, 思考预算+正文预留),
-  // 避免思维链耗尽预算后正文无从输出;已显式配置的更大值不受影响。
-  const floor = Number(ready._thinkingFloor) || 0;
-  delete ready._thinkingFloor;
-  const limit = Math.max(cap, floor);
-  if (!ready.max_tokens || ready.max_tokens > limit) ready.max_tokens = limit;
+  // 输出上限 = 该模型在「模型元数据」里的值;思维预算放不下时压缩思维预算保住正文
+  ready.max_tokens = cap;
+  fitThinkingBudget(ready, cap);
   if (extra && extra.continueFrom) ready.webSearch = 'off';
   return stampContext(ready, msgs);
 }
