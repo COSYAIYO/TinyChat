@@ -510,6 +510,17 @@
     // 回合期间暂停云端拉取/推送:发言间隙若整体替换 state.chats,
     // 后续成员会写进幽灵副本(回答不出现),且反复重绘导致界面闪烁
     state._groupTurnActive = true;
+    // 本回合的整体令牌:成员是一个接一个发言的,用户中途点「停止」时
+    // 只 abort 当前请求不会让下面的循环停下(下一轮照样开跑并计费),
+    // 这里记下令牌,每轮发言前自查,被停止就整体退出。
+    const turnId = (function () {
+      if (window.OCApp && typeof window.OCApp.beginTurn === 'function') return window.OCApp.beginTurn();
+      state.turnToken = (state.turnToken || 0) + 1;
+      return state.turnToken;
+    })();
+    const stopped = () => (window.OCApp && typeof window.OCApp.turnCancelled === 'function')
+      ? window.OCApp.turnCancelled(turnId)
+      : turnId !== state.turnToken;
     const chatId = chat.id;
     const admin = groupAdmin(group, members);
     const others = members.filter((p) => !p.admin);
@@ -563,7 +574,9 @@
       }
       let previous = null;
       for (let round = 1; round <= rounds; round++) {
+        if (stopped()) break;
         for (let i = 0; i < seats.length; i++) {
+          if (stopped()) break;
           const p = seats[i];
           const side = (i + round) % 2 === 1 ? '反对' : '支持';
           const task = !previous
@@ -590,6 +603,7 @@
       }
       let previous = null;
       for (let i = 0; i < seats.length; i++) {
+        if (stopped()) break;
         const layer = layers[i];
         const mark = '第 ' + (i + 1) + '/' + seats.length + ' 层';
         const task = !previous
@@ -611,6 +625,7 @@
           '专家拆题');
       }
       for (let i = 0; i < plan.length; i++) {
+        if (stopped()) break;
         const step = plan[i];
         const p = group.participants.find((x) => x.id === step.id);
         const task = '专家协作：你只提交自己的那一份，不评论其他专家，不补充别人的任务，也不做全场总结。' + NL
@@ -631,6 +646,7 @@
           '群主点名');
       }
       for (const step of plan) {
+        if (stopped()) break;
         const p = group.participants.find((x) => x.id === step.id);
         const task = '群主组织：只完成点名时交给你的这一块，不要把整个问题答完，也不要替没被点到的人发言。' + NL
           + '你的范围：' + (step.task || '只从你的角色回答') + '。' + NL

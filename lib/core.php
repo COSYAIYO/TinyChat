@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.123');
+define('TC_VERSION', '2.0.124');
 // 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
 define('TC_NOTE_MAX_CHARS', 500000);
 define('TC_DB_VERSION', 2);
@@ -200,24 +200,35 @@ $TC_SETTINGS_DEFAULTS = array(
 $TC_SETTINGS_DEFAULTS['mailTemplates'] = tc_mail_default_templates();
 
 function tc_load_config() {
+    // 环境变量只在「已设置且非空」时才算数:未设置的值不能把 config.php 里的配置抹掉。
+    $env = array();
+    foreach (array('admin_name', 'admin_password', 'jwt_secret', 'cors_origin', 'data_dir', 'site_url', 'timezone') as $k) {
+        $v = getenv(strtoupper($k));
+        if ($v !== false && $v !== '') $env[$k] = $v;
+    }
+    // 站点是否部署在反向代理(Nginx/CDN/宝塔)之后:
+    // 只有设为 1 时才信任 X-Forwarded-For 取真实客户端 IP;
+    // 默认 false——直连部署下该头可被任意伪造,会绕过注册/游客/找回密码的按 IP 限流
+    if (getenv('TRUST_PROXY') !== false) $env['trust_proxy'] = getenv('TRUST_PROXY') === '1';
+
     $cfg = array(
-        'admin_name' => getenv('ADMIN_NAME') ?: 'admin',
-        'admin_password' => getenv('ADMIN_PASSWORD') ?: '',
-        'jwt_secret' => getenv('JWT_SECRET') ?: '',
-        'cors_origin' => getenv('CORS_ORIGIN') ?: '*',
-        'data_dir' => getenv('DATA_DIR') ?: '',
-        'site_url' => getenv('SITE_URL') ?: '',
-        // 站点是否部署在反向代理(Nginx/CDN/宝塔)之后:
-        // 只有设为 true 时才信任 X-Forwarded-For 取真实客户端 IP;
-        // 默认 false——直连部署下该头可被任意伪造,会绕过注册/游客/找回密码的按 IP 限流
-        'trust_proxy' => getenv('TRUST_PROXY') === '1' ?: false,
+        'admin_name' => 'admin',
+        'admin_password' => '',
+        'jwt_secret' => '',
+        'cors_origin' => '*',
+        'data_dir' => '',
+        'site_url' => '',
+        'timezone' => '',
+        'trust_proxy' => false,
     );
     $file = TC_ROOT . '/config.php';
     if (is_file($file)) {
         $user = include $file;
         if (is_array($user)) $cfg = array_merge($cfg, $user);
     }
-    return $cfg;
+    // 文档承诺「环境变量优先于 config.php」,所以环境变量最后合并。
+    // 反过来的话,容器里改 ADMIN_PASSWORD 会被镜像内残留的 config.php 静默顶掉。
+    return array_merge($cfg, $env);
 }
 
 function tc_cfg($key = null) {
@@ -268,6 +279,21 @@ function tc_outbound_proxy() {
     if ($v !== '' && preg_match('#^(https?|socks5h?)://[^\s]{1,300}$#i', $v)) $proxy = $v;
     return $proxy;
 }
+
+// 时区:全站有若干处用 date()(备份文件名、导出文件名、笔记 AI 每日配额的分界)。
+// 不显式设置时取主机 php.ini 的值,很多镜像/虚拟主机默认 UTC —— 表现为
+// 备份名与站点本地时间差 8 小时、每日配额在北京时间早上 8 点而非 0 点重置。
+// 顺序很关键:必须在任何 date() 调用之前生效。
+function tc_apply_timezone() {
+    static $done = false;
+    if ($done) return;
+    $done = true;
+    $tz = trim((string) tc_cfg('timezone'));
+    if ($tz === '') $tz = 'Asia/Shanghai';   // 面向中文用户,给一个符合直觉的默认值
+    if (@date_default_timezone_set($tz)) return;
+    @date_default_timezone_set('Asia/Shanghai');   // 配置写了无效时区也不至于退回 UTC
+}
+tc_apply_timezone();
 
 function tc_now() {
     return (int) round(microtime(true) * 1000);
@@ -1685,7 +1711,9 @@ function tc_backup_list() {
     foreach ((is_dir($dir) ? scandir($dir) : array()) as $f) {
         if (!preg_match('/^db-\d{8}-\d{6}(?:-[a-z0-9]{4})?\.json$/', (string) $f)) continue;
         $full = $dir . '/' . $f;
-        $out[] = array('name' => $f, 'size' => (int) @filesize($full), 'time' => (int) @filemtime($full));
+        // 统一用毫秒:filemtime 给的是秒,而全站时间基准 tc_now() 是毫秒。
+        // 这里换算成毫秒,避免调用方(如 tc_backup_maybe 的间隔判断)把两种单位混着算。
+        $out[] = array('name' => $f, 'size' => (int) @filesize($full), 'time' => ((int) @filemtime($full)) * 1000);
     }
     usort($out, function ($a, $b) { return $b['time'] - $a['time']; });
     return $out;
@@ -1758,13 +1786,43 @@ function tc_rate_limit_gc() {
     }
 }
 
+// 读取-改-写 JSON 小文件,全程持锁。
+// file_put_contents(..., LOCK_EX) 只锁「写」这一下,读在锁外:
+// 并发的两个请求会同时读到旧内容,后写的那个把先写的改动整个盖子掉
+// (登录失败计数、笔记附件索引、笔记 AI 配额都踩过)。这里读改写在同一把锁里。
+function tc_json_mutate($file, $fn, $default = array()) {
+    $fp = @fopen($file, 'c+');
+    if (!$fp) return $default;
+    @flock($fp, LOCK_EX);
+    $raw = (string) stream_get_contents($fp);
+    $cur = json_decode($raw, true);
+    if (!is_array($cur)) $cur = $default;
+    $next = $fn($cur);
+    if ($next === null) {           // 回调返回 null = 不改也不写
+        flock($fp, LOCK_UN);
+        fclose($fp);
+        return $cur;
+    }
+    // 覆盖写之前先截断:新内容比旧内容短时,不截断会留下旧尾巴,JSON 直接失效
+    $json = tc_json_encode($next);
+    ftruncate($fp, 0);
+    rewind($fp);
+    fwrite($fp, $json);
+    fflush($fp);
+    flock($fp, LOCK_UN);
+    fclose($fp);
+    return $next;
+}
+
 function tc_rate_limit_check($key, $limitPerMin, $windowMs = 60000) {
     $limit = (int) $limitPerMin;
     if ($limit <= 0 || $key === '') return true;
     tc_rate_limit_gc();
     $window = max(1000, (int) $windowMs);
     $fp = @fopen(tc_rate_limit_file($key), 'c+');
-    if (!$fp) return true; // 计数存储不可用时不拦截主流程
+    // 计数存储不可用时放行而非拦截:磁盘满/目录不可写时若一律拒绝,
+    // 整站会立刻全站不可用(比限流失效严重得多)。但要留下痕迹,方便排查。
+    if (!$fp) { error_log('TinyChat: 限流计数不可写，本次请求未限流 (' . $key . ')'); return true; }
     @flock($fp, LOCK_EX);
     $data = json_decode((string) stream_get_contents($fp), true);
     $now = tc_now();
@@ -1785,13 +1843,25 @@ function tc_rate_limit_check($key, $limitPerMin, $windowMs = 60000) {
     return $allowed;
 }
 
+// mbstring 属「建议安装」而非必需扩展(见 README 扩展表),但有几处直接调 mb_*:
+// 没装的主机上会直接 Fatal error。这里统一走带兜底的包装(缺扩展时按字节近似)。
+function tc_mb_len($s) {
+    $s = (string) $s;
+    return function_exists('mb_strlen') ? mb_strlen($s, 'UTF-8') : strlen($s);
+}
+function tc_mb_cut($s, $n) {
+    $s = (string) $s;
+    if ($n <= 0) return '';
+    return function_exists('mb_substr') ? mb_substr($s, 0, $n, 'UTF-8') : substr($s, 0, $n);
+}
+
 // ---- 内容审核:本地敏感词表(每行一个,也支持逗号分隔),发送前对用户消息匹配 ----
 function tc_moderation_words_text($raw) {
     $out = array();
     $seen = array();
     foreach (preg_split('/[\r\n,;，；]+/u', (string) $raw) as $w) {
         $w = trim((string) $w);
-        if ($w === '' || mb_strlen($w, 'UTF-8') > 100) continue;
+        if ($w === '' || tc_mb_len($w) > 100) continue;
         $k = strtolower($w);
         if (isset($seen[$k])) continue;
         $seen[$k] = true;
@@ -1970,7 +2040,22 @@ function tc_with_db($write, $fn) {
     // 结果按请求缓存,不产生额外文件读取开销。
     tc_integrity_guard();
     $pdo = tc_db();
-    list($db, $orig, $origChats, $origDeleted, $origNotes) = tc_db_load_with_baseline($pdo);
+    // 关键顺序:写事务必须**先** BEGIN IMMEDIATE 拿到写锁,再读整库。
+    // 反过来(先读后 BEGIN)在 WAL 下读不会被写者阻塞,两个并发写者会各自基于
+    // 同一份旧快照改内存,再先后提交——后提交的一方把自己那份「与旧快照的差异」
+    // 写回去,前一方刚写的数据被整行覆盖(本函数下方的提交是逐键 diff 语义,
+    // 只写「与读到的快照不同」的键),即经典的 lost update:
+    // 实测 6 个并发预扣各 1 点,最终只扣了 1 点。
+    // 先取锁后读,锁内读到的一定是最新状态,diff 也建立在最新基线上。
+    if ($write) $pdo->exec('BEGIN IMMEDIATE');
+    $db = null;
+    $orig = $origChats = $origDeleted = $origNotes = array();
+    try {
+        list($db, $orig, $origChats, $origDeleted, $origNotes) = tc_db_load_with_baseline($pdo);
+    } catch (Throwable $e) {
+        if ($write) { try { $pdo->exec('ROLLBACK'); } catch (Throwable $e2) {} }
+        throw $e;
+    }
     $GLOBALS['_tc_db'] = &$db;
     // 出站代理随库一起带出来:网络请求可能在事务释放之后才发,那时读不到 db 了
     $GLOBALS['_tc_outbound_proxy'] = isset($db['settings']['outboundProxy']) ? (string) $db['settings']['outboundProxy'] : '';
@@ -1981,7 +2066,6 @@ function tc_with_db($write, $fn) {
         'origNotes' => $origNotes,
     );
     try {
-        if ($write) $pdo->exec('BEGIN IMMEDIATE');
         $ret = $fn($db);
         tc_db_commit();
         return $ret;
@@ -2119,13 +2203,35 @@ function tc_secret() {
         return $secret;
     }
     $file = tc_data_dir() . '/secret';
+    // 首次生成必须持锁再判空:并发请求若各自生成一份,文件里存的是最后写的那份,
+    // 而先写的那份已经被用来签 JWT / 加密供应商密钥 —— 之后这些数据全都解不开。
+    // 'c+' 不截断,配合 flock 保证「检查-生成-写入」原子。
+    $fp = @fopen($file, 'c+');
+    if ($fp) {
+        @flock($fp, LOCK_EX);
+        $cur = trim((string) stream_get_contents($fp));
+        if ($cur !== '') {
+            $secret = $cur;
+        } else {
+            $secret = tc_uid(32);
+            ftruncate($fp, 0);
+            rewind($fp);
+            fwrite($fp, $secret);
+            fflush($fp);
+        }
+        @flock($fp, LOCK_UN);
+        fclose($fp);
+        @chmod($file, 0600); // JWT 签名密钥,仅限 PHP 进程可读
+        return $secret;
+    }
+    // 打不开(目录不可写)时退回原行为,至少让本次请求能跑下去
     if (is_file($file)) {
         $secret = trim((string) file_get_contents($file));
         if ($secret !== '') return $secret;
     }
     $secret = tc_uid(32);
     @file_put_contents($file, $secret, LOCK_EX);
-    @chmod($file, 0600); // JWT 签名密钥,仅限 PHP 进程可读
+    @chmod($file, 0600);
     return $secret;
 }
 
@@ -2842,8 +2948,8 @@ function tc_login_state() {
     return is_array($j) ? $j : array();
 }
 
-function tc_save_login_state($state) {
-    file_put_contents(tc_login_file(), tc_json_encode($state), LOCK_EX);
+function tc_login_state_mutate($fn) {
+    return tc_json_mutate(tc_login_file(), $fn, array());
 }
 
 function tc_check_login_lock($settings, $name) {
@@ -2860,28 +2966,31 @@ function tc_check_login_lock($settings, $name) {
 function tc_note_login_fail($settings, $name) {
     $max = isset($settings['loginMaxFails']) ? (int) $settings['loginMaxFails'] : 0;
     if (!$max) return;
-    $state = tc_login_state();
     $k = tc_login_key($name);
-    $rec = isset($state[$k]) ? $state[$k] : array('count' => 0, 'lockedUntil' => 0);
-    $rec['count'] = (isset($rec['count']) ? (int) $rec['count'] : 0) + 1;
-    if ($rec['count'] >= $max) {
-        $rec['lockedUntil'] = tc_now() + (int) $settings['loginLockMs'];
-        $rec['count'] = 0;
-    }
-    $state[$k] = $rec;
-    if (count($state) > 5000) {
-        $now = tc_now();
-        foreach ($state as $key => $v) {
-            if (empty($v['lockedUntil']) || $v['lockedUntil'] < $now) unset($state[$key]);
+    tc_login_state_mutate(function ($state) use ($k, $max, $settings) {
+        $rec = isset($state[$k]) ? $state[$k] : array('count' => 0, 'lockedUntil' => 0);
+        $rec['count'] = (isset($rec['count']) ? (int) $rec['count'] : 0) + 1;
+        if ($rec['count'] >= $max) {
+            $rec['lockedUntil'] = tc_now() + (int) $settings['loginLockMs'];
+            $rec['count'] = 0;
         }
-    }
-    tc_save_login_state($state);
+        $state[$k] = $rec;
+        if (count($state) > 5000) {
+            $now = tc_now();
+            foreach ($state as $key => $v) {
+                if (empty($v['lockedUntil']) || $v['lockedUntil'] < $now) unset($state[$key]);
+            }
+        }
+        return $state;
+    });
 }
 
 function tc_clear_login_fail($name) {
-    $state = tc_login_state();
-    unset($state[tc_login_key($name)]);
-    tc_save_login_state($state);
+    $k = tc_login_key($name);
+    tc_login_state_mutate(function ($state) use ($k) {
+        unset($state[$k]);
+        return $state;
+    });
 }
 
 // 日志存储:每行一条 JSON(NDJSON,追加写)。
@@ -2898,8 +3007,7 @@ function tc_log_clip($s, $n) {
     $s = (string) $s;
     if ($n <= 0 || strlen($s) <= $n) return $s;
     // 按字符边界截断,避免把多字节字符切坏
-    $cut = mb_substr($s, 0, $n, 'UTF-8');
-    return $cut . "\n…（已截断，共 " . mb_strlen($s, 'UTF-8') . ' 字）';
+    return tc_mb_cut($s, $n) . "\n…（已截断，共 " . tc_mb_len($s) . ' 字）';
 }
 
 // 旧版 logs.json(单 JSON 对象)一次性迁移为 NDJSON;成功后原文件改名留档

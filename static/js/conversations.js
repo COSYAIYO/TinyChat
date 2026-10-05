@@ -108,6 +108,24 @@
       });
     }
 
+    // 会话项的可访问性:div 上的 click 只对鼠标生效,键盘用户完全打不开会话。
+    // 统一挂上 role=button + tabindex + Enter/Space 处理,两条渲染分支共用。
+    const wireItem = (item, c, opts) => {
+      item.setAttribute('role', 'button');
+      item.setAttribute('tabindex', '0');
+      item.addEventListener('click', (e) => {
+        if (e.target.closest('.chat-item-menu')) return;
+        if (opts.onSelect) opts.onSelect(c);
+      });
+      item.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+        // 焦点在菜单按钮/内联重命名输入框上时,回车归它们
+        if (e.target !== item) return;
+        e.preventDefault();
+        if (opts.onSelect) opts.onSelect(c);
+      });
+    };
+
     const renderItems = () => {
       // 移除旧列表(保留搜索框)
       listEl.querySelectorAll('.chat-item-wrap, .chat-group, .chat-group-section').forEach((el) => el.remove());
@@ -136,10 +154,7 @@
           item.appendChild(menu);
           wrap.appendChild(item);
           listEl.appendChild(wrap);
-          item.addEventListener('click', (e) => {
-            if (e.target.closest('.chat-item-menu')) return;
-            if (opts.onSelect) opts.onSelect(c);
-          });
+          wireItem(item, c, opts);
           menu.addEventListener('click', (e) => {
             e.stopPropagation();
             if (!e.target.closest('.more-btn')) return;
@@ -213,10 +228,7 @@
           item.appendChild(menu);
           wrap.appendChild(item);
           section.appendChild(wrap);
-          item.addEventListener('click', (e) => {
-            if (e.target.closest('.chat-item-menu')) return;
-            if (opts.onSelect) opts.onSelect(c);
-          });
+          wireItem(item, c, opts);
           menu.addEventListener('click', (e) => {
             e.stopPropagation();
             if (!e.target.closest('.more-btn')) return;

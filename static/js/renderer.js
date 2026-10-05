@@ -206,8 +206,11 @@
         }
         return '<div class="unknown-component"><strong>' + escapeHtml(p.name) + '</strong>（未注册组件）</div>';
       });
-      // 若占位符没被 <p> 包裹，直接替换
-      out = out.split(escaped).join(function () {
+      // 若占位符没被 <p> 包裹（落在列表项、引用块里时 markdown-it 不会加 <p>），逐个替换。
+      // 必须用 replace：split(...).join(fn) 会把函数转成源码字符串，
+      // 未包裹的容器会原样显示一段 JS 代码。
+      // (?!\d) 避免 OC_COMP_1 命中 OC_COMP_10 的前缀。
+      out = out.replace(new RegExp(escaped + '(?!\\d)', 'g'), function () {
         return R.components[p.name]
           ? (R.components[p.name]({ params: p.params, body: p.body, html: p.body }) || '')
           : '<div class="unknown-component"><strong>' + escapeHtml(p.name) + '</strong>（未注册组件）</div>';
@@ -741,64 +744,163 @@
     return true;
   }
 
-  const HTML_BLOCKED_TAGS = /^(script|style|iframe|object|embed|link|meta|base|form|input|textarea|select|button|svg|math|html|head|body|frame|frameset)$/i;
-  const HTML_EVENT_ATTR = /^on/i;
-  const HTML_BAD_URL = /^(javascript|vbscript|data):/i;
-  // 内联图片(data:image/png|jpeg|gif|webp;base64)是合法的:生图结果常以 b64_json 返回,
-  // 用户消息里的参考图也是 data URL。放行这几种位图,仍然拦掉 svg+xml(可执行脚本)与 text/html 等。
-  const HTML_SAFE_IMG_DATA = /^data:image\/(png|jpe?g|gif|webp|avif|bmp);base64,[a-z0-9+/=\s]+$/i;
-  function urlAllowedForAttr(name, val) {
-    const v = String(val || '').trim();
-    if (!HTML_BAD_URL.test(v)) return true;
-    if ((name === 'src' || name === 'xlink:href') && HTML_SAFE_IMG_DATA.test(v)) return true;
-    return false;
-  }
+  // ============ HTML 消毒 ============
+  // markdown-it 开着 html:true,模型/用户/分享页送进来的原始 HTML 会直接进渲染管线;
+  // 这里用随包发布的 DOMPurify(vendor/dompurify)做白名单消毒,它按浏览器真实解析结果
+  // 判定协议与标签,能挡住手工正则挡不住的花样:
+  //   java&#9;script: / &#01;javascript: —— 浏览器解析时会剥掉内嵌制表符与控制字符,
+  //   只 trim 两端再匹配 "javascript:" 会被绕过(旧实现的实际漏洞);
+  //   <svg><animate onbegin=…> 这类只在 SVG 命名空间生效的事件;
+  //   在活体 DOM 上解析时 onerror/onload 会先于节点被移除就触发。
+  // 白名单刻意保留排版类标签与 class/data-* 属性(对话气泡、表格、卡片样式都依赖它们),
+  // 拦掉可执行/可外联的标签与协议。
+  const PURIFY_ALLOWED_TAGS = [
+    'a', 'abbr', 'b', 'blockquote', 'br', 'button', 'caption', 'cite', 'code', 'col', 'colgroup',
+    'dd', 'del', 'details', 'dfn', 'div', 'dl', 'dt', 'em', 'figcaption', 'figure',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'img', 'ins', 'kbd', 'li',
+    'mark', 'ol', 'p', 'picture', 'pre', 'q', 'rp', 'rt', 'ruby', 's', 'samp',
+    'section', 'small', 'source', 'span', 'strong', 'sub', 'summary', 'sup',
+    'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'time', 'tr', 'u', 'ul', 'var', 'wbr',
+  ];
+  // 注意:刻意不含 svg/math —— MathML 与 SVG 命名空间是 mXSS 的经典载体,
+  // 公式由 KaTeX 在消毒之后单独注入(它输出的是可信 HTML),不需要在用户 HTML 里放行。
+  const PURIFY_ALLOWED_ATTR = [
+    'align', 'alt', 'class', 'colspan', 'dir', 'height', 'href', 'id', 'lang',
+    'loading', 'open', 'rel', 'rowspan', 'scope', 'span', 'src', 'start', 'style',
+    'target', 'title', 'type', 'valign', 'width',
+  ];
 
+  // 行内样式的过滤:丢 @import / expression() / url() / 脚本协议,其余保留。
+  // url() 会外联资源(可做信息泄露与追踪),一律去掉;颜色、边框、圆角等版式属性保留。
   function sanitizeStyleValue(value) {
     const v = String(value || '');
-    if (/expression\s*\(|@import|javascript\s*:|vbscript\s*:|behavior\s*:/i.test(v)) return '';
-    if (/url\s*\(/i.test(v)) return '';
+    if (/expression\s*\(|@import|javascript\s*:|vbscript\s*:|behavior\s*:|url\s*\(/i.test(v)) return '';
     return v;
   }
 
-  function sanitizeRenderedHtml(html) {
-    if (!html || typeof document === 'undefined') return html;
-    const host = document.createElement('div');
-    host.innerHTML = html;
-    const walk = (node) => {
-      const kids = Array.from(node.childNodes);
-      kids.forEach((child) => {
-        if (child.nodeType !== 1) return;
-        const tag = child.tagName;
-        const keepCopy = tag === 'BUTTON' && child.classList.contains('code-copy');
-        if (HTML_BLOCKED_TAGS.test(tag) && !keepCopy) {
-          child.remove();
-          return;
+  let purifier = null;
+  function getPurifier() {
+    if (purifier !== null) return purifier;
+    const P = (typeof window !== 'undefined' && window.DOMPurify) || null;
+    if (!P || typeof P.sanitize !== 'function') { purifier = false; return purifier; }
+    // 消毒后统一收尾:
+    //  - 外链一律新窗口打开并补 noopener(防 window.opener 反向控制);
+    //  - 图片按需懒加载;
+    //  - style 逐条过滤(CSS 注入面)。style 不能整条丢弃:「html-present」卡片
+    //    与排版类 HTML 围栏依赖行内样式,丢掉会让既有版式退化。
+    P.addHook('afterSanitizeAttributes', (node) => {
+      if (!node || node.nodeType !== 1) return;
+      if (node.tagName === 'A' && node.hasAttribute('href')) {
+        const href = node.getAttribute('href') || '';
+        if (href && href.charAt(0) !== '#') {
+          node.setAttribute('target', '_blank');
+          node.setAttribute('rel', 'noopener noreferrer');
         }
+      }
+      if (node.tagName === 'IMG' && !node.hasAttribute('loading')) node.setAttribute('loading', 'lazy');
+      if (node.hasAttribute && node.hasAttribute('style')) {
+        const cleaned = sanitizeStyleValue(node.getAttribute('style'));
+        if (cleaned) node.setAttribute('style', cleaned);
+        else node.removeAttribute('style');
+      }
+    });
+    purifier = P;
+    return purifier;
+  }
+
+  function purifyConfig() {
+    return {
+      ALLOWED_TAGS: PURIFY_ALLOWED_TAGS,
+      ALLOWED_ATTR: PURIFY_ALLOWED_ATTR,
+      // data-* 与 aria-* 是渲染管线的内部契约(data-lang / data-lightbox / data-src),
+      // 也是样式挂点;它们不构成脚本执行面,放行。
+      ALLOW_DATA_ATTR: true,
+      ALLOW_ARIA_ATTR: true,
+      // 表单类与可执行的容器标签整体禁止;KEEP_CONTENT 保证只掉壳、留下文字。
+      FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed', 'form', 'input', 'textarea', 'select', 'option', 'svg', 'math', 'base', 'link', 'meta', 'template', 'noscript', 'frame', 'frameset'],
+      FORBID_ATTR: ['srcdoc', 'srcset', 'formaction', 'xlink:href'],
+      // 内联图片(data:image/png|jpeg|gif|webp;base64)是合法的:生图结果常以 b64_json 返回,
+      // 用户消息里的参考图也是 data URL。仍拦掉 svg+xml(可执行脚本)与 text/html。
+      // DOMPurify 会先按浏览器规则归一化属性值(剥离内嵌控制字符)再匹配,因此
+      // 「java&#9;script:」这类绕过在这里不成立。
+      ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel|blob):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$)|data:image\/(?:png|jpe?g|gif|webp|avif|bmp);base64,)/i,
+      ADD_ATTR: ['target', 'rel', 'loading'],
+      KEEP_CONTENT: true,
+    };
+  }
+
+  // DOMPurify 缺失时的兜底:用不执行脚本的 <template> 解析(旧实现用活体 div,
+  // onerror 之类会在节点被删除前先触发),并对属性做保守清洗。
+  function sanitizeFallback(html) {
+    if (typeof document === 'undefined') return String(html || '');
+    const tpl = document.createElement('template');
+    tpl.innerHTML = String(html || '');
+    const BLOCKED = /^(script|style|iframe|object|embed|link|meta|base|form|input|textarea|select|button|svg|math|html|head|body|frame|frameset|template|noscript)$/i;
+    const walk = (node) => {
+      Array.from(node.childNodes).forEach((child) => {
+        if (child.nodeType === 8) { child.remove(); return; }
+        if (child.nodeType !== 1) return;
+        if (BLOCKED.test(child.tagName)) { child.remove(); return; }
         Array.from(child.attributes).forEach((attr) => {
-          const name = attr.name;
-          const val = attr.value || '';
-          if (HTML_EVENT_ATTR.test(name) || name === 'srcdoc' || name === 'srcset') {
-            child.removeAttribute(name);
+          const name = attr.name.toLowerCase();
+          const val = String(attr.value || '');
+          // 先剥掉所有空白与控制字符再判断协议(旧实现只 trim 两端,可被 java&#9;script: 绕过)
+          const norm = val.replace(/[\u0000-\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/g, '').toLowerCase();
+          const bad = /^(javascript|vbscript|data):/.test(norm)
+            && !/^data:image\/(png|jpe?g|gif|webp|avif|bmp);base64,/.test(norm);
+          if (/^on/.test(name) || name === 'srcdoc' || name === 'srcset' || name === 'style' || bad) {
+            child.removeAttribute(attr.name);
             return;
           }
-          if ((name === 'href' || name === 'src' || name === 'xlink:href') && !urlAllowedForAttr(name, val)) {
-            child.removeAttribute(name);
-            return;
-          }
-          if (name === 'style') {
-            const cleaned = sanitizeStyleValue(val);
-            if (cleaned) child.setAttribute('style', cleaned);
-            else child.removeAttribute('style');
-          }
+          if (!PURIFY_ALLOWED_ATTR.includes(name)) child.removeAttribute(attr.name);
         });
         walk(child);
       });
     };
-    walk(host);
+    walk(tpl.content);
+    return tpl.innerHTML;
+  }
+
+  function sanitizeRenderedHtml(html) {
+    if (!html) return html;
+    if (typeof document === 'undefined') return String(html);
+    const P = getPurifier();
+    let safe;
+    if (P) {
+      try { safe = P.sanitize(String(html), purifyConfig()); }
+      catch (e) { safe = sanitizeFallback(html); }
+    } else {
+      safe = sanitizeFallback(html);
+    }
+    // 消毒后仍是字符串,分组排版与图标补水需要在 DOM 上做一次
+    if (typeof document === 'undefined') return safe;
+    const host = document.createElement('div');
+    host.innerHTML = safe;
+    hydrateButtonIcons(host);
     groupAdjacentPresentCards(host);
     host.querySelectorAll('.html-present').forEach((el) => groupAdjacentPresentCards(el));
     return host.innerHTML;
+  }
+
+  // 代码块顶栏的复制按钮在 HTML 字符串里内联了 <svg> 图标,而消毒白名单
+  // 刻意不放行 SVG 命名空间(MathML/SVG 是 mXSS 的经典载体)。
+  // 这里在消毒之后用 DOM 把图标补回去:OC.icon 的输出是本地固定的图标表,
+  // 不走用户内容,因此可以安全注入。按钮的文字标签(「复制」)仍在,不影响可读性与点击。
+  function hydrateButtonIcons(host) {
+    const icons = (typeof window !== 'undefined' && window.OC && window.OC.icon) ? window.OC.icon : null;
+    if (!icons) return;
+    host.querySelectorAll('button.code-copy, button.code-expand').forEach((btn) => {
+      if (btn.querySelector('svg')) return;
+      const name = btn.classList.contains('code-excel') ? 'download'
+        : btn.classList.contains('code-image') ? 'download'
+          : btn.classList.contains('code-expand') ? 'chevronDown' : 'copy';
+      const svg = icons(name, 14);
+      if (!svg) return;
+      const holder = document.createElement('span');
+      holder.innerHTML = svg;
+      const node = holder.firstChild;
+      if (node) btn.insertBefore(node, btn.firstChild);
+    });
   }
 
   function looksLikePresentCard(el) {

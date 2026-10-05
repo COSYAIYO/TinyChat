@@ -17,6 +17,18 @@ function tc_upstream_path($baseUrl, $format) {
     return tc_api_url($baseUrl, $endpoint);
 }
 
+// 出站前的统一 SSRF 闸门。凡是把「用户/管理员填写的地址」交给 tc_http_request 的地方
+// 都必须先过这里:供应商 Base URL、用户自备检索源、生图/生视频地址等。
+// 之前只有对话与连通性测试两处做了检查,生图/生视频/获取模型列表/用户自备 SearXNG
+// 都漏了,等于把「读内网服务」的能力交给任何能填地址的人(云上可直取 169.254.169.254)。
+// 失败一律按 400 处理并给出可行动的文案。
+function tc_upstream_guard($url, $what = '供应商地址') {
+    if (!tc_upstream_url_is_safe($url)) {
+        tc_fail(400, $what . '不可用:不允许请求内网或保留地址(仅支持 80/443/8080/8443 的公网地址)');
+    }
+    return $url;
+}
+
 // 拼一个上游接口地址:baseUrl 已带版本段(如 /v1)就直接拼,否则补上 /v1。
 // 生图、获取模型等路径都必须走这里,否则用户按平台文档填「不带 /v1 的 Base URL」时会拼错路径(404)。
 function tc_api_url($baseUrl, $path) {
@@ -578,7 +590,7 @@ function tc_apply_temperature(&$body, $format, $temperature) {
 // 粗略 token 估算:中日韩字符按 1 token/字,其余按 4 字符/token(宁可略高估,保证输出预算留足)
 function tc_estimate_text_tokens($s) {
     if ($s === '' || !is_string($s)) return 0;
-    $len = mb_strlen($s, 'UTF-8');
+    $len = tc_mb_len($s);
     if ($len === 0) return 0;
     $cjk = @preg_match_all('/[\x{3000}-\x{30ff}\x{3400}-\x{4dbf}\x{4e00}-\x{9fff}\x{ac00}-\x{d7a3}\x{f900}-\x{faf6}\x{ff00}-\x{ffef}]/u', $s);
     $cjk = $cjk === false ? 0 : (int) $cjk;
@@ -969,6 +981,11 @@ function tc_search_searxng($base, $query, $max, $timeoutMs = 18000) {
         'language' => 'zh-CN',
         'safesearch' => 0,
     ));
+    // SearXNG 地址可由用户在「工具设置」里自填(后台开启 webSearchAllowUser 后),
+    // 服务端会带着自己的网络身份去请求它,因此同样必须过 SSRF 闸门。
+    if (!tc_upstream_url_is_safe($url)) {
+        return array('ok' => false, 'error' => 'SearXNG 地址不可用：不允许请求内网或保留地址');
+    }
     $res = tc_http_request($url, 'GET', array(
         'Accept' => 'application/json',
         'User-Agent' => 'TinyChat/1.0 (SearXNG JSON)',
@@ -1257,11 +1274,41 @@ function tc_html_to_text($html) {
     return trim((string) $text);
 }
 
+// 从 SSE 流里切出完整的 data: 行。SSE 事件按行分隔,但 curl 回调收到的 chunk 边界
+// 是 TCP 层的,与事件边界无关:一条 data: {...} 完全可能被拆到两次回调里。
+// 直接对单个 chunk 做 explode 会漏掉这些事件(用量统计与落库文本会静默变少),
+// 所以未收尾的半行要留在 $carry 里等下一个 chunk 拼齐。
+function tc_sse_take_lines(&$carry, $chunk) {
+    $carry .= $chunk;
+    $nl = strrpos($carry, "\n");
+    if ($nl === false) return array();   // 还没有一行是完整的
+    $head = substr($carry, 0, $nl);
+    $carry = substr($carry, $nl + 1);
+    return explode("\n", $head);
+}
+
+// 流结束时把 carry 里剩下的一段(上游最后一条事件不带换行时留下的)补一个换行交给解析器。
+// 只有确实像 SSE 数据行时才解析,避免把普通响应体尾部误当事件。
+function tc_sse_flush_tail(&$carry, $fn, &$target, $format) {
+    if ($carry === '') return;
+    $tail = $carry;
+    $carry = '';
+    if (strpos($tail, 'data:') !== 0 && strpos($tail, "\ndata:") === false) return;
+    $fn($target, $tail . "\n", $format, $carry);
+}
+
 // 服务端从 SSE 流里解析 token 用量(镜像前端 captureStreamUsage 的逻辑)
 // 兼容 OpenAI(prompt_tokens/completion_tokens)与 Anthropic(input_tokens/output_tokens)两种字段
-function tc_capture_stream_usage(&$target, $chunk, $format) {
-    if ($chunk === '' || strpos($chunk, '_tokens') === false) return;
-    foreach (explode("\n", $chunk) as $line) {
+function tc_capture_stream_usage(&$target, $chunk, $format, &$carry = null) {
+    if ($carry === null) {
+        if ($chunk === '' || strpos($chunk, '_tokens') === false) return;
+        $lines = explode("\n", $chunk);
+    } else {
+        if ($chunk === '' && $carry === '') return;
+        $lines = tc_sse_take_lines($carry, $chunk);   // 先累积再过滤,否则半条事件会被丢掉
+        if (!$lines) return;
+    }
+    foreach ($lines as $line) {
         $line = trim($line);
         if (strpos($line, 'data:') !== 0) continue;
         $payload = trim(substr($line, 5));
@@ -1344,9 +1391,17 @@ function tc_upstream_auth_headers($format, $apiKey, $acceptStream = false) {
     return $h;
 }
 
-function tc_capture_stream_text(&$target, $chunk, $format) {
-    if ($chunk === '' || strpos($chunk, 'data:') === false) return;
-    foreach (explode("\n", $chunk) as $line) {
+function tc_capture_stream_text(&$target, $chunk, $format, &$carry = null) {
+    if ($carry === null) {
+        if ($chunk === '' || strpos($chunk, 'data:') === false) return;
+        $lines = explode("\n", $chunk);
+    } else {
+        if ($chunk === '' && $carry === '') return;
+        // 先累积再过滤:半条事件在 carry 里,直接 return 会把整条丢掉
+        $lines = tc_sse_take_lines($carry, $chunk);
+        if (!$lines) return;
+    }
+    foreach ($lines as $line) {
         $line = trim($line);
         if (strpos($line, 'data:') !== 0) continue;
         $payload = trim(substr($line, 5));
@@ -1561,7 +1616,7 @@ function tc_read_urls_to_citations($urls, $settings) {
         $text = trim((string) (isset($pages[$u]) ? $pages[$u] : ''));
         if ($text === '') continue;
         $host = (string) parse_url($u, PHP_URL_HOST);
-        $out[] = array('url' => $u, 'title' => $host !== '' ? $host : $u, 'snippet' => '', 'page' => mb_substr($text, 0, 8000));
+        $out[] = array('url' => $u, 'title' => $host !== '' ? $host : $u, 'snippet' => '', 'page' => tc_mb_cut($text, 8000));
     }
     return $out;
 }
@@ -1955,6 +2010,9 @@ function tc_video_test_and_reply($baseUrl, $model, $prompt, $apiKey, $providerNa
     $baseUrl = rtrim(trim((string) $baseUrl), '/');
     if (!preg_match('/^https?:\/\//i', $baseUrl)) tc_fail(400, '供应商 Base URL 无效');
     $vurl = tc_api_url($baseUrl, '/videos');
+    // 视频连通性测试同样带服务端身份出站(调用方的 format=video 分支会走到这里,
+    // 绕开调用方的检查),在这里单独把关。
+    tc_upstream_guard($vurl);
     $vbody = array('model' => $model, 'prompt' => $prompt, 'mode' => 'text', 'seconds' => '4', 'size' => '720P', 'aspect_ratio' => '16:9', 'n' => 1);
     $started = tc_now();
     $vres = tc_http_request($vurl, 'POST', array('Content-Type' => 'application/json', 'Authorization' => 'Bearer ' . $apiKey), tc_json_encode($vbody), 30000, false, null, true, 20000);
@@ -2236,6 +2294,8 @@ function tc_api_fetch_models() {
         // 常见于「编辑供应商 + 留空 Key」但 providerId 不匹配(非本人/已删除)的场景,本地直接给出可行动的提示。
         if (strpos($apiKey, '••') !== false) tc_fail(400, '请先填写 API Key（编辑已有供应商时留空即沿用已保存的密钥）');
         $url = tc_api_url($baseUrl, '/models');
+        // 这里带着服务端身份出站,且 baseUrl 直接来自请求体:必须过 SSRF 闸门。
+        tc_upstream_guard($url);
         return array('url' => $url, 'apiKey' => $apiKey);
     });
     $res = tc_http_request($ctx['url'], 'GET', array(
@@ -2262,7 +2322,11 @@ function tc_api_fetch_models() {
 
 // 计费结算:billingMode=call 按次;=token 按 (prompt+completion)/1000 × pricePer1k。
 // 按 token 时若上游未返回用量(如部分流式),回退按次计费,避免漏计
-function tc_final_cost($provider, $baseCost, $usage) {
+// $free 为真表示本次「明确免费」(用户自备 Key / 站内 judge 预检):按 token 计费时
+// 不能再用算出来的金额覆盖它,否则「不向用户计费」的承诺失效 —— 自备 Key 反而会
+// 倒扣站点额度,judge 这类用户看不见的内部步骤也会被计费。
+function tc_final_cost($provider, $baseCost, $usage, $free = false) {
+    if ($free) return 0;
     $mode = isset($provider['billingMode']) ? $provider['billingMode'] : 'call';
     if ($mode !== 'token') return $baseCost;
     $price = isset($provider['pricePer1k']) ? (float) $provider['pricePer1k'] : 0;
@@ -2275,8 +2339,8 @@ function tc_final_cost($provider, $baseCost, $usage) {
 
 // 流式按 token 计费结算:首字节时刻用量未知,已按次预扣;流结束按实际用量多退少补。
 // 返回最终扣费额(供台账);无限额度与按次模式是 no-op(delta=0)。
-function tc_settle_stream_charge(&$db, $userId, $provider, $baseCost, $charged, $usage) {
-    $trueCost = tc_final_cost($provider, $baseCost, $usage);
+function tc_settle_stream_charge(&$db, $userId, $provider, $baseCost, $charged, $usage, $free = false) {
+    $trueCost = tc_final_cost($provider, $baseCost, $usage, $free);
     $delta = round($trueCost - (float) $charged, 4);
     if (abs($delta) < 0.0001) return $trueCost;
     $fresh = null;
@@ -2301,11 +2365,11 @@ function tc_settle_stream_charge(&$db, $userId, $provider, $baseCost, $charged, 
 // 扣费:取最新用户记录按实际用量计费,回写余量到 $GLOBALS['_tc_quota_after']
 // 额度已在请求前原子预扣(见 tc_quota_reserve),这里只按实际用量结算:
 // 原来在这里再调 tc_charge_user 会二次扣费,也会把并发窗口重新打开。
-function tc_stream_charge(&$db, $userId, $provider, $body, $cost, $streamUsage, $purpose, &$charged) {
+function tc_stream_charge(&$db, $userId, $provider, $body, $cost, $streamUsage, $purpose, &$charged, $free = false) {
     $fresh = null;
     foreach ($db['users'] as $u) if ((string) $u['id'] === (string) $userId) { $fresh = $u; break; }
     if (!$fresh) return;
-    $actual = tc_final_cost($provider, $cost, $streamUsage);
+    $actual = tc_final_cost($provider, $cost, $streamUsage, $free);
     $charged = tc_quota_settle($db, $userId, $actual, isset($body['model']) ? (string) $body['model'] : '', $purpose);
     tc_quota_clear_pending();
     foreach ($db['users'] as $u) if ((string) $u['id'] === (string) $userId) { $fresh = $u; break; }
@@ -2330,8 +2394,9 @@ function tc_stream_headers($charged, $citations, $ms, $withTask, $taskId, $forma
 function tc_stream_begin($user, $provider, $body, $cost, $streamUsage, $ctx, $started, $format, $isStream, $citations, $taskId, &$charged) {
     $ms = tc_now() - $started;
     $charged = 0;
-    tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage, $ctx) {
-        tc_stream_charge($db, $user['id'], $provider, $body, $cost, $streamUsage, isset($ctx['purpose']) ? (string) $ctx['purpose'] : '', $charged);
+    $free = !empty($ctx['free']);
+    tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage, $ctx, $free) {
+        tc_stream_charge($db, $user['id'], $provider, $body, $cost, $streamUsage, isset($ctx['purpose']) ? (string) $ctx['purpose'] : '', $charged, $free);
     });
     // 扣费落库后立即提交并释放写锁:流式响应要持续几十秒到几分钟,
     // 若把事务留到请求结束才提交,一个长回复会让全站所有写操作排队
@@ -2356,8 +2421,9 @@ function tc_stream_begin($user, $provider, $body, $cost, $streamUsage, $ctx, $st
 function tc_stream_charge_done($user, $provider, $body, $cost, $streamUsage, $ctx, $started, $citations, &$charged) {
     $ms = tc_now() - $started;
     $charged = 0;
-    tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage, $ctx) {
-        tc_stream_charge($db, $user['id'], $provider, $body, $cost, $streamUsage, isset($ctx['purpose']) ? (string) $ctx['purpose'] : '', $charged);
+    $free = !empty($ctx['free']);
+    tc_with_db(true, function (&$db) use ($user, $cost, $body, &$charged, $provider, $streamUsage, $ctx, $free) {
+        tc_stream_charge($db, $user['id'], $provider, $body, $cost, $streamUsage, isset($ctx['purpose']) ? (string) $ctx['purpose'] : '', $charged, $free);
         tc_record_usage_entry($db, $user['id'], isset($body['model']) ? $body['model'] : '', $charged, $streamUsage['prompt'], $streamUsage['completion']);
     });
     header('Content-Type: text/event-stream; charset=utf-8');
@@ -2369,8 +2435,9 @@ function tc_stream_charge_done($user, $provider, $body, $cost, $streamUsage, $ct
 // 流结束结算:按实际用量多退少补、写台账、按需把对话落库、回填日志
 function tc_stream_settle($user, $provider, $body, $cost, &$charged, $streamUsage, $streamText, $ctx, $format, $modelStr, $streamLogId) {
     $saveApiChat = !empty($ctx['saveApiChat']);
-    tc_with_db(true, function (&$db) use ($user, $provider, $cost, &$charged, $streamUsage, $streamText, $body, $saveApiChat, $format, $modelStr) {
-        $final = tc_settle_stream_charge($db, $user['id'], $provider, $cost, $charged, $streamUsage);
+    $free = !empty($ctx['free']);
+    tc_with_db(true, function (&$db) use ($user, $provider, $cost, &$charged, $streamUsage, $streamText, $body, $saveApiChat, $format, $modelStr, $free) {
+        $final = tc_settle_stream_charge($db, $user['id'], $provider, $cost, $charged, $streamUsage, $free);
         tc_record_usage_entry($db, $user['id'], $modelStr, $final, $streamUsage['prompt'], $streamUsage['completion']);
         if ($saveApiChat) {
             // 传全量历史:落库按「首条用户消息」判断是否同一段上下文,并自动去重
@@ -2428,16 +2495,17 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         $costModel = isset($b['model']) ? (string) $b['model'] : '';
         if ($costModel === '' && !empty($provider['models'][0]['id'])) $costModel = (string) $provider['models'][0]['id'];
         $cost = tc_model_cost($provider, $costModel);
+        $free = false;
         // 内容审核:开启敏感词过滤时,先检查最后一条用户消息
         $modHit = tc_moderation_hit(isset($db['settings']['moderation']) && is_array($db['settings']['moderation']) ? $db['settings']['moderation'] : array(), tc_last_user_text($b, $format));
         if ($modHit !== '') tc_fail(400, '消息包含被禁止的内容，请修改后重试');
         // 用户自备供应商(自己的 Key):不扣站点次数,也不设额度门槛
-        if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) $cost = 0;
+        if (isset($provider['ownerId']) && (string) $provider['ownerId'] === (string) $user['id']) { $cost = 0; $free = true; }
         // 内部「AI 工具判定」(生图/联网/标题的调度预检)不向用户计费:它是用户看不见的
         // 基础步骤,对用户而言一条消息就是一次对话;上游成本由站点承担。
         // 仅限网页端内部调用 —— 开放 API 的外部请求不能靠自带 _purpose=judge 绕过计费。
         $reqPurpose = isset($b['_purpose']) ? (string) $b['_purpose'] : '';
-        if ($reqPurpose === 'judge' && $apiKeyOwner === null) $cost = 0;
+        if ($reqPurpose === 'judge' && $apiKeyOwner === null) { $cost = 0; $free = true; }
         // 额度预扣:检查与扣减放在同一个写事务里完成,避免并发请求都读到同一笔余额后全部放行。
         // 实际费用要等上游返回才知道(按 token 计费),所以先按预估费用扣,结算时再多退少补。
         $reserveOk = false;
@@ -2479,6 +2547,7 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             // 用途标记(标题/跟进建议/判定等):仅存在于原始请求体,用于余量明细
             'purpose' => isset($b['_purpose']) ? (string) $b['_purpose'] : '',
             'cost' => $cost,
+            'free' => $free,
             'timeout' => $db['settings']['proxyTimeoutMs'],
             'wantSearch' => (!empty($b['webSearch']) && $b['webSearch'] !== 'off' && $b['webSearch'] !== false) ? (string) $b['webSearch'] : '',
             'settings' => tc_user_search_settings($user, $db['settings']),
@@ -2497,6 +2566,15 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                 && !empty($db['settings']['persistChats']),
         );
     });
+
+    // 生图/生视频的自动路由:对话接口收到生图/生视频模型时改走对应接口。
+    // 这两个接口各自会做完整的鉴权/限流/审核与「原子预扣 + 结算」,因此这里必须先把
+    // 对话路径已做的预扣原样退回,否则同一次请求会被扣两次:内层结算只释放内层那笔,
+    // 外层预扣永远留在账上(成功时用户付双份;内层失败时外层也不退,用户为失败买单)。
+    // 用 refund_pending 而不是自己写余额:它同时清掉待结算标记,避免后续 tc_fail 重复退款。
+    if (!empty($ctx['videoGen']) || !empty($ctx['imageGen'])) {
+        tc_quota_refund_pending();
+    }
 
     // 视频模型自动改走视频接口(异步任务;tc_generate_video 自带鉴权/限流/额度/审核与计费)
     if (!empty($ctx['videoGen'])) {
@@ -2623,14 +2701,16 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         $charged = 0;
         $streamUsage = array('prompt' => 0, 'completion' => 0);
         $streamText = '';
+        $usageCarry = '';
+        $textCarry = '';
         $streamLogId = 0;   // 首字节时先落一条日志,收尾再回填完整回复/用量
         // 429/5xx 一次自动重试:错误响应不会进入 onChunk(未计费未发送),重试安全
         $attempt = 0;
         do {
             $attempt++;
-            $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage, &$streamText, &$streamLogId, $ctx) {
-            tc_capture_stream_usage($streamUsage, $chunk, $format);
-            tc_capture_stream_text($streamText, $chunk, $format);
+            $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage, &$streamText, &$streamLogId, &$usageCarry, &$textCarry, $ctx) {
+            tc_capture_stream_usage($streamUsage, $chunk, $format, $usageCarry);
+            tc_capture_stream_text($streamText, $chunk, $format, $textCarry);
             if (!$headersSent) {
                 // First successful bytes: charge then start SSE.
                 $streamLogId = tc_stream_begin($user, $provider, $body, $cost, $streamUsage, $ctx, $started, $format, $isStream, $citations, $taskId, $charged);
@@ -2652,6 +2732,11 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
             if (!( !empty($res['ok']) && !empty($res['status']) && in_array((int) $res['status'], array(429, 500, 502, 503, 504), true) && $attempt < 2 )) break;
             sleep(1);
         } while (true);
+
+    // 上游最后一条事件可能不带换行,此时它还在 carry 里没被解析;结算前补上,
+    // 否则用量/文本会少最后一段(流式生成时最常见的就是最后那条 usage 事件)
+    tc_sse_flush_tail($usageCarry, 'tc_capture_stream_usage', $streamUsage, $format);
+    tc_sse_flush_tail($textCarry, 'tc_capture_stream_text', $streamText, $format);
 
     // 流结束:按实际用量与首字节预扣额多退少补,并把最终费用写入台账
     if ($headersSent && connection_aborted()) {
@@ -2704,10 +2789,12 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
                 $charged = 0;
                 $streamUsage = array('prompt' => 0, 'completion' => 0);
                 $streamText = '';
+                $usageCarry = '';
+                $textCarry = '';
                 $streamLogId = 0;
-                $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage, &$streamText, &$streamLogId, $ctx) {
-                    tc_capture_stream_usage($streamUsage, $chunk, $format);
-                    tc_capture_stream_text($streamText, $chunk, $format);
+                $res = tc_http_request($url, 'POST', $headers, $payload, $ctx['timeout'], true, function ($chunk) use (&$headersSent, &$charged, $user, $provider, $body, $cost, $started, $format, $isStream, $citations, $taskId, &$streamUsage, &$streamText, &$streamLogId, &$usageCarry, &$textCarry, $ctx) {
+                    tc_capture_stream_usage($streamUsage, $chunk, $format, $usageCarry);
+                    tc_capture_stream_text($streamText, $chunk, $format, $textCarry);
                     if (!$headersSent) {
                         $streamLogId = tc_stream_begin($user, $provider, $body, $cost, $streamUsage, $ctx, $started, $format, $isStream, $citations, $taskId, $charged);
                         $headersSent = true;
@@ -2823,7 +2910,7 @@ function tc_api_proxy($format, $apiKeyOwner = null) {
         foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
         if (!$fresh) return;
         // 额度已在请求前预扣:这里只做结算(按实际 token 费用多退少补),不再二次扣减。
-        $actual = tc_final_cost($provider, $cost, $bodyUsage);
+        $actual = tc_final_cost($provider, $cost, $bodyUsage, !empty($ctx['free']));
         $charged = tc_quota_settle($db, $user['id'], $actual, isset($body['model']) ? (string) $body['model'] : '', isset($ctx['purpose']) ? (string) $ctx['purpose'] : '');
         tc_quota_clear_pending();
         foreach ($db['users'] as $u) if ($u['id'] === $user['id']) { $fresh = $u; break; }
@@ -3080,6 +3167,9 @@ function tc_generate_images($apiKeyOwner = null) {
     if ($ctx['model'] === '' || $ctx['prompt'] === '') tc_fail(400, '请填写模型和提示词');
     // 关键:生图也必须补齐 /v1(用户常按平台文档只填 https://host,不写 /v1)
     $url = tc_api_url($provider['baseUrl'], '/images/generations');
+    // 生图是「带服务端身份 + 多部分表单」的出站请求,方向与对话接口相反,风险更高。
+    // 供应商地址写入时已校验过一次,这里在真正发请求前再确认,挡住历史数据与导入配置。
+    tc_upstream_guard($url);
     // 多密钥:按优先级链依次尝试,前一把认证/连接失败时自动换下一把
     $imgKeyChain = tc_provider_key_chain($provider, $ctx['model']);
     if (!$imgKeyChain) $imgKeyChain = array('');
@@ -3942,6 +4032,8 @@ function tc_generate_video($apiKeyOwner = null) {
     $user = $ctx['user'];
     if ($ctx['model'] === '' || $ctx['prompt'] === '') tc_fail(400, '请填写模型和提示词');
     $url = tc_api_url($provider['baseUrl'], '/videos');
+    // 生视频同样是带服务端身份的出站请求,发请求前确认目标不是内网/保留地址。
+    tc_upstream_guard($url);
     // 多密钥:按优先级链依次尝试,前一把认证/连接失败时自动换下一把
     $videoKeyChain = tc_provider_key_chain($provider, $ctx['model']);
     if (!$videoKeyChain) $videoKeyChain = array('');

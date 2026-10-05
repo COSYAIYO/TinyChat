@@ -78,6 +78,11 @@ function currentEffortMode() {
   return reasoningEnabled() ? reasoningEffort() : 'off';
 }
 const WEBSEARCH_LABELS = { auto: '智能', on: '始终', off: '关闭' };
+// 模型元数据缺失时的兜底上限,与后端 lib/core.php 的 TC_MODEL_META_AUTO_OUTPUT /
+// TC_MODEL_META_AUTO_CONTEXT 保持一致:两处都是「清单没给值」时的最后一道兜底,
+// 取值写死在不同的语言里容易各自漂移,集中成常量至少让改动有明确落点。
+const FALLBACK_MAX_OUTPUT = 8192;
+const FALLBACK_MAX_CONTEXT = 131072;
 function searchReady() {
   const t = state.tools && state.tools.webSearch;
   if (!t) return !!state.webSearchAvailable;
@@ -2449,8 +2454,8 @@ function applyReasoningToBody(body, format) {
 // 供应商与对话设置里都不再配置这两项。清单接口保证有值,这里只做兜底。
 function modelCapsNow() {
   const spec = currentModelSpec();
-  const out = spec && parseInt(spec.maxTokens, 10) > 0 ? parseInt(spec.maxTokens, 10) : 8192;
-  const ctx = spec && parseInt(spec.maxContext, 10) > 0 ? parseInt(spec.maxContext, 10) : 131072;
+  const out = spec && parseInt(spec.maxTokens, 10) > 0 ? parseInt(spec.maxTokens, 10) : FALLBACK_MAX_OUTPUT;
+  const ctx = spec && parseInt(spec.maxContext, 10) > 0 ? parseInt(spec.maxContext, 10) : FALLBACK_MAX_CONTEXT;
   return { out, ctx };
 }
 function thinkingBudgetFor(effort) {
@@ -2827,11 +2832,22 @@ async function sendMessage() {
       state.streaming = true; updateSendBtn();
       const judgeAc = new AbortController();
       const judgeTimer = setTimeout(() => judgeAc.abort(), 12000);
+      // 判定期间用户可能切换会话(或点了停止)。判题用的是局部 AbortController,
+      // 不在 state.abortController 上,stopStreaming 掐不到它;若不管,
+      // 判定返回后会把答案/占位画进「已经切过去的那条会话」(索引错位),甚至重复投递用户消息。
+      // 因此记住发起时的会话与轮次令牌,返回后先确认仍是同一会话、同一轮,否则整段放弃。
+      const judgeChatId = posted.chat && posted.chat.id;
+      const judgeTurnId = beginTurn();
       try {
         verdict = await aiJudgeTools(text, { imageEnabled: hasImageModel, searchEnabled: searchReady, prevImage: hasRef, wantTitle: isFirstMsg, signal: judgeAc.signal });
       } finally {
         clearTimeout(judgeTimer);
         state.streaming = false; updateSendBtn();
+      }
+      const stillHere = judgeChatId && state.currentChatId === judgeChatId;
+      if (!stillHere || turnCancelled(judgeTurnId)) {
+        // 已切走/已停止:丢弃这次判定结果,不再往下发真正的请求。
+        return null;
       }
     }
     // 联网:判定成功则按结果显式开关;失败则回退后端启发式(body.webSearch 保持 'auto')
@@ -3850,6 +3866,11 @@ function stopStreaming() {
   if (pending) { pending.taskStatus = 'cancelled'; api('/api/proxy/tasks/' + encodeURIComponent(pending.taskId) + '/cancel', { method: 'POST' }).catch(() => {}); }
   if (state.abortController) state.abortController.abort();
   state.abortController = null;
+  // 作废当前这一轮:多模型对比与群聊是「串行问多个模型」的循环,
+  // 只 abort 当前请求 + 清 streaming 标志的话,循环下一轮会照常开跑
+  // (requestAssistantReply 的守卫看到 streaming=false 就继续),用户点了停止仍被继续计费。
+  // 递增令牌让循环在每轮开头自查并整体退出。
+  state.turnToken = (state.turnToken || 0) + 1;
   state.streaming = false;
   document.documentElement.classList.remove('oc-streaming');
   $('stop-btn').classList.add('hidden');
@@ -3857,6 +3878,17 @@ function stopStreaming() {
   // 停止后消息内容已定稿,时间戳同步推进,已写出的内容不会被云端旧副本合并覆盖
   if (chat) chat.updatedAt = Date.now();
   saveChats();
+}
+
+// 开启新的一轮:记下令牌,循环用同一个值判断自己有没有被停止。
+function beginTurn() {
+  state.turnToken = (state.turnToken || 0) + 1;
+  return state.turnToken;
+}
+
+// 该轮是否已被停止(用于多模型对比/群聊这类多步循环的中途退出)
+function turnCancelled(token) {
+  return token !== state.turnToken;
 }
 
 function initStreamingState() {
@@ -8693,8 +8725,12 @@ async function sendCompareTurn(text, attachments) {
   const msg = turn.assistantMsg;
   const savedProv = state.currentProviderId;
   const savedModel = state.currentModel;
+  // 一轮多模型对比的整体令牌:用户中途点「停止」时,循环在下一轮开头退出,
+  // 不再继续问剩下的模型(每个模型都会真实计费)。
+  const turnId = beginTurn();
   try {
     for (let i = 0; i < picks.length; i++) {
+      if (turnCancelled(turnId)) break;
       // 第 2 个及以后:在当前回答上追加一个空白版本(标签),写法与 @模型重答一致
       if (i > 0) {
         const live = liveMessage(chat, msg);
@@ -8891,7 +8927,7 @@ async function aiComplete(messages, opts = {}) {
     model,
     providerId,
     stream: false,
-    max_tokens: opts.maxTokens || 8192,
+    max_tokens: opts.maxTokens || modelCapsNow().out,
     _purpose: opts.purpose || 'note',
     messages,
   };
@@ -8916,6 +8952,10 @@ window.OCApp = {
   providerFormat,
   resolveAuxModel,
   aiComplete,
+  // 一轮对话的整体取消令牌:多模型对比/群聊是多步循环,
+  // 只 abort 当前请求不足以让循环停下,调用方用它们自查是否该整体退出。
+  beginTurn,
+  turnCancelled,
   // 后加载模块(notes.js)拼提示词时要按模型真实窗口裁剪输入:
   // 弱模型上下文只有 8k~32k,把整段回答硬塞进去会被上游直接拒绝。
   modelCapsNow,

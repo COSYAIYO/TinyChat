@@ -67,15 +67,30 @@
     }
   } catch (e) {}
 
-  // 4. Service Worker 提前注册。SW 路径按部署形态推导:
-  //    主站页面取当前目录(相对),分享页(/s/xxx)回退到站点根(分享页脚本是绝对路径约定)。
+  // 4. Service Worker 提前注册。SW 文件在站点根目录,而本脚本在 static/js/ 下,
+  //    所以要从脚本自身的 URL 里剥掉 static/js/<file> 这一段,剩下的才是站点基址。
+  //    五种页面用的是同一种相对/绝对混排写法(./static/js/... 或 /static/js/...),
+  //    这样推导对主站、分享页、子目录部署都成立。
+  //    不要用 location.pathname 正则截断:/n/<token> 会推出 /n/,
+  //    以它作为 scope 注册会被浏览器拒绝(SW 作用域不能窄于脚本所在目录),
+  //    结果是笔记分享页根本没有 Service Worker。
   if ('serviceWorker' in navigator
     && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
     try {
-      var dir = location.pathname.indexOf('/s/') === 0
-        ? location.pathname.split('/s/')[0] + '/'
-        : location.pathname.replace(/[^/]*$/, '');
-      navigator.serviceWorker.register(dir + 'sw.js', { scope: dir }).catch(function () {});
+      var selfSrc = '';
+      try { selfSrc = (document.currentScript && document.currentScript.src) || ''; } catch (e) {}
+      if (!selfSrc) {
+        // 极端情况下拿不到 currentScript(部分异步/打包环境),退回从 <script src> 里找
+        var tags = document.getElementsByTagName('script');
+        for (var i = tags.length - 1; i >= 0; i--) {
+          var s = String(tags[i].src || '');
+          if (/theme-boot(\.min)?\.js/.test(s)) { selfSrc = s; break; }
+        }
+      }
+      if (selfSrc) {
+        var root = selfSrc.replace(/\?.*$/, '').replace(/static\/js\/[^/]*$/, '');
+        if (root) navigator.serviceWorker.register(root + 'sw.js', { scope: root }).catch(function () {});
+      }
     } catch (e) {}
   }
 })();

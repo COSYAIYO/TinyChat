@@ -229,10 +229,18 @@
     }
     const type = artifact.type || 'html';
     let body = '';
-    if (type === 'html') {
-      body = '<iframe class="artifact-frame" sandbox="allow-scripts" srcdoc="' + escapeAttr(artifact.content || '') + '"></iframe>';
-    } else if (type === 'svg') {
-      body = '<div class="artifact-svg">' + (artifact.content || '') + '</div>';
+    if (type === 'html' || type === 'svg') {
+      // SVG 与 HTML 走同一条沙箱路径:两者都是「可执行文档」。
+      // 此前 SVG 分支把模型内容直接拼进 innerHTML,而渲染管线的消毒白名单刻意不放行
+      // SVG 命名空间(SVG 里的事件如 <animate onbegin=…> 只在 SVG 生效,是 mXSS 的经典载体),
+      // 于是它成了唯一绕过消毒的注入点。放进 sandbox 的 iframe 后,脚本拿不到同源上下文,
+      // 也碰不到父页面。不给 allow-same-origin,避免内容读写父页的存储与 DOM。
+      // 注意整个文档都要按属性转义(srcdoc 是属性值),否则内层的引号会截断属性。
+      const doc = type === 'svg'
+        ? '<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%;display:flex;align-items:center;justify-content:center}svg{max-width:100%;max-height:100%}</style>'
+          + (artifact.content || '')
+        : (artifact.content || '');
+      body = '<iframe class="artifact-frame" sandbox="allow-scripts" srcdoc="' + escapeAttr(doc) + '"></iframe>';
     } else if (type === 'code') {
       body = '<pre class="artifact-code">' + escapeHtml(artifact.content || '') + '</pre>';
     } else {

@@ -69,6 +69,10 @@ jobs:
         run: php tests/image-chat.php
       - name: 虚拟主机配额自检(cgroup v1/v2 解析与双采样)
         run: php tests/sys-quota.php
+      - name: 流式采集自检(SSE 事件跨 TCP 分片 / 尾部收尾)
+        run: php tests/stream-capture.php
+      - name: JSON 边车文件并发自检(登录计数 / 附件索引 / 笔记 AI 配额)
+        run: php tests/json-sidecars.php
 
   e2e:
     name: E2E(PHP ${{ matrix.php }})
@@ -114,3 +118,7 @@ jobs:
       # 「点了没反应」类问题(弹窗爆栈、控件排在屏外)只有真浏览器点得出来
       - name: 笔记编辑器自检(已分享管理可打开 / 窄屏能编辑 / 顶栏对齐)
         run: node tests/notes-editor-gui.mjs
+      # Markdown 允许渲染 HTML 后,渲染器就是最主要的 XSS 面:注入点用真浏览器跑,
+      # 覆盖 mXSS / SVG 命名空间 / javascript: 混淆等浏览器行为相关的绕过。
+      - name: Markdown 渲染安全自检(注入载荷被中和 / 正常 HTML 保留)
+        run: node tests/renderer-xss.mjs
