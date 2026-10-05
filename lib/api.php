@@ -2756,12 +2756,15 @@ function tc_api_admin_model_meta_list() {
         $perPage = isset($_GET['perPage']) ? min(200, max(10, (int) $_GET['perPage'])) : 50;
 
         $meta = isset($db['modelMeta']) && is_array($db['modelMeta']) ? $db['modelMeta'] : array();
-        // 本地供应商实际用到的模型名:用于「在用」标记,同时让这些模型在默认排序里靠前
+        // 本地供应商实际用到的模型名:用于「在用」标记,同时让这些模型在默认排序里靠前。
+        // 渠道给模型加前缀/后缀时(XXX/deepseek-flash)归到包含匹配到的那个条目上,
+        // 否则表里那条被复用的元数据不会显示「在用」。
         $inUse = array();
         foreach ($db['providers'] as $p) {
             foreach ((isset($p['models']) ? $p['models'] : array()) as $m) {
                 if (!is_array($m) || empty($m['id'])) continue;
-                $inUse[tc_model_meta_key($m['id'])] = true;
+                $rk = tc_model_meta_resolve($db, $m['id']);
+                $inUse[$rk !== null ? $rk : tc_model_meta_key($m['id'])] = true;
             }
         }
         $rows = array();
@@ -2843,14 +2846,15 @@ function tc_api_admin_model_meta_delete() {
     });
 }
 
-// 清空整表(仅 litellm 来源;手工条目保留)
+// 清空整表(仅 litellm 来源;手工与内置条目保留)
 function tc_api_admin_model_meta_clear() {
     tc_with_db(true, function (&$db) {
         $admin = tc_require_admin($db);
         if (tc_is_demo_user($admin)) tc_fail(403, '演示账号不能清空模型元数据');
         $kept = array();
         foreach ((isset($db['modelMeta']) && is_array($db['modelMeta']) ? $db['modelMeta'] : array()) as $k => $v) {
-            if (isset($v['source']) && $v['source'] === 'manual') $kept[$k] = $v;
+            $src = isset($v['source']) ? (string) $v['source'] : '';
+            if ($src === 'manual' || $src === 'builtin') $kept[$k] = $v;
         }
         $db['modelMeta'] = $kept;
         unset($db['modelMetaSyncedAt']);
@@ -2895,7 +2899,9 @@ function tc_model_meta_sync_indexed(&$db, $raw) {
     $meta = isset($db['modelMeta']) && is_array($db['modelMeta']) ? $db['modelMeta'] : array();
     $added = 0; $updated = 0; $skipped = 0; $reviewCleared = 0;
     foreach ($index as $key => $item) {
-        if (isset($meta[$key]) && isset($meta[$key]['source']) && $meta[$key]['source'] === 'manual') { $skipped++; continue; }
+        // 手工与内置条目都不被同步覆盖:前者是管理员定的,后者是随发布包分发的基准值
+        $src = isset($meta[$key]['source']) ? (string) $meta[$key]['source'] : '';
+        if ($src === 'manual' || $src === 'builtin') { $skipped++; continue; }
         // 已有条目上管理员手动停用过的,同步回来后保持停用(不能因为上游有数据就擅自重新启用)
         if (isset($meta[$key])) {
             $updated++;

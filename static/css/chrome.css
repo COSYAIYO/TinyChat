@@ -4954,6 +4954,9 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 }
 .mm-table .mm-src.manual { background: color-mix(in srgb, #d97706 14%, transparent); color: #b45309; }
 [data-theme="dark"] .mm-table .mm-src.manual { color: #fbbf24; }
+/* 内置:随发布包分发的开箱即用值,用品牌蓝与手工/同步区分 */
+.mm-table .mm-src.builtin { background: color-mix(in srgb, #2563eb 12%, transparent); color: #1d4ed8; }
+[data-theme="dark"] .mm-table .mm-src.builtin { color: #93c5fd; }
 .mm-table .mm-src.sync { background: var(--bg-active); color: var(--text-tertiary); }
 /* 自动补的兜底值:用警示色,与「手工/同步」区分开 */
 .mm-table .mm-src.auto { background: color-mix(in srgb, #dc2626 12%, transparent); color: #b91c1c; }

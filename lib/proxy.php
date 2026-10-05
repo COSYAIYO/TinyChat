@@ -2999,15 +2999,19 @@ function tc_context_learn($provider, $body, $errBody) {
         tc_with_db(true, function (&$db) use ($pid, $model, $limit) {
             if (empty($db['settings']['contextAutoLearn'])) return;
             // 上限统一记在「模型元数据」表(全站渠道共用);供应商模型项已不再保存窗口
+            // 渠道给模型加前缀/后缀时(XXX/deepseek-flash)复用包含匹配到的原条目,不另建一条
             $key = tc_model_meta_key($model);
             if ($key === '' || strlen($key) > 200) return;
             if (!isset($db['modelMeta']) || !is_array($db['modelMeta'])) $db['modelMeta'] = array();
+            $matched = tc_model_meta_resolve($db, $model);
+            if ($matched !== null) $key = $matched;
             $cur = isset($db['modelMeta'][$key]) && is_array($db['modelMeta'][$key]) ? $db['modelMeta'][$key] : array();
-            // 上游亲口报出的窗口比表里的值可信:覆盖之。但手工条目是管理员的显式声明,
-            // 不覆盖手动设置这一条依然成立——手工条目仅在数值缺失时才补。
-            $isManual = isset($cur['source']) && $cur['source'] === 'manual';
+            // 上游亲口报出的窗口比表里的值可信:覆盖之。但手工/内置条目是显式声明,
+            // 不覆盖显式设置这一条依然成立——这两类条目仅在数值缺失时才补。
+            $src = isset($cur['source']) ? (string) $cur['source'] : '';
+            $isPinned = ($src === 'manual' || $src === 'builtin');
             $hasCtx = !empty($cur['maxInputTokens']);
-            if ($isManual && $hasCtx) return;
+            if ($isPinned && $hasCtx) return;
             if ($hasCtx && (int) $cur['maxInputTokens'] === $limit) return;
             $cur['maxInputTokens'] = $limit;
             $cur['updatedAt'] = tc_now();

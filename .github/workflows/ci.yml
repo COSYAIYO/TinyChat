@@ -66,6 +66,8 @@ jobs:
         run: node tests/settings-merge.js
       - name: 用户设置云同步自检(白名单收敛 / 分片落库 / 注销清理)
         run: php tests/settings-sync.php
+      - name: 内置模型元数据自检(注入 / 不覆盖手工与同步 / 同步跳过内置)
+        run: php tests/model-meta-builtin.php
       - name: 演示管理员还原自检(拍摄/到期还原/反复还原)
         run: php tests/demo-revert.php
       - name: 生图响应解析自检(各平台返回形态)
