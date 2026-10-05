@@ -43,6 +43,7 @@
     fontCjk: 'source-han-serif',     // 中文字体
     fontLatin: 'alibaba-sans',       // 英文/希腊字母字体
     accent: '',            // 主题色(空 = 默认)
+    themePack: 'default',  // 主题包(主题市场):default = 当前外观;其余见 theme-boot.js 的 OC_THEME_PACKS
     lastProviderId: null,  // 上次使用的供应商
     lastModel: null,       // 上次使用的模型
     pinnedProviderId: null, // 置顶供应商：新建对话使用
@@ -654,6 +655,64 @@ UI.toggleTheme = function () {
     styleEl.textContent = css;
   }
 
+  // ============ 主题包(主题市场) ============
+  // 目录定义在 theme-boot.js 的 OC_THEME_PACKS:它是五页首帧前唯一保证同步执行、
+  // 且已持有站点基址推导的地方。首帧套用(theme-boot)与运行时切换(这里)共用同一份
+  // 目录与同一套 data-oc-theme 约定,避免两处各写一份而漂移。
+  const THEME_PACK_FALLBACK = [{ id: 'default', name: 'TinyChat 默认', desc: '', ownsPalette: false, css: null }];
+  function themePacks() {
+    const list = window.OC_THEME_PACKS;
+    return (list && list.length) ? list : THEME_PACK_FALLBACK;
+  }
+  function themePackById(id) {
+    const list = themePacks();
+    const want = String(id == null ? '' : id).trim();
+    for (let i = 0; i < list.length; i++) if (list[i].id === want) return list[i];
+    return list[0]; // 未知 id 回落到默认:宁可退回原外观,也不能套上半截样式
+  }
+  UI.themePacks = themePacks;
+  UI.themePack = function () { return themePackById(loadPrefs().themePack); };
+  UI.themePackById = themePackById;
+  // 把主题包落到 DOM:写 data-oc-theme + 按需增删样式表。
+  // 幂等且不触发 applyAppearance —— 它会被 applyAppearance 反过来调用(见下方),
+  // 所以这里绝不能回头再调一次,否则两者互相递归。
+  // 幂等判定直接看 DOM 现状(属性值 + 样式表在不在),这样首帧由 theme-boot.js
+  // 注入过的情况也能被识别为「已就位」,不会重复插入 <link>。
+  function themePackCssHref(pack) {
+    // 路径基准优先用 theme-boot.js 剥出的站点根(子目录部署下 /static/... 是错的);
+    // 拿不到时退回 API_BASE 约定,与 applyTheme 里 HLJS 的写法保持一致。
+    const base = (typeof window.OC_THEME_CSS_BASE === 'string' && window.OC_THEME_CSS_BASE)
+      ? window.OC_THEME_CSS_BASE
+      : (window.API_BASE || '') + '/';
+    return base + pack.css + (window.OC_ASSET_V ? '?v=' + encodeURIComponent(window.OC_ASSET_V) : '');
+  }
+  function syncThemePackDom(pack) {
+    const root = document.documentElement;
+    const link = document.getElementById('oc-theme-pack-css');
+    if (root.getAttribute('data-oc-theme') === pack.id && !!link === !!pack.css) return;
+    root.setAttribute('data-oc-theme', pack.id);
+    if (link) link.remove();
+    if (pack.css) {
+      const el = document.createElement('link');
+      el.rel = 'stylesheet';
+      el.id = 'oc-theme-pack-css';
+      el.href = themePackCssHref(pack);
+      // 样式表是异步加载的:紧随其后的 applyAppearance 要去读 --bg-app 定浏览器 UI 色,
+      // 此刻新主题还没生效,读到的会是上一个主题的值。加载完再刷一次外观。
+      // 幂等且不递归:那时 syncThemePackDom 的现状判定已命中,不会再插 <link>。
+      el.addEventListener('load', () => { UI.applyAppearance(); });
+      document.head.appendChild(el);
+    }
+  }
+  // 切换主题包:先落偏好再改 DOM,保证紧随其后的 applyAppearance 读到的已是新主题。
+  UI.applyThemePack = function (id, opts) {
+    const pack = themePackById(id);
+    if (!opts || opts.persist !== false) UI.setPref('themePack', pack.id);
+    syncThemePackDom(pack);
+    UI.applyAppearance();
+    return pack;
+  };
+
   // 应用外观:字号/字体/主题色 → CSS 变量
   UI.applyAppearance = function () {
     const prefs = loadPrefs();
@@ -681,13 +740,24 @@ UI.toggleTheme = function () {
     root.style.setProperty('--oc-ui-font', uiStack);
     root.style.setProperty('--oc-latin-font', uiStack);
 
-    // 3. 主题色:同步覆盖品牌色 / 主按钮 / 高亮,而不只改 --accent
+    // 3. 主题色:同步覆盖品牌色 / 主按钮 / 高亮,而不只改 --accent。
+    //    自带完整配色的主题包(ownsPalette)必须让位:这里写的是行内样式,
+    //    优先级高于主题样式表里的一切选择器,不让位就会把主题的 --brand/--primary 顶掉,
+    //    表现为「换了主题但按钮还是原来的主题色」。传空串即清除这些行内覆盖。
     const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-    applyAccentVars(root, prefs.accent, isDark);
+    const pack = themePackById(prefs.themePack);
+    // 主题包也在这里落 DOM:设置云同步拉回一份新偏好后,调用方只会走到 applyAppearance
+    // (见 app.js 的 applySyncedSettings),不在这里同步就会出现「换了设备主题没跟着回来」。
+    syncThemePackDom(pack);
+    applyAccentVars(root, pack.ownsPalette ? '' : prefs.accent, isDark);
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) {
+      // 主题包自带配色时,浏览器 UI 色取主题的画布色(从计算样式读,避免在 JS 里再抄一份色值)
+      const packBg = (pack.ownsPalette && typeof getComputedStyle === 'function')
+        ? String(getComputedStyle(root).getPropertyValue('--bg-app') || '').trim()
+        : '';
       const acc = parseHexColor(prefs.accent);
-      meta.setAttribute('content', acc ? hexOf(acc) : (isDark ? '#000000' : '#ffffff'));
+      meta.setAttribute('content', packBg || (acc ? hexOf(acc) : (isDark ? '#000000' : '#ffffff')));
     }
   };
   UI.defaultAccent = ACCENT_DEFAULT_LIGHT;

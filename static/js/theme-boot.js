@@ -1,16 +1,78 @@
-/* TinyChat 首屏主题预置(index / admin / login / share 四页共用)。
+/* TinyChat 首屏主题预置(index / admin / login / share / note-share 五页共用)。
  * 原先各页面持有一份内联实现且已互相漂移;统一到这里维护。
  * 同步执行:紧跟样式表之后、首帧渲染之前 ——
  *   1) 设置 data-theme(深色用户不再白闪);
  *   2) 代码高亮主题随主题切换(保留各页面声明的路径基准:主站相对、分享页绝对、子目录前缀);
- *   3) 应用用户主题色(accent)到 CSS 变量,主按钮首帧即为目标色;
- *   4) 从自身 URL 的 ?v= 提取发布版本号,暴露为 window.OC_ASSET_V;
- *   5) 提前注册 Service Worker(原先挂在 app.js 尾部,主包加载完才开始缓存 vendor)。
+ *   3) 应用主题包(theme pack):启用时写入 data-oc-theme 并注入对应样式表;
+ *   4) 应用用户主题色(accent)到 CSS 变量,主按钮首帧即为目标色;
+ *   5) 从自身 URL 的 ?v= 提取发布版本号,暴露为 window.OC_ASSET_V;
+ *   6) 提前注册 Service Worker(原先挂在 app.js 尾部,主包加载完才开始缓存 vendor)。
+ *
+ * 主题包目录放在本文件而不是单独的 catalog.js:本文件是唯一保证在五页首帧前
+ * 同步执行、且已持有站点基址推导逻辑的地方,放这里可以零额外请求完成首帧套用。
+ * 消费方(ui.js 的主题市场、app.js 的弹窗)统一读 window.OC_THEME_PACKS。
  */
 (function () {
   var prefs = {};
   try { prefs = JSON.parse(localStorage.getItem('oc_prefs') || '{}'); } catch (e) {}
   try { window.OC_ASSET_V = ((document.currentScript && document.currentScript.src || '').split('?')[1] || '').replace(/^v=/, ''); } catch (e) {}
+
+  // 站点基址:从本脚本自身 URL 剥掉 static/js/<file> 这一段。
+  // 五种页面用的是同一种相对/绝对混排写法(./static/js/... 或 /static/js/...),
+  // 这样推导对主站、分享页、子目录部署都成立。
+  var selfSrc = '';
+  try { selfSrc = (document.currentScript && document.currentScript.src) || ''; } catch (e) {}
+  if (!selfSrc) {
+    // 极端情况下拿不到 currentScript(部分异步/打包环境),退回从 <script src> 里找
+    var tags = document.getElementsByTagName('script');
+    for (var ti = tags.length - 1; ti >= 0; ti--) {
+      var ts = String(tags[ti].src || '');
+      if (/theme-boot(\.min)?\.js/.test(ts)) { selfSrc = ts; break; }
+    }
+  }
+  var siteRoot = selfSrc ? selfSrc.replace(/\?.*$/, '').replace(/static\/js\/[^/]*$/, '') : '';
+  // 暴露给 ui.js:切换主题包时要注入同一路径基准的样式表(子目录部署下 /static/... 是错的)
+  window.OC_THEME_CSS_BASE = siteRoot;
+
+  // ---- 主题包目录 ----
+  // ownsPalette=true 的主题自带完整配色,此时跳过用户的「主题色」覆盖,
+  // 否则 applyAccentVars 的行内变量会盖住主题自己的 --brand/--primary(行内样式优先级最高)。
+  // css 为 null 表示默认外观:不加载任何额外样式表。
+  // swatch 供主题市场的预览缩略图取色,只放缩略图需要的 5 个色,不重复主题的完整调色板。
+  var PACKS = [
+    {
+      id: 'default',
+      name: 'TinyChat 默认',
+      desc: '浅色 / 深色的经典外观，蓝色点缀，跟随你的主题色设置',
+      ownsPalette: false,
+      css: null,
+      swatch: {
+        light: { bg: '#fcfcfc', panel: '#ffffff', text: '#1d1d1f', accent: '#2563eb', bubble: 'rgba(0, 0, 0, 0.05)' },
+        dark: { bg: '#000000', panel: '#1d1d1f', text: '#f5f5f7', accent: '#4d8dff', bubble: 'rgba(255, 255, 255, 0.08)' }
+      }
+    },
+    {
+      id: 'chatgpt',
+      name: 'ChatGPT 风格',
+      desc: '黑白极简配色、大圆角气泡与胶囊输入框，自带配色不跟随主题色',
+      ownsPalette: true,
+      // 文件名不带 "chatgpt":部分免费虚拟主机的边缘 WAF 会拦 URL 里含 chat 的请求
+      // (连静态资源也拦,实证见 tests/waf-paths.js),带上就整份主题 403。
+      // 展示名与主题 id 不受影响 —— WAF 只看 URL。
+      css: 'static/css/theme-gpt.min.css',
+      swatch: {
+        light: { bg: '#ffffff', panel: '#f9f9f9', text: '#0d0d0d', accent: '#0d0d0d', bubble: '#f4f4f4' },
+        dark: { bg: '#212121', panel: '#171717', text: '#ececec', accent: '#ffffff', bubble: '#303030' }
+      }
+    }
+  ];
+  window.OC_THEME_PACKS = PACKS;
+
+  function findPack(id) {
+    id = String(id || '').trim();
+    for (var i = 0; i < PACKS.length; i++) if (PACKS[i].id === id) return PACKS[i];
+    return PACKS[0]; // 未知 id(降级/被改坏的偏好)一律回落到默认,不让页面套上半截样式
+  }
 
   // 1. 主题:外观偏好 > 旧键 oc_theme > 系统偏好
   var pref = String(prefs.theme || '').trim();
@@ -32,8 +94,23 @@
     }
   }
 
-  // 3. 主题色变量
-  try {
+  // 3. 主题包:先写 data-oc-theme(样式表里的规则全部以此为前缀),再注入样式表。
+  //    在 <head> 解析期间插入 <link rel=stylesheet> 会阻塞渲染,所以首帧即为目标外观,
+  //    不会出现"先默认主题、样式表到位后再跳一下"的闪烁。
+  var pack = findPack(prefs.themePack);
+  document.documentElement.setAttribute('data-oc-theme', pack.id);
+  if (pack.css && siteRoot) {
+    try {
+      var link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.id = 'oc-theme-pack-css';
+      link.href = siteRoot + pack.css + (window.OC_ASSET_V ? '?v=' + encodeURIComponent(window.OC_ASSET_V) : '');
+      (document.head || document.documentElement).appendChild(link);
+    } catch (e) {}
+  }
+
+  // 4. 主题色变量(主题包自带配色时跳过,理由见上面 ownsPalette 注释)
+  if (!pack.ownsPalette) try {
     var hex = String(prefs.accent || '').trim();
     var m = hex.match(/^#([0-9a-fA-F]{3,8})$/);
     if (m) {
@@ -67,30 +144,14 @@
     }
   } catch (e) {}
 
-  // 4. Service Worker 提前注册。SW 文件在站点根目录,而本脚本在 static/js/ 下,
-  //    所以要从脚本自身的 URL 里剥掉 static/js/<file> 这一段,剩下的才是站点基址。
-  //    五种页面用的是同一种相对/绝对混排写法(./static/js/... 或 /static/js/...),
-  //    这样推导对主站、分享页、子目录部署都成立。
+  // 5. Service Worker 提前注册。SW 文件在站点根目录,基址由上面剥出的 siteRoot 给出。
   //    不要用 location.pathname 正则截断:/n/<token> 会推出 /n/,
   //    以它作为 scope 注册会被浏览器拒绝(SW 作用域不能窄于脚本所在目录),
   //    结果是笔记分享页根本没有 Service Worker。
   if ('serviceWorker' in navigator
     && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
     try {
-      var selfSrc = '';
-      try { selfSrc = (document.currentScript && document.currentScript.src) || ''; } catch (e) {}
-      if (!selfSrc) {
-        // 极端情况下拿不到 currentScript(部分异步/打包环境),退回从 <script src> 里找
-        var tags = document.getElementsByTagName('script');
-        for (var i = tags.length - 1; i >= 0; i--) {
-          var s = String(tags[i].src || '');
-          if (/theme-boot(\.min)?\.js/.test(s)) { selfSrc = s; break; }
-        }
-      }
-      if (selfSrc) {
-        var root = selfSrc.replace(/\?.*$/, '').replace(/static\/js\/[^/]*$/, '');
-        if (root) navigator.serviceWorker.register(root + 'sw.js', { scope: root }).catch(function () {});
-      }
+      if (siteRoot) navigator.serviceWorker.register(siteRoot + 'sw.js', { scope: siteRoot }).catch(function () {});
     } catch (e) {}
   }
 })();

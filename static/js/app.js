@@ -4269,6 +4269,85 @@ if (announceMenuBtn) announceMenuBtn.addEventListener('click', () => {
   closeUserMenu();
   if (window.OCShowAnnouncement) window.OCShowAnnouncement();
 });
+
+// ---- 主题市场(左下角用户菜单 → 主题市场) ----
+const themeMarketModal = $('theme-market-modal');
+// 缩略图配色从主题目录(theme-boot.js 的 OC_THEME_PACKS)读,浅色/深色各一套。
+// 样式表只认 --tp-* 这五个变量,所以新增主题只要在目录里补一个 swatch,
+// 这里和 chrome.css 都不用动。
+function themeSwatchStyle(pack) {
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  const s = (pack && pack.swatch && (dark ? pack.swatch.dark : pack.swatch.light)) || {};
+  return '--tp-bg:' + (s.bg || 'transparent')
+    + ';--tp-panel:' + (s.panel || 'transparent')
+    + ';--tp-text:' + (s.text || 'currentColor')
+    + ';--tp-accent:' + (s.accent || 'transparent')
+    + ';--tp-bubble:' + (s.bubble || 'transparent');
+}
+function renderThemeGrid() {
+  const grid = $('theme-grid');
+  if (!grid || !window.OCUI || !window.OCUI.themePacks) return;
+  const cur = window.OCUI.themePack ? window.OCUI.themePack() : null;
+  const curId = cur ? cur.id : 'default';
+  grid.innerHTML = window.OCUI.themePacks().map((p) => {
+    const active = p.id === curId;
+    return '<button type="button" class="theme-card" role="radio" data-theme-id="' + escapeHtml(p.id) + '"'
+      + ' aria-checked="' + (active ? 'true' : 'false') + '">'
+      + '<span class="theme-preview" style="' + themeSwatchStyle(p) + '" aria-hidden="true">'
+      + '<span class="tp-side-row"></span><span class="tp-side-row"></span><span class="tp-side-row"></span>'
+      + '<span class="tp-main"><span class="tp-bubble"></span><span class="tp-line"></span>'
+      + '<span class="tp-line tp-line-short"></span><span class="tp-dot"></span></span>'
+      + '</span>'
+      + '<span class="theme-meta">'
+      + '<span class="theme-name">' + escapeHtml(p.name || p.id)
+      + (active ? '<span class="theme-badge">使用中</span>' : '') + '</span>'
+      + '<span class="theme-desc">' + escapeHtml(p.desc || '') + '</span>'
+      + '</span></button>';
+  }).join('');
+  // 自带配色的主题会让「设置 → 外观 → 主题色」失效,这一点必须写在用户看得见的地方,
+  // 否则用户改主题色没反应只会当成 bug。
+  const foot = $('theme-market-foot');
+  if (foot) foot.textContent = (cur && cur.ownsPalette) ? '该主题自带配色，「设置 → 外观 → 主题色」对它不生效。' : '';
+}
+function openThemeMarket() {
+  if (!themeMarketModal) return;
+  renderThemeGrid();
+  if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(themeMarketModal);
+  else themeMarketModal.classList.remove('hidden');
+}
+const themeMenuBtn = $('user-menu-theme');
+if (themeMenuBtn) themeMenuBtn.addEventListener('click', () => {
+  closeUserMenu();
+  openThemeMarket();
+});
+// 「设置 → 外观 → 界面主题」是同一个市场的第二个入口:主题藏在用户菜单里很容易被漏掉。
+// 设置弹窗开着时市场弹窗叠在其上,弹窗栈(ui.js 的 modalStack)已支持多层,Esc 关最上层。
+const themePackEntry = $('pref-theme-pack');
+if (themePackEntry) themePackEntry.addEventListener('click', openThemeMarket);
+if (themeMarketModal) {
+  // bindModal 的 closeSelector 走 querySelector,只能命中第一个匹配,
+  // 所以两个关闭按钮分开绑(不能用 '#x, #done' 一把梭)。
+  if (window.OCUI && window.OCUI.bindModal) {
+    window.OCUI.bindModal(themeMarketModal, { closeSelector: '#theme-market-x' });
+  }
+  const themeDoneBtn = $('theme-market-done');
+  if (themeDoneBtn) themeDoneBtn.addEventListener('click', () => {
+    if (window.OCUI && window.OCUI.closeModal) window.OCUI.closeModal(themeMarketModal);
+    else themeMarketModal.classList.add('hidden');
+  });
+  const themeGrid = $('theme-grid');
+  if (themeGrid) themeGrid.addEventListener('click', (e) => {
+    const card = e.target.closest('.theme-card');
+    if (!card || !window.OCUI || !window.OCUI.applyThemePack) return;
+    const id = card.getAttribute('data-theme-id');
+    const before = window.OCUI.themePack ? window.OCUI.themePack().id : 'default';
+    const pack = window.OCUI.applyThemePack(id);
+    renderThemeGrid();
+    // 设置弹窗可能正开着(从「外观 → 界面主题」进来的),同步它的当前主题名与提示
+    try { syncPrefsPanel(); } catch (e) {}
+    if (before !== id) toast(pack.id === 'default' ? '已恢复默认主题' : '已应用主题：' + pack.name);
+  });
+}
 const modal = $('settings-modal');
 // Esc 走 OCUI.closeModal 时也要清密钥明文:挂 _onClose,统一覆盖所有关闭路径
 modal._onClose = () => { if (typeof resetApiKeySecret === 'function') resetApiKeySecret(); };
@@ -4597,6 +4676,17 @@ function syncPrefsPanel() {
   document.querySelectorAll('#pref-theme .seg-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.themeVal === themeVal);
   });
+  // 界面主题行:显示当前主题包名(入口本身在用户菜单,这里只是同步状态)
+  const packBtn = $('pref-theme-pack');
+  if (packBtn && window.OCUI && window.OCUI.themePack) {
+    const pack = window.OCUI.themePack();
+    const nameEl = $('pref-theme-pack-name');
+    if (nameEl) nameEl.textContent = pack.name || pack.id;
+    const descEl = $('pref-theme-pack-desc');
+    if (descEl) descEl.textContent = pack.ownsPalette
+      ? '自带配色，「主题色」对该主题不生效'
+      : '在主题市场里挑选整套外观';
+  }
   // 外观控件
   const fs = Number(uiPref('fontSize', 14)) || 14;
   const fsEl = $('pref-fontsize');
@@ -5139,6 +5229,13 @@ async function saveToolSource(patch) {
     accentState.a = accentState.a < 0.01 ? 1 : 0;
     paintAccent();
     commitAccent();
+  });
+  // 恢复默认:写回内置默认色(而不是删键——云同步按「键存在与否」比对,
+  // 删掉的键下次拉取会被云端的旧颜色重新填回来)。
+  const accReset = $('accent-modal-reset');
+  if (accReset) accReset.addEventListener('click', () => {
+    applyAccentHex((window.OCUI && window.OCUI.defaultAccent) || '#2563eb', true);
+    toast('已恢复默认主题色');
   });
   const accOpen = $('accent-open');
   if (accOpen) accOpen.addEventListener('click', () => {

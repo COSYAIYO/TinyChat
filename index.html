@@ -25,21 +25,21 @@
 </script>
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
-<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.127">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.127" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.127">
-<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.127">
-<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.127">
-<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.127">
-<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.127">
-<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.127">
-<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.127">
-<link rel="stylesheet" href="./static/css/notes.min.css?v=2.0.127">
-<link rel="stylesheet" href="./static/css/groupui.min.css?v=2.0.127">
-<script src="./static/js/theme-boot.min.js?v=2.0.127"></script>
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.130">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.130" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.130">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.130">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.130">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.130">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.130">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.130">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.130">
+<link rel="stylesheet" href="./static/css/notes.min.css?v=2.0.130">
+<link rel="stylesheet" href="./static/css/groupui.min.css?v=2.0.130">
+<script src="./static/js/theme-boot.min.js?v=2.0.130"></script>
 <!-- 性能门控:按后台设置决定是否加载渲染依赖(markdown-it 始终加载;KaTeX/highlight 可关)。
      必须在渲染依赖之前同步执行;具体的 <script> 标签由 perf.js 用 document.write 注入。 -->
-<script src="./static/js/perf.min.js?v=2.0.127"></script>
+<script src="./static/js/perf.min.js?v=2.0.130"></script>
 </head>
 <body>
   <!-- 移动端侧边栏遮罩 -->
@@ -117,6 +117,10 @@
           <svg class="oc-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
           开源地址
         </a>
+        <button class="user-menu-item" id="user-menu-theme" role="menuitem" aria-haspopup="dialog">
+          <svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M12 3.4a8.6 8.6 0 000 17.2c.9 0 1.6-.7 1.6-1.6 0-.4-.1-.8-.4-1-.2-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6h1.8a4.4 4.4 0 004.4-4.4c0-4.2-3.8-7.5-8.6-7.5z" stroke-linejoin="round"/><circle cx="7.9" cy="11.6" r="1.05" fill="currentColor" stroke="none"/><circle cx="10.7" cy="7.9" r="1.05" fill="currentColor" stroke="none"/><circle cx="15.1" cy="8.5" r="1.05" fill="currentColor" stroke="none"/></svg>
+          主题市场
+        </button>
         <button class="user-menu-item hidden" id="admin-link" role="menuitem" hidden>
           <svg class="oc-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4 20.5h16M6.5 20.5V7.2L12 4.2l5.5 3v13.3M10 20.5v-5h4v5M9.5 10h.01M14.5 10h.01" stroke-linecap="round" stroke-linejoin="round"/></svg>
           管理后台
@@ -201,7 +205,7 @@
         <div class="composer">
           <div class="composer-left">
             <button type="button" class="composer-more" id="composer-more" title="文件、联网和思考" aria-label="文件、联网和思考" aria-expanded="false" aria-controls="composer-tools">
-              <svg class="oc-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 8.5h14M5 12h14M5 15.5h14" stroke-linecap="round"/></svg>
+              <svg class="oc-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3.7" y="3.7" width="16.6" height="16.6" rx="5.5" stroke-dasharray="1.2 4.2" stroke-linecap="round"/><path d="M7.4 9.2h7M7.4 12h9.2M7.4 14.8h7" stroke-linecap="round"/></svg>
             </button>
             <div class="composer-tools hidden" id="composer-tools">
               <button type="button" class="composer-tool" id="composer-tool-image">
@@ -693,6 +697,16 @@
           </div>
           <div class="pref-row">
             <div class="pref-info">
+              <div class="pref-name">界面主题</div>
+              <div class="pref-desc" id="pref-theme-pack-desc">在主题市场里挑选整套外观</div>
+            </div>
+            <button class="btn small" id="pref-theme-pack" type="button" aria-haspopup="dialog">
+              <span id="pref-theme-pack-name">TinyChat 默认</span>
+              <span class="font-select-chevron" aria-hidden="true"><svg class="oc-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M9 6.5L13.5 12 9 17.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            </button>
+          </div>
+          <div class="pref-row">
+            <div class="pref-info">
               <div class="pref-name">字体大小</div>
               <div class="pref-desc">整页缩放，界面统一 14px（11 ~ 22）</div>
               <div class="font-size-value" id="pref-fontsize-val">14px</div>
@@ -792,7 +806,27 @@
         </div>
       </div>
       <div class="modal-footer accent-footer">
+        <button class="btn" id="accent-modal-reset" type="button">恢复默认</button>
         <button class="btn primary" id="accent-modal-done" type="button">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-mask hidden" id="theme-market-modal" role="dialog" aria-modal="true" aria-labelledby="theme-market-title">
+    <div class="modal theme-market">
+      <div class="modal-header">
+        <h3 id="theme-market-title">主题市场</h3>
+        <button class="icon-btn" id="theme-market-x" type="button" aria-label="关闭">
+          <svg class="oc-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p class="theme-market-lead">选择一套界面主题，点击立即生效，并随账号同步到其他设备。</p>
+        <div class="theme-grid" id="theme-grid" role="radiogroup" aria-label="可选主题"></div>
+      </div>
+      <div class="modal-footer">
+        <span class="theme-market-foot muted small" id="theme-market-foot"></span>
+        <button class="btn primary" id="theme-market-done" type="button">完成</button>
       </div>
     </div>
   </div>
@@ -947,22 +981,22 @@
     <button class="btn small primary" id="guest-bar-login" type="button">登录 / 注册</button>
   </div>
 
-  <script defer src="./static/js/config.min.js?v=2.0.127"></script>
-  <script defer src="./static/js/icons.min.js?v=2.0.127"></script>
-  <script defer src="./static/js/logos.min.js?v=2.0.127"></script>
-  <script defer src="./static/js/components.min.js?v=2.0.127"></script>
-  <script defer src="./static/js/ui.min.js?v=2.0.127"></script>
-  <script defer src="./static/js/settings-sync.min.js?v=2.0.127"></script>
-  <script defer src="./static/js/assistants.min.js?v=2.0.127"></script>
-  <script defer src="./static/js/conversations.min.js?v=2.0.127"></script>
-  <script defer src="./static/js/renderer.min.js?v=2.0.127"></script>
-  <script defer src="./static/js/reasoning.min.js?v=2.0.127"></script>
-  <script defer src="./static/js/office-formula-copy.min.js?v=2.0.127"></script>
-  <script defer src="./static/js/citations.min.js?v=2.0.127"></script>
-  <script defer src="./static/js/messages.min.js?v=2.0.127"></script>
-  <script defer src="./static/js/multimodal.min.js?v=2.0.127"></script>
-  <script defer src="./static/js/app.min.js?v=2.0.127"></script>
-  <script defer src="./static/js/groupui.min.js?v=2.0.127"></script>
-  <script defer src="./static/js/notes.min.js?v=2.0.127"></script>
+  <script defer src="./static/js/config.min.js?v=2.0.130"></script>
+  <script defer src="./static/js/icons.min.js?v=2.0.130"></script>
+  <script defer src="./static/js/logos.min.js?v=2.0.130"></script>
+  <script defer src="./static/js/components.min.js?v=2.0.130"></script>
+  <script defer src="./static/js/ui.min.js?v=2.0.130"></script>
+  <script defer src="./static/js/settings-sync.min.js?v=2.0.130"></script>
+  <script defer src="./static/js/assistants.min.js?v=2.0.130"></script>
+  <script defer src="./static/js/conversations.min.js?v=2.0.130"></script>
+  <script defer src="./static/js/renderer.min.js?v=2.0.130"></script>
+  <script defer src="./static/js/reasoning.min.js?v=2.0.130"></script>
+  <script defer src="./static/js/office-formula-copy.min.js?v=2.0.130"></script>
+  <script defer src="./static/js/citations.min.js?v=2.0.130"></script>
+  <script defer src="./static/js/messages.min.js?v=2.0.130"></script>
+  <script defer src="./static/js/multimodal.min.js?v=2.0.130"></script>
+  <script defer src="./static/js/app.min.js?v=2.0.130"></script>
+  <script defer src="./static/js/groupui.min.js?v=2.0.130"></script>
+  <script defer src="./static/js/notes.min.js?v=2.0.130"></script>
 </body>
 </html>
