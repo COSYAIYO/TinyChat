@@ -51,6 +51,8 @@ jobs:
         run: node tests/logos-check.js
       - name: AI 整理解析自检(弱模型畸形输出 / 降级格式 / 输入裁剪)
         run: node tests/notes-archive.js
+      - name: 弹窗框架契约自检(关闭回调不递归爆栈 / Esc 链路)
+        run: node tests/modal-close.js
       - name: 演示管理员还原自检(拍摄/到期还原/反复还原)
         run: php tests/demo-revert.php
       - name: 生图响应解析自检(各平台返回形态)
@@ -109,3 +111,6 @@ jobs:
         run: node tests/notes-mobile-gui.mjs
       - name: 移动端笔记其它界面自检(分屏退化 / 分享弹窗 / 顶栏可达 / 新建)
         run: node tests/notes-mobile-gui2.mjs
+      # 「点了没反应」类问题(弹窗爆栈、控件排在屏外)只有真浏览器点得出来
+      - name: 笔记编辑器自检(已分享管理可打开 / 窄屏能编辑 / 顶栏对齐)
+        run: node tests/notes-editor-gui.mjs

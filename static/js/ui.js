@@ -333,7 +333,13 @@
     if (prev && prev.isConnected) {
       setTimeout(() => { try { prev.focus({ preventScroll: true }); } catch (e) {} }, 60);
     }
-    if (typeof el._onClose === 'function') el._onClose();
+    // 关闭回调只触发一次:大量弹窗把 _onClose 设成「关自己」的 done()(内部又调 closeModal),
+    // 若这里原样回调,closeModal ↔ _onClose 会互相递归到爆栈——栈溢出抛在点击处理器里,
+    // 后面的代码(如「已分享管理」的 setTimeout 打开下一个弹窗)整段不执行,表现为点了没反应。
+    // 先取出并清空,回调内部的再次 closeModal 就成了普通收尾,不再递归。
+    const onClose = el._onClose;
+    el._onClose = null;
+    if (typeof onClose === 'function') onClose();
   };
   UI.isModalOpen = function () { return modalStack.length > 0; };
   // 动态创建的弹窗遮罩(用完直接 remove())纳入统一管理:
