@@ -257,10 +257,42 @@ check('隐藏的是容器,九个按钮确实都不在', (await page.evaluate(() 
 })) === true);
 check('空态标题与说明还在', (await box('#empty-title')) !== null && (await box('.empty-lead')) !== null);
 
-console.log('== 5b. 品牌 logo 去色 ==');
-const logoFilter = await css('.sidebar-brand .brand-logo-light', 'filter');
-check('侧栏 logo 带灰度滤镜', /grayscale\(1\)/.test(logoFilter), logoFilter);
-check('空态 logo 同样去色', /grayscale\(1\)/.test(await css('.empty-logo-img', 'filter')), await css('.empty-logo-img', 'filter'));
+console.log('== 5b. 品牌 logo:精致灰 ==');
+// 把「精致灰」变成可测的定义:去色必须彻底(饱和度 0),明度要收在一条窄带里。
+// 单纯 grayscale(1) 是按亮度加权去色,渐变那头(#2EC5FF 亮度 0.66)比字身
+// (#232936 亮度 0.16)亮太多,跨度约 0.5,看起来是「褪了色的彩色」而不是灰。
+// 取样走画布:ctx.filter 与 CSS filter 同一套语法,量到的是最终落地的像素。
+async function logoBand(sel) {
+  return page.evaluate(async (s) => {
+    const img = document.querySelector(s);
+    if (!img) return 'MISSING';
+    try { await img.decode(); } catch (e) { /* 已解码 */ }
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    const ctx = c.getContext('2d');
+    ctx.filter = getComputedStyle(img).filter;
+    ctx.drawImage(img, 0, 0);
+    const d = ctx.getImageData(0, 0, c.width, c.height).data;
+    let min = 1, max = 0, sat = 0, px = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] < 40) continue;   // 跳过透明与抗锯齿边缘
+      const r = d[i] / 255, g = d[i + 1] / 255, b = d[i + 2] / 255;
+      const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      min = Math.min(min, lum); max = Math.max(max, lum);
+      sat = Math.max(sat, Math.max(r, g, b) - Math.min(r, g, b));
+      px++;
+    }
+    return { filter: getComputedStyle(img).filter, min, max, spread: max - min, sat, px };
+  }, sel);
+}
+const lightBand = await logoBand('.sidebar-brand .brand-logo-light');
+check('浅色 logo 是中性灰(饱和度 0)', lightBand.sat < 0.02, JSON.stringify(lightBand));
+check('浅色 logo 灰带够窄(不发虚)', lightBand.spread < 0.35, '跨度 ' + lightBand.spread.toFixed(3));
+check('浅色 logo 整体偏深(不是浅灰字)', lightBand.min < 0.35 && lightBand.max < 0.62,
+  lightBand.min.toFixed(2) + '~' + lightBand.max.toFixed(2));
+const emptyBand = await logoBand('.empty-logo-img');
+check('空态 logo 与侧栏同一套灰', Math.abs(emptyBand.min - lightBand.min) < 0.02 && Math.abs(emptyBand.max - lightBand.max) < 0.02,
+  emptyBand.min.toFixed(2) + '~' + emptyBand.max.toFixed(2));
 // 灰度只该落在站点 logo 上:正文里的图片必须保持原色(选择器写宽了就会全灰)
 const imgFilter = await page.evaluate(() => {
   const p = document.querySelector('.msg.assistant .md-prose');
@@ -311,6 +343,12 @@ check('深色正文 #ececec', (await css('.msg.assistant .msg-content', 'color')
 check('深色用户气泡 #303030', (await css('.msg.user .msg-content', 'background-color')) === 'rgb(48, 48, 48)');
 check('深色下表头同样透明', (await css('.msg.assistant .md-prose .table-wrap table th', 'background-color')) === 'rgba(0, 0, 0, 0)',
   await css('.msg.assistant .md-prose .table-wrap table th', 'background-color'));
+// 深色用的是另一套 logo(字身近白),同一组滤镜参数必然不对,必须单独验
+const darkBand = await logoBand('.sidebar-brand .brand-logo-dark');
+check('深色 logo 是中性灰', darkBand.sat < 0.02, JSON.stringify(darkBand));
+check('深色 logo 灰带够窄', darkBand.spread < 0.4, '跨度 ' + darkBand.spread.toFixed(3));
+check('深色 logo 整体偏亮(深底上读得出来)', darkBand.min > 0.45 && darkBand.max > 0.75,
+  darkBand.min.toFixed(2) + '~' + darkBand.max.toFixed(2));
 await page.evaluate(() => window.OCUI.applyTheme('light'));
 await sleep(400);
 

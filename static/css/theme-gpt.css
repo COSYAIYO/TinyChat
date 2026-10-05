@@ -531,19 +531,34 @@ html[data-oc-theme="chatgpt"] .scroll-bottom-btn {
   html[data-oc-theme="chatgpt"] .scroll-bottom-btn { bottom: 166px; }
 }
 
-/* ---------- 16. 品牌 logo:去色 ---------- */
+/* ---------- 16. 品牌 logo:精致灰 ---------- */
 /* 站点 logo 是 #2EC5FF → #6A5CFF 的蓝紫渐变字标,整套黑白主题里就剩它一处彩色,
-   一眼就跳出来。灰度化之后两个色标的明度差还在,渐变依然看得出层次,但颜色收进
-   中性灰,和主题的单色语气一致。
+   一眼就跳出来。
+   但光写 grayscale(1) 只是按亮度加权去色,结果很"脏":渐变那头(#2EC5FF 亮度 0.66)
+   比字身(#232936 亮度 0.16)亮太多,尾部发白发虚 —— 看起来像褪了色的彩色,
+   而不是一块设计过的灰。这里把色调压进一条窄带、并把对比度收一点:
+     浅色 整个字标落在 #2a2a2a ~ #5d5d5d(最亮处正好是主题的次级文字灰 --text-secondary)
+     深色 落在 #979797 ~ #d9d9d9
+   渐变还在,但只剩一层若隐若现的过渡 —— 是有层次的灰,不是发虚的灰。
+   深浅两套 logo 必须分开调:logo.svg 字身近黑、logo-dark.svg 字身近白,
+   同一组参数套两边必然有一边不对。
    只圈站点自己的 logo:logos.js 给站点 logo 的输出带 brand-logo-light/dark 类,
-   第三方模型图标走的是普通类名,不会被这条规则误伤。
-   深浅两套 logo(logo.svg / logo-dark.svg)都要盖住 —— 登录页、分享页、空态、
-   侧栏、笔记侧栏、以及模型选择器里站点 logo 的兜底位置都是同一批类名。 */
+   第三方模型图标走的是普通类名,不会被这条规则误伤(自检里断言了正文图片保持原色)。
+   类名覆盖登录页、分享页、空态、侧栏、笔记侧栏,以及模型选择器里站点 logo 的兜底位置。 */
 html[data-oc-theme="chatgpt"] .brand-logo,
 html[data-oc-theme="chatgpt"] .brand-logo-light,
 html[data-oc-theme="chatgpt"] .brand-logo-dark,
 html[data-oc-theme="chatgpt"] .empty-logo-img,
 html[data-oc-theme="chatgpt"] .avatar-logo-img,
 html[data-oc-theme="chatgpt"] .empty-logo .oc-icon {
-  filter: grayscale(1);
+  filter: grayscale(1) brightness(0.5) contrast(0.8);
+}
+/* 深色下换成「提亮 + 压平」:近白的字身留白,蓝紫渐变收进浅灰,两边都不过曝 */
+html[data-oc-theme="chatgpt"][data-theme="dark"] .brand-logo,
+html[data-oc-theme="chatgpt"][data-theme="dark"] .brand-logo-light,
+html[data-oc-theme="chatgpt"][data-theme="dark"] .brand-logo-dark,
+html[data-oc-theme="chatgpt"][data-theme="dark"] .empty-logo-img,
+html[data-oc-theme="chatgpt"][data-theme="dark"] .avatar-logo-img,
+html[data-oc-theme="chatgpt"][data-theme="dark"] .empty-logo .oc-icon {
+  filter: grayscale(1) brightness(1.5) contrast(0.72);
 }
