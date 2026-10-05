@@ -25,21 +25,21 @@
 </script>
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
-<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.122">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.122" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.122">
-<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.122">
-<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.122">
-<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.122">
-<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.122">
-<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.122">
-<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.122">
-<link rel="stylesheet" href="./static/css/notes.min.css?v=2.0.122">
-<link rel="stylesheet" href="./static/css/groupchat.min.css?v=2.0.122">
-<script src="./static/js/theme-boot.min.js?v=2.0.122"></script>
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.127">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.127" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.127">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.127">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.127">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.127">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.127">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.127">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.127">
+<link rel="stylesheet" href="./static/css/notes.min.css?v=2.0.127">
+<link rel="stylesheet" href="./static/css/groupui.min.css?v=2.0.127">
+<script src="./static/js/theme-boot.min.js?v=2.0.127"></script>
 <!-- 性能门控:按后台设置决定是否加载渲染依赖(markdown-it 始终加载;KaTeX/highlight 可关)。
      必须在渲染依赖之前同步执行;具体的 <script> 标签由 perf.js 用 document.write 注入。 -->
-<script src="./static/js/perf.min.js?v=2.0.122"></script>
+<script src="./static/js/perf.min.js?v=2.0.127"></script>
 </head>
 <body>
   <!-- 移动端侧边栏遮罩 -->
@@ -452,6 +452,18 @@
             </div>
             <div class="switch"><input type="checkbox" id="pref-show-api-chats" checked><span class="slider"></span></div>
           </label>
+          <div class="section-title">设置云同步</div>
+          <label class="pref-row" for="pref-sync-settings">
+            <div class="pref-info">
+              <div class="pref-name">把设置同步到云端</div>
+              <div class="pref-desc">主题、字体、字号、模型选择、群聊配置、生成参数等随账号保存；换设备或换浏览器登录后自动恢复，无需重新设置</div>
+            </div>
+            <div class="switch"><input type="checkbox" id="pref-sync-settings" checked><span class="slider"></span></div>
+          </label>
+          <div class="row-between">
+            <div><div>立即同步</div><div class="muted small" id="pref-sync-status">已开启</div></div>
+            <button class="btn small" id="pref-sync-now" type="button">同步</button>
+          </div>
           <div class="section-title">当前对话</div>
           <div class="row-between">
             <div><div>导出当前对话</div><div class="muted small">只导出正在看的这一段，Markdown</div></div>
@@ -935,21 +947,22 @@
     <button class="btn small primary" id="guest-bar-login" type="button">登录 / 注册</button>
   </div>
 
-  <script defer src="./static/js/config.min.js?v=2.0.122"></script>
-  <script defer src="./static/js/icons.min.js?v=2.0.122"></script>
-  <script defer src="./static/js/logos.min.js?v=2.0.122"></script>
-  <script defer src="./static/js/components.min.js?v=2.0.122"></script>
-  <script defer src="./static/js/ui.min.js?v=2.0.122"></script>
-  <script defer src="./static/js/assistants.min.js?v=2.0.122"></script>
-  <script defer src="./static/js/conversations.min.js?v=2.0.122"></script>
-  <script defer src="./static/js/renderer.min.js?v=2.0.122"></script>
-  <script defer src="./static/js/reasoning.min.js?v=2.0.122"></script>
-  <script defer src="./static/js/office-formula-copy.min.js?v=2.0.122"></script>
-  <script defer src="./static/js/citations.min.js?v=2.0.122"></script>
-  <script defer src="./static/js/messages.min.js?v=2.0.122"></script>
-  <script defer src="./static/js/multimodal.min.js?v=2.0.122"></script>
-  <script defer src="./static/js/app.min.js?v=2.0.122"></script>
-  <script defer src="./static/js/groupchat.min.js?v=2.0.122"></script>
-  <script defer src="./static/js/notes.min.js?v=2.0.122"></script>
+  <script defer src="./static/js/config.min.js?v=2.0.127"></script>
+  <script defer src="./static/js/icons.min.js?v=2.0.127"></script>
+  <script defer src="./static/js/logos.min.js?v=2.0.127"></script>
+  <script defer src="./static/js/components.min.js?v=2.0.127"></script>
+  <script defer src="./static/js/ui.min.js?v=2.0.127"></script>
+  <script defer src="./static/js/settings-sync.min.js?v=2.0.127"></script>
+  <script defer src="./static/js/assistants.min.js?v=2.0.127"></script>
+  <script defer src="./static/js/conversations.min.js?v=2.0.127"></script>
+  <script defer src="./static/js/renderer.min.js?v=2.0.127"></script>
+  <script defer src="./static/js/reasoning.min.js?v=2.0.127"></script>
+  <script defer src="./static/js/office-formula-copy.min.js?v=2.0.127"></script>
+  <script defer src="./static/js/citations.min.js?v=2.0.127"></script>
+  <script defer src="./static/js/messages.min.js?v=2.0.127"></script>
+  <script defer src="./static/js/multimodal.min.js?v=2.0.127"></script>
+  <script defer src="./static/js/app.min.js?v=2.0.127"></script>
+  <script defer src="./static/js/groupui.min.js?v=2.0.127"></script>
+  <script defer src="./static/js/notes.min.js?v=2.0.127"></script>
 </body>
 </html>

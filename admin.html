@@ -9,16 +9,16 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
-<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.122">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.122" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.122">
-<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.122">
-<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.122">
-<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.122">
-<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.122">
-<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.122">
-<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.122">
-<script src="./static/js/theme-boot.min.js?v=2.0.122"></script>
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.127">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.127" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.127">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.127">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.127">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.127">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.127">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.127">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.127">
+<script src="./static/js/theme-boot.min.js?v=2.0.127"></script>
 </head>
 <body class="admin-body">
 <form id="admin-fields" autocomplete="off" style="display:contents">
@@ -132,6 +132,7 @@
       <p class="muted small" style="margin:-6px 0 10px">填写后所有出站请求（含「模型元数据」拉取 litellm 价格表）都走该代理。支持 <code>http://</code>、<code>https://</code>、<code>socks5h://</code>。国内网络直连 <code>raw.githubusercontent.com</code> 常下到一半卡死，走代理可稳定完成。</p>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-context-learn" checked><span class="slider"></span></span><span>自动学习上下文窗口（从上游 context length 报错回填模型的最大上下文，不覆盖手动设置）</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-persist-chats" checked><span class="slider"></span></span><span>服务器保存对话记录（关闭后对话仅存用户浏览器本地，服务器不留存）</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-sync-settings" checked><span class="slider"></span></span><span>用户设置云同步（主题、字体、模型选择、群聊配置等随账号保存到服务器，换设备登录后自动恢复）</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="chat-save-api" checked><span class="slider"></span></span><span>开放 API 对话记入用户对话列表（用户在「设置 → 数据」可选择是否显示到首页；需开启上一项「服务器保存对话记录」）</span></label>
       <h3>生图结果本地留存</h3>
       <p class="muted small" style="margin:0 0 8px">开启后，出图时后端会即时把图片下载并保存到本站 <code>data/imgstore/</code>，历史对话里的图片改用站内地址长期可访问，避免上游图床链接过期导致图片打不开。默认开启。</p>
@@ -1113,16 +1114,17 @@
   </div>
 </div>
 </form>
-<script defer src="./static/js/config.min.js?v=2.0.122"></script>
-<script defer src="./static/js/icons.min.js?v=2.0.122"></script>
-<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.122"></script>
-<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.122"></script>
-<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.122"></script>
-<script defer src="./vendor/katex/katex.min.js?v=2.0.122"></script>
-<script defer src="./vendor/highlight/highlight.min.js?v=2.0.122"></script>
-<script defer src="./static/js/ui.min.js?v=2.0.122"></script>
-<script defer src="./static/js/components.min.js?v=2.0.122"></script>
-<script defer src="./static/js/renderer.min.js?v=2.0.122"></script>
-<script defer src="./static/js/admin.min.js?v=2.0.122"></script>
+<script defer src="./static/js/config.min.js?v=2.0.127"></script>
+<script defer src="./static/js/icons.min.js?v=2.0.127"></script>
+<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.127"></script>
+<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.127"></script>
+<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.127"></script>
+<script defer src="./vendor/dompurify/purify.min.js?v=2.0.127"></script>
+<script defer src="./vendor/katex/katex.min.js?v=2.0.127"></script>
+<script defer src="./vendor/highlight/highlight.min.js?v=2.0.127"></script>
+<script defer src="./static/js/ui.min.js?v=2.0.127"></script>
+<script defer src="./static/js/components.min.js?v=2.0.127"></script>
+<script defer src="./static/js/renderer.min.js?v=2.0.127"></script>
+<script defer src="./static/js/admin.min.js?v=2.0.127"></script>
 </body>
 </html>

@@ -55,6 +55,7 @@
 - **AI 跟进建议**：回复后生成 3 条追问，可指定用哪个模型生成（默认跟随当前模型）
 - **AI 对话命名**：新会话可按首条消息本地截取标题（默认，不扣费），也可选「AI 生成」并指定模型
 - 会话管理：置顶 / 重命名 / 分支 / 分享链接 / 搜索，对话云同步（可选）
+- **设置云同步（可选）**：主题与外观、模型选择、生成参数、群聊配置、自定义字体、笔记工作台界面等随账号保存到服务器，换设备 / 换浏览器登录同一账号即自动恢复，无需重新设置；逐键合并 + 删除墓碑，多设备改动不会互相覆盖
 - 全端适配：桌面端与移动端（抽屉侧栏、软键盘适配、安全区）均可正常使用
 
 **模型与供应商**
@@ -118,7 +119,7 @@
 - 纯 PHP（7.4+），不需要 Composer、MySQL、Node 或常驻进程；数据存于 SQLite（WAL 模式），多数虚拟主机默认支持
 - 首次运行自动跑环境自检：PHP 版本、pdo_sqlite / curl / openssl 扩展、data/ 目录权限逐项核对，不通过不放行安装
 - 数据备份：每日自动轮换备份整库，后台一键手动备份 / 下载 / 恢复
-- 隐私模式可选：关闭后服务器不保存对话记录，对话仅存用户浏览器本地
+- 隐私模式可选：关闭后服务器不保存对话记录，对话仅存用户浏览器本地；「用户设置云同步」另有独立开关（后台可整站关闭，用户也可只关掉本机的设置同步）
 - PWA：可「添加到主屏幕 / 安装」，静态资源离线缓存（需 HTTPS）
 - Apache / Nginx / IIS 伪静态配置齐备，常见虚拟主机、宝塔面板可直接跑
 
@@ -163,8 +164,9 @@ chown -R www:www data    # 用户/组名按你的主机而定（www-data / nginx
 chmod -R 775 data
 ```
 
-- 不要把整个站点目录设为 `777`，也不要给 `lib/`、`config.php` 任何写权限。
-- `data/` 建议禁止外部直接访问（仓库自带的 `data/.htaccess` 已做拒绝规则；Nginx 见文末示例）。
+- 不要把整个站点目录设为 `777`。程序运行只需要 `data/` 可写。
+- `lib/`、`config.php` 平时不应有写权限；只有**使用后台「在线更新」**时才需要站点根目录、`lib/`、`static/` 可写（更新过程要覆盖这些目录里的文件）。不想开这个口子，就到 GitHub 下载新版本手动覆盖，功能完全一样。
+- `data/` 建议禁止外部直接访问（仓库自带的 `data/.htaccess` 已做拒绝规则；Nginx / IIS 见文末示例）。
 - 权限不足时的典型现象是：能进环境自检页，但「`data/` 目录可写」一项标红，无法创建管理员。
 - 用宝塔面板部署的话，可直接照做下方「宝塔面板部署（小白步骤）」，权限设置在第 3 步。
 
@@ -177,6 +179,12 @@ chmod -R 775 data
 5. 浏览器打开站点。还没有管理员时，登录页会先显示环境自检，全部通过后点「下一步：创建管理员」再创建。然后进管理后台添加全局供应商。
 
 也可以复制 `config.sample.php` 为 `config.php`，写上 `admin_password`，首次访问会自动种下管理员（只在库里还没有管理员时生效）。
+
+> **免费主机提示（InfinityFree 等）**：这类主机的边缘 WAF 会拦截 URL 里**含 `chat` 等关键词**的请求——**连静态资源和页面路由也一样**，返回主机自己的 403 页且发生在 `.htaccess` 之前，改伪静态也救不回来。2.0.125 起，本站所有文件名与路由都已避开这些关键词（旧名 `groupchat.*` → `groupui.*`，`chatglm-color.svg` → `zhipu-glm-color.svg`，路由 `/chat` → `/app`）。
+>
+> **从 2.0.124 及更早版本升级到 2.0.125 时**：先手动删掉站点上的旧文件 `static/css/groupchat.css`、`static/css/groupchat.min.css`、`static/js/groupchat.js`、`static/js/groupchat.min.js`、`static/logo/chatglm-color.svg`，再上传新版本。在线更新只覆盖同名文件、不会删除已改名失效的旧文件，而旧 URL 会被主机拦成 403（不影响功能，但会让 WAF 日志里一直出现被拦记录）。
+>
+> 接口路径（`/api/proxy/chat`、`/api/sync/chats`、`/v1/chat/completions` 等）**不受影响**——这些主机对 `/api`、`/v1` 前缀放行。仓库里有 `node tests/waf-paths.js` 可随时自检是否有新文件又踩到关键词。
 
 ### 宝塔面板部署（小白步骤）
 
@@ -243,16 +251,20 @@ location / {
     try_files $uri $uri/ /index.php?$query_string;
 }
 
-# 建议保留：禁止外部直接下载数据库与后端源码
+# 建议保留：禁止外部直接下载数据库、后端源码与开发文件
 location ^~ /data/ { deny all; }
 location ^~ /lib/ { deny all; }
+location ^~ /tests/ { deny all; }
+location ^~ /tools/ { deny all; }
+location ^~ /.git/ { deny all; }
 location = /config.php { deny all; }
+location ~* ^/(README|CHANGELOG|LICENSE|checksums)\.(md|txt)$ { deny all; }
 ```
 
 3. 点「保存」。
 
 > **为什么必须配**：`/api`、`/login`、`/admin`、`/s/xxx` 这些地址都没有对应的真实文件，全靠这一段转发给 `index.php` 处理。不配的话首页能打开，但一登录、一进后台就会 404。
-> 后面三行 `deny all` 是顺手加上的安全项：`data/` 里是数据库与密钥，`lib/` 是后端源码，都不该被浏览器直接下载。
+> 后面的 `deny all` 是顺手加上的安全项：`data/` 里是数据库与密钥，`lib/` 是后端源码，`tests/` 与 `tools/` 是自检与脚本（`tests/attribution.php` 会改写 `index.html`，匿名访问也能触发），`.git/` 里有完整历史，都不该被浏览器直接下载。Apache 下 `.htaccess` 已自带等价规则，Nginx / IIS 需要自己加（下面的示例已含）。
 
 #### 第 5 步：确认 PHP 扩展
 
@@ -505,6 +517,8 @@ php tests/image-chat.php       # 对话式生图 / 改图
 php tests/image-proxy.php      # 生图图片代理（签名 / SSRF）
 php tests/upstream-url.php     # 上游接口地址拼接（补 /v1）
 php tests/attribution.php      # 完整性校验
+php tests/settings-sync.php    # 用户设置云同步（白名单收敛 / 分片落库 / 注销清理）
+node tests/settings-merge.js   # 设置合并（逐键时间戳 / 删除墓碑 / 快照往返）
 
 # 端到端冒烟：起真实 PHP 服务 + mock 上游，跑完整业务流
 bash tests/e2e.sh
@@ -568,7 +582,11 @@ server {
     # 用 ^~ 前缀匹配:优先级高于上面的正则,确保 lib/ 下的 .php 不会被当脚本执行
     location ^~ /data/ { deny all; }
     location ^~ /lib/ { deny all; }
+    location ^~ /tests/ { deny all; }
+    location ^~ /tools/ { deny all; }
+    location ^~ /.git/ { deny all; }
     location = /config.php { deny all; }
+    location ~* ^/(README|CHANGELOG|LICENSE|checksums)\.(md|txt)$ { deny all; }
 }
 ```
 
@@ -602,14 +620,20 @@ server {
         <hiddenSegments>
           <add segment="data" />
           <add segment="lib" />
+          <add segment="tests" />
+          <add segment="tools" />
+          <add segment=".git" />
         </hiddenSegments>
+        <fileExtensions>
+          <add fileExtension=".md" allowed="false" />
+        </fileExtensions>
       </requestFiltering>
     </security>
   </system.webServer>
 </configuration>
 ```
 
-把上面内容存为站点根目录的 `web.config` 即可（已包含伪静态与 `data` / `lib` 目录的访问屏蔽）。
+把上面内容存为站点根目录的 `web.config` 即可（已包含伪静态与 `data` / `lib` / `tests` / `tools` / `.git` 的访问屏蔽；`.md` 类文档一并禁止下载）。
 
 ## 许可证
 

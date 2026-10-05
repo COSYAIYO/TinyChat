@@ -26,7 +26,7 @@
     'agnesai.svg': 1, 'aihubmix-color.svg': 1, 'aimass-color.svg': 1,
     'anthropic.svg': 1, 'antigravity-color.svg': 1, 'app-icon.svg': 1, 'apple.svg': 1,
     'azureai-color.svg': 1, 'baichuan-color.svg': 1, 'baidu-color.svg': 1, 'bocha-color.svg': 1,
-    'brave-color.svg': 1, 'bytedance-color.svg': 1, 'chatglm-color.svg': 1, 'claude-color.svg': 1,
+    'brave-color.svg': 1, 'bytedance-color.svg': 1, 'claude-color.svg': 1,
     'cohere-color.svg': 1, 'copilot-color.svg': 1, 'dalle-color.svg': 1, 'deepmind-color.svg': 1,
     'deepseek-color.svg': 1, 'doubao-color.svg': 1, 'fastgpt-color.svg': 1, 'fireworks-color.svg': 1,
     'flux.svg': 1, 'gemini-color.svg': 1, 'gemma-color.svg': 1, 'google-color.svg': 1,
@@ -38,7 +38,7 @@
     'qwen-color.svg': 1, 'replicate.svg': 1, 'runway.svg': 1, 'searxng-color.svg': 1,
     'stability-color.svg': 1, 'suno.svg': 1, 'tavily-color.svg': 1, 'tiangong-color.svg': 1,
     'together-color.svg': 1, 'vertexai-color.svg': 1, 'wenxin-color.svg': 1, 'xiaomimimo.svg': 1,
-    'yi-color.svg': 1, 'yuanbao-color.svg': 1, 'zai.svg': 1, 'zhipu-color.svg': 1,
+    'yi-color.svg': 1, 'yuanbao-color.svg': 1, 'zai.svg': 1, 'zhipu-color.svg': 1, 'zhipu-glm-color.svg': 1,
     // 功能图标与登录方式图标:虽不参与关键词匹配,但需登记,否则会被当成缺失文件
     'video-camera.svg': 1, 'qq.svg': 1, 'weixin.svg': 1,
   };
@@ -51,7 +51,7 @@
     ['deepseek', 'deepseek-color.svg'],
     ['kimi', 'kimi-color.svg'],
     ['moonshot', 'kimi-color.svg'],
-    ['chatglm', 'chatglm-color.svg'],
+    ['chatglm', 'zhipu-glm-color.svg'],
     ['zhipu', 'zhipu-color.svg'],
     ['glm', 'zhipu-color.svg'],
     ['zai', 'zai.svg', COMPANY],

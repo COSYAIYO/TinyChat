@@ -127,7 +127,9 @@
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: thin;
-  padding-bottom: 2px;
+  /* 上下对称的 1px:此前只有 padding-bottom:2px,内容盒被压成 32px 且整体上移 1px,
+     条内的文字(编辑/分屏/预览)比左侧「返回」高 1px,顶栏看起来不齐。 */
+  padding: 1px 0;
 }
 .notes-editor-bar .notes-icon-btn { width: 28px; height: 28px; }
 /* 撤销/重做:不可用时降低存在感,不隐藏(保持工具栏稳定) */
@@ -341,6 +343,8 @@
 /* 整栏折叠:只收起左侧面板,编辑器占满剩余空间(不能把列宽压成 0,否则编辑器会被挤没) */
 .notes-fs.side-collapsed .notes-fs-body { grid-template-columns: 1fr; }
 .notes-fs.side-collapsed .notes-side { display: none; }
+/* 侧栏已收起时拖拽条没有可拖的对象,却仍停在 left:280px 压着正文(点了没反应) */
+.notes-fs.side-collapsed .notes-side-resizer { display: none; }
 .notes-side-float {
   position: absolute;
   top: 50px;
@@ -893,6 +897,12 @@
   .notes-editor-panes.mode-split, .notes-editor-panes.mode-preview { grid-template-columns: 1fr; }
   .notes-editor-panes.mode-split .notes-ta { display: none; }
   .notes-editor-panes.mode-split .notes-preview-wrap { display: block; }
+  /* 模式切换(编辑/分屏/预览)挪到控件条最前:窄屏下整条内容宽 721px、可视只有约 192px,
+     它原本排在最右(x≈576),既不在屏内、也没法靠滑动发现——用户由此以为「笔记只能看不能编辑」
+     (分屏在窄屏本就渲染成预览单栏)。排到最前后它在默认滚动位置(最左)就能看到可点,
+     其余控件照常向右滚动,不会有任何控件被盖住。内边距同步收紧,三个按钮才放得下。 */
+  .notes-mode-switch { order: -1; }
+  .notes-mode-switch button { padding: 5px 7px; }
   .ne-save-state { display: none; }
   .neb-title { width: 110px; }
   .nfh-right { padding-left: 12px; }
@@ -1399,3 +1409,33 @@
 .shm-ops { display: flex; gap: 5px; flex-shrink: 0; }
 .shm-ops .btn { white-space: nowrap; }
 .notes-shm-edit-mask { z-index: 1680; }
+
+/* ---------- 窄屏:笔记设置(右键菜单动作)/ 已分享管理 ----------
+   实测 390×844:
+   - 已分享管理行是 [标题+说明 | 三个 nowrap 按钮] 的横向布局,按钮固定约 290px,
+     文字列被压到 23px —— 标题与「持链接可查看 · 剩余 7 天」竖着排成一条,每行一个字,
+     整行高度被撑到 229px。窄屏改为上下两段:文字占满宽度、按钮等宽三列。
+   - .modal-footer 是 nowrap + 按钮 flex:0 0 auto(见 chrome.css),三枚按钮
+     (已分享管理 / 重新查看使用导航 / 完成)比弹窗宽,溢出方向朝左,
+     「已分享管理」被裁到弹窗外(实测 x=-4)。窄屏改为换行:主按钮独占一行。
+   断点取 600px:更宽时文字列仍有 120px 以上,不需要退化。 */
+@media (max-width: 600px) {
+  .notes-aimgr-modal .modal-footer,
+  .notes-shm-modal .modal-footer,
+  .notes-share-modal .modal-footer { flex-wrap: wrap; }
+  .notes-aimgr-modal .modal-footer .btn,
+  .notes-shm-modal .modal-footer .btn,
+  .notes-share-modal .modal-footer .btn { flex: 1 1 auto; min-height: 40px; justify-content: center; }
+  .notes-aimgr-modal .modal-footer .btn.primary,
+  .notes-share-modal .modal-footer .btn.primary { flex: 1 1 100%; order: 2; }
+
+  .shm-item { flex-direction: column; align-items: stretch; gap: 8px; }
+  /* 允许换行,标题不再被省略成「这...」 */
+  .shm-main b { white-space: normal; overflow-wrap: anywhere; }
+  .shm-ops { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .shm-ops .btn { width: 100%; min-height: 38px; justify-content: center; padding-left: 6px; padding-right: 6px; }
+
+  /* 修改分享设置:有效期标签与下拉同排时被挤成两行(「链接有效 / 期」),改为上下排 */
+  .ns-expire { flex-direction: column; align-items: stretch; gap: 6px; }
+  .ns-expire select { width: 100%; }
+}

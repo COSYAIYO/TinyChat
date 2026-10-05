@@ -44,6 +44,10 @@ window.OCState = state;
 function uiPref(key, def) {
   return (window.OCUI && window.OCUI.getPref(key) !== undefined) ? window.OCUI.getPref(key) : def;
 }
+// 设置云同步:本机改动记时间戳并防抖推送(模块未加载时静默跳过)
+function syncTouch(field) {
+  if (window.OCSettingsSync) window.OCSettingsSync.touchUi(field);
+}
 function streamEnabled() { return !!uiPref('stream', true); }
 function followUpsEnabled() { return !!uiPref('followups', true); }
 function autoTitleEnabled() { return !!uiPref('autotitle', true); }
@@ -78,6 +82,11 @@ function currentEffortMode() {
   return reasoningEnabled() ? reasoningEffort() : 'off';
 }
 const WEBSEARCH_LABELS = { auto: '智能', on: '始终', off: '关闭' };
+// 模型元数据缺失时的兜底上限,与后端 lib/core.php 的 TC_MODEL_META_AUTO_OUTPUT /
+// TC_MODEL_META_AUTO_CONTEXT 保持一致:两处都是「清单没给值」时的最后一道兜底,
+// 取值写死在不同的语言里容易各自漂移,集中成常量至少让改动有明确落点。
+const FALLBACK_MAX_OUTPUT = 8192;
+const FALLBACK_MAX_CONTEXT = 131072;
 function searchReady() {
   const t = state.tools && state.tools.webSearch;
   if (!t) return !!state.webSearchAvailable;
@@ -2449,8 +2458,8 @@ function applyReasoningToBody(body, format) {
 // 供应商与对话设置里都不再配置这两项。清单接口保证有值,这里只做兜底。
 function modelCapsNow() {
   const spec = currentModelSpec();
-  const out = spec && parseInt(spec.maxTokens, 10) > 0 ? parseInt(spec.maxTokens, 10) : 8192;
-  const ctx = spec && parseInt(spec.maxContext, 10) > 0 ? parseInt(spec.maxContext, 10) : 131072;
+  const out = spec && parseInt(spec.maxTokens, 10) > 0 ? parseInt(spec.maxTokens, 10) : FALLBACK_MAX_OUTPUT;
+  const ctx = spec && parseInt(spec.maxContext, 10) > 0 ? parseInt(spec.maxContext, 10) : FALLBACK_MAX_CONTEXT;
   return { out, ctx };
 }
 function thinkingBudgetFor(effort) {
@@ -2827,11 +2836,22 @@ async function sendMessage() {
       state.streaming = true; updateSendBtn();
       const judgeAc = new AbortController();
       const judgeTimer = setTimeout(() => judgeAc.abort(), 12000);
+      // 判定期间用户可能切换会话(或点了停止)。判题用的是局部 AbortController,
+      // 不在 state.abortController 上,stopStreaming 掐不到它;若不管,
+      // 判定返回后会把答案/占位画进「已经切过去的那条会话」(索引错位),甚至重复投递用户消息。
+      // 因此记住发起时的会话与轮次令牌,返回后先确认仍是同一会话、同一轮,否则整段放弃。
+      const judgeChatId = posted.chat && posted.chat.id;
+      const judgeTurnId = beginTurn();
       try {
         verdict = await aiJudgeTools(text, { imageEnabled: hasImageModel, searchEnabled: searchReady, prevImage: hasRef, wantTitle: isFirstMsg, signal: judgeAc.signal });
       } finally {
         clearTimeout(judgeTimer);
         state.streaming = false; updateSendBtn();
+      }
+      const stillHere = judgeChatId && state.currentChatId === judgeChatId;
+      if (!stillHere || turnCancelled(judgeTurnId)) {
+        // 已切走/已停止:丢弃这次判定结果,不再往下发真正的请求。
+        return null;
       }
     }
     // 联网:判定成功则按结果显式开关;失败则回退后端启发式(body.webSearch 保持 'auto')
@@ -3850,6 +3870,11 @@ function stopStreaming() {
   if (pending) { pending.taskStatus = 'cancelled'; api('/api/proxy/tasks/' + encodeURIComponent(pending.taskId) + '/cancel', { method: 'POST' }).catch(() => {}); }
   if (state.abortController) state.abortController.abort();
   state.abortController = null;
+  // 作废当前这一轮:多模型对比与群聊是「串行问多个模型」的循环,
+  // 只 abort 当前请求 + 清 streaming 标志的话,循环下一轮会照常开跑
+  // (requestAssistantReply 的守卫看到 streaming=false 就继续),用户点了停止仍被继续计费。
+  // 递增令牌让循环在每轮开头自查并整体退出。
+  state.turnToken = (state.turnToken || 0) + 1;
   state.streaming = false;
   document.documentElement.classList.remove('oc-streaming');
   $('stop-btn').classList.add('hidden');
@@ -3857,6 +3882,17 @@ function stopStreaming() {
   // 停止后消息内容已定稿,时间戳同步推进,已写出的内容不会被云端旧副本合并覆盖
   if (chat) chat.updatedAt = Date.now();
   saveChats();
+}
+
+// 开启新的一轮:记下令牌,循环用同一个值判断自己有没有被停止。
+function beginTurn() {
+  state.turnToken = (state.turnToken || 0) + 1;
+  return state.turnToken;
+}
+
+// 该轮是否已被停止(用于多模型对比/群聊这类多步循环的中途退出)
+function turnCancelled(token) {
+  return token !== state.turnToken;
 }
 
 function initStreamingState() {
@@ -4146,18 +4182,30 @@ function logout() {
   const chip = $('account-chip');
   if (chip) { chip.classList.remove('menu-open'); chip.setAttribute('aria-expanded', 'false'); }
   // 先让服务端吊销会话(审计留痕、token 立即失效),再清本地跳转
+  let finished = false;
   const done = () => {
+    if (finished) return;
+    finished = true;
     localStorage.removeItem('oc_token');
     localStorage.removeItem('oc_user');
     location.href = apiUrl('/login');
   };
-  try {
-    fetch(apiUrl('/api/auth/logout'), { method: 'POST', headers: { 'Authorization': 'Bearer ' + (state.token || '') } })
-      .catch(() => {})
-      .finally(done);
-    // 网络异常时也要保证 2s 内完成登出跳转
-    setTimeout(done, 2000);
-  } catch (e) { done(); }
+  const revoke = () => {
+    try {
+      fetch(apiUrl('/api/auth/logout'), { method: 'POST', headers: { 'Authorization': 'Bearer ' + (state.token || '') } })
+        .catch(() => {})
+        .finally(done);
+    } catch (e) { done(); }
+  };
+  // 退出前把还没推上去的设置改动补推一次,再吊销会话(否则 token 先失效会丢掉最后一次改动)
+  if (window.OCSettingsSync) {
+    try { Promise.resolve(window.OCSettingsSync.flushAsync()).catch(() => {}).then(revoke); }
+    catch (e) { revoke(); }
+  } else {
+    revoke();
+  }
+  // 网络异常时也要保证 2s 内完成登出跳转
+  setTimeout(done, 2000);
 }
 
 // ============ 主题切换(委托 OCUI 统一管理;ui.js 未加载时走旧逻辑) ============
@@ -4237,6 +4285,7 @@ function openSettings(tab) {
   try { renderProviderList(); } catch (e) { console.error(e); }
   try { renderAccountPanel(); } catch (e) { console.error(e); }
   try { syncPrefsPanel(); } catch (e) { console.error(e); }
+  try { refreshSettingsSyncStatus(); } catch (e) { console.error(e); }
   try { loadAccountPackages(); } catch (e) { console.error(e); }
   // tab 可能来自事件对象(MouseEvent),必须校验为字符串;不带参数时默认落在「账户」
   switchSettingsTab(typeof tab === 'string' && tab ? tab : 'account');
@@ -4268,6 +4317,86 @@ if (settingsTabsEl) settingsTabsEl.addEventListener('click', (e) => {
 });
 $('settings-close').addEventListener('click', closeSettings);
 modal.addEventListener('click', (e) => { if (e.target === modal) closeSettings(); });
+
+// ============ 设置云同步(面板开关 + 应用回调) ============
+// 云端设置应用后,把依赖偏好的界面重新走一遍:主题/字体/侧栏/群聊/笔记/设置面板回显。
+// 没有这一步,新设备拉回的主题与布局要等下次刷新才生效。
+function applySyncedSettings() {
+  if (window.OCUI) {
+    if (window.OCUI.applyTheme) { try { window.OCUI.applyTheme(null); } catch (e) {} }
+    if (window.OCUI.applyAppearance) { try { window.OCUI.applyAppearance(); } catch (e) {} }
+  }
+  // 侧边栏折叠与宽度
+  const sidebar = $('sidebar');
+  if (sidebar) {
+    const collapsed = localStorage.getItem('oc_sidebar_collapsed') === '1';
+    sidebar.classList.toggle('collapsed', collapsed);
+    const floatBtn = $('sidebar-float-btn');
+    if (floatBtn) floatBtn.classList.toggle('hidden', !collapsed);
+    const w = parseInt(localStorage.getItem('oc_sidebar_width') || '', 10);
+    if (Number.isFinite(w) && w > 0) sidebar.style.setProperty('--sidebar-w', w + 'px');
+  }
+  // 对话列宽度
+  const cw = parseInt(localStorage.getItem('oc_content_width') || '', 10);
+  if (Number.isFinite(cw) && cw > 0) document.documentElement.style.setProperty('--content-w', cw + 'px');
+  // 群聊配置与模式(丢弃内存缓存重新加载)
+  if (window.OCGroup && window.OCGroup.reload) { try { window.OCGroup.reload(); } catch (e) {} }
+  // 笔记界面(动作配置 / 排序 / 分栏宽度 / 悬浮工具条位置)
+  if (window.OCNotes && window.OCNotes.applySyncedSettings) { try { window.OCNotes.applySyncedSettings(); } catch (e) {} }
+  // 设置面板与输入区回显
+  try { syncPrefsPanel(); } catch (e) {}
+  try { syncComposerEffort(); } catch (e) {}
+  try { syncComposerWebSearch(); } catch (e) {}
+  try { updateSendBtn(); } catch (e) {}
+}
+function refreshSettingsSyncStatus(st) {
+  const el = $('pref-sync-status');
+  const box = $('pref-sync-settings');
+  const sync = window.OCSettingsSync;
+  if (!el) return;
+  if (!sync) { el.textContent = '不可用'; return; }
+  const s = st || sync.status();
+  if (box) box.checked = !!s.enabled;
+  if (s.guest) { el.textContent = '游客模式不同步'; return; }
+  if (!s.enabled) { el.textContent = '已在本机关闭（本地设置照常保存）'; return; }
+  if (s.serverDisabled) { el.textContent = '站点已关闭设置云同步'; return; }
+  if (!s.active) { el.textContent = '登录后自动同步'; return; }
+  if (s.syncing || s.dirty) { el.textContent = '同步中…'; return; }
+  if (s.lastError) { el.textContent = '同步失败：' + s.lastError + '（稍后自动重试）'; return; }
+  el.textContent = s.lastSyncAt
+    ? '已同步 ' + new Date(s.lastSyncAt).toLocaleTimeString('zh-CN', { hour12: false })
+    : '已开启';
+}
+(function bindSettingsSyncPanel() {
+  const sync = window.OCSettingsSync;
+  if (!sync) return;
+  sync.onApply(() => { try { applySyncedSettings(); } catch (e) { console.error(e); } });
+  sync.onStatus((s) => { try { refreshSettingsSyncStatus(s); } catch (e) {} });
+  const box = $('pref-sync-settings');
+  if (box) box.addEventListener('change', () => {
+    sync.setEnabled(box.checked);
+    refreshSettingsSyncStatus();
+    toast(box.checked ? '已开启设置云同步' : '已在本机关闭设置云同步，本地设置不受影响');
+  });
+  const nowBtn = $('pref-sync-now');
+  if (nowBtn) nowBtn.addEventListener('click', async () => {
+    if (!sync.isActive()) { toast('登录后可用', true); return; }
+    nowBtn.disabled = true;
+    nowBtn.textContent = '同步中';
+    try {
+      await sync.pull({ force: true });
+      await sync.push();
+      toast('设置已同步');
+    } catch (e) {
+      toast('同步失败，请稍后重试', true);
+    } finally {
+      nowBtn.disabled = false;
+      nowBtn.textContent = '同步';
+      refreshSettingsSyncStatus();
+    }
+  });
+  refreshSettingsSyncStatus();
+})();
 
 // ============ 账户面板 / 偏好面板 ============
 function renderAccountPanel() {
@@ -5974,6 +6103,7 @@ $('admin-link').addEventListener('click', () => location.href = apiUrl('/admin')
   function markSeen() {
     const t = current && current.updatedAt ? current.updatedAt : Date.now();
     try { localStorage.setItem('oc_announcement_seen', String(t)); } catch (e) {}
+    syncTouch('announcementSeen');
   }
   function showAnnouncement(ann) {
     if (!ann || !ann.text) return;
@@ -6745,8 +6875,10 @@ function openImageDialog() {
     if (!prompt) return toast('请输入提示词', true);
     if (!model) return toast('请填写图像模型', true);
     localStorage.setItem('oc_image_model', model);
+    syncTouch('imageModel');
     // 记住「用户实际表达」的规格:像素/档位存 size,宽高比存 ratio,两条入口据此还原
     localStorage.setItem('oc_image_size', spec.ratio || spec.size);
+    syncTouch('imageSize');
     run.disabled = true;
     status.textContent = '生成中，通常需要 10–60 秒…';
     try {
@@ -6936,6 +7068,9 @@ function openVideoDialog() {
     localStorage.setItem('oc_video_model', model);
     localStorage.setItem('oc_video_seconds', String(seconds));
     localStorage.setItem('oc_video_ratio', ratio);
+    syncTouch('videoModel');
+    syncTouch('videoSeconds');
+    syncTouch('videoRatio');
     run.disabled = true;
     status.textContent = '生成中，通常需要 1–5 分钟，请勿关闭页面…';
     try {
@@ -7406,6 +7541,7 @@ function setSidebarCollapsed(collapsed) {
   if (floatBtn) floatBtn.classList.toggle('hidden', !collapsed);
   // 侧边栏头部按钮图标方向
   localStorage.setItem('oc_sidebar_collapsed', collapsed ? '1' : '0');
+  syncTouch('sidebarCollapsed');
 }
 function toggleSidebar() {
   setSidebarCollapsed(!$('sidebar').classList.contains('collapsed'));
@@ -7507,6 +7643,7 @@ function toggleSidebar() {
       const onUp = () => {
         const w = sidebar.getBoundingClientRect().width;
         localStorage.setItem('oc_sidebar_width', String(Math.round(w)));
+        syncTouch('sidebarWidth');
         sidebar.classList.remove('resizing');
         document.body.classList.remove('sidebar-resizing');
         document.removeEventListener('mousemove', onMove);
@@ -7543,7 +7680,7 @@ function toggleSidebar() {
 
     function persist() {
       const cur = parseInt(getComputedStyle(root).getPropertyValue('--content-w'), 10);
-      if (cur >= MIN_W) localStorage.setItem('oc_content_width', String(cur));
+      if (cur >= MIN_W) { localStorage.setItem('oc_content_width', String(cur)); syncTouch('contentWidth'); }
     }
 
     function startDrag(e, side) {
@@ -8439,6 +8576,12 @@ function enterReadonlyHome() {
     if (data.tools) state.tools = data.tools;
     // 启动时必须带上用量数据,否则设置→用量/账户面板在首次刷新前显示为 0
     state.usage = Array.isArray(data.usage) ? data.usage : [];
+    // 设置云同步:先把云端设置(主题/字体/模型选择/群聊配置/生成参数)拉回来并应用,
+    // 再加载供应商与会话 —— 新设备首次打开就是熟悉的样子,不必重新设置一遍。
+    // 失败(离线/接口异常)时继续用本地设置,不影响使用。
+    if (window.OCSettingsSync) {
+      try { await window.OCSettingsSync.init(state.user); } catch (e) { /* 本地设置兜底 */ }
+    }
     renderUser();
     loadChats();
     renderChatList();
@@ -8693,8 +8836,12 @@ async function sendCompareTurn(text, attachments) {
   const msg = turn.assistantMsg;
   const savedProv = state.currentProviderId;
   const savedModel = state.currentModel;
+  // 一轮多模型对比的整体令牌:用户中途点「停止」时,循环在下一轮开头退出,
+  // 不再继续问剩下的模型(每个模型都会真实计费)。
+  const turnId = beginTurn();
   try {
     for (let i = 0; i < picks.length; i++) {
+      if (turnCancelled(turnId)) break;
       // 第 2 个及以后:在当前回答上追加一个空白版本(标签),写法与 @模型重答一致
       if (i > 0) {
         const live = liveMessage(chat, msg);
@@ -8891,7 +9038,7 @@ async function aiComplete(messages, opts = {}) {
     model,
     providerId,
     stream: false,
-    max_tokens: opts.maxTokens || 8192,
+    max_tokens: opts.maxTokens || modelCapsNow().out,
     _purpose: opts.purpose || 'note',
     messages,
   };
@@ -8916,6 +9063,10 @@ window.OCApp = {
   providerFormat,
   resolveAuxModel,
   aiComplete,
+  // 一轮对话的整体取消令牌:多模型对比/群聊是多步循环,
+  // 只 abort 当前请求不足以让循环停下,调用方用它们自查是否该整体退出。
+  beginTurn,
+  turnCancelled,
   // 后加载模块(notes.js)拼提示词时要按模型真实窗口裁剪输入:
   // 弱模型上下文只有 8k~32k,把整段回答硬塞进去会被上游直接拒绝。
   modelCapsNow,

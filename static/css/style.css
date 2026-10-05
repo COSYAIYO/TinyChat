@@ -219,6 +219,12 @@ body {
 }
 .chat-item:hover { background: var(--bg-hover); }
 .chat-item.active { background: var(--bg-active); font-weight: 500; }
+/* 会话项是 role=button 的可聚焦元素:键盘 Tab 过来必须有可见焦点环,
+   否则用户看不出焦点在哪(鼠标用户不受影响,:focus-visible 只在键盘触发时生效) */
+.chat-item:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
 .chat-item .chat-icon { flex-shrink: 0; color: var(--text-tertiary); display: flex; }
 .chat-item.active .chat-icon { color: var(--text-secondary); }
 .chat-item .chat-title { flex: 1; overflow: hidden; text-overflow: ellipsis; }

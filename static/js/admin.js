@@ -1877,6 +1877,7 @@ function fillChatLimits(s) {
   if ($('chat-outbound-proxy')) $('chat-outbound-proxy').value = String(src.outboundProxy || '');
   if ($('chat-context-learn')) $('chat-context-learn').checked = src.contextAutoLearn !== false;
   if ($('chat-persist-chats')) $('chat-persist-chats').checked = src.persistChats !== false;
+  if ($('chat-sync-settings')) $('chat-sync-settings').checked = src.syncSettings !== false;
   if ($('chat-save-api')) $('chat-save-api').checked = src.apiSaveChats !== false;
   if ($('chat-health-ok')) $('chat-health-ok').value = Math.min(100, Math.max(1, parseInt(src.healthOkMin, 10) || 75));
   if ($('chat-health-warn')) $('chat-health-warn').value = Math.min(99, Math.max(0, parseInt(src.healthWarnMin, 10) || 40));
@@ -1904,6 +1905,7 @@ function fillChatLimits(s) {
     const timeoutSec = Math.min(600, Math.max(5, parseInt($('chat-timeout') && $('chat-timeout').value, 10) || 120));
     const contextLearn = !!($('chat-context-learn') && $('chat-context-learn').checked);
     const persistChats = !!($('chat-persist-chats') && $('chat-persist-chats').checked);
+    const syncSettings = !!($('chat-sync-settings') && $('chat-sync-settings').checked);
     const apiSaveChats = !!($('chat-save-api') && $('chat-save-api').checked);
     // 可用性阈值:保证 okMin 严格大于 warnMin(输入颠倒时本地纠正并回写)
     let healthOk = Math.min(100, Math.max(1, parseInt($('chat-health-ok') && $('chat-health-ok').value, 10) || 75));
@@ -1923,7 +1925,7 @@ function fillChatLimits(s) {
       const r = await api('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, temperature, rateLimitPerMin: rateLimit, proxyTimeoutMs: timeoutSec * 1000, contextAutoLearn: contextLearn, persistChats, apiSaveChats, healthOkMin: healthOk, healthWarnMin: healthWarn, imageArchiveEnabled, imageArchiveQuotaMb, outboundProxy }),
+        body: JSON.stringify({ contextMessages: ctx, maxContextMessages: maxCtx, temperature, rateLimitPerMin: rateLimit, proxyTimeoutMs: timeoutSec * 1000, contextAutoLearn: contextLearn, persistChats, syncSettings, apiSaveChats, healthOkMin: healthOk, healthWarnMin: healthWarn, imageArchiveEnabled, imageArchiveQuotaMb, outboundProxy }),
       });
       const data = await r.json();
       if (!r.ok) return toast((data.error && data.error.message) || '保存失败', true);

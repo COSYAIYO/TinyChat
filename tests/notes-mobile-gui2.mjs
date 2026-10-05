@@ -5,8 +5,11 @@
  *   1) 选中笔记后编辑器可用、正文渲染、不横向溢出;
  *   2) 窄屏「分屏」退化为预览单栏(设计如此:手机上左右各半没法读);
  *   3) 分享弹窗在窄屏可打开、在视口内、按钮可达、不横向溢出;
- *   4) 顶栏控件条在窄屏可横向滚动,AI / 问笔记 / 分享等入口不丢失;
- *   5) 新建笔记(模板菜单 → 标题输入)在窄屏可完成并落库。
+ *   4) 设置弹窗(右键菜单动作)与已分享管理在窄屏的布局:底栏按钮不越出弹窗、
+ *      分享行不再被三个按钮挤成竖条(修复前文字列只剩 23px、整行 229px 高),
+ *      并在 360px 机型上复量一遍;
+ *   5) 顶栏控件条在窄屏可横向滚动,AI / 问笔记 / 分享等入口不丢失;
+ *   6) 新建笔记(模板菜单 → 标题输入)在窄屏可完成并落库。
  */
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
@@ -207,7 +210,117 @@ console.log('\n== 3. 窄屏分享弹窗 ==');
   } else bad('分享弹窗未打开(入口不可达)');
 }
 
-console.log('\n== 4. 顶栏控件窄屏可达 ==');
+console.log('\n== 4. 窄屏「笔记设置」与「已分享管理」 ==');
+{
+  // 设置弹窗:侧栏抽屉 → 齿轮。底栏三枚按钮此前是 nowrap + 按钮 flex:0 0 auto,
+  // 比弹窗宽时溢出方向朝左,「已分享管理」被裁到弹窗外(x=-4),点不到左边一半。
+  await page.locator('#notes-side-float').click();
+  await sleep(450);
+  await page.locator('#notes-gear').click();
+  await sleep(800);
+  const aimgr = page.locator('.notes-aimgr-modal').first();
+  if (!(await aimgr.count())) bad('设置弹窗未打开(齿轮不可达)');
+  else {
+    const box = await aimgr.boundingBox();
+    check('设置弹窗在视口内', !!box && box.x >= -1 && (box.x + box.width) <= W + 1);
+    check('设置弹窗不导致横向溢出', (await overflowX()) <= 1);
+    const foot = await page.evaluate(() => {
+      const modal = document.querySelector('.notes-aimgr-modal');
+      const r = modal.getBoundingClientRect();
+      return Array.from(modal.querySelectorAll('.modal-footer .btn')).map((b) => {
+        const q = b.getBoundingClientRect();
+        return { txt: b.textContent.trim(), left: q.left - r.left, right: r.right - q.right, w: q.width, bottom: q.bottom };
+      });
+    });
+    check('设置弹窗底栏按钮不越出弹窗左右边界', foot.length >= 3 && foot.every((f) => f.left >= -1 && f.right >= -1));
+    check('设置弹窗底栏按钮都在视口内', foot.every((f) => f.bottom <= H + 1));
+    const primary = foot.find((f) => f.txt === '完成');
+    check('主按钮「完成」独占一行(宽度 ≥ 内容宽 90%)', !!primary && !!box && primary.w >= (box.width - 44) * 0.9);
+    const rows = await page.evaluate(() => Array.from(document.querySelectorAll('.notes-aimgr-modal .aimgr-item')).map((it) => {
+      const r = it.getBoundingClientRect();
+      const lab = it.querySelector('.aimgr-label');
+      return { rowW: r.width, labelW: lab ? lab.getBoundingClientRect().width : 0 };
+    }));
+    check('动作行的名称/提示词输入仍占行宽 60% 以上', rows.length > 0 && rows.every((r) => r.labelW >= r.rowW * 0.6));
+  }
+
+  // 已分享管理:行内此前是 [标题+说明 | 三个 nowrap 按钮],按钮固定约 290px,
+  // 文字列被压到 23px —— 标题与说明竖着排成一条,整行 229px 高。
+  await page.locator('.notes-aimgr-modal #aimgr-shares').click();
+  await sleep(1200);
+  const shm = page.locator('.notes-shm-mask .notes-shm-modal').first();
+  if (!(await shm.count())) bad('已分享管理未打开');
+  else {
+    const box = await shm.boundingBox();
+    check('已分享管理弹窗在视口内', !!box && box.x >= -1 && (box.x + box.width) <= W + 1);
+    check('已分享管理不导致横向溢出', (await overflowX()) <= 1);
+    const rows = await page.evaluate(() => Array.from(document.querySelectorAll('.notes-shm-mask .shm-item')).map((it) => {
+      const r = it.getBoundingClientRect();
+      const b = it.querySelector('.shm-main b');
+      const ops = Array.from(it.querySelectorAll('.shm-ops .btn')).map((x) => {
+        const q = x.getBoundingClientRect();
+        return { txt: x.textContent.trim(), left: q.left, right: q.right, bottom: q.bottom };
+      });
+      return { rowW: r.width, rowH: r.height, titleW: b ? b.getBoundingClientRect().width : 0, ops };
+    }));
+    check('已分享管理列出了分享行', rows.length >= 1);
+    check('行内文字列不再被按钮挤成竖条(标题宽 ≥ 行宽 50%)', rows.length > 0 && rows.every((r) => r.titleW >= r.rowW * 0.5));
+    check('行高正常(≤ 180px,修复前 229px)', rows.length > 0 && rows.every((r) => r.rowH <= 180));
+    check('三个操作按钮都在视口内且不横向溢出', rows.length > 0 && rows.every((r) => r.ops.length === 3 && r.ops.every((o) => o.left >= -1 && o.right <= W + 1)));
+    const footBtn = await page.evaluate(() => {
+      const b = document.querySelector('.notes-shm-mask .modal-footer .btn');
+      const q = b.getBoundingClientRect();
+      return { bottom: q.bottom, w: q.width };
+    });
+    check('底栏「关闭」按钮在视口内', footBtn.bottom <= H + 1);
+
+    // 修改分享设置:有效期标签与下拉同排时被挤成两行,改为上下排
+    await page.locator('.notes-shm-mask .shm-item [data-act="edit"]').first().click();
+    await sleep(800);
+    const edit = page.locator('.notes-shm-edit-mask .notes-shm-modal').first();
+    if (!(await edit.count())) bad('修改分享设置弹窗未打开');
+    else {
+      const ebox = await edit.boundingBox();
+      check('修改分享设置弹窗在视口内', !!ebox && ebox.x >= -1 && (ebox.x + ebox.width) <= W + 1);
+      // 原生 select 被 enhanceSelect 换成 .select-box(原生节点 display:none),
+      // 要量的是真正渲染出来的那个
+      const sel = await page.evaluate(() => {
+        const s = document.querySelector('.notes-shm-edit-mask #shm-expire-box');
+        const q = s.getBoundingClientRect();
+        return { left: q.left, right: q.right, w: q.width };
+      });
+      check('有效期下拉占满可用宽度且不溢出', sel.left >= -1 && sel.right <= W + 1 && sel.w >= 240);
+      await page.locator('.notes-shm-edit-mask [data-close]').first().click();
+      await sleep(500);
+    }
+    // 更窄的机型(360×740):同一批断言再量一遍
+    await page.setViewportSize({ width: 360, height: 740 });
+    await sleep(450);
+    const narrow = await page.evaluate(() => {
+      const rows2 = Array.from(document.querySelectorAll('.notes-shm-mask .shm-item')).map((it) => {
+        const r = it.getBoundingClientRect();
+        const b = it.querySelector('.shm-main b');
+        const ops = Array.from(it.querySelectorAll('.shm-ops .btn')).map((x) => x.getBoundingClientRect().right);
+        return { rowW: r.width, rowH: r.height, titleW: b ? b.getBoundingClientRect().width : 0, maxRight: Math.max.apply(null, ops) };
+      });
+      const modal = document.querySelector('.notes-shm-mask .notes-shm-modal').getBoundingClientRect();
+      return { rows: rows2, modalLeft: modal.left, modalRight: modal.right, vw: window.innerWidth, docOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth };
+    });
+    check('360px 下弹窗仍在视口内', narrow.modalLeft >= -1 && narrow.modalRight <= narrow.vw + 1);
+    check('360px 下文字列仍可读(标题宽 ≥ 行宽 50%)', narrow.rows.length > 0 && narrow.rows.every((r) => r.titleW >= r.rowW * 0.5));
+    check('360px 下按钮不横向溢出', narrow.rows.every((r) => r.maxRight <= narrow.vw + 1) && narrow.docOverflow <= 1);
+    await page.setViewportSize({ width: W, height: H });
+    await sleep(400);
+    await page.locator('.notes-shm-mask [data-close]').first().click();
+    await sleep(600);
+  }
+  // 收尾:点遮罩收起抽屉 —— 抽屉开着时浮标(#notes-side-float)是隐藏的,
+  // 后面的用例要靠它重新打开。遮罩中心被抽屉盖住,点右侧空白处。
+  await page.locator('#notes-side-scrim').click({ position: { x: W - 30, y: 400 } });
+  await sleep(450);
+}
+
+console.log('\n== 5. 顶栏控件窄屏可达 ==');
 {
   const sx = await page.locator('#notes-editor-bar').evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth })).catch(() => null);
   check('顶栏控件条可横向滚动(入口不会被裁掉)', !!sx && sx.sw >= sx.cw);
@@ -227,7 +340,7 @@ console.log('\n== 4. 顶栏控件窄屏可达 ==');
   await page.evaluate(() => { const b = document.querySelector('#notes-editor-bar'); if (b) b.scrollLeft = 0; });
 }
 
-console.log('\n== 5. 窄屏新建笔记(模板 → 标题) ==');
+console.log('\n== 6. 窄屏新建笔记(模板 → 标题) ==');
 {
   await page.locator('#notes-side-float').click();
   await sleep(450);
@@ -254,7 +367,7 @@ console.log('\n== 5. 窄屏新建笔记(模板 → 标题) ==');
   } else bad('标题输入弹窗未出现');
 }
 
-console.log('\n== 6. 无未捕获异常 ==');
+console.log('\n== 7. 无未捕获异常 ==');
 {
   const real = pageErrors.filter((e) => !/favicon|Failed to load resource|net::|ERR_/i.test(e));
   check('无 JS 异常' + (real.length ? ': ' + real.slice(0, 2).join(' | ') : ''), real.length === 0);

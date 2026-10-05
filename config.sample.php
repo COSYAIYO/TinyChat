@@ -17,6 +17,10 @@ return array(
     // 留空 = 站点根目录下的 data/
     'data_dir' => '',
 
+    // 站点时区。影响备份文件名、用量导出文件名、笔记 AI 每日配额的重置时刻。
+    // 不填按 Asia/Shanghai；主机是 UTC 又想保持 UTC 的话写 'UTC'。
+    'timezone' => 'Asia/Shanghai',
+
     // 站点是否部署在反向代理(Nginx/CDN/宝塔)之后。
     // 设为 true 才会信任 X-Forwarded-For 记录真实客户端 IP(限流、后台 lastIp 依赖它);
     // 直连部署务必保持 false——该头可被伪造,信任它会绕过按 IP 限流。

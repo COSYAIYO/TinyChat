@@ -147,6 +147,28 @@
     return value;
   };
   UI.onPrefsChange = function (fn) { prefListeners.push(fn); };
+  // 整批写入偏好(设置云同步应用云端设置时使用):与 setPref 一样标记 touched
+  // (云端值来自用户自己的选择,默认值迁移不得再覆盖),并统一通知订阅者一次,
+  // key 传 null 表示「批量变更」,订阅者据此区分是否为单键操作。
+  UI.setPrefsBulk = function (obj) {
+    if (!obj || typeof obj !== 'object') return false;
+    const p = loadPrefs();
+    const keys = Object.keys(obj);
+    let changed = false;
+    keys.forEach((k) => { if (p[k] !== obj[k]) { p[k] = obj[k]; changed = true; } });
+    if (!changed) return false;
+    try { localStorage.setItem(PREF_KEY, JSON.stringify(p)); } catch (e) { /* 存储不可用 */ }
+    try {
+      const t = JSON.parse(localStorage.getItem(PREF_TOUCHED_KEY) || '[]');
+      const arr = Array.isArray(t) ? t.map((x) => String(x)) : [];
+      keys.forEach((k) => { if (arr.indexOf(String(k)) < 0) arr.push(String(k)); });
+      localStorage.setItem(PREF_TOUCHED_KEY, JSON.stringify(arr));
+    } catch (e) { /* 存储不可用 */ }
+    prefListeners.forEach((fn) => { try { fn(null, undefined, p); } catch (e) {} });
+    return true;
+  };
+  // 丢弃内存缓存:换账号登录(设置云同步)时先清掉上一个账号的偏好,下次读取回到默认值
+  UI.resetPrefs = function () { prefs = null; };
 
   // ============ Toast ============
   function toastHost() {
@@ -333,7 +355,13 @@
     if (prev && prev.isConnected) {
       setTimeout(() => { try { prev.focus({ preventScroll: true }); } catch (e) {} }, 60);
     }
-    if (typeof el._onClose === 'function') el._onClose();
+    // 关闭回调只触发一次:大量弹窗把 _onClose 设成「关自己」的 done()(内部又调 closeModal),
+    // 若这里原样回调,closeModal ↔ _onClose 会互相递归到爆栈——栈溢出抛在点击处理器里,
+    // 后面的代码(如「已分享管理」的 setTimeout 打开下一个弹窗)整段不执行,表现为点了没反应。
+    // 先取出并清空,回调内部的再次 closeModal 就成了普通收尾,不再递归。
+    const onClose = el._onClose;
+    el._onClose = null;
+    if (typeof onClose === 'function') onClose();
   };
   UI.isModalOpen = function () { return modalStack.length > 0; };
   // 动态创建的弹窗遮罩(用完直接 remove())纳入统一管理:
@@ -677,6 +705,7 @@ UI.toggleTheme = function () {
       map[name] = cssText;
       localStorage.setItem(CUSTOM_FONT_KEY, JSON.stringify(map));
       applyCustomFonts();
+      if (window.OCSettingsSync) window.OCSettingsSync.syncFonts();
       return true;
     } catch (e) { return false; }
   };
@@ -690,6 +719,7 @@ UI.toggleTheme = function () {
       delete map[name];
       localStorage.setItem(CUSTOM_FONT_KEY, JSON.stringify(map));
       applyCustomFonts();
+      if (window.OCSettingsSync) window.OCSettingsSync.syncFonts();
     } catch (e) {}
   };
   function applyCustomFonts() {

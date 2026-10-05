@@ -152,6 +152,7 @@
   }
   function persistUi() {
     try { localStorage.setItem(lsUiKey(), JSON.stringify(N.ui)); } catch (e) {}
+    if (window.OCSettingsSync) window.OCSettingsSync.touchUi('notesUi');
   }
   function loadLocal() {
     try {
@@ -795,6 +796,7 @@
       const onUp = () => {
         const w = fs.querySelector('.notes-side').getBoundingClientRect().width;
         try { localStorage.setItem('oc_notes_side_w', String(Math.round(w))); } catch (err) {}
+        if (window.OCSettingsSync) window.OCSettingsSync.touchUi('notesSideW');
         fs.classList.remove('resizing');
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
@@ -842,6 +844,7 @@
   }
   function aiConfigSave(cfg) {
     try { localStorage.setItem('oc_notes_ai_cfg', JSON.stringify(cfg)); } catch (e) {}
+    if (window.OCSettingsSync) window.OCSettingsSync.touchUi('notesAiCfg');
   }
   // 当前生效的动作列表(内置已覆盖 + 自定义,按顺序)
   function aiActions() {
@@ -993,6 +996,7 @@
           x: Math.round(el.getBoundingClientRect().left),
           y: Math.round(el.getBoundingClientRect().top),
         }));
+        if (window.OCSettingsSync) window.OCSettingsSync.touchUi('notesMdbarPos');
       } catch (err) {}
     };
     document.addEventListener('mousemove', move);
@@ -3699,7 +3703,12 @@
         tries++;
         const st = window.OCApp && window.OCApp.state;
         if (st && st.user) { open({ boot: true }); return; }
-        if (tries < 40) setTimeout(boot, 250);
+        if (tries < 40) { setTimeout(boot, 250); return; }
+        // 10 秒还没等到登录态:刻意不自动开(未登录时笔记接口会 401,开了也是空壳),
+        // 但必须让用户知道发生了什么 —— 否则停在对话页,看起来像 /ainotes 这个地址坏了。
+        if (!st || !st.user) {
+          toast('登录状态未就绪，笔记暂未打开；请刷新页面或重新登录', true);
+        }
       };
       boot();
     }
@@ -3732,12 +3741,19 @@
     });
   }
 
+  // 设置云同步应用了云端设置后调用:重载笔记界面状态(AI 动作配置读取时实时生效)
+  function applySyncedSettings() {
+    loadUi();
+    if (N.ready) renderAll();
+  }
+
   window.OCNotes = {
     open,
     close,
     archiveFromMessage,
     openShareManager,
     warmUp,
+    applySyncedSettings,
     isReady: () => !!N.ready,
     listNotes: () => (N.doc.notes || []).map((n) => ({ id: n.id, title: n.title, tags: n.tags || [], content: n.content || '', updatedAt: n.updatedAt })),
     searchNotes: (q, limit) => recallNotes(q, limit || 5).map((h) => ({ id: h.note.id, title: h.note.title, content: h.note.content })),
