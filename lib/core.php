@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.125');
+define('TC_VERSION', '2.0.126');
 // 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
 define('TC_NOTE_MAX_CHARS', 500000);
 define('TC_DB_VERSION', 2);
@@ -140,6 +140,8 @@ $TC_SETTINGS_DEFAULTS = array(
     'agreementHtml' => '',
     // 隐私:关闭后服务器不保存对话记录(客户端仅本地留存)
     'persistChats' => true,
+    // 用户设置云同步:开启后用户的偏好/外观/群聊配置等随账号同步,换设备无需重新设置
+    'syncSettings' => true,
     // 开放 API 调用记录到用户的对话列表(前台可见,便于集中查看与配密钥;需 persistChats 开启)
     'apiSaveChats' => true,
     // 全站公告:enabled 且 text 非空时前台展示
@@ -923,6 +925,9 @@ function tc_normalize_settings($raw) {
     $s['imageArchiveEnabled'] = !array_key_exists('imageArchiveEnabled', $s) || !empty($s['imageArchiveEnabled']);
     $s['imageArchiveQuotaMb'] = min(10240, max(50, (int) (isset($s['imageArchiveQuotaMb']) ? $s['imageArchiveQuotaMb'] : 500) ?: 500));
     $s['persistChats'] = !array_key_exists('persistChats', $s) || !empty($s['persistChats']);
+    // 用户设置云同步:默认开启。关闭后 /api/sync/settings 只读不写(与 persistChats 同一套隐私语义),
+    // 用户偏好/外观/群聊配置就只留在各自浏览器本地。
+    $s['syncSettings'] = !array_key_exists('syncSettings', $s) || !empty($s['syncSettings']);
     $ann = isset($s['announcement']) && is_array($s['announcement']) ? $s['announcement'] : array();
     $annText = trim((string) (isset($ann['text']) ? $ann['text'] : ''));
     if (function_exists('mb_substr')) {
@@ -1162,6 +1167,11 @@ function tc_empty_db() {
         'userNoteRevisions' => new stdClass(),
         // 笔记分享:{token: {token, ownerId, noteId, mode, createdAt}},内容不快照、读取时按属主实时取
         'noteShares' => new stdClass(),
+        // 用户设置(界面偏好/外观/群聊配置/生成参数等):按用户拆成 uset:{uid} 行,
+        // 值为整份设置文档(含逐键更新时间戳),换设备登录即可恢复,无需重新设置
+        'userSettings' => new stdClass(),
+        // 设置文档乐观并发修订号:{userId: int},语义与 userChatRevisions 一致
+        'userSettingsRevisions' => new stdClass(),
         'shares' => new stdClass(),
         'userGroups' => array(),
         'accessRules' => array(),
@@ -1632,6 +1642,9 @@ function tc_migrate_db($raw) {
     $db['userNotes'] = tc_object_map(isset($db['userNotes']) ? $db['userNotes'] : array());
     $db['userNoteRevisions'] = tc_object_map(isset($db['userNoteRevisions']) ? $db['userNoteRevisions'] : array());
     $db['noteShares'] = tc_object_map(isset($db['noteShares']) ? $db['noteShares'] : array());
+    // 用户设置:同样是老库没有的键(默认空),按用户拆行存储,这里只规整映射形状
+    $db['userSettings'] = tc_object_map(isset($db['userSettings']) ? $db['userSettings'] : array());
+    $db['userSettingsRevisions'] = tc_object_map(isset($db['userSettingsRevisions']) ? $db['userSettingsRevisions'] : array());
     $stats = tc_assoc(isset($db['stats']) ? $db['stats'] : array());
     $votes = array();
     foreach (tc_assoc(isset($stats['modelVotes']) ? $stats['modelVotes'] : array()) as $model => $row) {
@@ -1972,6 +1985,7 @@ function tc_db_load_with_baseline($pdo) {
     $origChats = array();
     $origDeleted = array();
     $origNotes = array();
+    $origSettings = array();
     $rows = $pdo->query('SELECT k, v FROM store')->fetchAll();
     foreach ($rows as $row) {
         $k = (string) $row['k'];
@@ -2000,12 +2014,20 @@ function tc_db_load_with_baseline($pdo) {
             }
             continue;
         }
+        if (strncmp($k, 'uset:', 5) === 0) {
+            $origSettings[substr($k, 5)] = $raw;
+            $val = json_decode($raw, true);
+            if (is_array($val)) {
+                $db['userSettings']->{substr($k, 5)} = $val;
+            }
+            continue;
+        }
         $orig[$k] = $raw;
         $val = json_decode($raw, true);
         if ($val === null && $raw !== 'null') continue;
         $db[$k] = $val;
     }
-    return array(tc_migrate_db($db), $orig, $origChats, $origDeleted, $origNotes);
+    return array(tc_migrate_db($db), $orig, $origChats, $origDeleted, $origNotes, $origSettings);
 }
 
 // 整库快照写入(迁移导入 / 恢复备份用):清空后按顶层键落行
@@ -2031,6 +2053,12 @@ function tc_db_write_snapshot($pdo, $db) {
             }
             continue;
         }
+        if ($k === 'userSettings') {
+            foreach (tc_assoc($v) as $uid => $row) {
+                $ins->execute(array(':k' => 'uset:' . $uid, ':v' => tc_json_encode($row)));
+            }
+            continue;
+        }
         $ins->execute(array(':k' => $k, ':v' => tc_json_encode($v)));
     }
 }
@@ -2049,9 +2077,9 @@ function tc_with_db($write, $fn) {
     // 先取锁后读,锁内读到的一定是最新状态,diff 也建立在最新基线上。
     if ($write) $pdo->exec('BEGIN IMMEDIATE');
     $db = null;
-    $orig = $origChats = $origDeleted = $origNotes = array();
+    $orig = $origChats = $origDeleted = $origNotes = $origSettings = array();
     try {
-        list($db, $orig, $origChats, $origDeleted, $origNotes) = tc_db_load_with_baseline($pdo);
+        list($db, $orig, $origChats, $origDeleted, $origNotes, $origSettings) = tc_db_load_with_baseline($pdo);
     } catch (Throwable $e) {
         if ($write) { try { $pdo->exec('ROLLBACK'); } catch (Throwable $e2) {} }
         throw $e;
@@ -2063,7 +2091,7 @@ function tc_with_db($write, $fn) {
     $GLOBALS['_tc_db_ctx'] = array(
         'write' => $write, 'committed' => false, 'pdo' => $pdo,
         'orig' => $orig, 'origChats' => $origChats, 'origDeleted' => $origDeleted,
-        'origNotes' => $origNotes,
+        'origNotes' => $origNotes, 'origSettings' => $origSettings,
     );
     try {
         $ret = $fn($db);
@@ -2107,8 +2135,10 @@ function tc_db_commit() {
         $newChats = tc_assoc(isset($db['userChats']) ? $db['userChats'] : null);
         $newDeleted = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : null);
         $newNotes = tc_assoc(isset($db['userNotes']) ? $db['userNotes'] : null);
+        $newSettings = tc_assoc(isset($db['userSettings']) ? $db['userSettings'] : null);
         $origDeleted = isset($ctx['origDeleted']) ? $ctx['origDeleted'] : array();
         $origNotes = isset($ctx['origNotes']) ? $ctx['origNotes'] : array();
+        $origSettings = isset($ctx['origSettings']) ? $ctx['origSettings'] : array();
         foreach ($db as $k => $v) {
             if ($k === 'userChats') {
                 foreach ($newChats as $uid => $row) {
@@ -2140,6 +2170,17 @@ function tc_db_commit() {
                 }
                 foreach ($origDeleted as $uid => $json) {
                     if (!array_key_exists($uid, $newDeleted)) $del->execute(array(':k' => 'chatdel:' . $uid));
+                }
+                continue;
+            }
+            if ($k === 'userSettings') {
+                foreach ($newSettings as $uid => $row) {
+                    $json = tc_json_encode($row);
+                    if (isset($origSettings[$uid]) && $origSettings[$uid] === $json) continue;
+                    $ups->execute(array(':k' => 'uset:' . $uid, ':v' => $json, ':v2' => $json));
+                }
+                foreach ($origSettings as $uid => $json) {
+                    if (!array_key_exists($uid, $newSettings)) $del->execute(array(':k' => 'uset:' . $uid));
                 }
                 continue;
             }
@@ -2810,6 +2851,9 @@ function tc_auth_user($db) {
             $tv = isset($u['tv']) ? (int) $u['tv'] : 0;
             $ptv = isset($payload['tv']) ? (int) $payload['tv'] : 0;
             if ($ptv !== $tv) return null;
+            // 顺手补发笔记附件 Cookie:浏览器加载正文里的 <img>/<a> 带不了请求头,
+            // 只能靠它认人(实现见 lib/api.php,只加载 core.php 的自检脚本没有它)
+            if (function_exists('tc_note_attach_cookie_sync')) tc_note_attach_cookie_sync($db, $u);
             return $u;
         }
     }

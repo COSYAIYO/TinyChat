@@ -130,6 +130,8 @@
   }
   function save() {
     try { localStorage.setItem(STORE_KEY, JSON.stringify(cache)); } catch (e) { /* 本地存储不可用时群聊配置不持久化 */ }
+    // 设置云同步:按 id 对比出改动/删除的群,记时间戳并防抖推送
+    if (window.OCSettingsSync) window.OCSettingsSync.syncGroups(cache);
   }
   function uid() {
     return 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -272,7 +274,16 @@
   };
   G.setMode = function (mode) {
     try { localStorage.setItem(MODE_KEY, mode === 'group' ? 'group' : 'simple'); } catch (e) {}
+    if (window.OCSettingsSync) window.OCSettingsSync.touchUi('composerMode');
     syncModeUI();
+  };
+  // 云同步应用了新的群聊配置 / 模式后调用:丢弃内存缓存重新加载并刷新界面
+  G.reload = function () {
+    cache = null;
+    load();
+    syncModeUI();
+    const modal = document.getElementById('group-modal');
+    if (modal && !modal.classList.contains('hidden')) render();
   };
 
   function esc(s) {

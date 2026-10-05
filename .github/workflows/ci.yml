@@ -58,6 +58,10 @@ jobs:
         run: node tests/notes-archive.js
       - name: 弹窗框架契约自检(关闭回调不递归爆栈 / Esc 链路)
         run: node tests/modal-close.js
+      - name: 设置云同步合并自检(逐键时间戳 / 删除墓碑 / 快照往返)
+        run: node tests/settings-merge.js
+      - name: 用户设置云同步自检(白名单收敛 / 分片落库 / 注销清理)
+        run: php tests/settings-sync.php
       - name: 演示管理员还原自检(拍摄/到期还原/反复还原)
         run: php tests/demo-revert.php
       - name: 生图响应解析自检(各平台返回形态)
@@ -123,6 +127,15 @@ jobs:
       # 「点了没反应」类问题(弹窗爆栈、控件排在屏外)只有真浏览器点得出来
       - name: 笔记编辑器自检(已分享管理可打开 / 窄屏能编辑 / 顶栏对齐)
         run: node tests/notes-editor-gui.mjs
+      # 「换设备不用重新设置」是本功能的核心承诺,只有「全新浏览器上下文登录同一账号」
+      # 这条真实路径能验证:拉了不用、或应用后被当成本机改动再推回去,都会在这里暴露
+      - name: 设置云同步 GUI 自检(新设备自动恢复 / 不反复重推)
+        run: node tests/settings-sync-gui.mjs
+      # 浏览器加载正文里的 <img>/<a> 不会带 Authorization 头(登录态是 localStorage
+      # 里的 Bearer 令牌),附件「只有本人可读」的判定必须同时认 Cookie —— 这类
+      # 「curl 里正常、浏览器里裂图」的问题,只有真浏览器跑得出来。
+      - name: 笔记内嵌附件自检(预览图片解码 / 下载链接直取)
+        run: node tests/notes-image-gui.mjs
       # Markdown 允许渲染 HTML 后,渲染器就是最主要的 XSS 面:注入点用真浏览器跑,
       # 覆盖 mXSS / SVG 命名空间 / javascript: 混淆等浏览器行为相关的绕过。
       - name: Markdown 渲染安全自检(注入载荷被中和 / 正常 HTML 保留)
