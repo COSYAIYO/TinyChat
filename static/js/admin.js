@@ -4243,6 +4243,7 @@ function mmFmtTokens(v) {
   return escapeHtml(n.toLocaleString('en-US'));
 }
 function mmSourceBadge(item) {
+  if (item.source === 'builtin') return '<span class="mm-src builtin" title="随发布包内置的开箱即用值，同步与清空都不会覆盖">内置</span>';
   if (item.source === 'manual') return '<span class="mm-src manual" title="手工维护，同步不会覆盖">手工</span>';
   if (item.source === 'auto') return '<span class="mm-src auto" title="模型未匹配到本表时自动补的兜底值，需人工复核">自动</span>';
   return '<span class="mm-src sync" title="来自 litellm 价格表">同步</span>';
@@ -4321,7 +4322,7 @@ async function refreshModelMeta() {
       + '<th title="每百万输出 token 的价格，仅作估算参考">输出 $/M</th>'
       + '<th title="每百万缓存读取 token 的价格">缓存读 $/M</th>'
       + '<th title="每百万缓存写入 token 的价格">缓存写 $/M</th>'
-      + '<th title="手工维护的条目不会被 litellm 同步覆盖">来源</th>'
+      + '<th title="内置与手工维护的条目不会被 litellm 同步覆盖">来源</th>'
       + '<th class="mm-ops"></th>'
       + '</tr>';
     const rows = items.map((it) => {

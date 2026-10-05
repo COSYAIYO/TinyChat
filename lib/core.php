@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.131');
+define('TC_VERSION', '2.0.132');
 // 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
 define('TC_NOTE_MAX_CHARS', 500000);
 define('TC_DB_VERSION', 2);
@@ -22,6 +22,10 @@ define('TC_MAIL_TPL_VERSION', 2);
 //   上下文窗口 131072:128K 是当前主流模型的常见窗口,偏保守以免高估小模型。
 define('TC_MODEL_META_AUTO_OUTPUT', 8192);
 define('TC_MODEL_META_AUTO_CONTEXT', 131072);
+
+// 内置模型元数据表的版本。改动 tc_builtin_model_meta() 后 +1:
+// 升级时只补「库里还没有、或仍是自动兜底值」的条目,管理员改过的一律不动。
+define('TC_MODEL_META_BUILTIN_VERSION', 1);
 
 // 默认邮件模板:同一套卡片式外壳,占位符 {siteName} {name} {link} {expires}
 function tc_mail_default_templates() {
@@ -699,7 +703,8 @@ function tc_litellm_index($raw) {
 //   cache_read_input_token_cost -> cacheReadCostPerToken,
 //   cache_creation_input_token_cost -> cacheWriteCostPerToken。
 // 价格统一按「每 token」存(与 litellm 一致),展示时由前端换算成百万 token。
-// source 三态:
+// source 四态:
+//   builtin —— 内置的开箱即用值(见 tc_builtin_model_meta),同步与清空都不动它;
 //   manual —— 管理员手工维护,同步不覆盖;
 //   litellm —— 从公开价格表同步;
 //   auto   —— 模型没匹配到本表时自动补的兜底值,带 needsReview 待人工复核。
@@ -724,7 +729,7 @@ function tc_normalize_model_meta_item($raw) {
     $cWrite = $num(isset($raw['cacheWriteCostPerToken']) ? $raw['cacheWriteCostPerToken'] : null, 0, 1000);
     if ($input === 0 && $output === 0 && $pIn <= 0 && $pOut <= 0 && $cRead <= 0 && $cWrite <= 0) return null;
     $srcRaw = isset($raw['source']) ? (string) $raw['source'] : '';
-    $source = in_array($srcRaw, array('manual', 'auto'), true) ? $srcRaw : 'litellm';
+    $source = in_array($srcRaw, array('builtin', 'manual', 'auto'), true) ? $srcRaw : 'litellm';
     return array(
         'maxInputTokens' => $input,
         'maxOutputTokens' => $output,
@@ -758,11 +763,38 @@ function tc_normalize_model_meta($raw) {
     return $out;
 }
 
-// 取某模型的元数据;找不到返回 null。$onlyEnabled=true 时忽略已停用条目。
-function tc_model_meta_get($db, $model, $onlyEnabled = true) {
+// 解析模型名命中的元数据键(唯一匹配入口),找不到返回 null。
+//   1) 先精确命中:去空格转小写后与键完全一致;
+//   2) 精确没有时做「包含匹配」:渠道常给同一个模型加前缀或后缀
+//      (XXX/deepseek-flash、deepseek-flash-2026、deepseek-flash:free),
+//      名字里含该键即视为同一模型。
+// 包含匹配要求命中处两侧是「非字母数字」边界(串首/串尾、/ - _ . : 空格 等),
+// 否则 gpt-4 会把 gpt-4o 抢走 —— 这种误配会静默套用错误的窗口,比不命中更危险。
+// 多个键同时被包含时取最长(最具体)的那个,保证 gemini-2.5-flash-lite 不被
+// gemini-2.5-flash 截胡;精确键即使已停用也直接返回它(由调用方按 enabled 判定),
+// 不再退到更宽的包含匹配上。
+function tc_model_meta_resolve($db, $model) {
     if (!isset($db['modelMeta']) || !is_array($db['modelMeta'])) return null;
     $key = tc_model_meta_key($model);
-    if ($key === '' || !isset($db['modelMeta'][$key])) return null;
+    if ($key === '') return null;
+    if (isset($db['modelMeta'][$key])) return $key;
+    $best = null; $bestLen = 0;
+    foreach (array_keys($db['modelMeta']) as $k) {
+        $k = (string) $k;
+        $len = strlen($k);
+        // 长度下限 2:兼顾 o1/o3 这类短名;单字符键信息量太低,不参与包含匹配
+        if ($len < 2 || $len <= $bestLen) continue;
+        if (strpos($key, $k) === false) continue;
+        if (!preg_match('/(?<![a-z0-9])' . preg_quote($k, '/') . '(?![a-z0-9])/', $key)) continue;
+        $best = $k; $bestLen = $len;
+    }
+    return $best;
+}
+
+// 取某模型的元数据;找不到返回 null。$onlyEnabled=true 时忽略已停用条目。
+function tc_model_meta_get($db, $model, $onlyEnabled = true) {
+    $key = tc_model_meta_resolve($db, $model);
+    if ($key === null) return null;
     $item = $db['modelMeta'][$key];
     if ($onlyEnabled && empty($item['enabled'])) return null;
     return $item;
@@ -779,6 +811,8 @@ function tc_model_meta_caps($meta) {
 
 // 模型加进供应商后,若元数据表里还没有它,自动补一条兜底值并标记「待人工复核」。
 // 让新加的模型立刻出现在「模型元数据」表里(而不是静默沿用兜底值),便于管理员核对修正。
+// 名字能被现有条目包含匹配到(如 XXX/deepseek-flash 命中 deepseek-flash)时不补 ——
+// 复用已有条目的窗口/价格,避免同一模型在表里出现两条互相矛盾的数据。
 function tc_model_meta_ensure_auto(&$db, $models) {
     if (!isset($db['modelMeta']) || !is_array($db['modelMeta'])) $db['modelMeta'] = array();
     $added = 0;
@@ -786,6 +820,7 @@ function tc_model_meta_ensure_auto(&$db, $models) {
         $name = is_array($m) ? (isset($m['id']) ? (string) $m['id'] : '') : (string) $m;
         $key = tc_model_meta_key($name);
         if ($key === '' || strlen($key) > 200 || isset($db['modelMeta'][$key])) continue;
+        if (tc_model_meta_resolve($db, $name) !== null) continue;
         $db['modelMeta'][$key] = tc_normalize_model_meta_item(array(
             'maxInputTokens' => TC_MODEL_META_AUTO_CONTEXT,
             'maxOutputTokens' => TC_MODEL_META_AUTO_OUTPUT,
@@ -798,6 +833,77 @@ function tc_model_meta_ensure_auto(&$db, $models) {
         if (count($db['modelMeta']) >= 20000) break;
     }
     return $added;
+}
+
+// 内置的模型元数据表:常见模型的开箱即用值,省得管理员逐个手工录入。
+// 价格按「每百万 token」书写(贴近各家报价习惯),取数时统一 /1e6 转「每 token」,
+// 与 litellm 的存储口径一致;窗口/输出上限直接按 token 填。
+// 币种:全表统一按美元(USD)录入,与后台「$/M」展示口径一致;DeepSeek/Agnes
+// 的官方人民币报价已按美元值填入,不在这里做任何汇率换算。
+// 空值(如 Grok 未公布输出上限、Agnes 未公布缓存写价)填 0,取数处按 0 视为未配置。
+function tc_builtin_model_meta() {
+    $perM = function ($v) { return ((float) $v) / 1000000; };
+    $row = function ($ctx, $out, $in, $outCost, $read, $write) use ($perM) {
+        return array(
+            'maxInputTokens' => (int) $ctx,
+            'maxOutputTokens' => (int) $out,
+            'inputCostPerToken' => $perM($in),
+            'outputCostPerToken' => $perM($outCost),
+            'cacheReadCostPerToken' => $perM($read),
+            'cacheWriteCostPerToken' => $perM($write),
+        );
+    };
+    return array(
+        'gpt-6-astra' => $row(1050000, 128000, 10, 50, 1, 12.5),
+        'gpt-6.1-sol' => $row(1050000, 128000, 2, 10, 0.1, 2.5),
+        'gpt-6-luna' => $row(1050000, 128000, 0.1, 0.5, 0.01, 0.13),
+        'gpt-6-sol' => $row(1050000, 128000, 2, 10, 0.2, 2.5),
+        'gpt-5.6-sol' => $row(1050000, 128000, 4, 20, 0.4, 5),
+        'gpt-5.6-terra' => $row(1050000, 128000, 2, 12, 0.2, 2.5),
+        'gpt-5.6-luna' => $row(1050000, 128000, 0.2, 1.2, 0.02, 0.25),
+        'deepseek-flash' => $row(1000000, 384000, 0.3, 1.2, 0.04, 0),
+        'deepseek-v4-pro' => $row(1000000, 384000, 1.32, 3.96, 0.3, 0),
+        'deepseek-v4-flash' => $row(1000000, 384000, 0.3, 1.2, 0.04, 0),
+        'deepseek-v4-flash-vision-exp' => $row(1000000, 384000, 0.3, 1.2, 0.04, 0),
+        'grok-4.7' => $row(500000, 0, 2, 6, 0.5, 0),
+        'grok-4.6' => $row(500000, 0, 2, 6, 0.5, 0),
+        'gemini-3.8-flash' => $row(1048576, 65536, 0.75, 3.75, 0.08, 0.5),
+        'gemini-3.7-flash' => $row(1048576, 65536, 0.75, 3.75, 0.08, 0.5),
+        'gemini-3.1-pro-preview' => $row(1048576, 65536, 2, 12, 0.2, 4.5),
+        'gemini-2.5-pro' => $row(1048576, 65536, 1.25, 10, 0.13, 4.5),
+        'gemini-2.5-flash' => $row(1048576, 65536, 0.3, 2.5, 0.03, 1),
+        'gemini-2.5-flash-lite' => $row(1048576, 65536, 0.1, 0.4, 0.01, 1),
+        'agnes-3.0-flash' => $row(500000, 65536, 0, 0, 0, 0),
+        'agnes-2.5-flash' => $row(500000, 65536, 0, 0, 0, 0),
+        'agnes-2.5-pro' => $row(1000000, 65536, 0.45, 0.9, 0.05, 0),
+        'agnes-3.0-pro' => $row(1000000, 65536, 0.45, 0.9, 0.05, 0),
+        'agnes-2.0-flash' => $row(256000, 65536, 0, 0, 0, 0),
+    );
+}
+
+// 把内置元数据补进库。三条规则:
+//   1) 库里没有 → 新增(source=builtin);
+//   2) 库里是 auto(source=auto,即「没数据时自动补的兜底值」)→ 用内置真实值替换;
+//   3) 库里是 manual/litellm/builtin → 一律不动(管理员改过的、同步来的真实数据优先)。
+// 返回新增或替换的条数。可重复调用:第二次起不会再有 auto 条目被替换。
+function tc_model_meta_seed_builtin(&$db) {
+    if (!isset($db['modelMeta']) || !is_array($db['modelMeta'])) $db['modelMeta'] = array();
+    $n = 0;
+    foreach (tc_builtin_model_meta() as $name => $row) {
+        $key = tc_model_meta_key($name);
+        if ($key === '') continue;
+        $cur = isset($db['modelMeta'][$key]) && is_array($db['modelMeta'][$key]) ? $db['modelMeta'][$key] : null;
+        if ($cur !== null && (string) (isset($cur['source']) ? $cur['source'] : '') !== 'auto') continue;
+        $item = tc_normalize_model_meta_item(array_merge($row, array(
+            'source' => 'builtin',
+            'enabled' => true,
+            'updatedAt' => tc_now(),
+        )));
+        if ($item === null) continue;
+        $db['modelMeta'][$key] = $item;
+        $n++;
+    }
+    return $n;
 }
 
 function tc_normalize_settings($raw) {
@@ -1556,6 +1662,13 @@ function tc_migrate_db($raw) {
         }
     }
     $db['settingsMigrated52'] = true;
+    // 内置模型元数据(v2.0.132):常见模型的窗口/输出上限/价格开箱即用,
+    // 省去管理员逐条手工录入。放在下面的 119 迁移之前:这样内置值先落库,
+    // 119 就不会再为这些模型补「自动兜底」条目。用版本号做标记,便于以后扩表。
+    if ((int) (isset($db['modelMetaBuiltinVersion']) ? $db['modelMetaBuiltinVersion'] : 0) < TC_MODEL_META_BUILTIN_VERSION) {
+        tc_model_meta_seed_builtin($db);
+        $db['modelMetaBuiltinVersion'] = TC_MODEL_META_BUILTIN_VERSION;
+    }
     // 上限来源统一迁移(v2.0.119):此前 max_tokens/最大上下文可在「供应商模型项」与
     // 「对话设置」两处各配一份,现全部收归「模型元数据」表。这里的迁移保证存量配置不丢:
     //   1) 供应商里手填的 maxTokens/maxContext 写进元数据表(标 manual,不被同步覆盖);
@@ -1598,7 +1711,8 @@ function tc_migrate_db($raw) {
         $missing = array();
         foreach (array_unique($enabledModels) as $name) {
             $key = tc_model_meta_key($name);
-            if ($key !== '' && !isset($db['modelMeta'][$key])) $missing[] = $name;
+            // 精确或包含匹配到现有条目的不补:渠道给模型加前缀/后缀时复用原条目
+            if ($key !== '' && !isset($db['modelMeta'][$key]) && tc_model_meta_resolve($db, $name) === null) $missing[] = $name;
         }
         if ($missing) {
             if ($legacyGlobalOut > 0) {
