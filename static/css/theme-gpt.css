@@ -438,10 +438,13 @@ html[data-oc-theme="chatgpt"] .visual-actions .code-copy:hover {
   color: var(--text);
 }
 
-/* ---------- 12. 空态:大标题 + 一排描边胶囊 ---------- */
-/* 空态是打开应用第一眼看到的东西,默认外观是无框的图标 + 文字网格,一眼看过去
-   和 ChatGPT 的「建议胶囊」完全不同。这里给每个建议加一层极浅的描边、做成胶囊,
-   并把图标收小一档(28px → 20px),让文字成为主体。 */
+/* ---------- 12. 空态:只有标题与一句说明 ---------- */
+/* ChatGPT 的空态就是一个居中的标题,没有任务启动器;默认外观那九个预设
+   (润色改写 / 中英翻译 / …)是 TinyChat 自己的功能入口,九宫格铺在正中间,
+   一眼就是「这不是 ChatGPT」。这个主题下整块隐藏 —— 它们不是被删掉,
+   只是在这个外观里不出现,切回默认主题原样回来。
+   「暂无可用的 API 供应商」那行提示是另一处(.empty-hint),没有跟着藏:
+   它说的是「现在还不能用」,藏了会让人找不到原因。 */
 /* chrome.css 把 .empty-state h2 钉在 --fs-display(20px)上,ID 选择器带 !important 才压得住 */
 html[data-oc-theme="chatgpt"] #empty-title {
   font-size: 1.714rem !important;
@@ -449,26 +452,11 @@ html[data-oc-theme="chatgpt"] #empty-title {
   letter-spacing: 0;
 }
 html[data-oc-theme="chatgpt"] .empty-lead { font-size: 1rem; color: var(--text-secondary); }
-html[data-oc-theme="chatgpt"] .empty-suggests { gap: 10px; }
-html[data-oc-theme="chatgpt"] .empty-suggest {
-  gap: 10px;
-  justify-content: flex-start;
-  padding: 10px 16px;
-  border: 1px solid var(--hairline);
-  border-radius: 999px;
-  background: transparent;
-  box-shadow: none;
-}
-html[data-oc-theme="chatgpt"] .empty-suggest:hover {
-  background: var(--bg-hover);
-  border-color: var(--hairline-strong);
-}
-html[data-oc-theme="chatgpt"] .empty-suggest .es-icon,
-html[data-oc-theme="chatgpt"] .empty-suggest .es-icon svg {
-  width: 20px;
-  height: 20px;
-}
-html[data-oc-theme="chatgpt"] .es-title { font-size: 0.929rem; }
+html[data-oc-theme="chatgpt"] .empty-suggests { display: none; }
+/* 九个预设占掉的正是中间那块高度,藏了之后剩下的标题块会贴在顶部、下面空一大片。
+   默认的 8vh 是按「有预设」调的位置,这里补回到可见区域的视觉中心附近
+   (输入框是悬浮的,留白要算到 composer 之上,所以不是简单的 50vh)。 */
+html[data-oc-theme="chatgpt"] .empty-state { padding-top: 22vh; }
 
 /* ---------- 13. 侧栏:行更高、留白更多 ---------- */
 /* 默认外观侧栏行高 32~34px,排得比较密;ChatGPT 的行更舒展,品牌行也弱一些 */
@@ -541,4 +529,21 @@ html[data-oc-theme="chatgpt"] .scroll-bottom-btn {
 @media (max-width: 768px) {
   html[data-oc-theme="chatgpt"] .chat-area { padding-bottom: 168px; }
   html[data-oc-theme="chatgpt"] .scroll-bottom-btn { bottom: 166px; }
+}
+
+/* ---------- 16. 品牌 logo:去色 ---------- */
+/* 站点 logo 是 #2EC5FF → #6A5CFF 的蓝紫渐变字标,整套黑白主题里就剩它一处彩色,
+   一眼就跳出来。灰度化之后两个色标的明度差还在,渐变依然看得出层次,但颜色收进
+   中性灰,和主题的单色语气一致。
+   只圈站点自己的 logo:logos.js 给站点 logo 的输出带 brand-logo-light/dark 类,
+   第三方模型图标走的是普通类名,不会被这条规则误伤。
+   深浅两套 logo(logo.svg / logo-dark.svg)都要盖住 —— 登录页、分享页、空态、
+   侧栏、笔记侧栏、以及模型选择器里站点 logo 的兜底位置都是同一批类名。 */
+html[data-oc-theme="chatgpt"] .brand-logo,
+html[data-oc-theme="chatgpt"] .brand-logo-light,
+html[data-oc-theme="chatgpt"] .brand-logo-dark,
+html[data-oc-theme="chatgpt"] .empty-logo-img,
+html[data-oc-theme="chatgpt"] .avatar-logo-img,
+html[data-oc-theme="chatgpt"] .empty-logo .oc-icon {
+  filter: grayscale(1);
 }

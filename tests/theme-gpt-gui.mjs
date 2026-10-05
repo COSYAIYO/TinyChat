@@ -246,11 +246,35 @@ check('悬停后操作条浮现', (await css('.msg.assistant .msg-actions', 'opa
 await page.mouse.move(5, 5);
 await sleep(300);
 
-console.log('== 5. 空态:描边胶囊 ==');
+console.log('== 5. 空态:只剩标题,九个预设整块隐藏 ==');
 const titleFs = await css('#empty-title', 'font-size');
-check('建议项是胶囊(999px)', (await css('.empty-suggest', 'border-radius')) === '999px', await css('.empty-suggest', 'border-radius'));
-check('建议项有描边', (await css('.empty-suggest', 'border-top-width')) === '1px');
 check('空态标题 24px(--fs-display 是 !important,ID 选择器才压得住)', near(titleFs, 24), titleFs);
+check('九个预设整块隐藏', (await css('.empty-suggests', 'display')) === 'none', await css('.empty-suggests', 'display'));
+check('隐藏的是容器,九个按钮确实都不在', (await page.evaluate(() => {
+  const box = document.querySelector('#empty-suggests');
+  if (!box) return 'MISSING';
+  return box.getBoundingClientRect().height === 0 && box.querySelectorAll('.empty-suggest').length > 0;
+})) === true);
+check('空态标题与说明还在', (await box('#empty-title')) !== null && (await box('.empty-lead')) !== null);
+
+console.log('== 5b. 品牌 logo 去色 ==');
+const logoFilter = await css('.sidebar-brand .brand-logo-light', 'filter');
+check('侧栏 logo 带灰度滤镜', /grayscale\(1\)/.test(logoFilter), logoFilter);
+check('空态 logo 同样去色', /grayscale\(1\)/.test(await css('.empty-logo-img', 'filter')), await css('.empty-logo-img', 'filter'));
+// 灰度只该落在站点 logo 上:正文里的图片必须保持原色(选择器写宽了就会全灰)
+const imgFilter = await page.evaluate(() => {
+  const p = document.querySelector('.msg.assistant .md-prose');
+  if (!p) return 'MISSING';
+  let img = p.querySelector('img.zz-probe');
+  if (!img) {
+    img = document.createElement('img');
+    img.className = 'zz-probe';
+    img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
+    p.appendChild(img);
+  }
+  return getComputedStyle(img).filter;
+});
+check('正文图片不受灰度影响', imgFilter === 'none', imgFilter);
 
 console.log('== 6. 输入区:两行式,且与消息列同宽 ==');
 // @ 行只在选中助手时存在,而它与 textarea 首行是「同一行盒」的约定 ——
@@ -315,7 +339,8 @@ check('消息区留白回到 132px', (await css('.chat-area', 'padding-bottom'))
 check('操作条恢复常驻', (await css('.msg.assistant .msg-actions', 'opacity')) === '1');
 check('表头恢复默认底色', (await css('.msg.assistant .md-prose .table-wrap table th', 'background-color')) !== 'rgba(0, 0, 0, 0)',
   await css('.msg.assistant .md-prose .table-wrap table th', 'background-color'));
-check('建议项恢复默认圆角', (await css('.empty-suggest', 'border-radius')) === '12px', await css('.empty-suggest', 'border-radius'));
+check('九个预设恢复显示', (await css('.empty-suggests', 'display')) !== 'none', await css('.empty-suggests', 'display'));
+check('logo 灰度滤镜已撤掉', (await css('.sidebar-brand .brand-logo-light', 'filter')) === 'none', await css('.sidebar-brand .brand-logo-light', 'filter'));
 
 check('无页面 JS 报错', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '));
 
