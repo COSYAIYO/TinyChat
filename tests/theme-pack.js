@@ -62,6 +62,41 @@ packs.forEach((p) => {
   check('主题 ' + p.id + ' 带预览配色', !!(p.swatch && p.swatch.light && p.swatch.dark));
 });
 
+// 收集样式表里全部会生效的选择器。
+// 递归下钻:@media / @supports 这类容器块自己不是选择器,但它内部的规则同样是会生效的
+// 规则,必须一并校验 —— 只扫顶层的话,容器里写什么都能溜过自检。
+function scanSelectors(css) {
+  const selectors = [];
+  const scan = (text) => {
+    let buf = '';
+    let i = 0;
+    while (i < text.length) {
+      const ch = text[i];
+      if (ch === '}') { buf = ''; i++; continue; }
+      if (ch !== '{') { buf += ch; i++; continue; }
+      const sel = buf.trim();
+      buf = '';
+      let depth = 1;
+      let j = i + 1;
+      while (j < text.length && depth > 0) {
+        if (text[j] === '{') depth++;
+        else if (text[j] === '}') depth--;
+        j++;
+      }
+      const body = text.slice(i + 1, j - 1);
+      if (sel) {
+        // @keyframes 内部是 0%/from/to 这类关键帧选择器,不是规则,跳过整块
+        if (/^@(-\w+-)?keyframes\b/.test(sel)) { /* 跳过 */ }
+        else if (sel.charAt(0) === '@') scan(body);
+        else selectors.push(sel);
+      }
+      i = j;
+    }
+  };
+  scan(css);
+  return selectors;
+}
+
 console.log('== 2. 主题样式表 ==');
 const themed = packs.filter((p) => p.css);
 check('至少有一个非默认主题', themed.length > 0);
@@ -75,19 +110,8 @@ themed.forEach((p) => {
   check(p.id + ': 文件名不含 WAF 关键词', hit.length === 0, '命中 ' + hit.join(','));
   if (!fs.existsSync(srcPath)) return;
 
-  // 每条选择器都必须带属性前缀,否则会漏进默认外观
   const css = fs.readFileSync(srcPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
-  const selectors = [];
-  let depth = 0;
-  let buf = '';
-  for (const ch of css) {
-    if (ch === '{') {
-      const sel = buf.trim();
-      buf = '';
-      depth++;
-      if (depth === 1 && sel) selectors.push(sel);
-    } else if (ch === '}') { depth--; buf = ''; } else if (depth === 0) buf += ch;
-  }
+  const selectors = scanSelectors(css);
   const prefixed = 'html[data-oc-theme="' + p.id + '"]';
   const leaked = selectors
     .flatMap((s) => s.split(','))
@@ -98,6 +122,18 @@ themed.forEach((p) => {
   check(p.id + ': 定义了浅色与深色调色板',
     css.indexOf(prefixed + ' {') >= 0 && css.indexOf(prefixed + '[data-theme="dark"]') >= 0);
 });
+
+// 反向断言:上面那条「全部限定在前缀下」只有在扫描器真的能看见选择器时才有意义。
+// 这里喂一段同时含顶层规则、@media 内规则与 @keyframes 的样式,验证前两者被收进
+// 结果、关键帧不被误当成选择器。
+const probe = scanSelectors(
+  'html[data-oc-theme="x"] .a{color:red}' +
+  '@media (hover:hover){html[data-oc-theme="x"] .b{color:red}.leak{color:red}}' +
+  '@keyframes spin{0%{opacity:0}to{opacity:1}}'
+);
+check('反向断言:扫描器能看见顶层与 @media 内的选择器、且不误收关键帧',
+  probe.length === 3 && probe.indexOf('.leak') >= 0 && probe.indexOf('0%') < 0,
+  JSON.stringify(probe));
 
 console.log('== 3. 启用后确实注入样式表 ==');
 const on = loadPacks({ themePack: themed.length ? themed[0].id : 'default' });
