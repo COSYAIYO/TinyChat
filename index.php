@@ -72,7 +72,9 @@ if ($method === 'GET' || $method === 'HEAD') {
     $pages = array(
         '/' => 'index.html',
         '/index.html' => 'index.html',
-        '/chat' => 'index.html',
+        // 会话页别名。用 /app 而非 /chat:部分虚拟主机(如 InfinityFree)的边缘 WAF
+        // 会拦截路径里含 "chat" 的请求,连路由地址也一样,用户会撞上主机的 403 页。
+        '/app' => 'index.html',
         // AI 笔记独立地址:刷新后仍停留在笔记页(前端 boot 时检测该路径自动打开)
         '/ainotes' => 'index.html',
         '/login' => 'login.html',
