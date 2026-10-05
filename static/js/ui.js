@@ -147,6 +147,28 @@
     return value;
   };
   UI.onPrefsChange = function (fn) { prefListeners.push(fn); };
+  // 整批写入偏好(设置云同步应用云端设置时使用):与 setPref 一样标记 touched
+  // (云端值来自用户自己的选择,默认值迁移不得再覆盖),并统一通知订阅者一次,
+  // key 传 null 表示「批量变更」,订阅者据此区分是否为单键操作。
+  UI.setPrefsBulk = function (obj) {
+    if (!obj || typeof obj !== 'object') return false;
+    const p = loadPrefs();
+    const keys = Object.keys(obj);
+    let changed = false;
+    keys.forEach((k) => { if (p[k] !== obj[k]) { p[k] = obj[k]; changed = true; } });
+    if (!changed) return false;
+    try { localStorage.setItem(PREF_KEY, JSON.stringify(p)); } catch (e) { /* 存储不可用 */ }
+    try {
+      const t = JSON.parse(localStorage.getItem(PREF_TOUCHED_KEY) || '[]');
+      const arr = Array.isArray(t) ? t.map((x) => String(x)) : [];
+      keys.forEach((k) => { if (arr.indexOf(String(k)) < 0) arr.push(String(k)); });
+      localStorage.setItem(PREF_TOUCHED_KEY, JSON.stringify(arr));
+    } catch (e) { /* 存储不可用 */ }
+    prefListeners.forEach((fn) => { try { fn(null, undefined, p); } catch (e) {} });
+    return true;
+  };
+  // 丢弃内存缓存:换账号登录(设置云同步)时先清掉上一个账号的偏好,下次读取回到默认值
+  UI.resetPrefs = function () { prefs = null; };
 
   // ============ Toast ============
   function toastHost() {
@@ -683,6 +705,7 @@ UI.toggleTheme = function () {
       map[name] = cssText;
       localStorage.setItem(CUSTOM_FONT_KEY, JSON.stringify(map));
       applyCustomFonts();
+      if (window.OCSettingsSync) window.OCSettingsSync.syncFonts();
       return true;
     } catch (e) { return false; }
   };
@@ -696,6 +719,7 @@ UI.toggleTheme = function () {
       delete map[name];
       localStorage.setItem(CUSTOM_FONT_KEY, JSON.stringify(map));
       applyCustomFonts();
+      if (window.OCSettingsSync) window.OCSettingsSync.syncFonts();
     } catch (e) {}
   };
   function applyCustomFonts() {

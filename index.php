@@ -181,6 +181,9 @@ function tc_dispatch($method, $path) {
         // AI 笔记:整文档同步 / 附件上传与签名输出 / 分享链接(实时读取,支持 edit-link)
         array('GET', '#^/api/sync/notes$#', 'tc_api_notes_get'),
         array('POST', '#^/api/sync/notes$#', 'tc_api_notes_save'),
+        // 用户设置云同步:界面偏好/外观/群聊配置/生成参数(整文档 + 乐观并发,换设备免重设)
+        array('GET', '#^/api/sync/settings$#', 'tc_api_sync_get_settings'),
+        array('POST', '#^/api/sync/settings$#', 'tc_api_sync_save_settings'),
         array('POST', '#^/api/notes/upload$#', 'tc_api_note_attachment_upload'),
         array('GET', '#^/api/notes/file$#', 'tc_api_note_attachment_serve'),
         array('DELETE', '#^/api/notes/file$#', 'tc_api_note_attachment_delete'),

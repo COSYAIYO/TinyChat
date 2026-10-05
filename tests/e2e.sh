@@ -1648,6 +1648,29 @@ curl -s -X POST "$BASE/api/admin/users" -H "$AUTH" -H "Content-Type: application
 NMT=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"notemate","password":"notemate123"}' | jget token)
 assert_contains "其他已登录用户访问附件被拒" "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $NMT" "$BASE$FURL")" "404"
 
+# 浏览器加载正文里的 <img>/<a> 不会带 Authorization 头(登录态是 localStorage 里的
+# Bearer 令牌,不是 Cookie),所以任一「已鉴权请求」都会补发一枚只对该路由有效的
+# 附件 Cookie;没有它,笔记预览区永远是裂图(浏览器侧验证见 tests/notes-image-gui.mjs)。
+CKJAR="$TMP/ck-admin.txt"
+CKHDR=$(curl -s -D - -o /dev/null -c "$CKJAR" -H "$AUTH" "$BASE/api/auth/me")
+assert_has "已鉴权请求补发附件 Cookie" "$CKHDR" 'tc_note_attach='
+assert_contains "Cookie 作用路径收窄到附件路由" "$CKHDR" 'path=/api/notes/file'
+assert_contains "Cookie 为 HttpOnly(脚本读不到)" "$CKHDR" 'HttpOnly'
+assert_contains "只带附件 Cookie 即可读取自己的附件" "$(curl -s -o /dev/null -w '%{http_code}' -b "$CKJAR" "$BASE$FURL")" "200"
+# 写操作仍只认请求头:Cookie 不能用来删附件(否则等于给跨站请求开了口子)
+CKDEL=$( ( cd "$TMP" && curl -s -X POST "$BASE/api/notes/upload" -H "$AUTH" -F "file=@pixel.png;type=image/png" ) )
+CKDELID=$(printf '%s' "$CKDEL" | jget id)
+CKDELURL=$(printf '%s' "$CKDEL" | jget url | sed 's#\\/#/#g')
+assert_contains "附件 Cookie 不能用于删除" "$(curl -s -o /dev/null -w '%{http_code}' -b "$CKJAR" -X DELETE "$BASE/api/notes/file?id=$CKDELID")" "401"
+assert_contains "附件仍在自己名下(未被上面的 Cookie 删除)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH" "$BASE$CKDELURL")" "200"
+# 他人的附件 Cookie 换不来本附件的读取权限
+NCJAR="$TMP/ck-mate.txt"
+curl -s -o /dev/null -c "$NCJAR" -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"notemate","password":"notemate123"}'
+assert_contains "他人附件 Cookie 不能读取本附件" "$(curl -s -o /dev/null -w '%{http_code}' -b "$NCJAR" "$BASE$FURL")" "404"
+# 退出登录即作废:共享设备换人后不能靠旧 Cookie 继续读
+curl -s -o /dev/null -b "$CKJAR" -c "$CKJAR" -X POST "$BASE/api/auth/logout" -H "$AUTH"
+assert_contains "退出登录后附件 Cookie 失效" "$(curl -s -o /dev/null -w '%{http_code}' -b "$CKJAR" "$BASE$FURL")" "404"
+
 # 附件按用户 ID 分目录存储(不再堆在单一目录)
 NSDIR=$(ls "$TMP/data/notes" 2>/dev/null | grep -v '^index.json$' | head -1)
 if [ -n "$NSDIR" ]; then ok "附件按用户 ID 分目录存储($NSDIR)"; else bad "附件按用户 ID 分目录存储"; fi
@@ -1860,6 +1883,53 @@ else bad "建测试供应商失败"; fi
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesAiDailyLimit":50}' > /dev/null
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":true}' > /dev/null
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"notesShareBodyOnly":true}' > /dev/null
+
+
+say "== 用户设置云同步 =="
+# 未登录访问被拒
+assert_contains "设置同步需要登录" "$(curl -s "$BASE/api/sync/settings")" '未登录'
+SET0=$(curl -s "$BASE/api/sync/settings" -H "$AUTH")
+assert_has "初始偏好表为空" "$SET0" '"prefs":{}'
+assert_contains "初始修订号为 0" "$SET0" '"revision":0'
+assert_contains "默认开启设置云同步" "$SET0" '"syncSettings":true'
+# 推送一份设置:偏好 + 布局 + 群聊 + 自定义字体 + 时间戳;故意混入越界值与垃圾键
+cat > "$TMP/settings1.json" <<'EOF'
+{"baseRevision":0,"settings":{"v":1,"prefs":{"theme":"dark","fontSize":18,"contextMessages":9999,"bogus":{"a":1},"futureFlag":true},"ui":{"sidebarWidth":320,"composerMode":"group","nope":"x"},"groups":{"groups":[{"id":"g1","name":"问题研讨","mode":"round","participants":[{"id":"p1","name":"群主","prompt":"你是群主","admin":true}]}],"activeId":"g1"},"fonts":{"我的字体":"@font-face{font-family:\"X\"}"},"tombs":{"groups.gone":1700000000000},"at":{"prefs.theme":1700000000000}}}
+EOF
+SS1=$(curl -s -X POST "$BASE/api/sync/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/settings1.json")
+assert_contains "设置推送成功" "$SS1" '"revision":1'
+SET1=$(curl -s "$BASE/api/sync/settings" -H "$AUTH")
+assert_contains "云端保存主题" "$SET1" '"theme":"dark"'
+assert_contains "云端保存字号" "$SET1" '"fontSize":18'
+assert_contains "云端保存布局宽度" "$SET1" '"sidebarWidth":320'
+assert_contains "云端保存模式" "$SET1" '"composerMode":"group"'
+assert_contains "云端保存群聊配置" "$SET1" '问题研讨'
+assert_contains "云端保存自定义字体" "$SET1" '我的字体'
+assert_has "云端保留逐键时间戳" "$SET1" 'prefs.theme'
+assert_has "云端保留删除墓碑" "$SET1" 'groups.gone'
+assert_contains "越界数值被收敛" "$SET1" '"contextMessages":500'
+if printf '%s' "$SET1" | grep -q '"bogus"'; then bad "非标量垃圾键被写入云端"; else ok "非标量垃圾键被丢弃"; fi
+if printf '%s' "$SET1" | grep -q '"nope"'; then bad "未白名单的界面键被写入云端"; else ok "未白名单的界面键被丢弃"; fi
+# baseRevision 过期 → 409 并带回云端设置
+cat > "$TMP/settings-stale.json" <<'EOF'
+{"baseRevision":0,"settings":{"prefs":{"theme":"light"}}}
+EOF
+STALES=$(curl -s -X POST "$BASE/api/sync/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/settings-stale.json")
+assert_contains "过期修订号冲突返回 409" "$STALES" '设置已在其他设备更新'
+assert_contains "冲突响应带回云端设置" "$STALES" '"theme":"dark"'
+# 以最新修订号重推:成功且旧值被更新
+SETREV=$(curl -s "$BASE/api/sync/settings" -H "$AUTH" | jget revision)
+cat > "$TMP/settings2.json" <<EOF
+{"baseRevision":$SETREV,"settings":{"prefs":{"theme":"light","fontSize":16}}}
+EOF
+assert_contains "按最新修订号重推成功" "$(curl -s -X POST "$BASE/api/sync/settings" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/settings2.json")" '"ok":true'
+assert_contains "重推后取到新值" "$(curl -s "$BASE/api/sync/settings" -H "$AUTH")" '"theme":"light"'
+# 站点关闭设置云同步:接受请求但不落库(隐私开关,与 persistChats 同语义)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"syncSettings":false}' > /dev/null
+OFF=$(curl -s -X POST "$BASE/api/sync/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"baseRevision":0,"settings":{"prefs":{"theme":"dark"}}}')
+assert_contains "关闭后推送被忽略" "$OFF" '"syncSettings":false'
+assert_contains "关闭后不写库" "$(curl -s "$BASE/api/sync/settings" -H "$AUTH")" '"theme":"light"'
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"syncSettings":true}' > /dev/null
 
 
 say ""

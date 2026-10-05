@@ -44,6 +44,10 @@ window.OCState = state;
 function uiPref(key, def) {
   return (window.OCUI && window.OCUI.getPref(key) !== undefined) ? window.OCUI.getPref(key) : def;
 }
+// 设置云同步:本机改动记时间戳并防抖推送(模块未加载时静默跳过)
+function syncTouch(field) {
+  if (window.OCSettingsSync) window.OCSettingsSync.touchUi(field);
+}
 function streamEnabled() { return !!uiPref('stream', true); }
 function followUpsEnabled() { return !!uiPref('followups', true); }
 function autoTitleEnabled() { return !!uiPref('autotitle', true); }
@@ -4178,18 +4182,30 @@ function logout() {
   const chip = $('account-chip');
   if (chip) { chip.classList.remove('menu-open'); chip.setAttribute('aria-expanded', 'false'); }
   // 先让服务端吊销会话(审计留痕、token 立即失效),再清本地跳转
+  let finished = false;
   const done = () => {
+    if (finished) return;
+    finished = true;
     localStorage.removeItem('oc_token');
     localStorage.removeItem('oc_user');
     location.href = apiUrl('/login');
   };
-  try {
-    fetch(apiUrl('/api/auth/logout'), { method: 'POST', headers: { 'Authorization': 'Bearer ' + (state.token || '') } })
-      .catch(() => {})
-      .finally(done);
-    // 网络异常时也要保证 2s 内完成登出跳转
-    setTimeout(done, 2000);
-  } catch (e) { done(); }
+  const revoke = () => {
+    try {
+      fetch(apiUrl('/api/auth/logout'), { method: 'POST', headers: { 'Authorization': 'Bearer ' + (state.token || '') } })
+        .catch(() => {})
+        .finally(done);
+    } catch (e) { done(); }
+  };
+  // 退出前把还没推上去的设置改动补推一次,再吊销会话(否则 token 先失效会丢掉最后一次改动)
+  if (window.OCSettingsSync) {
+    try { Promise.resolve(window.OCSettingsSync.flushAsync()).catch(() => {}).then(revoke); }
+    catch (e) { revoke(); }
+  } else {
+    revoke();
+  }
+  // 网络异常时也要保证 2s 内完成登出跳转
+  setTimeout(done, 2000);
 }
 
 // ============ 主题切换(委托 OCUI 统一管理;ui.js 未加载时走旧逻辑) ============
@@ -4269,6 +4285,7 @@ function openSettings(tab) {
   try { renderProviderList(); } catch (e) { console.error(e); }
   try { renderAccountPanel(); } catch (e) { console.error(e); }
   try { syncPrefsPanel(); } catch (e) { console.error(e); }
+  try { refreshSettingsSyncStatus(); } catch (e) { console.error(e); }
   try { loadAccountPackages(); } catch (e) { console.error(e); }
   // tab 可能来自事件对象(MouseEvent),必须校验为字符串;不带参数时默认落在「账户」
   switchSettingsTab(typeof tab === 'string' && tab ? tab : 'account');
@@ -4300,6 +4317,86 @@ if (settingsTabsEl) settingsTabsEl.addEventListener('click', (e) => {
 });
 $('settings-close').addEventListener('click', closeSettings);
 modal.addEventListener('click', (e) => { if (e.target === modal) closeSettings(); });
+
+// ============ 设置云同步(面板开关 + 应用回调) ============
+// 云端设置应用后,把依赖偏好的界面重新走一遍:主题/字体/侧栏/群聊/笔记/设置面板回显。
+// 没有这一步,新设备拉回的主题与布局要等下次刷新才生效。
+function applySyncedSettings() {
+  if (window.OCUI) {
+    if (window.OCUI.applyTheme) { try { window.OCUI.applyTheme(null); } catch (e) {} }
+    if (window.OCUI.applyAppearance) { try { window.OCUI.applyAppearance(); } catch (e) {} }
+  }
+  // 侧边栏折叠与宽度
+  const sidebar = $('sidebar');
+  if (sidebar) {
+    const collapsed = localStorage.getItem('oc_sidebar_collapsed') === '1';
+    sidebar.classList.toggle('collapsed', collapsed);
+    const floatBtn = $('sidebar-float-btn');
+    if (floatBtn) floatBtn.classList.toggle('hidden', !collapsed);
+    const w = parseInt(localStorage.getItem('oc_sidebar_width') || '', 10);
+    if (Number.isFinite(w) && w > 0) sidebar.style.setProperty('--sidebar-w', w + 'px');
+  }
+  // 对话列宽度
+  const cw = parseInt(localStorage.getItem('oc_content_width') || '', 10);
+  if (Number.isFinite(cw) && cw > 0) document.documentElement.style.setProperty('--content-w', cw + 'px');
+  // 群聊配置与模式(丢弃内存缓存重新加载)
+  if (window.OCGroup && window.OCGroup.reload) { try { window.OCGroup.reload(); } catch (e) {} }
+  // 笔记界面(动作配置 / 排序 / 分栏宽度 / 悬浮工具条位置)
+  if (window.OCNotes && window.OCNotes.applySyncedSettings) { try { window.OCNotes.applySyncedSettings(); } catch (e) {} }
+  // 设置面板与输入区回显
+  try { syncPrefsPanel(); } catch (e) {}
+  try { syncComposerEffort(); } catch (e) {}
+  try { syncComposerWebSearch(); } catch (e) {}
+  try { updateSendBtn(); } catch (e) {}
+}
+function refreshSettingsSyncStatus(st) {
+  const el = $('pref-sync-status');
+  const box = $('pref-sync-settings');
+  const sync = window.OCSettingsSync;
+  if (!el) return;
+  if (!sync) { el.textContent = '不可用'; return; }
+  const s = st || sync.status();
+  if (box) box.checked = !!s.enabled;
+  if (s.guest) { el.textContent = '游客模式不同步'; return; }
+  if (!s.enabled) { el.textContent = '已在本机关闭（本地设置照常保存）'; return; }
+  if (s.serverDisabled) { el.textContent = '站点已关闭设置云同步'; return; }
+  if (!s.active) { el.textContent = '登录后自动同步'; return; }
+  if (s.syncing || s.dirty) { el.textContent = '同步中…'; return; }
+  if (s.lastError) { el.textContent = '同步失败：' + s.lastError + '（稍后自动重试）'; return; }
+  el.textContent = s.lastSyncAt
+    ? '已同步 ' + new Date(s.lastSyncAt).toLocaleTimeString('zh-CN', { hour12: false })
+    : '已开启';
+}
+(function bindSettingsSyncPanel() {
+  const sync = window.OCSettingsSync;
+  if (!sync) return;
+  sync.onApply(() => { try { applySyncedSettings(); } catch (e) { console.error(e); } });
+  sync.onStatus((s) => { try { refreshSettingsSyncStatus(s); } catch (e) {} });
+  const box = $('pref-sync-settings');
+  if (box) box.addEventListener('change', () => {
+    sync.setEnabled(box.checked);
+    refreshSettingsSyncStatus();
+    toast(box.checked ? '已开启设置云同步' : '已在本机关闭设置云同步，本地设置不受影响');
+  });
+  const nowBtn = $('pref-sync-now');
+  if (nowBtn) nowBtn.addEventListener('click', async () => {
+    if (!sync.isActive()) { toast('登录后可用', true); return; }
+    nowBtn.disabled = true;
+    nowBtn.textContent = '同步中';
+    try {
+      await sync.pull({ force: true });
+      await sync.push();
+      toast('设置已同步');
+    } catch (e) {
+      toast('同步失败，请稍后重试', true);
+    } finally {
+      nowBtn.disabled = false;
+      nowBtn.textContent = '同步';
+      refreshSettingsSyncStatus();
+    }
+  });
+  refreshSettingsSyncStatus();
+})();
 
 // ============ 账户面板 / 偏好面板 ============
 function renderAccountPanel() {
@@ -6006,6 +6103,7 @@ $('admin-link').addEventListener('click', () => location.href = apiUrl('/admin')
   function markSeen() {
     const t = current && current.updatedAt ? current.updatedAt : Date.now();
     try { localStorage.setItem('oc_announcement_seen', String(t)); } catch (e) {}
+    syncTouch('announcementSeen');
   }
   function showAnnouncement(ann) {
     if (!ann || !ann.text) return;
@@ -6777,8 +6875,10 @@ function openImageDialog() {
     if (!prompt) return toast('请输入提示词', true);
     if (!model) return toast('请填写图像模型', true);
     localStorage.setItem('oc_image_model', model);
+    syncTouch('imageModel');
     // 记住「用户实际表达」的规格:像素/档位存 size,宽高比存 ratio,两条入口据此还原
     localStorage.setItem('oc_image_size', spec.ratio || spec.size);
+    syncTouch('imageSize');
     run.disabled = true;
     status.textContent = '生成中，通常需要 10–60 秒…';
     try {
@@ -6968,6 +7068,9 @@ function openVideoDialog() {
     localStorage.setItem('oc_video_model', model);
     localStorage.setItem('oc_video_seconds', String(seconds));
     localStorage.setItem('oc_video_ratio', ratio);
+    syncTouch('videoModel');
+    syncTouch('videoSeconds');
+    syncTouch('videoRatio');
     run.disabled = true;
     status.textContent = '生成中，通常需要 1–5 分钟，请勿关闭页面…';
     try {
@@ -7438,6 +7541,7 @@ function setSidebarCollapsed(collapsed) {
   if (floatBtn) floatBtn.classList.toggle('hidden', !collapsed);
   // 侧边栏头部按钮图标方向
   localStorage.setItem('oc_sidebar_collapsed', collapsed ? '1' : '0');
+  syncTouch('sidebarCollapsed');
 }
 function toggleSidebar() {
   setSidebarCollapsed(!$('sidebar').classList.contains('collapsed'));
@@ -7539,6 +7643,7 @@ function toggleSidebar() {
       const onUp = () => {
         const w = sidebar.getBoundingClientRect().width;
         localStorage.setItem('oc_sidebar_width', String(Math.round(w)));
+        syncTouch('sidebarWidth');
         sidebar.classList.remove('resizing');
         document.body.classList.remove('sidebar-resizing');
         document.removeEventListener('mousemove', onMove);
@@ -7575,7 +7680,7 @@ function toggleSidebar() {
 
     function persist() {
       const cur = parseInt(getComputedStyle(root).getPropertyValue('--content-w'), 10);
-      if (cur >= MIN_W) localStorage.setItem('oc_content_width', String(cur));
+      if (cur >= MIN_W) { localStorage.setItem('oc_content_width', String(cur)); syncTouch('contentWidth'); }
     }
 
     function startDrag(e, side) {
@@ -8471,6 +8576,12 @@ function enterReadonlyHome() {
     if (data.tools) state.tools = data.tools;
     // 启动时必须带上用量数据,否则设置→用量/账户面板在首次刷新前显示为 0
     state.usage = Array.isArray(data.usage) ? data.usage : [];
+    // 设置云同步:先把云端设置(主题/字体/模型选择/群聊配置/生成参数)拉回来并应用,
+    // 再加载供应商与会话 —— 新设备首次打开就是熟悉的样子,不必重新设置一遍。
+    // 失败(离线/接口异常)时继续用本地设置,不影响使用。
+    if (window.OCSettingsSync) {
+      try { await window.OCSettingsSync.init(state.user); } catch (e) { /* 本地设置兜底 */ }
+    }
     renderUser();
     loadChats();
     renderChatList();

@@ -211,6 +211,7 @@
           title.setAttribute('data-tip', (cur ? '收起' : '展开') + g + '对话');
           collapsedMap[g] = !cur;
           try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsedMap)); } catch (e) {}
+          if (window.OCSettingsSync) window.OCSettingsSync.touchUi('chatGroupCollapsed');
         };
         title.addEventListener('click', toggle);
         title.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
