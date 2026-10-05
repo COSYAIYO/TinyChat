@@ -13,7 +13,10 @@
  * 为什么用属性前缀而不是直接覆盖:默认主题必须原样保留(用户明确要求
  * 「当前主题即默认」),所以主题包只能在自己被选中时生效,不能靠加载顺序
  * 去压 chrome.css —— 后者有 200+ 处 !important,靠顺序不可靠;
- * 属性前缀把特异性抬到 (0,2,1) 以上,不需要跟它比 !important。
+ * 属性前缀把特异性抬到 (0,2,1) 以上,绝大多数规则直接压过默认外观。
+ * 少数几处例外:chrome.css 的「字号总表」和 markdown.css 的正文排版把
+ * 字号、表格底色、代码块顶栏写成了 !important,那些声明普通写法一律无效,
+ * 本主题只能同样带 !important(靠属性前缀赢同权重),涉及处均在注释里标明。
  *
  * 配色取自 ChatGPT 现行界面:
  *   浅色 侧栏 #f9f9f9 / 画布 #ffffff / 用户气泡 #f4f4f4 / 主按钮 #0d0d0d
@@ -198,31 +201,110 @@ html[data-oc-theme="chatgpt"] .composer-at { font-weight: 500; }
 html[data-oc-theme="chatgpt"] .send-btn,
 html[data-oc-theme="chatgpt"] .stop-btn { border-radius: 50%; }
 
-/* ---------- 5. 消息:用户气泡统一大圆角,助手不加装饰 ---------- */
+/* ---------- 5. 消息:助手整栏通排,用户大圆角气泡 ---------- */
+/* 助手回复不带头像、也不缩进:默认外观里那个圆头像加缩进是最显眼的"不是 ChatGPT"
+   的特征,只换配色根本盖不住。去掉之后正文直接顶到内容栏左缘,与用户气泡左界对齐。 */
+html[data-oc-theme="chatgpt"] .msg.assistant .msg-avatar { display: none; }
+html[data-oc-theme="chatgpt"] .msg.assistant .msg-actions { padding-left: 0; }
+html[data-oc-theme="chatgpt"] .msg.assistant .msg-content { padding-top: 0; }
+
 /* 背景显式指到 --bg-user-msg:redesign.css 把用户气泡接到了 --brand-soft(跟随主题色),
    本主题下 --brand-soft 只是单色浅灰,和气泡需要的中性灰不是一回事,所以这里接管。 */
 html[data-oc-theme="chatgpt"] .msg.user .msg-content {
   background: var(--bg-user-msg);
   border: none;
-  border-radius: 20px;
+  border-radius: 22px;
   box-shadow: none;
+  padding: 11px 20px;
+  max-width: 72%;
+  font-size: 1.143rem !important;
+  line-height: 1.6;
+}
+html[data-oc-theme="chatgpt"] .msg.user .msg-actions { max-width: 72%; }
+
+/* 正文排版:16px / 1.75。默认外观是 14px / 1.7,行距与段距都更紧,读起来"密"很多;
+   ChatGPT 的呼吸感主要就来自这里,比改配色更影响观感。
+   这里必须带 !important:chrome.css 有一张上百个选择器的字号总表,把 .msg .msg-content
+   连同输入框、按钮一起钉死在 var(--fs) 上,普通声明再高优先级也压不过它。
+   rem 在本项目等于 --fs(style.css 里 html{font-size:var(--fs)}),所以字号偏好依然生效。 */
+html[data-oc-theme="chatgpt"] .msg .msg-content {
+  font-size: 1.143rem !important;
+  line-height: 1.75;
+}
+html[data-oc-theme="chatgpt"] .msg.assistant p { margin: 0 0 1.15em; }
+html[data-oc-theme="chatgpt"] .msg.assistant p:first-child { margin-top: 0; }
+html[data-oc-theme="chatgpt"] .msg.assistant p:last-child { margin-bottom: 0; }
+html[data-oc-theme="chatgpt"] .msg.assistant ul,
+html[data-oc-theme="chatgpt"] .msg.assistant ol { margin: 0 0 1.15em; padding-left: 1.6em; }
+html[data-oc-theme="chatgpt"] .msg.assistant li { margin: 0.4em 0; }
+/* 默认外观把 h1~h4 收成 1.32/1.18/1.07/1 倍,层级很平;ChatGPT 的标题落差更大,
+   而且标题下面常紧跟正文,所以顶距给足、底距收紧,读起来是"标题领着段落"。
+   字号同样被 chrome.css 的字号总表用 !important 钉住,必须对着带 !important。 */
+html[data-oc-theme="chatgpt"] .msg.assistant h1,
+html[data-oc-theme="chatgpt"] .msg.assistant h2,
+html[data-oc-theme="chatgpt"] .msg.assistant h3,
+html[data-oc-theme="chatgpt"] .msg.assistant h4 {
+  margin: 1.6em 0 0.7em;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0;
+}
+html[data-oc-theme="chatgpt"] .msg.assistant h1 { font-size: 1.571rem !important; }
+html[data-oc-theme="chatgpt"] .msg.assistant h2 { font-size: 1.429rem !important; }
+html[data-oc-theme="chatgpt"] .msg.assistant h3 { font-size: 1.286rem !important; }
+html[data-oc-theme="chatgpt"] .msg.assistant h4 { font-size: 1.143rem !important; }
+html[data-oc-theme="chatgpt"] .msg.assistant blockquote {
+  border-left: 2px solid var(--hairline-strong);
+  border-radius: 0;
+  background: transparent;
+  padding: 0 0 0 1em;
+  color: var(--text-secondary);
+}
+html[data-oc-theme="chatgpt"] .msg.assistant a {
+  color: var(--text);
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 35%, transparent);
+  text-decoration: none;
+}
+html[data-oc-theme="chatgpt"] .msg.assistant a:hover { border-bottom-color: var(--text); }
+/* 行内代码:不加边框,底色与代码块同源;字号由 chrome.css 统一钉在 --fs 上(14px),
+   正好是 ChatGPT 的比例(正文 16px 里的行内代码略小一号),不再单独覆盖 */
+html[data-oc-theme="chatgpt"] .msg.assistant code {
+  background: var(--bg-code);
+  border-radius: 6px;
+  padding: 0.15em 0.4em;
 }
 html[data-oc-theme="chatgpt"] .msg .msg-avatar {
   border: none;
   box-shadow: none;
 }
 
-/* ---------- 6. 弹窗与按钮:圆角与单色主操作 ---------- */
+/* ---------- 6. 消息操作:桌面端悬停才出现 ---------- */
+/* 默认外观让操作条常驻,一行图标一直挂在正文下方;ChatGPT 是悬停才浮出来,
+   静止时正文周围是干净的。触屏没有 hover,那里保持常驻,否则等于没有入口。 */
+@media (hover: hover) {
+  html[data-oc-theme="chatgpt"] .msg .msg-actions {
+    opacity: 0 !important;
+    transition: opacity 0.12s ease;
+  }
+  html[data-oc-theme="chatgpt"] .msg:hover .msg-actions,
+  html[data-oc-theme="chatgpt"] .msg:focus-within .msg-actions { opacity: 1 !important; }
+}
+html[data-oc-theme="chatgpt"] .msg-action { color: var(--text-tertiary); border-radius: 8px; }
+html[data-oc-theme="chatgpt"] .msg-action:hover { background: var(--bg-hover); color: var(--text); }
+html[data-oc-theme="chatgpt"] .msg-actions .reply-meta,
+html[data-oc-theme="chatgpt"] .msg-actions .reply-time { color: var(--text-tertiary); }
+
+/* ---------- 7. 弹窗与按钮:圆角与单色主操作 ---------- */
 html[data-oc-theme="chatgpt"] .modal {
   border-radius: 20px;
   border: 1px solid var(--hairline);
   box-shadow: var(--shadow-pop);
 }
-html[data-oc-theme="chatgpt"] .btn { border-radius: 10px; }
+/* 按钮形状交给 chrome.css 的圆角总表(全站药丸),这里只管颜色:
+   主操作在浅色下是黑底白字、深色下白底黑字,和发送键同一套语义 */
 html[data-oc-theme="chatgpt"] .btn.primary {
   background: var(--primary);
   color: var(--primary-text);
-  border-radius: 999px;
 }
 html[data-oc-theme="chatgpt"] .btn.primary:hover {
   background: var(--primary-hover);
@@ -238,7 +320,7 @@ html[data-oc-theme="chatgpt"] .user-menu {
 }
 html[data-oc-theme="chatgpt"] .user-menu-item { border-radius: 9px; }
 
-/* ---------- 7. 滚动条:细、无轨道 ---------- */
+/* ---------- 8. 滚动条:细、无轨道 ---------- */
 html[data-oc-theme="chatgpt"] * {
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent;
@@ -254,4 +336,209 @@ html[data-oc-theme="chatgpt"] ::-webkit-scrollbar-thumb {
 html[data-oc-theme="chatgpt"] ::-webkit-scrollbar-thumb:hover {
   background: color-mix(in srgb, var(--text) 34%, transparent);
   background-clip: content-box;
+}
+
+/* ---------- 9. 消息区:更窄的内容栏 + 更松的段距 ---------- */
+/* 默认外观 820px / 32px 内边距,一行能排很长;ChatGPT 的内容栏更窄、上下留白更多,
+   正文因此更"好读",整屏观感也更接近。 */
+html[data-oc-theme="chatgpt"] .messages {
+  max-width: 768px;
+  padding: 40px 28px 28px;
+}
+html[data-oc-theme="chatgpt"] .msg { padding: 26px 0; }
+html[data-oc-theme="chatgpt"] .msg + .msg { margin-top: 0; }
+
+/* ---------- 10. 代码块:一条顶栏压在代码上,复制键做成幽灵按钮 ---------- */
+/* 默认外观把顶栏做成深灰药丸、复制键做成实心方块;ChatGPT 是「圆角代码盒 + 一条浅色
+   顶栏 + 右侧一个悬停才显形的幽灵复制键」。顶栏在 markdown.css 里是绝对定位悬浮在
+   代码之上(所以 pre 的 padding-top 是 42px),这里保留这个结构,只把它染成一条真正的
+   头部:淡底色 + 一条 hairline 压底。
+   markdown.css/chrome.css 给这一块写满了 !important,要盖住只能同样带 !important,
+   本主题选择器多一层属性前缀,同权重时压得住。 */
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .code-block .code-header,
+html[data-oc-theme="chatgpt"] .code-block .code-header {
+  background: color-mix(in srgb, var(--text) 4%, var(--bg-code)) !important;
+  border-bottom: 1px solid var(--hairline) !important;
+  border-radius: 12px 12px 0 0 !important;
+  min-height: 34px;
+  padding: 5px 12px !important;
+}
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .code-block .code-lang {
+  color: var(--text-tertiary) !important;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.857rem;
+}
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .code-block .code-copy {
+  background: transparent !important;
+  color: var(--text-tertiary) !important;
+  font-weight: 500 !important;
+  border-radius: 8px !important;
+  padding: 3px 8px !important;
+  min-width: 0;
+}
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .code-block .code-copy:hover {
+  background: var(--bg-hover) !important;
+  color: var(--text) !important;
+}
+/* 代码本体:左右 16px 比默认的 22px 更贴边,与顶栏的 12px 形成一致的呼吸感。
+   pre 的选择器要写到 .md-prose 里,否则压不过 markdown.css 的同类 !important。 */
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .code-block pre {
+  padding: 42px 16px 16px !important;
+}
+
+/* ---------- 11. 表格:去掉外框与斑马纹,只留横线 ---------- */
+/* 默认外观是「卡片外框 + 表头灰底 + 偶数行淡染」;ChatGPT 的表格是编辑风:无框、
+   表头透明、只有行间横线,而且首列贴齐正文左缘(首格不设左内边距),读起来像正文的一部分。 */
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap table th,
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap table td {
+  background: transparent !important;
+  padding: 10px 14px !important;
+}
+/* 表格字号跟随正文:chrome.css 把 .md-prose table 也钉在 --fs 上,
+   不改的话 16px 的段落后面接一张 14px 的表,一眼就不齐 */
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap table {
+  font-size: 1em !important;
+}
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap table th {
+  padding-top: 0 !important;
+  border-bottom: 1px solid var(--hairline-strong) !important;
+  font-weight: 500 !important;
+  color: var(--text-secondary) !important;
+}
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap table th:first-child,
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap table td:first-child {
+  padding-left: 0 !important;
+}
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap table th:last-child,
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap table td:last-child {
+  padding-right: 0 !important;
+}
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap table tbody tr:nth-child(even) td {
+  background: transparent !important;
+}
+/* 表格/公式/图表上方的操作条(复制表格、导出 Excel):默认是「整行 + 下划线的实心浅色按钮」,
+   ChatGPT 里这类操作是安静的幽灵按钮,所以去掉分隔线与底色,只留文字和悬停底色 */
+html[data-oc-theme="chatgpt"] .visual-actions {
+  border-bottom: none;
+  min-height: 0;
+  margin: 0 0 8px;
+  padding: 0;
+}
+html[data-oc-theme="chatgpt"] .visual-actions .code-copy {
+  background: transparent !important;
+  border: none;
+  border-radius: 8px;
+  color: var(--text-tertiary);
+  font-weight: 500;
+  box-shadow: none;
+}
+html[data-oc-theme="chatgpt"] .visual-actions .code-copy:hover {
+  background: var(--bg-hover) !important;
+  color: var(--text);
+}
+
+/* ---------- 12. 空态:大标题 + 一排描边胶囊 ---------- */
+/* 空态是打开应用第一眼看到的东西,默认外观是无框的图标 + 文字网格,一眼看过去
+   和 ChatGPT 的「建议胶囊」完全不同。这里给每个建议加一层极浅的描边、做成胶囊,
+   并把图标收小一档(28px → 20px),让文字成为主体。 */
+/* chrome.css 把 .empty-state h2 钉在 --fs-display(20px)上,ID 选择器带 !important 才压得住 */
+html[data-oc-theme="chatgpt"] #empty-title {
+  font-size: 1.714rem !important;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+html[data-oc-theme="chatgpt"] .empty-lead { font-size: 1rem; color: var(--text-secondary); }
+html[data-oc-theme="chatgpt"] .empty-suggests { gap: 10px; }
+html[data-oc-theme="chatgpt"] .empty-suggest {
+  gap: 10px;
+  justify-content: flex-start;
+  padding: 10px 16px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+}
+html[data-oc-theme="chatgpt"] .empty-suggest:hover {
+  background: var(--bg-hover);
+  border-color: var(--hairline-strong);
+}
+html[data-oc-theme="chatgpt"] .empty-suggest .es-icon,
+html[data-oc-theme="chatgpt"] .empty-suggest .es-icon svg {
+  width: 20px;
+  height: 20px;
+}
+html[data-oc-theme="chatgpt"] .es-title { font-size: 0.929rem; }
+
+/* ---------- 13. 侧栏:行更高、留白更多 ---------- */
+/* 默认外观侧栏行高 32~34px,排得比较密;ChatGPT 的行更舒展,品牌行也弱一些 */
+html[data-oc-theme="chatgpt"] .sidebar-brand { padding: 14px 12px 8px; }
+html[data-oc-theme="chatgpt"] .sidebar-brand .brand-logo { max-height: 24px; height: 24px; }
+html[data-oc-theme="chatgpt"] .sidebar-header { padding: 2px 12px 8px; }
+html[data-oc-theme="chatgpt"] .sidebar-model-wrap { padding: 0 12px 10px; }
+html[data-oc-theme="chatgpt"] .assistant-lib-btn,
+html[data-oc-theme="chatgpt"] .sidebar-model-wrap .model-picker {
+  height: 38px;
+  border-radius: 10px;
+  color: var(--text);
+}
+html[data-oc-theme="chatgpt"] .chat-search {
+  height: 38px;
+  margin: 0 12px 10px;
+  border-radius: 10px;
+}
+html[data-oc-theme="chatgpt"] .chat-item {
+  height: 38px;
+  border-radius: 10px;
+  font-size: 0.964rem;
+}
+
+/* ---------- 14. 输入区:两行式(内容在上,工具与发送在下) ---------- */
+/* 默认外观把「≡ / 输入框 / 发送」压在同一个横排里;ChatGPT 的输入框是两行:
+   上面整行写字,下面一行左边是工具入口、右边是发送键。这是整套主题里最容易被一眼
+   认出来的结构差异,只改配色是换不来的。
+   代价是输入框高了约 58px,而它是绝对定位悬浮在消息区之上的(composer-area
+   position:absolute),所以消息区底部留白与「回到底部」按钮要同步上移,否则最后
+   一条消息会被压住。 */
+html[data-oc-theme="chatgpt"] .chat-area { padding-bottom: 190px; }
+html[data-oc-theme="chatgpt"] .composer-wrap { max-width: 768px; }   /* 与消息列同宽 */
+html[data-oc-theme="chatgpt"] .composer {
+  flex-wrap: wrap;
+  align-items: flex-end;
+  row-gap: 6px;
+  padding: 12px 12px 10px;
+}
+html[data-oc-theme="chatgpt"] .composer-flow { order: 1; flex: 1 1 100%; align-self: stretch; }
+html[data-oc-theme="chatgpt"] .composer-left { order: 2; }
+html[data-oc-theme="chatgpt"] .composer-right { order: 3; margin-left: auto; }
+/* 输入字号与正文一致(16px)。@ 行与 textarea 首行是「同一行盒」的约定:
+   两边都用 line-height 1.5 且同字号,height:1.5em 才对得上,所以这里必须一起改。 */
+html[data-oc-theme="chatgpt"] .composer-flow textarea,
+html[data-oc-theme="chatgpt"] .composer-at-row,
+html[data-oc-theme="chatgpt"] .composer-flow .composer-at,
+html[data-oc-theme="chatgpt"] .composer-flow .note-mention-chip {
+  font-size: 1.143rem !important;
+  line-height: 1.5;
+}
+/* 上内边距保持 10px:@ 行按这个值定位首行 */
+html[data-oc-theme="chatgpt"] .composer textarea { padding: 10px 4px 6px; }
+html[data-oc-theme="chatgpt"] .composer-more,
+html[data-oc-theme="chatgpt"] .attach-btn { border-radius: 50%; color: var(--text-secondary); }
+html[data-oc-theme="chatgpt"] .composer-hint { opacity: 0.6; }
+
+/* ---------- 15. 回到底部:圆形悬浮 ---------- */
+html[data-oc-theme="chatgpt"] .scroll-bottom-btn {
+  bottom: 176px;              /* 让开变高的输入框 */
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  border: 1px solid var(--hairline);
+  box-shadow: var(--shadow-md);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* 窄屏:输入区本来就窄,两行式同样成立,只是留白的加高幅度不同 */
+@media (max-width: 768px) {
+  html[data-oc-theme="chatgpt"] .chat-area { padding-bottom: 168px; }
+  html[data-oc-theme="chatgpt"] .scroll-bottom-btn { bottom: 166px; }
 }

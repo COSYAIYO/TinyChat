@@ -148,3 +148,9 @@ jobs:
       # 覆盖 mXSS / SVG 命名空间 / javascript: 混淆等浏览器行为相关的绕过。
       - name: Markdown 渲染安全自检(注入载荷被中和 / 正常 HTML 保留)
         run: node tests/renderer-xss.mjs
+      # 主题包靠属性前缀提特异性,但 chrome.css 的字号总表与 markdown.css 的正文排版
+      # 是 !important —— 那几处覆盖失效时界面只是「看起来没变化」,读代码看不出来
+      # (主题初版有 5 处静默失效),只能真浏览器量计算样式;顺带守住「切回默认主题
+      # 必须原样还原」与两行式输入框带来的底部留白联动。
+      - name: ChatGPT 主题包自检(覆盖生效 / 深色 / 窄屏 / 切回默认还原)
+        run: node tests/theme-gpt-gui.mjs
