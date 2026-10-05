@@ -1969,7 +1969,12 @@ assert_contains "阅读模式抽到正文" "$wr" '上海市气象局'
 if printf '%s' "$wr" | grep -qF 'MOCK-SCRIPT-SHOULD-NOT-APPEAR'; then bad "正文混入脚本内容"; else ok "正文不含脚本内容"; fi
 if printf '%s' "$wr" | grep -qF 'MOCK-COMMENT-SHOULD-NOT-APPEAR'; then bad "正文混入注释"; else ok "正文不含注释"; fi
 assert_contains "内容超过上限时标记截断字段" "$wr" '"truncated"'
-WBM=$(curl -s -X POST "$BASE/api/web/bookmarks" -H "$AUTH" -H "Content-Type: application/json" -d '{"bookmarks":[{"name":"E2E 站","url":"example.org"},{"name":"","url":"bad"}]}')
+# 请求体走文件:Windows 的 curl 会把命令行参数里的非 ASCII 按本地码页重编码,
+# 内联的中文收藏名会被送成别的字节(实测「站」变成 D5BE),断言就对不上了。
+cat > "$TMP/web-bm.json" <<'EOF'
+{"bookmarks":[{"name":"E2E 站","url":"example.org"},{"name":"","url":"bad"}]}
+EOF
+WBM=$(curl -s -X POST "$BASE/api/web/bookmarks" -H "$AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/web-bm.json")
 assert_contains "收藏夹保存并补全协议" "$WBM" '"url":"https://example.org"'
 assert_contains "收藏夹读回一致" "$(curl -s "$BASE/api/web/bookmarks" -H "$AUTH")" 'E2E 站'
 # 总开关:关闭后票据与代理都要拒绝(即便票据尚未过期)
@@ -1985,8 +1990,21 @@ assert_contains "公共配置暴露 browserEnabled" "$(curl -s "$BASE/api/config
 # 没有配供应商的冒烟用例进不到这个分支,所以这里用 mock 供应商把它走满。
 say ""
 say "== 会话内 @AI 召唤 =="
-curl -s -X POST "$BASE/api/auth/register" -H "Content-Type: application/json" -d '{"name":"Summoner","password":"pass1234"}' > /dev/null
-curl -s -X POST "$BASE/api/auth/register" -H "Content-Type: application/json" -d '{"name":"Summoned","password":"pass1234"}' > /dev/null
+# 本段是最后一段注册:此时站点已开着「邀请码注册 + 同意用户协议」(见开头那条设置),
+# 所以注册必须和前面几段一样带上邀请码与 agreementAccepted,否则用户建不出来、
+# 后面所有用例都会因为拿不到令牌而 401。
+curl -s -X POST "$BASE/api/admin/invites" -H "$AUTH" -H "Content-Type: application/json" -d '{"count":2,"prefix":"SUMM"}' > /dev/null
+SUMCODES=$(curl -s "$BASE/api/admin/invites" -H "$AUTH" | grep -o '"code":"SUMM-[A-F0-9]*"' | cut -d'"' -f4)
+SUM_INV1=$(printf '%s' "$SUMCODES" | sed -n 1p)
+SUM_INV2=$(printf '%s' "$SUMCODES" | sed -n 2p)
+cat > "$TMP/summon1.json" <<EOF
+{"name":"Summoner","password":"pass1234","invite":"$SUM_INV1","agreementAccepted":true}
+EOF
+cat > "$TMP/summon2.json" <<EOF
+{"name":"Summoned","password":"pass1234","invite":"$SUM_INV2","agreementAccepted":true}
+EOF
+curl -s -X POST "$BASE/api/auth/register" -H "Content-Type: application/json" --data-binary @"$TMP/summon1.json" > /dev/null
+curl -s -X POST "$BASE/api/auth/register" -H "Content-Type: application/json" --data-binary @"$TMP/summon2.json" > /dev/null
 SU=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"Summoner","password":"pass1234"}' | jget token)
 S2=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"Summoned","password":"pass1234"}' | jget token)
 SUAUTH="Authorization: Bearer $SU"
