@@ -255,7 +255,17 @@ check('隐藏的是容器,九个按钮确实都不在', (await page.evaluate(() 
   if (!box) return 'MISSING';
   return box.getBoundingClientRect().height === 0 && box.querySelectorAll('.empty-suggest').length > 0;
 })) === true);
-check('空态标题与说明还在', (await box('#empty-title')) !== null && (await box('.empty-lead')) !== null);
+check('空态标题还在', (await box('#empty-title')) !== null);
+// 「选择模型后输入问题,或点下面一个任务直接开始」后半句指的就是刚被藏掉的九个预设,
+// 留着等于让用户去点已经不在的东西,所以在这个主题下整行隐藏
+check('空态提示行「…或点下面一个任务直接开始」已隐藏', (await css('.empty-lead', 'display')) === 'none',
+  await css('.empty-lead', 'display'));
+check('藏的是那一行,不是整块空态', (await page.evaluate(() => {
+  const lead = document.querySelector('.empty-lead');
+  const title = document.querySelector('#empty-title');
+  if (!lead || !title) return 'MISSING';
+  return lead.getBoundingClientRect().height === 0 && title.getBoundingClientRect().height > 0;
+})) === true);
 
 console.log('== 5b. 品牌 logo:精致灰 ==');
 // 把「精致灰」变成可测的定义:去色必须彻底(饱和度 0),明度要收在一条窄带里。
@@ -324,6 +334,18 @@ const rightBox = await box('.composer-right');
 check('输入行在上、工具行在下', leftBox.y >= flowBox.bottom - 2, leftBox.y + ' vs flow.bottom ' + flowBox.bottom);
 check('发送键仍在输入框右下角', rightBox.y >= flowBox.bottom - 2 && Math.abs((rightBox.x + rightBox.w) - (wrap.x + wrap.w)) <= 24,
   JSON.stringify(rightBox));
+// 输入框两端的两个圆按钮要「看上去」一样大:发送钮是实心圆底,菜单钮是透明的,
+// 所以菜单钮刻意做大一档(46 vs 42),靠外径补上那圈柔和边缘的视觉差;
+// 但不许给它加投影 —— 透明按钮上多一圈灰会更显脏。
+const moreBox = await box('.composer-more');
+const sendBox = await box('#send-btn');
+check('折叠菜单钮比发送钮大一档(46 vs 42,补上实心圆底的视觉差)', moreBox.w === 46 && moreBox.h === 46 && sendBox.w === 42 && sendBox.h === 42,
+  moreBox.w + 'x' + moreBox.h + ' vs ' + sendBox.w + 'x' + sendBox.h);
+check('折叠菜单钮没有投影', (await css('.composer-more', 'box-shadow')) === 'none', await css('.composer-more', 'box-shadow'));
+check('两个钮垂直居中对齐', Math.abs((moreBox.y + moreBox.h / 2) - (sendBox.y + sendBox.h / 2)) <= 1,
+  JSON.stringify({ moreCenter: moreBox.y + moreBox.h / 2, sendCenter: sendBox.y + sendBox.h / 2 }));
+check('菜单钮图标 22px(发送钮 20px)', Math.abs((await box('.composer-more .oc-icon')).w - 22) <= 0.5,
+  String((await box('.composer-more .oc-icon')).w));
 check('消息区底部留白已让开变高的输入框', (await css('.chat-area', 'padding-bottom')) === '190px',
   await css('.chat-area', 'padding-bottom'));
 check('回到底部按钮同步上移', (await css('.scroll-bottom-btn', 'bottom')) === '176px',
@@ -333,6 +355,10 @@ check('输入字号与正文一致', near(taFs, num(bodyFs)), taFs);
 const atH = await css('.composer-at-row', 'height');
 const taLh = await css('.composer textarea', 'line-height');
 check('@ 行高度与输入框首行行高一致', near(atH, taLh), atH + ' vs ' + taLh);
+// 输入行的高度必须严格等于 textarea:多出来的任何一截都会把文字顶偏
+const flowH = (await box('.composer-flow')).h;
+const taH = (await box('.composer textarea')).h;
+check('输入行高度 = textarea 高度(多出来的空白会把文字顶偏)', Math.abs(flowH - taH) <= 0.5, flowH + ' vs ' + taH);
 
 console.log('== 7. 深色:调色板与浅色互不影响 ==');
 await injectDemo(page);   // 换助手/新建会话会重渲染消息区,量之前重新注入
@@ -373,11 +399,34 @@ check('头像恢复显示', (await css('.msg.assistant .msg-avatar', 'display'))
 check('正文字号回到 14px', (await css('.msg.assistant .msg-content', 'font-size')) === '14px', await css('.msg.assistant .msg-content', 'font-size'));
 check('输入框回到单行', (await css('.composer', 'flex-wrap')) === 'nowrap', await css('.composer', 'flex-wrap'));
 check('输入框宽度回到 820px', (await box('.composer-wrap')).w === 820, String((await box('.composer-wrap')).w));
+// 默认外观自身的不变量,和主题无关,放在这里是因为这节正好是默认外观的现场:
+// textarea 默认是 inline-block,坐在文字基线上,行盒还要给下方 descender 留位置,
+// 于是 .composer-flow 比 textarea 高出一截且空白全在下方,输入框里那行字看着偏上。
+const dComposer = await box('.composer');
+const dTa = await box('.composer textarea');
+const dLineTop = dTa.y + num(await css('.composer textarea', 'padding-top'));
+const dAbove = dLineTop - dComposer.y;
+const dBelow = dComposer.bottom - (dLineTop + num(await css('.composer textarea', 'line-height')));
+// 容差 1.5px:上下留白的理论差值是 0(各 19.5),落到整数像素上会有 1px 的取整抖动,
+// 而这条要防的是 inline-block 支撑空白那种 5.4px 级别的偏移,两者差得足够远。
+check('默认外观:输入框内文字垂直居中(上 ' + dAbove.toFixed(1) + ' / 下 ' + dBelow.toFixed(1) + ')',
+  Math.abs(dAbove - dBelow) <= 1.5);
+check('默认外观:输入行高度 = textarea 高度', Math.abs((await box('.composer-flow')).h - dTa.h) <= 0.5,
+  (await box('.composer-flow')).h + ' vs ' + dTa.h);
 check('消息区留白回到 132px', (await css('.chat-area', 'padding-bottom')) === '132px');
 check('操作条恢复常驻', (await css('.msg.assistant .msg-actions', 'opacity')) === '1');
 check('表头恢复默认底色', (await css('.msg.assistant .md-prose .table-wrap table th', 'background-color')) !== 'rgba(0, 0, 0, 0)',
   await css('.msg.assistant .md-prose .table-wrap table th', 'background-color'));
 check('九个预设恢复显示', (await css('.empty-suggests', 'display')) !== 'none', await css('.empty-suggests', 'display'));
+check('空态提示行恢复显示', (await css('.empty-lead', 'display')) !== 'none', await css('.empty-lead', 'display'));
+// 这一对按钮的尺寸与对齐是默认外观自己的规则,主题不该改变它,也不该只在主题里成立
+const dMore = await box('.composer-more');
+const dSend = await box('#send-btn');
+check('默认外观:折叠菜单钮 46px、发送钮 42px', dMore.w === 46 && dMore.h === 46 && dSend.w === 42 && dSend.h === 42,
+  JSON.stringify({ more: dMore.w + 'x' + dMore.h, send: dSend.w + 'x' + dSend.h }));
+check('默认外观:两个钮垂直居中对齐',
+  Math.abs((dMore.y + dMore.h / 2) - (dSend.y + dSend.h / 2)) <= 1,
+  JSON.stringify({ moreCenter: dMore.y + dMore.h / 2, sendCenter: dSend.y + dSend.h / 2 }));
 check('logo 灰度滤镜已撤掉', (await css('.sidebar-brand .brand-logo-light', 'filter')) === 'none', await css('.sidebar-brand .brand-logo-light', 'filter'));
 
 check('无页面 JS 报错', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '));

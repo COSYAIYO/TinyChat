@@ -737,13 +737,17 @@
 /* 输入框左侧「≡」菜单:PC 与移动端统一的控制入口(绘画 / 模型对比 / 文件 / 联网 / 思考)。
    原先只在窄屏出现,PC 上另有独立的附件、联网、思考按钮;现统一为这一个菜单,两端一致。 */
 .composer-left { position: relative; }
+/* 比 .send-btn(42px)大一档,刻意如此:发送按钮是一整块实心圆底,菜单按钮是透明的、
+   只有中间一个图标,同样 42px 时它看上去明显更小、两个圆不协调。
+   46px 是把发送按钮那圈柔和边缘算进去后的视觉外径 —— 用它对齐视觉大小,而不是给
+   菜单按钮也加一层投影(那样会在透明按钮上凭空多出一圈灰)。 */
 .composer-more {
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 46px;
+  height: 46px;
   padding: 0;
   border: none;
   border-radius: 999px;
@@ -4800,8 +4804,15 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   margin: 0;
   min-width: 0;
 }
-/* textarea 占满整宽,首行缩进由 JS 写 text-indent */
+/* textarea 占满整宽,首行缩进由 JS 写 text-indent。
+   display:block 是必需的,不是顺手写的:textarea 默认按 inline-block 排版,它坐在
+   「基线」上,行盒还必须给下方 descender 留位置,于是 .composer-flow 会比 textarea
+   高出约 5px(14px 字号下实测 5.4px,字号越大差得越多),而这截空白全在下方 ——
+   输入框里那行字因此整体偏上,看着不在中间,点下方的空白也聚焦不到输入框。
+   去掉 inline 排版后 flow 的高度严格等于 textarea,上下内边距才真正相等。
+   @ 行是绝对定位(top: 10px = textarea 的 padding-top),不参与这个行盒,不受影响。 */
 .composer-flow textarea {
+  display: block;
   width: 100%;
   flex: 1 1 auto;
   padding-top: 10px;
