@@ -136,6 +136,10 @@ jobs:
       # 「curl 里正常、浏览器里裂图」的问题,只有真浏览器跑得出来。
       - name: 笔记内嵌附件自检(预览图片解码 / 下载链接直取)
         run: node tests/notes-image-gui.mjs
+      # 「同一个框上两圈」「环只圈住框的一部分」都是 CSS 多层规则叠加出来的,
+      # 看代码看不出来,必须真浏览器量计算样式;主题色「恢复默认」是 DOM 接线。
+      - name: 输入框聚焦环 / 主题色恢复默认自检(单圈描边 / 整框聚焦 / 恢复默认)
+        run: node tests/focus-ring-gui.mjs
       # Markdown 允许渲染 HTML 后,渲染器就是最主要的 XSS 面:注入点用真浏览器跑,
       # 覆盖 mXSS / SVG 命名空间 / javascript: 混淆等浏览器行为相关的绕过。
       - name: Markdown 渲染安全自检(注入载荷被中和 / 正常 HTML 保留)

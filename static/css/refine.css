@@ -563,7 +563,6 @@
 }
 .auth-card input:focus {
   background: var(--bg-surface) !important;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent) !important;
 }
 .auth-card .btn.primary {
   background: var(--accent);

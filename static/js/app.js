@@ -5140,6 +5140,13 @@ async function saveToolSource(patch) {
     paintAccent();
     commitAccent();
   });
+  // 恢复默认:写回内置默认色(而不是删键——云同步按「键存在与否」比对,
+  // 删掉的键下次拉取会被云端的旧颜色重新填回来)。
+  const accReset = $('accent-modal-reset');
+  if (accReset) accReset.addEventListener('click', () => {
+    applyAccentHex((window.OCUI && window.OCUI.defaultAccent) || '#2563eb', true);
+    toast('已恢复默认主题色');
+  });
   const accOpen = $('accent-open');
   if (accOpen) accOpen.addEventListener('click', () => {
     const stored = (window.OCUI && window.OCUI.getPref) ? window.OCUI.getPref('accent') : '';
