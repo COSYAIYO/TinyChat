@@ -3699,7 +3699,12 @@
         tries++;
         const st = window.OCApp && window.OCApp.state;
         if (st && st.user) { open({ boot: true }); return; }
-        if (tries < 40) setTimeout(boot, 250);
+        if (tries < 40) { setTimeout(boot, 250); return; }
+        // 10 秒还没等到登录态:刻意不自动开(未登录时笔记接口会 401,开了也是空壳),
+        // 但必须让用户知道发生了什么 —— 否则停在对话页,看起来像 /ainotes 这个地址坏了。
+        if (!st || !st.user) {
+          toast('登录状态未就绪，笔记暂未打开；请刷新页面或重新登录', true);
+        }
       };
       boot();
     }

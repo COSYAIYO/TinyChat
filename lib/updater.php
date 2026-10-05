@@ -178,14 +178,46 @@ function tc_update_rrmdir_inner($dir) {
     @rmdir($dir);
 }
 
+// 找可用的 PHP CLI 解释器。PHP_BINARY 在 FPM/CGI 下是 php-fpm 本身:
+// 它不是 CLI SAPI,不认 -l,拿它 lint 会把「新版本文件存在语法错误」误报出来,
+// 于是宝塔/Nginx 站点上「在线更新」永远失败。这里改为逐个候选探测 -l 能力。
+function tc_update_php_cli() {
+    static $cached = false;
+    if ($cached !== false) return $cached;
+    $cached = '';
+    if (!function_exists('exec')) return $cached;
+
+    $devnull = DIRECTORY_SEPARATOR === '\\' ? ' 2>NUL' : ' 2>/dev/null';
+    $probe = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'tc-lint-probe-' . bin2hex(random_bytes(4)) . '.php';
+    if (@file_put_contents($probe, "<?php echo 1;\n") === false) return $cached;
+
+    $candidates = array();
+    if (PHP_SAPI === 'cli' || PHP_SAPI === 'cli-server' || PHP_SAPI === 'phpdbg') {
+        $candidates[] = (string) PHP_BINARY;
+    }
+    if (defined('PHP_BINDIR') && PHP_BINDIR) {
+        $candidates[] = rtrim((string) PHP_BINDIR, '/\\') . DIRECTORY_SEPARATOR . 'php';
+    }
+    foreach (array('php', 'php-cli') as $name) $candidates[] = $name;
+    // 宝塔/常见面板的多版本目录:www/server/php/<版本>/bin/php
+    foreach (glob('/www/server/php/*/bin/php') ?: array() as $p) $candidates[] = $p;
+    $candidates = array_merge($candidates, array('/usr/bin/php', '/usr/local/bin/php', '/opt/homebrew/bin/php'));
+
+    foreach (array_unique($candidates) as $bin) {
+        if ($bin === '') continue;
+        @exec(escapeshellarg($bin) . ' -l ' . escapeshellarg($probe) . $devnull, $o, $c);
+        if ($c === 0) { $cached = $bin; break; }
+    }
+    @unlink($probe);
+    return $cached;
+}
+
 // 有 PHP CLI 可用时对新包逐个 .php 做语法检查;失败即中止,避免半新半旧
 function tc_update_lint($srcRoot) {
-    if (!function_exists('exec')) return;
-    $php = escapeshellarg((string) PHP_BINARY);
-    if ($php === "''") return;
+    $phpBin = tc_update_php_cli();
+    if ($phpBin === '') return; // 没有可用的 PHP CLI(如 FPM 且 PATH 里也没有 php),跳过语法检查
+    $php = escapeshellarg($phpBin);
     $devnull = DIRECTORY_SEPARATOR === '\\' ? ' 2>NUL' : ' 2>/dev/null';
-    @exec($php . ' -v' . $devnull, $out, $code);
-    if ($code !== 0) return; // 找不到可用的 PHP CLI,跳过语法检查
     $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($srcRoot, FilesystemIterator::SKIP_DOTS));
     foreach ($it as $f) {
         if (substr($f->getFilename(), -4) !== '.php') continue;

@@ -37,6 +37,9 @@
   ws('markdown-it/markdown-it.min.js');
   ws('markdown-it/markdown-it-footnote.min.js');
   ws('markdown-it/markdown-it-emoji.min.js');
+  // HTML 消毒(对话页/分享页允许模型与用户输出原始 HTML,渲染前必须过它)。
+  // 始终加载:不是可关闭的性能项,而是渲染管线的安全底线。
+  ws('dompurify/purify.min.js');
   if (!perf.noKatex) {
     ws('katex/katex.min.js');
     ws('katex/auto-render.min.js');

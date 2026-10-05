@@ -2,6 +2,42 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.124] - 2026-10-05
+
+### 新增
+
+- **会话页 Markdown 支持渲染 HTML（且安全）**：AI 回复里的 `<table>`、`<details>`、`<div>` 卡片、`<mark>`、行内 `style` 等现在会真的渲染出来，不再被转义成纯文本。安全策略从「正则过滤」换成 **DOMPurify 3.4.16**（已本地内置到 `vendor/dompurify/`，因为站点 CSP 是 `script-src 'self'`，不能引 CDN）：按白名单放行标签与属性，显式排除 `svg`/`math` 命名空间、`script`/`iframe`/`object`/`embed`/`form` 等；URL 与 `style` 值由浏览器按自身规则归一化后再判定。代码块的复制/展开/存图按钮在净化后从可信来源重新注入图标，功能不受影响。笔记里的 HTML / SVG 产物面板原先直接拼接未净化内容，现改为 `sandbox` 的 iframe 承载。
+
+### 修复
+
+- **流式回复的用量与落库正文会少最后一段**：上游 SSE 事件的边界与 `curl` 回调收到的 chunk 边界无关，一条 `data: {...}` 完全可能被拆到两次回调里。原实现对每个 chunk 单独 `explode("\n")`，被拆开的事件整条丢掉——表现为后台用量统计偏少、API 对话落库的正文缺尾巴，且只在网络分片恰好落在事件中间时复现。现在未收尾的半行留在缓冲里等下一个 chunk 拼齐，流结束时再冲刷尾段。
+- **并发登录失败计数、附件索引、笔记 AI 配额会丢更新**：这三类 `data/` 下的小 JSON 文件都是「`file_get_contents` 读 → 改 → `file_put_contents(..., LOCK_EX)` 写」，而 `LOCK_EX` 只锁得住「写」那一下，读在锁外——两个并发请求同时读到旧内容，后写的把先写的整个盖掉。附件索引表现为刚上传的附件「找不到归属」；配额表现为超发（上限 10 时实测放行到 19）。现在统一走新的 `tc_json_mutate()`，读改写在同一把锁里完成。
+- **后台「清理运行日志」看着成功、实际什么都没删**：日志早已从 `logs.json` 迁移为追加写的 `logs.ndjson`，但存储统计与清理仍写死旧文件名，于是面板里日志体积恒为 0、点清理返回成功却什么也没发生。现在按 `tc_logs_file()` 定位，并顺带清掉迁移留档的 `logs.json.migrated*`。
+- **`/ainotes` 与 `/n/<token>` 页面没有 Service Worker**：SW 注册路径由 `location.pathname` 正则截断推导，`/n/abc123` 会推出 `/n/`；以它作 scope 会被浏览器拒绝（作用域不能窄于脚本所在目录），结果是笔记分享页完全没有 SW。现在基址改为从脚本自身 URL 剥离 `static/js/<file>` 推导，主站、分享页、子目录部署三种形态都对。
+- **Service Worker 激活时清掉同源下所有缓存**：`activate` 里 `keys.filter(k => k !== CACHE)` 会删除该源上**全部** Cache Storage，包括同一域名下别的应用/子站。现在只清理自己这一族（前缀 `tinychat-static-`）。
+- **笔记分享页的 HTML 会被缓存**：SW 的「不缓存 HTML」判断漏了 `/ainotes` 与 `/n/<token>`，分享链接失效后仍能从缓存打开旧页面。已补全。
+- **在线更新的语法检查在宝塔/Nginx 站点上恒定失败**：`PHP_BINARY` 在 FPM/CGI 下指向 `php-fpm` 本身，它不是 CLI SAPI、不认 `-l`，于是「新版本文件存在语法错误」被误报、更新永远中止。现在逐个探测候选解释器（CLI SAPI 优先、`PHP_BINDIR`、`php`、面板常见的 `/www/server/php/*/bin/php`、`/usr/bin/php` 等），选第一个真正支持 `-l` 的；都没有时跳过检查而不是报错。
+- **环境变量优先级与文档相反**：文档写「环境变量优先于 config.php」，实现却是 `array_merge($env, $userFile)` —— 文件覆盖环境。容器里改 `ADMIN_PASSWORD` 会被镜像内残留的 `config.php` 静默顶掉。现在环境变量最后合并（且只在「已设置且非空」时生效，空值不会抹掉文件里的配置）。
+- **`.htaccess` 没有屏蔽开发目录**：README 让用户「整个仓库上传」，于是 `tests/`、`tools/`、`.git/`、`*.md` 全在 Web 根下——`tests/attribution.php` 匿名 GET 就能触发（它会改写 `index.html`），`tests/mock-upstream.php` 是个公开的 mock 上游，`.git/config` 可能被读取。现在 Apache 侧用 `RedirectMatch 404` + `FilesMatch` 屏蔽这些目录与文档（两种语法都写了），README 的 Nginx / IIS 示例同步补上 `tests`、`tools`、`.git`、`.md`。
+- **附件超过 `memory_limit` 时上传/下载直接 500**：上传把整个文件读进内存后又用 `$head . $body` 复制一份（50MB 附件峰值 100MB），下载同样整份读入再 `substr`。现在上传只读前 64KB 做魔数校验（校验器最多看 4096 字节），随后流式写头部 + 分块拷贝临时文件，先写 `.part` 再改名；下载改为 `fread` 分块转发。中断留下的 `.part` 由回收任务按 1 小时宽限期清理。
+- **用量导出 CSV 可被公式注入**：`$esc()` 会加引号，但 Excel/LibreOffice 对被引号包住的 `=`、`+`、`-`、`@` 开头内容**照样求值**（`@SUM`、DDE 命令），用户名是用户可控的。现在这些前导字符会被前缀单引号中和。
+- **首次生成 `data/secret` 存在竞争**：并发请求会各自生成一份密钥，文件里留下的只有最后写入的那份，而先写的那份已经被用来签 JWT / 加密供应商 API Key —— 之后这些数据全都解不开。现在「检查-生成-写入」在同一把 `flock` 里原子完成。
+- **限流计数不可写时静默放行**：磁盘满或目录不可写时，`tc_rate_limit_check` 直接返回 `true`（不拦截）且不留任何痕迹。行为保持不变（一律拒绝会让整站立刻不可用），但会写一条 `error_log` 便于排查。
+- **会话列表项键盘完全打不开**：会话项是 `div` + `click`，键盘用户无法选中。现在补 `role="button"`、`tabindex="0"`、Enter/Space 处理与 `:focus-visible` 焦点环（菜单按钮与内联重命名的回车仍归它们自己）。
+- **`renderContainers` 会把函数源码当文本输出**：`split(...).join(function(){...})` 中 `Array#join` 会把参数转成字符串，于是没被 `<p>` 包裹的 `::: thinking` 之类容器（落在列表项、引用块里的情形）会原样显示一段 JS 代码。已改为 `replace` 正则替换，并用 `(?!\d)` 避免 `OC_COMP_1` 命中 `OC_COMP_10`。
+- **笔记分享页 viewport 与其它页面不一致**：缺 `viewport-fit=cover` 与 `interactive-widget=resizes-content`，刘海屏与键盘弹出时的表现和其它页不同。已对齐。
+- **`/ainotes` 登录态迟迟未就绪时静默失败**：10 秒重试结束后什么都不做，用户停在对话页，看起来像这个地址坏了。现在会明确提示「登录状态未就绪，请刷新或重新登录」。
+- **时区未显式设置**：全站多处使用 `date()`（备份文件名、导出文件名、笔记 AI 每日配额的分界），取值取决于主机 `php.ini`，很多镜像默认 UTC——备份名差 8 小时、每日配额在北京时间早上 8 点而非 0 点重置。现在新增 `timezone` 配置项（默认 `Asia/Shanghai`，可用环境变量 `TIMEZONE` 覆盖），在任何 `date()` 之前生效。
+- **未装 mbstring 时部分路径直接 Fatal error**：README 把 mbstring 列为「建议」而非必需，但日志截断、敏感词长度校验、tombstone 用户名、网页正文截取、token 估算等处直接调 `mb_*`。新增 `tc_mb_len()` / `tc_mb_cut()` 兜底包装（缺扩展时按字节近似），并替换掉全部未加保护的调用。
+- **演示管理员可执行程序更新**：补齐演示管理员守卫（共 21 处）：在线更新、存储清理、发送测试邮件此前漏了 `tc_demo_guard`，演示站上的管理员可以借这些接口改代码或发信。
+
+### 测试
+
+- 新增 `tests/renderer-xss.mjs`（32 项，已入 CI 的 GUI 任务）：真 Chromium 加载真实渲染链路（markdown-it → DOMPurify → KaTeX → highlight → renderer.js），跑 17 组注入载荷（`<script>`、`<img onerror>`、大小写混淆的 `onerror`、`href="javascript:"`、tab/控制字符/换行混淆的协议、`<svg><animate onbegin>`、`<form action>`、`<iframe srcdoc>`、`<object data>`、`style` 表达式、MathML 命名空间、`<body onload>`、`<base href>`、`<meta refresh>`、模板嵌套）断言全部被中和，同时验证 15 项正常 HTML、KaTeX、代码复制按钮与外链 `noopener` 未被破坏。
+- 新增 `tests/stream-capture.php`（26 项）：覆盖 SSE 事件跨分片拼接、一条事件拆三段、末尾无换行时 flush、非 SSE 响应体不误判、`[DONE]` 与心跳行、Anthropic/Responses/Completions 三种格式，以及不传缓冲时的向后兼容。
+- 新增 `tests/json-sidecars.php`（13 项）：除基础读写、超时/损坏文件、覆盖写截断外，用多进程真并发验证登录计数不丢、附件索引不丢、笔记 AI 配额不超发（含「确实发生了争抢」的兜底断言，防止测试空转）。同一并发场景下旧实现实测 360 次只记到 48 次。
+- `tests/e2e.sh` 全量回归：522 项通过、0 项失败。
+
 ## [2.0.123] - 2026-10-05
 
 ### 修复

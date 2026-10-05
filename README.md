@@ -163,8 +163,9 @@ chown -R www:www data    # 用户/组名按你的主机而定（www-data / nginx
 chmod -R 775 data
 ```
 
-- 不要把整个站点目录设为 `777`，也不要给 `lib/`、`config.php` 任何写权限。
-- `data/` 建议禁止外部直接访问（仓库自带的 `data/.htaccess` 已做拒绝规则；Nginx 见文末示例）。
+- 不要把整个站点目录设为 `777`。程序运行只需要 `data/` 可写。
+- `lib/`、`config.php` 平时不应有写权限；只有**使用后台「在线更新」**时才需要站点根目录、`lib/`、`static/` 可写（更新过程要覆盖这些目录里的文件）。不想开这个口子，就到 GitHub 下载新版本手动覆盖，功能完全一样。
+- `data/` 建议禁止外部直接访问（仓库自带的 `data/.htaccess` 已做拒绝规则；Nginx / IIS 见文末示例）。
 - 权限不足时的典型现象是：能进环境自检页，但「`data/` 目录可写」一项标红，无法创建管理员。
 - 用宝塔面板部署的话，可直接照做下方「宝塔面板部署（小白步骤）」，权限设置在第 3 步。
 
@@ -243,16 +244,20 @@ location / {
     try_files $uri $uri/ /index.php?$query_string;
 }
 
-# 建议保留：禁止外部直接下载数据库与后端源码
+# 建议保留：禁止外部直接下载数据库、后端源码与开发文件
 location ^~ /data/ { deny all; }
 location ^~ /lib/ { deny all; }
+location ^~ /tests/ { deny all; }
+location ^~ /tools/ { deny all; }
+location ^~ /.git/ { deny all; }
 location = /config.php { deny all; }
+location ~* ^/(README|CHANGELOG|LICENSE|checksums)\.(md|txt)$ { deny all; }
 ```
 
 3. 点「保存」。
 
 > **为什么必须配**：`/api`、`/login`、`/admin`、`/s/xxx` 这些地址都没有对应的真实文件，全靠这一段转发给 `index.php` 处理。不配的话首页能打开，但一登录、一进后台就会 404。
-> 后面三行 `deny all` 是顺手加上的安全项：`data/` 里是数据库与密钥，`lib/` 是后端源码，都不该被浏览器直接下载。
+> 后面的 `deny all` 是顺手加上的安全项：`data/` 里是数据库与密钥，`lib/` 是后端源码，`tests/` 与 `tools/` 是自检与脚本（`tests/attribution.php` 会改写 `index.html`，匿名访问也能触发），`.git/` 里有完整历史，都不该被浏览器直接下载。Apache 下 `.htaccess` 已自带等价规则，Nginx / IIS 需要自己加（下面的示例已含）。
 
 #### 第 5 步：确认 PHP 扩展
 
@@ -568,7 +573,11 @@ server {
     # 用 ^~ 前缀匹配:优先级高于上面的正则,确保 lib/ 下的 .php 不会被当脚本执行
     location ^~ /data/ { deny all; }
     location ^~ /lib/ { deny all; }
+    location ^~ /tests/ { deny all; }
+    location ^~ /tools/ { deny all; }
+    location ^~ /.git/ { deny all; }
     location = /config.php { deny all; }
+    location ~* ^/(README|CHANGELOG|LICENSE|checksums)\.(md|txt)$ { deny all; }
 }
 ```
 
@@ -602,14 +611,20 @@ server {
         <hiddenSegments>
           <add segment="data" />
           <add segment="lib" />
+          <add segment="tests" />
+          <add segment="tools" />
+          <add segment=".git" />
         </hiddenSegments>
+        <fileExtensions>
+          <add fileExtension=".md" allowed="false" />
+        </fileExtensions>
       </requestFiltering>
     </security>
   </system.webServer>
 </configuration>
 ```
 
-把上面内容存为站点根目录的 `web.config` 即可（已包含伪静态与 `data` / `lib` 目录的访问屏蔽）。
+把上面内容存为站点根目录的 `web.config` 即可（已包含伪静态与 `data` / `lib` / `tests` / `tools` / `.git` 的访问屏蔽；`.md` 类文档一并禁止下载）。
 
 ## 许可证
 

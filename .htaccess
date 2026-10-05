@@ -71,6 +71,28 @@
   </FilesMatch>
 </IfModule>
 
+# 开发与工具目录不进 Web:README 让用户「整个仓库上传」,默认就带着 tests/ 与 tools/。
+# 它们不是运行所需,却能被人直接下载甚至执行:
+#   tests/attribution.php  会改写 index.html 做自检,匿名 GET 也能触发;
+#   tests/mock-upstream.php 是个公开的 mock 上游;
+#   tools/make-checksums.php 会跑 git ls-files 并重写 checksums.txt。
+# 目录级 .htaccess 覆盖面最广(不依赖文件名大小写、也不怕后续加新文件)。
+<IfModule mod_authz_core.c>
+  <FilesMatch "^(README|CHANGELOG|LICENSE|checksums)\.(md|txt)$">
+    Require all denied
+  </FilesMatch>
+</IfModule>
+<IfModule !mod_authz_core.c>
+  <FilesMatch "^(README|CHANGELOG|LICENSE|checksums)\.(md|txt)$">
+    Order allow,deny
+    Deny from all
+  </FilesMatch>
+</IfModule>
+
+# 仓库自带的版本控制与开发产物目录:即便部署时一并上传了,也不能被下载
+RedirectMatch 404 ^/(\.git|\.github|\.zcode|tests|tools|node_modules|gui-test-screenshots)(/|$)
+RedirectMatch 404 /\.(git|htaccess|gitignore|zcodeignore)(/|$)
+
 DirectoryIndex index.php index.html
 
 # 流式对话尽量不要被 gzip / 代理缓冲
