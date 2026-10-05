@@ -1958,6 +1958,11 @@ assert_has "代理响应不缓存(避免跨用户串号)" "$WEHHDR" 'Cache-Contr
 assert_eq "伪造票据被拒" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/page?u=$PU&t=bad.ticket.sig")" "403"
 # SSRF 闸门在测试钩子生效前先拦一道:内网/云元数据地址必须进不来
 assert_eq "内网地址被 SSRF 闸门拒绝" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/page?u=$(b64url 'http://169.254.169.254/latest/meta-data')&t=$TICKET")" "400"
+# 变体写法与隧道路径:RFC6598 CGNAT、6to4 里藏 127.0.0.1、十进制 IP、本地文件协议
+assert_eq "共享主机内网段(CGNAT)被拒" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/page?u=$(b64url 'http://100.64.0.1/')&t=$TICKET")" "400"
+assert_eq "IPv6 隧道段藏内网被拒" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/page?u=$(b64url 'http://[2002:7f00:1::]/')&t=$TICKET")" "400"
+assert_eq "十进制 IP 回环变体被拒" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/page?u=$(b64url 'http://2130706433/')&t=$TICKET")" "400"
+assert_eq "本地文件协议被拒" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/page?u=$(b64url 'file:///etc/passwd')&t=$TICKET")" "400"
 wr=$(curl -s "$BASE/api/web/read?u=$PU&t=$TICKET")
 assert_contains "阅读模式抽到标题" "$wr" 'mock page'
 assert_contains "阅读模式抽到正文" "$wr" '上海市气象局'
@@ -1973,6 +1978,43 @@ assert_eq "关闭后票据接口拒绝" "$(curl -s -o /dev/null -w '%{http_code}
 assert_eq "关闭后页面代理拒绝" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/page?u=$PU&t=$TICKET")" "403"
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"browserEnabled":true}' > /dev/null
 assert_contains "公共配置暴露 browserEnabled" "$(curl -s "$BASE/api/config")" '"browserEnabled":true'
+
+# ---------- 会话内 @AI 召唤 ----------
+# 会话内召唤走的是「有可用供应商」的分支:要先预扣额度,再把本会话最近若干条消息快照成上下文。
+# 这段逻辑曾经在上下文快照处读了一个尚未赋值的变量,线上「@AI 回答」因此固定返回 500;
+# 没有配供应商的冒烟用例进不到这个分支,所以这里用 mock 供应商把它走满。
+say ""
+say "== 会话内 @AI 召唤 =="
+curl -s -X POST "$BASE/api/auth/register" -H "Content-Type: application/json" -d '{"name":"Summoner","password":"pass1234"}' > /dev/null
+curl -s -X POST "$BASE/api/auth/register" -H "Content-Type: application/json" -d '{"name":"Summoned","password":"pass1234"}' > /dev/null
+SU=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"Summoner","password":"pass1234"}' | jget token)
+S2=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"Summoned","password":"pass1234"}' | jget token)
+SUAUTH="Authorization: Bearer $SU"
+S2AUTH="Authorization: Bearer $S2"
+SUID=$(curl -s "$BASE/api/im/users/search?q=Summoned" -H "$SUAUTH" | grep -o '"id":"[a-f0-9]*"' | head -1 | cut -d'"' -f4)
+# 双向请求自动匹配成好友,随后建单聊
+curl -s -X POST "$BASE/api/friends/request" -H "$SUAUTH" -H "Content-Type: application/json" -d '{"name":"Summoned"}' > /dev/null
+curl -s -X POST "$BASE/api/friends/request" -H "$S2AUTH" -H "Content-Type: application/json" -d '{"name":"Summoner"}' > /dev/null
+STID=$(curl -s -X POST "$BASE/api/im/threads" -H "$SUAUTH" -H "Content-Type: application/json" -d "{\"type\":\"dm\",\"uid\":\"$SUID\"}" | jget id)
+[ -n "$STID" ] && ok "召唤用例:建单聊" || bad "召唤用例:建单聊"
+# 先塞历史,让「上下文快照」确实有内容可读(故障点就在这里)
+curl -s -X POST "$BASE/api/im/messages" -H "$SUAUTH" -H "Content-Type: application/json" -d "{\"thread\":\"$STID\",\"text\":\"今天天气不错\"}" > /dev/null
+curl -s -X POST "$BASE/api/im/messages" -H "$S2AUTH" -H "Content-Type: application/json" -d "{\"thread\":\"$STID\",\"text\":\"是挺晴朗的\"}" > /dev/null
+SUM=$(curl -s -w '\n%{http_code}' -X POST "$BASE/api/im/messages" -H "$SUAUTH" -H "Content-Type: application/json" \
+  -d "{\"thread\":\"$STID\",\"text\":\"@AI 帮我总结一下\",\"providerId\":\"$PROV\",\"model\":\"mock-model\"}")
+assert_eq "@AI 召唤不返回 500(上下文快照不再读未赋值变量)" "$(printf '%s' "$SUM" | tail -1)" "200"
+assert_contains "@AI 召唤进入异步回复" "$(printf '%s' "$SUM" | sed '$d')" '"pending":true'
+# 关掉「AI 读取上下文」后同一分支仍要能走通
+curl -s -X POST "$BASE/api/im/threads/$STID/ai" -H "$SUAUTH" -H "Content-Type: application/json" -d '{"context":false}' > /dev/null
+assert_eq "关闭上下文后召唤仍不 500" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/im/messages" -H "$SUAUTH" -H "Content-Type: application/json" \
+  -d "{\"thread\":\"$STID\",\"text\":\"@AI 再总结一次\",\"providerId\":\"$PROV\",\"model\":\"mock-model\"}")" "200"
+# 整会话 AI 模式:不带 @ 的普通消息也走召唤分支
+curl -s -X POST "$BASE/api/im/threads/$STID/ai" -H "$SUAUTH" -H "Content-Type: application/json" -d '{"enabled":true}' > /dev/null
+assert_eq "整会话 AI 模式普通消息不 500" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/im/messages" -H "$SUAUTH" -H "Content-Type: application/json" \
+  -d "{\"thread\":\"$STID\",\"text\":\"不带 @ 的一句\",\"providerId\":\"$PROV\",\"model\":\"mock-model\"}")" "200"
+# 供应商不存在时应回错误提示而不是 500
+assert_contains "无效供应商回错误提示而非 500" "$(curl -s -X POST "$BASE/api/im/messages" -H "$SUAUTH" -H "Content-Type: application/json" \
+  -d "{\"thread\":\"$STID\",\"text\":\"@AI 用不存在的供应商\",\"providerId\":\"ffffffffffffffffffffffffffffffff\"}")" '"error"'
 
 
 say ""

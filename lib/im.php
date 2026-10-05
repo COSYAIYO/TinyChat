@@ -1047,6 +1047,10 @@ function tc_api_im_send() {
         }
         if ($text === '' && !$fileMeta) tc_fail(400, '消息不能为空');
 
+        // 会话消息分片先读出来:AI 上下文快照要用到它(下面落库时再整体写回)。
+        // 注意必须在召唤分支之前读 —— 放在后面会让上下文快照读到未定义的 $doc。
+        $doc = tc_im_msgs_doc($db, $tid);
+
         // AI 召唤判定:显式前缀优先;会话开了 AI 模式时,所有文本消息都召唤
         list($summon, $question) = tc_im_ai_trigger($text);
         if (!$summon && !empty($t['aiEnabled']) && $text !== '') {

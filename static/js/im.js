@@ -1200,7 +1200,7 @@
       html += renderMsg(msg);
     }
     if (S.aiPending.get(tid)) {
-      html += '<div class="im-row ai" id="im-ai-pending"><span class="im-avatar ai" style="width:34px;height:34px;font-size:16px">' + icon('bot', 16) + '</span>'
+      html += '<div class="im-row ai" id="im-ai-pending">' + aiAvatarHtml(34, S.current && S.current.model)
         + '<div class="im-bubble ai im-typing"><span></span><span></span><span></span></div></div>';
     }
     box.innerHTML = html || '<div class="im-empty small"><p>还没有消息</p><p class="im-empty-sub">打个招呼吧,输入 @ 选「AI 回答」可以召唤 AI</p></div>';
@@ -1233,10 +1233,21 @@
     c.classList.toggle('hidden', !n);
   }
 
+  // AI 头像与首页对话保持同一套逻辑:优先显示该模型的品牌 logo(deepseek / openai / …),
+  // 取不到时退回站点 logo —— 与 app.js 的 aiAvatarHtml 一致,免得同一句 AI 回答
+  // 在首页和聊天里长得不一样。
+  function aiAvatarHtml(size, modelText) {
+    if (window.OC && OC.logoImg && OC.modelLogo) {
+      const html = OC.logoImg(OC.modelLogo(String(modelText || '')), 'im-avatar-logo');
+      if (html) return '<span class="im-avatar ai" style="width:' + size + 'px;height:' + size + 'px">' + html + '</span>';
+    }
+    return '<span class="im-avatar ai" style="width:' + size + 'px;height:' + size + 'px;font-size:' + Math.round(size * 0.47) + 'px">' + icon('bot', Math.round(size * 0.47)) + '</span>';
+  }
+
   function renderMsg(msg) {
     const who = msg.kind === 'ai' ? 'ai' : (msg.self ? 'self' : 'other');
     const av = who === 'self' ? '' : (msg.kind === 'ai'
-      ? '<span class="im-avatar ai" style="width:34px;height:34px;font-size:16px">' + icon('bot', 16) + '</span>'
+      ? aiAvatarHtml(34, msg.model || S.current && S.current.model)
       : avatarHtml(msg.name, 34, '', msg.from));
     // 群聊发送者名字用头像同款渐变色(Telegram 惯例),一眼分辨谁在说话
     const nameLine = who === 'other' && isGroup(S.current)

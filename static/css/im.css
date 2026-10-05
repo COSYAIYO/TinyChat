@@ -275,7 +275,23 @@
 }
 /* 带角色头像层的:隐藏首字(图片 404 时只剩渐变圆,不会出现裂图) */
 .im-avatar.im-has-role { color: transparent; text-shadow: none; }
-.im-avatar.ai { background-image: linear-gradient(135deg, #a78bfa, #7c5cff); color: #fff; }
+/* AI 头像与首页一致:不铺底色,只放模型 logo(取不到时退回主题色线标) */
+.im-avatar.ai {
+  background-image: none;
+  background: transparent;
+  color: var(--accent);
+  text-shadow: none;
+  overflow: hidden;
+}
+.im-avatar.ai .im-avatar-logo {
+  width: 100%; height: 100%;
+  object-fit: contain; object-position: center;
+  display: block;
+}
+/* 站点 logo 是深浅双图,按主题切换(与首页同一套约定) */
+.im-avatar.ai .brand-logo-dark { display: none; }
+[data-theme="dark"] .im-avatar.ai .brand-logo-light { display: none; }
+[data-theme="dark"] .im-avatar.ai .brand-logo-dark { display: block; }
 .im-avatar.group { border-radius: 32%; }
 
 /* ---------- 右栏聊天窗 ---------- */
