@@ -1,0 +1,257 @@
+/* ============================================================
+ * 主题包:ChatGPT 风格(黑白极简 + 大圆角)
+ *
+ * 文件名刻意不含 chatgpt:部分免费虚拟主机的边缘 WAF 会拦截 URL 里含 chat 的
+ * 请求,连静态资源也返回主机自己的 403(实证见 tests/waf-paths.js 记录的事故)。
+ * 主题 id 与展示名仍是 chatgpt,只有文件名绕开该关键词。
+ *
+ * 加载方式:theme-boot.js / ui.js 在启用该主题时注入本文件,
+ *   并在 <html> 上写入 data-oc-theme="chatgpt"。
+ *   未启用时本文件不加载;即使被加载,所有规则都以
+ *   html[data-oc-theme="chatgpt"] 前缀限定,不生效也不影响默认外观。
+ *
+ * 为什么用属性前缀而不是直接覆盖:默认主题必须原样保留(用户明确要求
+ * 「当前主题即默认」),所以主题包只能在自己被选中时生效,不能靠加载顺序
+ * 去压 chrome.css —— 后者有 200+ 处 !important,靠顺序不可靠;
+ * 属性前缀把特异性抬到 (0,2,1) 以上,不需要跟它比 !important。
+ *
+ * 配色取自 ChatGPT 现行界面:
+ *   浅色 侧栏 #f9f9f9 / 画布 #ffffff / 用户气泡 #f4f4f4 / 主按钮 #0d0d0d
+ *   深色 侧栏 #171717 / 画布 #212121 / 用户气泡 #303030 / 主按钮 #ffffff
+ * 该主题自带完整配色,故 UI 侧会跳过「主题色」覆盖(见 ui.js 的 ownsPalette)。
+ * ============================================================ */
+
+/* ---------- 1. 调色板:浅色 ---------- */
+html[data-oc-theme="chatgpt"] {
+  color-scheme: light;
+
+  /* 品牌与主操作:ChatGPT 是黑白单色,不用彩色点缀 */
+  --brand: #0d0d0d;
+  --brand-hover: #000000;
+  --brand-soft: rgba(13, 13, 13, 0.06);
+  --brand-soft-strong: rgba(13, 13, 13, 0.1);
+  --ring-brand: rgba(13, 13, 13, 0.12);
+  --primary: #0d0d0d;
+  --primary-hover: #000000;
+  --primary-text: #ffffff;
+  --accent: #0d0d0d;
+  --accent-hover: #000000;
+  --active-text: #0d0d0d;
+  --active-bar: #0d0d0d;
+
+  /* 画布与面板 */
+  --bg-app: #ffffff;
+  --bg-surface: #ffffff;
+  --bg-surface-2: #f9f9f9;
+  --bg-sidebar: #f9f9f9;
+  --bg-hover: rgba(13, 13, 13, 0.07);
+  --bg-active: rgba(13, 13, 13, 0.11);
+  --bg-input: #ffffff;
+  --bg-code: #f4f4f4;
+  --bg-user-msg: #f4f4f4;
+  --bg-selected: rgba(13, 13, 13, 0.06);
+  --bg-elevated: #ffffff;
+  --bg-mask: rgba(255, 255, 255, 0.85);
+
+  /* 文字 */
+  --text: #0d0d0d;
+  --text-secondary: #5d5d5d;
+  --text-tertiary: #8f8f8f;
+
+  /* 线框:ChatGPT 几乎不画分隔线,靠色阶区分 */
+  --hairline: rgba(13, 13, 13, 0.08);
+  --hairline-strong: rgba(13, 13, 13, 0.16);
+  --border: rgba(13, 13, 13, 0.08);
+  --border-strong: rgba(13, 13, 13, 0.16);
+
+  /* 阴影:极浅,悬浮感主要靠圆角与描边 */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --shadow-pop: 0 4px 16px rgba(0, 0, 0, 0.1);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-float: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --shadow-glow: 0 0 0 1px rgba(255, 255, 255, 0.5) inset;
+
+  --danger: #e02e2a;
+  --danger-bg: rgba(224, 46, 42, 0.1);
+
+  /* 圆角:整体更大更圆 */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+}
+
+/* ---------- 2. 调色板:深色 ---------- */
+html[data-oc-theme="chatgpt"][data-theme="dark"] {
+  color-scheme: dark;
+
+  --brand: #ffffff;
+  --brand-hover: #d9d9d9;
+  --brand-soft: rgba(255, 255, 255, 0.08);
+  --brand-soft-strong: rgba(255, 255, 255, 0.14);
+  --ring-brand: rgba(255, 255, 255, 0.16);
+  --primary: #ffffff;
+  --primary-hover: #d9d9d9;
+  --primary-text: #0d0d0d;
+  --accent: #ffffff;
+  --accent-hover: #d9d9d9;
+  --active-text: #ffffff;
+  --active-bar: #ffffff;
+
+  --bg-app: #212121;
+  --bg-surface: #212121;
+  --bg-surface-2: #2f2f2f;
+  --bg-sidebar: #171717;
+  --bg-hover: rgba(255, 255, 255, 0.07);
+  --bg-active: rgba(255, 255, 255, 0.12);
+  --bg-input: #2f2f2f;
+  --bg-code: #2f2f2f;
+  --bg-user-msg: #303030;
+  --bg-selected: rgba(255, 255, 255, 0.1);
+  --bg-elevated: #2f2f2f;
+  --bg-mask: rgba(33, 33, 33, 0.85);
+
+  --text: #ececec;
+  --text-secondary: #b4b4b4;
+  --text-tertiary: #8f8f8f;
+
+  --hairline: rgba(255, 255, 255, 0.1);
+  --hairline-strong: rgba(255, 255, 255, 0.18);
+  --border: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.18);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.24);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.36);
+  --shadow-pop: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-float: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-glow: 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+
+  --danger: #ff6764;
+  --danger-bg: rgba(255, 103, 100, 0.14);
+}
+
+/* ---------- 3. 侧栏:实色、无毛玻璃、无分隔线 ---------- */
+html[data-oc-theme="chatgpt"] .sidebar {
+  background: var(--bg-sidebar);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+/* ChatGPT 靠侧栏与画布的色阶差分区,不画竖线 */
+html[data-oc-theme="chatgpt"] .sidebar::after { display: none; }
+
+/* 新建对话:ChatGPT 里是一行轻量入口,不是实心按钮 */
+html[data-oc-theme="chatgpt"] .new-chat-btn {
+  justify-content: flex-start;
+  background: transparent;
+  color: var(--text);
+  font-weight: 500;
+  border-radius: 10px;
+  padding: 0 10px;
+}
+html[data-oc-theme="chatgpt"] .new-chat-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+html[data-oc-theme="chatgpt"] .new-chat-btn:active {
+  background: var(--bg-active);
+}
+
+/* 会话行:更高的圆角与更明确的选中底色 */
+html[data-oc-theme="chatgpt"] .chat-item {
+  border-radius: 10px;
+  font-weight: 400;
+}
+html[data-oc-theme="chatgpt"] .chat-item.active {
+  background: var(--bg-active);
+  font-weight: 500;
+}
+
+/* 底部分隔线一并去掉,与侧栏整体保持"无框" */
+html[data-oc-theme="chatgpt"] .sidebar-footer {
+  border-top-color: transparent;
+}
+
+/* ---------- 4. 输入区:实心胶囊 + 轻描边 ---------- */
+html[data-oc-theme="chatgpt"] .composer {
+  background: var(--bg-surface);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 28px;
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+/* 聚焦只把描边压深一点:ChatGPT 不做彩色光圈 */
+html[data-oc-theme="chatgpt"] .composer:focus-within {
+  border-color: color-mix(in srgb, var(--text) 34%, transparent);
+  box-shadow: var(--shadow-md);
+  background: var(--bg-surface);
+}
+html[data-oc-theme="chatgpt"] .composer-at { font-weight: 500; }
+
+/* 发送键:浅色黑底白箭头 / 深色白底黑箭头(由 --brand / --primary-text 驱动) */
+html[data-oc-theme="chatgpt"] .send-btn,
+html[data-oc-theme="chatgpt"] .stop-btn { border-radius: 50%; }
+
+/* ---------- 5. 消息:用户气泡统一大圆角,助手不加装饰 ---------- */
+/* 背景显式指到 --bg-user-msg:redesign.css 把用户气泡接到了 --brand-soft(跟随主题色),
+   本主题下 --brand-soft 只是单色浅灰,和气泡需要的中性灰不是一回事,所以这里接管。 */
+html[data-oc-theme="chatgpt"] .msg.user .msg-content {
+  background: var(--bg-user-msg);
+  border: none;
+  border-radius: 20px;
+  box-shadow: none;
+}
+html[data-oc-theme="chatgpt"] .msg .msg-avatar {
+  border: none;
+  box-shadow: none;
+}
+
+/* ---------- 6. 弹窗与按钮:圆角与单色主操作 ---------- */
+html[data-oc-theme="chatgpt"] .modal {
+  border-radius: 20px;
+  border: 1px solid var(--hairline);
+  box-shadow: var(--shadow-pop);
+}
+html[data-oc-theme="chatgpt"] .btn { border-radius: 10px; }
+html[data-oc-theme="chatgpt"] .btn.primary {
+  background: var(--primary);
+  color: var(--primary-text);
+  border-radius: 999px;
+}
+html[data-oc-theme="chatgpt"] .btn.primary:hover {
+  background: var(--primary-hover);
+  color: var(--primary-text);
+}
+
+/* 用户菜单 / 下拉:深色下用悬浮面板色,和侧栏拉开层次 */
+html[data-oc-theme="chatgpt"] .user-menu {
+  border-radius: 14px;
+  border: 1px solid var(--hairline);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-pop);
+}
+html[data-oc-theme="chatgpt"] .user-menu-item { border-radius: 9px; }
+
+/* ---------- 7. 滚动条:细、无轨道 ---------- */
+html[data-oc-theme="chatgpt"] * {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent;
+}
+html[data-oc-theme="chatgpt"] ::-webkit-scrollbar { width: 10px; height: 10px; }
+html[data-oc-theme="chatgpt"] ::-webkit-scrollbar-track { background: transparent; }
+html[data-oc-theme="chatgpt"] ::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text) 20%, transparent);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+html[data-oc-theme="chatgpt"] ::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text) 34%, transparent);
+  background-clip: content-box;
+}

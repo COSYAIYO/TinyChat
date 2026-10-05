@@ -49,6 +49,10 @@ jobs:
         run: node tools/release.mjs && git diff --exit-code
       - name: 图标匹配自检(规则目标文件必须存在 + 关键模型命中)
         run: node tests/logos-check.js
+      - name: 主题包契约自检(规则不得漏进默认外观 / 入口位置 / 白名单)
+        # 主题样式表少写一条属性前缀,那条规则就会漏进默认外观,而默认外观必须与引入
+        # 主题市场之前逐像素一致 —— 这种走样不报错、只在界面上静静变样,用静态约定挡住。
+        run: node tests/theme-pack.js
       - name: WAF 路径自检(文件名/路由不得含主机拦截关键词)
         # 免费虚拟主机(InfinityFree)的边缘 WAF 会拦 URL 里含 chat 的请求,连静态资源
         # 与页面路由也返回 403,且发生在 .htaccess 之前 —— 只能靠改名字避开。
