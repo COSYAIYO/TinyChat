@@ -285,8 +285,11 @@
 .chat-search:focus-within {
   background: var(--bg-active);
   border: none;
-  box-shadow: none;
+  box-shadow: 0 0 0 3px var(--ring-brand);
 }
+/* 搜索框是一个整体:环画在整框上,内部 input 不单独描边 */
+.chat-search input:focus,
+.chat-search input:focus-visible { outline: none; }
 .chat-search input { font-size: 0.893rem; }
 .chat-search svg { color: var(--text-tertiary); }
 .chat-search input::selection,
@@ -1282,10 +1285,6 @@ body {
   border-radius: 8px;
   background: var(--bg-surface);
   font-size: 0.893rem;
-}
-.font-family-control .font-family-input:focus {
-  border-color: var(--brand);
-  box-shadow: 0 0 0 2px var(--ring-brand);
 }
 .font-select-trigger {
   display: inline-flex;
@@ -2574,6 +2573,7 @@ body.share-page {
 .admin-toolbar .users-search .search-input:focus {
   border: none;
   box-shadow: none;
+  outline: none; /* 环由 .users-search:focus-within 画在整框上 */
 }
 .users-search .search-input::-webkit-search-decoration,
 .users-search .search-input::-webkit-search-cancel-button {
@@ -2779,6 +2779,7 @@ body.share-page {
   background: var(--bg-active);
   border-color: transparent;
   color: var(--text-secondary);
+  box-shadow: 0 0 0 3px var(--ring-brand);
 }
 .assistant-lib-split {
   display: flex;
@@ -2997,11 +2998,7 @@ body.share-page {
   font: inherit;
   line-height: 1.5;
 }
-.field textarea:focus {
-  outline: none;
-  border-color: var(--brand);
-  box-shadow: 0 0 0 3px var(--ring-brand);
-}
+/* 多行输入框与单行一致:聚焦只留全局那圈 2px 主色描边 */
 @media (max-width: 640px) {
   .assistant-lib-toolbar { flex-direction: column; align-items: stretch; }
   .assistant-lib-actions { justify-content: flex-end; }
@@ -3811,12 +3808,7 @@ a.btn {
 /* 供应商卡片列表:加大卡片之间的间距 */
 #admin-providers { display: flex; flex-direction: column; gap: 14px; }
 
-/* 测试收件邮箱输入框:与其他表单控件一致的聚焦反馈 */
-.admin-card input[type="email"]:focus {
-  border-color: var(--brand) !important;
-  box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--brand, var(--accent)) 14%, transparent) !important;
-  outline: none;
-}
+/* 测试收件邮箱输入框:聚焦反馈交给全局 2px 描边,不再单独描边 */
 
 /* AI 思考策略:全局设置行(规则卡片复用 pkg-card 体系) */
 .thinking-global {

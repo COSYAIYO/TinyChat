@@ -178,11 +178,13 @@ button { -webkit-tap-highlight-color: transparent; }
               box-shadow var(--dur-1) var(--ease-out),
               background var(--dur-1) var(--ease-out);
 }
+/* 聚焦反馈只留一圈:描边统一由本文件的 :focus-visible(2px 主色)负责。
+   这里原本又叠了一层 3.5px 光环,同一个框上两圈,视觉上很脏,已去掉。 */
 .field input:focus,
 .font-family-input:focus,
 .rename-input:focus,
 .msg-edit-area:focus {
-  box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--brand, var(--accent)) 14%, transparent);
+  box-shadow: none;
 }
 .chat-search:focus-within {
   box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--brand, var(--accent)) 12%, transparent);
@@ -511,10 +513,6 @@ html:not(.oc-streaming) .stream-cursor { display: none; }
 .log-filter-btn { transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out); }
 .admin-table tr { transition: background var(--dur-1) var(--ease-out); }
 .admin-toolbar .search-input { transition: border-color var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out); }
-.admin-toolbar .search-input:focus {
-  border-color: var(--brand, var(--accent));
-  box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--brand, var(--accent)) 12%, transparent);
-}
 
 /* ---------- 15. 登录页:进场编排 + 提交按钮 ---------- */
 .auth-card { animation: authCardIn 520ms var(--ease-spring) both; }

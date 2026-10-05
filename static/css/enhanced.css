@@ -1086,6 +1086,14 @@
   font-weight: 600;
   color: var(--text);
 }
+/* 窄屏:次数徽章独占一行。徽章文案可能很长(剩余次数: 1000000000000000),
+   与头像、名字挤在同一行时,名字和「注册于 …」会被压成一条竖线
+   (390px 下 meta 只剩 25px、360px 下 0px,整块高 218px)。 */
+@media (max-width: 600px) {
+  .acc-head { flex-wrap: wrap; row-gap: 10px; }
+  .acc-head-meta { flex: 1 1 140px; }
+  .acc-quota-badge { flex: 1 1 100%; text-align: center; overflow-wrap: anywhere; }
+}
 
 /* 偏好面板 */
 .pref-row {
@@ -1151,6 +1159,10 @@
   padding: 4px 0;
   outline: none;
 }
+/* 步进器是「− 数字 +」一个整体:环画在整框上,内部输入框不单独描边 */
+.stepper:focus-within { box-shadow: 0 0 0 3px var(--ring-brand); }
+.stepper input:focus,
+.stepper input:focus-visible { outline: none; }
 .seg-btn {
   border: none;
   background: transparent;
@@ -1198,10 +1210,7 @@
   color: var(--text);
   font-size: 0.964rem;
   font-family: inherit;
-  outline: none;
 }
-.admin-toolbar .search-input:focus { box-shadow: 0 0 0 3px var(--hairline-strong); }
-
 /* 调用趋势(纯 CSS 柱状图) */
 .trend-chart {
   display: flex;
@@ -1431,11 +1440,6 @@
   border: 1px solid var(--hairline);
   background: var(--bg-surface);
 }
-.admin-toolbar .search-input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
-}
-
 /* 日志过滤器按钮(默认态要有明显边框,激活态清晰) */
 .log-filters {
   gap: 6px;
@@ -1796,7 +1800,6 @@
   font-family: inherit;
   outline: none;
 }
-.font-family-input:focus { box-shadow: 0 0 0 3px var(--hairline-strong); }
 .accent-control {
   display: flex;
   align-items: center;
@@ -1904,7 +1907,13 @@
   border-radius: 12px;
   background: var(--bg-surface);
 }
-.accent-hex-field:focus-within { box-shadow: 0 0 0 3px var(--ring-brand); }
+.accent-hex-field:focus-within {
+  border-color: var(--brand, var(--accent));
+  box-shadow: 0 0 0 3px var(--ring-brand);
+}
+/* HEX 输入框在整框内部:环画在整框上,内部输入框不再单独描边 */
+.accent-hex:focus,
+.accent-hex:focus-visible { outline: none; }
 .accent-hex-prefix {
   flex-shrink: 0;
   font-size: 0.857rem;
@@ -1992,6 +2001,7 @@
   outline: none;
 }
 .accent-track:focus-visible {
+  outline: none;
   box-shadow: 0 0 0 3px var(--ring-brand);
 }
 .accent-hue {

@@ -716,7 +716,7 @@ body {
   color: var(--text);
   transition: background 0.15s, box-shadow 0.15s;
 }
-.field input:focus { background: var(--bg-input); box-shadow: 0 0 0 3px var(--hairline-strong); }
+.field input:focus { background: var(--bg-input); }
 
 /* 自定义选择框（替代原生 select） */
 .select-box {

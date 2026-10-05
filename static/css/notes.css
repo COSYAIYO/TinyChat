@@ -101,7 +101,7 @@
   padding: 7px 12px;
   transition: background .15s;
 }
-.notes-search:focus-within { background: var(--bg-active); box-shadow: none; }
+.notes-search:focus-within { background: var(--bg-active); box-shadow: 0 0 0 3px var(--ring-brand); }
 .notes-search-icon { color: var(--text-tertiary); display: flex; }
 .notes-search input {
   flex: 1;

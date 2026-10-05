@@ -730,8 +730,6 @@ textarea:focus-visible {
   transition: border-color 0.16s, box-shadow 0.16s;
 }
 .field input:focus {
-  border-color: var(--brand);
-  box-shadow: 0 0 0 4px var(--ring-brand);
   background: var(--bg-surface);
 }
 .select-box:hover { border-color: var(--hairline-strong); background: var(--bg-surface); }
