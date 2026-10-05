@@ -49,6 +49,11 @@ jobs:
         run: node tools/release.mjs && git diff --exit-code
       - name: 图标匹配自检(规则目标文件必须存在 + 关键模型命中)
         run: node tests/logos-check.js
+      - name: WAF 路径自检(文件名/路由不得含主机拦截关键词)
+        # 免费虚拟主机(InfinityFree)的边缘 WAF 会拦 URL 里含 chat 的请求,连静态资源
+        # 与页面路由也返回 403,且发生在 .htaccess 之前 —— 只能靠改名字避开。
+        # 这类问题在自建服务器上永远复现不了,用静态扫描挡住回归。
+        run: node tests/waf-paths.js
       - name: AI 整理解析自检(弱模型畸形输出 / 降级格式 / 输入裁剪)
         run: node tests/notes-archive.js
       - name: 弹窗框架契约自检(关闭回调不递归爆栈 / Esc 链路)

@@ -2,6 +2,20 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.125] - 2026-10-05
+
+### 修复
+
+- **免费虚拟主机上「回答模型标签页」与群聊整体失效**：部分虚拟主机（典型是 InfinityFree）的边缘 WAF 会把 URL 路径里**含 `chat` 子串**的请求一律拦成主机自己的 403 页，且发生在 `.htaccess` 与 PHP 之前——文件不存在也照拦（`/static/css/groupchatX.min.css` 同样 403），而 `/api` 与 `/v1` 前缀例外，所以**只有部分资源坏掉、对话功能看起来还正常**。本站静态资源名正好带 `chat`：`static/css/groupchat.min.css` 与 `static/js/groupchat.min.js` 在免费主机上返回 403（241 字节的主机拦截页），于是 `.reply-tabs` 整组样式（25 条规则）、侧栏「简单对话 / 群聊」开关样式全部丢失，多个回答版本的标签退化成三个带边框的默认按钮（每行一个、长文字不省略）；`window.OCGroup` 也因脚本 403 而不存在，群聊模式彻底不可用；`static/logo/chatglm-color.svg` 同样 403，ChatGLM 系模型图标裂图（`logoImg` 无 `onerror` 兜底）。付费主机与自建服务器没有这层规则，所以同一份文件在那边完全正常。
+
+  修法是**把 URL 里的 `chat` 彻底去掉**：`groupchat.css` / `groupchat.js` → `groupui.*`，`chatglm-color.svg` → `zhipu-glm-color.svg`（保留 `chatglm` 关键词仍匹配到该图标），页面路由 `/chat` 改为 `/app`。`.htaccess` 与其它 rewrite 都救不回来——403 在它们之前就发生了，只能改 URL 本身。仓库内已无任何含 `chat` 的文件名（`/api/proxy/chat`、`/api/sync/chats`、`/v1/chat/completions` 等**接口路径不受影响**，主机对 `/api`、`/v1` 前缀放行，保持不变）。
+
+### 新增
+
+- **`tests/waf-paths.js`（16 项，已入 CI）**：静态自检仓库里所有会被 Web 直接请求的路径（`git ls-files` 全量文件名 + 路由地址 + 前端运行时引用），凡命中已知 WAF 黑名单关键词（小写 `chat`、`paypal`、`bank`…）即失败。这类问题在自建服务器上永远复现不了，只能靠静态扫描挡住回归。
+- **README「虚拟主机部署」新增说明**：若你部署在带域名关键词 WAF 的免费主机上（如 InfinityFree），升级到 2.0.125 前，先删掉站点上的旧文件 `static/css/groupchat.*`、`static/js/groupchat.*`、`static/logo/chatglm-color.svg`，再上传新版本——这些旧 URL 会被主机拦成 403，而在线更新只覆盖、不删除。
+- **`/app` 会话页别名**：替代原先会被 WAF 拦截的 `/chat`。原先没有任何站内链接指向 `/chat`，实际影响仅限用户手动输入该地址。
+
 ## [2.0.124] - 2026-10-05
 
 ### 新增

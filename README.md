@@ -179,6 +179,12 @@ chmod -R 775 data
 
 也可以复制 `config.sample.php` 为 `config.php`，写上 `admin_password`，首次访问会自动种下管理员（只在库里还没有管理员时生效）。
 
+> **免费主机提示（InfinityFree 等）**：这类主机的边缘 WAF 会拦截 URL 里**含 `chat` 等关键词**的请求——**连静态资源和页面路由也一样**，返回主机自己的 403 页且发生在 `.htaccess` 之前，改伪静态也救不回来。2.0.125 起，本站所有文件名与路由都已避开这些关键词（旧名 `groupchat.*` → `groupui.*`，`chatglm-color.svg` → `zhipu-glm-color.svg`，路由 `/chat` → `/app`）。
+>
+> **从 2.0.124 及更早版本升级到 2.0.125 时**：先手动删掉站点上的旧文件 `static/css/groupchat.css`、`static/css/groupchat.min.css`、`static/js/groupchat.js`、`static/js/groupchat.min.js`、`static/logo/chatglm-color.svg`，再上传新版本。在线更新只覆盖同名文件、不会删除已改名失效的旧文件，而旧 URL 会被主机拦成 403（不影响功能，但会让 WAF 日志里一直出现被拦记录）。
+>
+> 接口路径（`/api/proxy/chat`、`/api/sync/chats`、`/v1/chat/completions` 等）**不受影响**——这些主机对 `/api`、`/v1` 前缀放行。仓库里有 `node tests/waf-paths.js` 可随时自检是否有新文件又踩到关键词。
+
 ### 宝塔面板部署（小白步骤）
 
 面向第一次用宝塔的站长，一步步照做即可。全程只需要 **Nginx + PHP**，**不需要 MySQL**——所以别建数据库。
