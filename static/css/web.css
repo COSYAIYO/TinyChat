@@ -46,22 +46,24 @@
   border-bottom: 1px solid var(--hairline);
 }
 
-/* 左上角的 logo:同时是「回首页」按钮 */
+/* 左上角的 logo:同时是「回首页」按钮(实心品牌色,和工具条里的图标控件区分开) */
 .web-logo {
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   flex-shrink: 0;
-  border-radius: 7px;
-  background: var(--brand-soft);
-  color: var(--brand);
+  border-radius: 8px;
+  background: var(--brand);
+  color: var(--primary-text);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0;
   cursor: pointer;
-  transition: background 0.15s ease;
+  box-shadow: var(--shadow-sm);
+  transition: background 0.15s ease, transform 0.15s ease;
 }
-.web-logo:hover { background: var(--brand-soft-strong); }
+.web-logo:hover { background: var(--brand-hover); }
+.web-logo:active { transform: scale(0.94); }
 
 .web-tabs {
   flex: 1;
@@ -448,4 +450,12 @@
     position: absolute; inset: 0; width: 100%;
     border-left: none; z-index: 5;
   }
+}
+
+/* 超窄屏:把「前进 / 在原始网站打开」收起来(移动端浏览器的常规做法),
+   协议徽标也让位 —— 否则 9 个控件会把地址栏挤到只剩几十像素,输入的内容根本看不见 */
+@media (max-width: 560px) {
+  #web-fwd, #web-external, .web-addr-scheme { display: none; }
+  .web-icon-btn { width: 30px; height: 30px; }
+  .web-icon-btn.web-sm { width: 26px; height: 26px; }
 }

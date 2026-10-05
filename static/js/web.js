@@ -310,6 +310,8 @@
     });
     // 被代理页面的上报(地址 / 标题 / 正文)统一从这里进
     window.addEventListener('message', onFrameMessage);
+    window.addEventListener('resize', applyPlaceholder);
+    applyPlaceholder();
   }
 
   // ============ 打开 / 关闭 ============
@@ -466,6 +468,14 @@
     return e ? e.name : '搜索';
   }
 
+  // 超窄屏下地址栏只剩百来像素,长提示语会把可输入区域挤没,这里按宽度换短文案
+  function applyPlaceholder() {
+    if (!S.els.addr) return;
+    S.els.addr.placeholder = (window.innerWidth <= 560)
+      ? '输入网址或搜索'
+      : ('输入网址，或直接搜索（默认 ' + engineName(S.engine) + '）');
+  }
+
   function renderHome(t) {
     const list = bookmarks();
     const engines = ENGINES.map((e) => '<button class="web-chip' + (e.id === S.engine ? ' active' : '') + '" data-engine="' + e.id + '">' + esc(e.name) + '</button>').join('');
@@ -496,7 +506,7 @@
       if (!btn) return;
       S.engine = btn.dataset.engine;
       el.querySelectorAll('.web-chip').forEach((c) => c.classList.toggle('active', c.dataset.engine === S.engine));
-      S.els.addr.placeholder = '输入网址，或直接搜索（默认 ' + engineName(S.engine) + '）';
+      applyPlaceholder();
     });
     el.querySelector('.web-bm-add-btn').addEventListener('click', () => addBookmarkPrompt(t));
     el.querySelector('.web-bm-grid').addEventListener('click', onBookmarkClick);
