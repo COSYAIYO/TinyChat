@@ -5250,6 +5250,9 @@ function tc_settings_prefs($raw) {
         'lastProviderId' => 64, 'lastModel' => 200, 'pinnedProviderId' => 64, 'pinnedModel' => 200,
         'followupsModel' => 200, 'judgeModel' => 200, 'imageModel' => 200, 'notesModel' => 200,
         'fontFamily' => 80, 'fontCjk' => 80, 'fontLatin' => 80, 'accent' => 16,
+        // 主题市场的主题包 id(见 static/js/theme-boot.js 的 OC_THEME_PACKS)。
+        // 只存 id 不存样式:样式表随发布包分发,存 id 才能让主题更新跟着版本走。
+        'themePack' => 32,
     );
     $i = 0;
     foreach ($raw as $k => $v) {
