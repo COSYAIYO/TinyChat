@@ -88,6 +88,10 @@ jobs:
         run: php tests/stream-capture.php
       - name: JSON 边车文件并发自检(登录计数 / 附件索引 / 笔记 AI 配额)
         run: php tests/json-sidecars.php
+      - name: 在线聊天自检(AI 触发边界 / 好友请求语义 / 单聊复用 / immsg 与 imdel 分片落库)
+        run: php tests/im-social.php
+      - name: 在线浏览器代理自检(票据验签 / URL 绝对化 / SSRF / HTML·CSS 改写 / cookie jar)
+        run: php tests/web-proxy.php
 
   e2e:
     name: E2E(PHP ${{ matrix.php }})

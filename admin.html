@@ -9,16 +9,16 @@
 <meta name="robots" content="noindex,nofollow">
 <link rel="icon" type="image/svg+xml" href="./logo-icon.svg">
 <link rel="apple-touch-icon" href="./static/logo/app-icon-192.png">
-<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.132">
-<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.132" id="hljs-theme">
-<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.132">
-<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.132">
-<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.132">
-<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.132">
-<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.132">
-<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.132">
-<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.132">
-<script src="./static/js/theme-boot.min.js?v=2.0.132"></script>
+<link rel="stylesheet" href="./static/css/style.min.css?v=2.0.134">
+<link rel="stylesheet" href="./vendor/highlight/github.min.css?v=2.0.134" id="hljs-theme">
+<link rel="stylesheet" href="./vendor/katex/katex.min.css?v=2.0.134">
+<link rel="stylesheet" href="./static/css/enhanced.min.css?v=2.0.134">
+<link rel="stylesheet" href="./static/css/refine.min.css?v=2.0.134">
+<link rel="stylesheet" href="./static/css/redesign.min.css?v=2.0.134">
+<link rel="stylesheet" href="./static/css/polish.min.css?v=2.0.134">
+<link rel="stylesheet" href="./static/css/markdown.min.css?v=2.0.134">
+<link rel="stylesheet" href="./static/css/chrome.min.css?v=2.0.134">
+<script src="./static/js/theme-boot.min.js?v=2.0.134"></script>
 </head>
 <body class="admin-body">
 <form id="admin-fields" autocomplete="off" style="display:contents">
@@ -271,8 +271,10 @@
       <div class="pkg-form-grid">
         <label class="field"><span>每用户空间上限（MB，0 = 不限；用户侧边栏左下角显示剩余）</span>
           <input id="notes-quota" type="number" min="0" max="102400" step="50" value="200"></label>
-        <label class="field"><span>单个附件大小上限（MB；图片固定 10MB）</span>
+        <label class="field"><span>单个附件大小上限（MB，非图片）</span>
           <input id="notes-max-file" type="number" min="1" max="2048" step="1" value="50"></label>
+        <label class="field"><span>图片附件大小上限（MB）</span>
+          <input id="notes-max-image" type="number" min="1" max="2048" step="1" value="10"></label>
       </div>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="notes-share-body-only" checked><span class="slider"></span></span><span>分享链接仅包含正文（图片/附件不随分享公开；关闭后分享页也能看到正文里引用的图片与附件）</span></label>
       <label class="user-form-admin"><span class="switch"><input type="checkbox" id="notes-ai-customizable" checked><span class="slider"></span></span><span>允许用户自定义右键菜单动作（关闭后用户只能使用内置动作，齿轮弹窗只读）</span></label>
@@ -293,6 +295,63 @@
         <input id="notes-user-search" class="notes-search-mini" type="search" placeholder="搜索用户名或 ID" autocomplete="off" spellcheck="false">
         <div id="notes-users" class="pkg-cards"></div>
       </div>
+    </div>
+  </div>
+
+  <!-- 在线浏览器 -->
+  <div class="admin-panel" id="panel-web">
+    <div class="admin-card">
+      <h2>在线浏览器</h2>
+      <p class="muted small">用户在对话侧栏「在线浏览器」中输入网址或直接搜索：网页由<b>本站服务器</b>抓取、改写后在同源下渲染，因此目标网站看到的是本机的出口 IP 而不是用户的 IP；页面跑在 sandbox 隔离的框里，读不到本站登录令牌。网页顶部可一键「AI 总结」，走与对话相同的计费通道。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="web-enabled" checked><span class="slider"></span></span><span>开启在线浏览器（关闭后前台入口隐藏、代理接口与票据一律拒绝）</span></label>
+      <div class="pkg-form-grid">
+        <label class="field"><span>网页 AI 总结每日次数上限（每用户，0 = 不限；单次调用仍按额度计费）</span>
+          <input id="web-ai-limit" type="number" min="0" max="10000" step="1" value="50"></label>
+      </div>
+      <div class="pkg-form-grid">
+        <label class="field"><span>主页收藏夹（每行一条，格式：<code>名称|网址</code>；留空用内置默认：Google 学术、arXiv、PubMed 等。此处配置会覆盖内置默认）</span>
+          <textarea id="web-bookmarks" rows="7" spellcheck="false" placeholder="Google 学术|https://scholar.google.com/&#10;arXiv|https://arxiv.org/"></textarea></label>
+      </div>
+      <p class="muted small">提醒：开启后任何登录用户都能借本机出口访问任意公网站点，出口 IP 的声誉与流量都算在本站账上；若目标站对数据中心 IP 有风控（如 Google 搜索常返回验证码），属于预期现象，可在下方「联网搜索」里配置外部检索源作为替代。</p>
+      <button class="btn primary" id="web-settings-save" type="button">保存浏览器设置</button>
+    </div>
+  </div>
+
+  <!-- 在线聊天 -->
+  <div class="admin-panel" id="panel-im">
+    <div class="admin-card">
+      <h2>在线聊天</h2>
+      <p class="muted small">用户在对话侧栏「在线聊天」中按用户名添加好友，支持单聊、群聊、图片/文件发送；消息以「AI」开头可召唤 AI 回答（会话也可整体开启 AI 模式）。聊天附件独立保存在 <code>data/im/用户ID/</code>，不占笔记配额。双向删除的消息与被删除/解散的会话会进入留档，可在下方「会话与留档」查看原文或彻底清理。</p>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="im-enabled" checked><span class="slider"></span></span><span>开启在线聊天功能（关闭后前台入口隐藏、接口拒绝读写）</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="im-allow-files" checked><span class="slider"></span></span><span>允许在聊天中发送非图片文件（关闭后仅允许图片）</span></label>
+      <label class="user-form-admin"><span class="switch"><input type="checkbox" id="im-mutual-friends"><span class="slider"></span></span><span>所有人默认互为好友（开启后注册用户之间无需添加即可直接聊天、互相出现在好友列表；关闭时需搜索用户名发请求添加。管理员始终与所有人互为好友）</span></label>
+      <div class="pkg-form-grid">
+        <label class="field"><span>对所有人可见的用户（用户名，逗号或换行分隔；管理员无需填写即始终可见）</span>
+          <input id="im-visible-users" type="text" placeholder="如：Alice, Bob" autocomplete="off"></label>
+      </div>
+      <div class="pkg-form-grid">
+        <label class="field"><span>每用户聊天空间上限（MB，0 = 不限）</span>
+          <input id="im-quota" type="number" min="0" max="102400" step="50" value="500"></label>
+        <label class="field"><span>单个文件大小上限（MB，非图片）</span>
+          <input id="im-max-file" type="number" min="1" max="2048" step="1" value="20"></label>
+        <label class="field"><span>图片大小上限（MB）</span>
+          <input id="im-max-image" type="number" min="1" max="2048" step="1" value="10"></label>
+      </div>
+      <div class="pkg-form-grid">
+        <label class="field"><span>AI 召唤每日次数上限（每用户，0 = 不限；单次调用仍按额度计费）</span>
+          <input id="im-ai-limit" type="number" min="0" max="10000" step="1" value="50"></label>
+      </div>
+      <button class="btn primary" id="im-settings-save" type="button">保存聊天设置</button>
+    </div>
+
+    <div class="admin-card" style="margin-top:16px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2 style="margin:0">会话与留档</h2>
+        <button class="btn small" id="im-threads-refresh" type="button">刷新列表</button>
+        <span class="muted small" id="im-threads-overview"></span>
+      </div>
+      <p class="muted small">点「查看」审阅会话消息与删除留档原文；「清理」把该会话的留档彻底删除（含其引用的附件文件），不可恢复；在线会话不受影响。</p>
+      <div id="im-threads" class="pkg-cards"></div>
     </div>
   </div>
 
@@ -1114,17 +1173,17 @@
   </div>
 </div>
 </form>
-<script defer src="./static/js/config.min.js?v=2.0.132"></script>
-<script defer src="./static/js/icons.min.js?v=2.0.132"></script>
-<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.132"></script>
-<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.132"></script>
-<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.132"></script>
-<script defer src="./vendor/dompurify/purify.min.js?v=2.0.132"></script>
-<script defer src="./vendor/katex/katex.min.js?v=2.0.132"></script>
-<script defer src="./vendor/highlight/highlight.min.js?v=2.0.132"></script>
-<script defer src="./static/js/ui.min.js?v=2.0.132"></script>
-<script defer src="./static/js/components.min.js?v=2.0.132"></script>
-<script defer src="./static/js/renderer.min.js?v=2.0.132"></script>
-<script defer src="./static/js/admin.min.js?v=2.0.132"></script>
+<script defer src="./static/js/config.min.js?v=2.0.134"></script>
+<script defer src="./static/js/icons.min.js?v=2.0.134"></script>
+<script defer src="./vendor/markdown-it/markdown-it.min.js?v=2.0.134"></script>
+<script defer src="./vendor/markdown-it/markdown-it-footnote.min.js?v=2.0.134"></script>
+<script defer src="./vendor/markdown-it/markdown-it-emoji.min.js?v=2.0.134"></script>
+<script defer src="./vendor/dompurify/purify.min.js?v=2.0.134"></script>
+<script defer src="./vendor/katex/katex.min.js?v=2.0.134"></script>
+<script defer src="./vendor/highlight/highlight.min.js?v=2.0.134"></script>
+<script defer src="./static/js/ui.min.js?v=2.0.134"></script>
+<script defer src="./static/js/components.min.js?v=2.0.134"></script>
+<script defer src="./static/js/renderer.min.js?v=2.0.134"></script>
+<script defer src="./static/js/admin.min.js?v=2.0.134"></script>
 </body>
 </html>

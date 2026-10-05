@@ -4520,6 +4520,8 @@ async function clearModelMeta() {
 
 const TAB_LOADERS = {
   notes: loadNotesSettings,
+  im: loadImSettings,
+  web: loadWebSettings,
   overview: () => { loadStats(); loadSystemBoard(); },
   usage: () => loadStats(),
   users: () => loadUsers(),
@@ -4683,6 +4685,7 @@ async function loadNotesSettings() {
   if ($('notes-allow-files')) $('notes-allow-files').checked = s.notesAllowFiles !== false;
   if ($('notes-quota')) $('notes-quota').value = Number(s.notesQuotaMb != null ? s.notesQuotaMb : 200);
   if ($('notes-max-file')) $('notes-max-file').value = Number(s.notesMaxFileMb != null ? s.notesMaxFileMb : 50);
+  if ($('notes-max-image')) $('notes-max-image').value = Number(s.notesMaxImageMb != null ? s.notesMaxImageMb : 10);
   if ($('notes-share-body-only')) $('notes-share-body-only').checked = s.notesShareBodyOnly !== false;
   if ($('notes-ai-limit')) $('notes-ai-limit').value = Number(s.notesAiDailyLimit != null ? s.notesAiDailyLimit : 50);
   if ($('notes-ai-customizable')) $('notes-ai-customizable').checked = s.notesAiCustomizable !== false;
@@ -4761,7 +4764,7 @@ const ADMIN_GROUPS = {
     { id: 'codes-gen', label: '生成兑换码' },
     { id: 'codes-fixed', label: '添加固定兑换码' },
   ],
-  platform: [{ id: 'providers', label: '供应商' }, { id: 'modelmeta', label: '模型元数据' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'notes', label: '笔记' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'oauth', label: '第三方登录' }, { id: 'storage', label: '存储管理' }, { id: 'update', label: '版本更新' }],
+  platform: [{ id: 'providers', label: '供应商' }, { id: 'modelmeta', label: '模型元数据' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'notes', label: '笔记' }, { id: 'im', label: '在线聊天' }, { id: 'web', label: '在线浏览器' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'oauth', label: '第三方登录' }, { id: 'storage', label: '存储管理' }, { id: 'update', label: '版本更新' }],
   thinking: [{ id: 'thinking', label: '思考策略' }],
   content: [{ id: 'assistants', label: '助手库' }],
 };
@@ -4805,6 +4808,7 @@ document.addEventListener('click', async (e) => {
         notesAllowFiles: $('notes-allow-files').checked,
         notesQuotaMb: Number($('notes-quota').value || 0),
         notesMaxFileMb: Number($('notes-max-file').value || 50),
+        notesMaxImageMb: Number($('notes-max-image').value || 10),
         notesShareBodyOnly: $('notes-share-body-only').checked,
         notesAiDailyLimit: Number($('notes-ai-limit').value || 0),
         notesAiCustomizable: $('notes-ai-customizable').checked,
@@ -4819,12 +4823,198 @@ document.addEventListener('click', async (e) => {
     } finally { save.disabled = false; }
     return;
   }
+  const imSave = e.target.closest('#im-settings-save');
+  if (imSave) {
+    imSave.disabled = true;
+    try {
+      const body = {
+        imEnabled: $('im-enabled').checked,
+        imAllowFiles: $('im-allow-files').checked,
+        imMutualFriends: $('im-mutual-friends').checked,
+        imVisibleUsers: $('im-visible-users').value,
+        imQuotaMb: Number($('im-quota').value || 0),
+        imMaxFileMb: Number($('im-max-file').value || 20),
+        imMaxImageMb: Number($('im-max-image').value || 10),
+        imAiDailyLimit: Number($('im-ai-limit').value || 0),
+      };
+      const r = await api('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((d.error && d.error.message) || '保存失败');
+      toast('聊天设置已保存');
+      await loadImSettings();
+    } catch (err) {
+      toast(err.message || '保存失败', true);
+    } finally { imSave.disabled = false; }
+    return;
+  }
+  const webSave = e.target.closest('#web-settings-save');
+  if (webSave) {
+    webSave.disabled = true;
+    try {
+      const body = {
+        browserEnabled: $('web-enabled').checked,
+        webAiDailyLimit: Number($('web-ai-limit').value || 0),
+        webBookmarks: parseWebBookmarks($('web-bookmarks').value),
+      };
+      const r = await api('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((d.error && d.error.message) || '保存失败');
+      toast('浏览器设置已保存');
+      await loadWebSettings();
+    } catch (err) {
+      toast(err.message || '保存失败', true);
+    } finally { webSave.disabled = false; }
+    return;
+  }
+  if (e.target.closest('#im-threads-refresh')) {
+    loadImThreads().catch((err) => toast('加载失败: ' + err.message, true));
+    return;
+  }
 });
 document.addEventListener('keydown', (e) => {
   const toggle = e.target.closest && e.target.closest('#notes-users-toggle');
   if (!toggle) return;
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle.click(); }
 });
+
+// ---------- 在线浏览器:设置(总开关 / 总结次数上限 / 主页收藏夹) ----------
+async function loadWebSettings() {
+  const r = await api('/api/admin/settings');
+  const s = ((await r.json()) || {}).settings || {};
+  if ($('web-enabled')) $('web-enabled').checked = s.browserEnabled !== false;
+  if ($('web-ai-limit')) $('web-ai-limit').value = Number(s.webAiDailyLimit != null ? s.webAiDailyLimit : 50);
+  if ($('web-bookmarks')) {
+    const list = Array.isArray(s.webBookmarks) ? s.webBookmarks : [];
+    $('web-bookmarks').value = list.map((b) => (b && b.name ? b.name + '|' + (b.url || '') : '')).filter((x) => x.indexOf('|') > 0).join('\n');
+  }
+}
+
+// 「名称|网址」逐行解析;网址缺协议时补 https://
+function parseWebBookmarks(text) {
+  const out = [];
+  String(text || '').split(/\r?\n/).forEach((line) => {
+    const t = line.trim();
+    if (!t) return;
+    const at = t.indexOf('|');
+    let name = '', url = '';
+    if (at < 0) { name = t; url = t; } else { name = t.slice(0, at).trim(); url = t.slice(at + 1).trim(); }
+    if (!name || !url) return;
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url.replace(/^\/+/, '');
+    out.push({ name: name.slice(0, 40), url: url.slice(0, 500) });
+  });
+  return out;
+}
+
+// ---------- 在线聊天:设置 + 会话与留档 ----------
+async function loadImSettings() {
+  const r = await api('/api/admin/settings');
+  const s = ((await r.json()) || {}).settings || {};
+  if ($('im-enabled')) $('im-enabled').checked = s.imEnabled !== false;
+  if ($('im-allow-files')) $('im-allow-files').checked = s.imAllowFiles !== false;
+  if ($('im-mutual-friends')) $('im-mutual-friends').checked = s.imMutualFriends === true;
+  if ($('im-visible-users')) $('im-visible-users').value = Array.isArray(s.imVisibleUsers) ? s.imVisibleUsers.join(', ') : (s.imVisibleUsers || '');
+  if ($('im-quota')) $('im-quota').value = Number(s.imQuotaMb != null ? s.imQuotaMb : 500);
+  if ($('im-max-file')) $('im-max-file').value = Number(s.imMaxFileMb != null ? s.imMaxFileMb : 20);
+  if ($('im-max-image')) $('im-max-image').value = Number(s.imMaxImageMb != null ? s.imMaxImageMb : 10);
+  if ($('im-ai-limit')) $('im-ai-limit').value = Number(s.imAiDailyLimit != null ? s.imAiDailyLimit : 50);
+  await loadImThreads();
+}
+
+function imThreadTitle(t) {
+  if (t.type === 'group') return '群聊：' + (t.title || '未命名');
+  const names = (t.members || []).map((m) => m.name).filter((n) => !!n);
+  return '单聊：' + (names.join(' & ') || '未知成员');
+}
+
+async function loadImThreads() {
+  const r = await api('/api/admin/im/threads');
+  const d = await r.json();
+  if (!r.ok) throw new Error((d.error && d.error.message) || '加载失败');
+  const box = $('im-threads');
+  if (!box) return;
+  const live = d.threads.filter((t) => !t.archived).length;
+  if ($('im-threads-overview')) {
+    $('im-threads-overview').textContent = d.threads.length + ' 个会话（在线 ' + live + ' / 留档 ' + (d.threads.length - live) + '）';
+  }
+  if (!d.threads.length) { box.innerHTML = '<p class="muted small">还没有会话。</p>'; return; }
+  box.innerHTML = d.threads.map((t) => ''
+    + '<div class="pkg-card" style="display:flex;align-items:center;gap:10px">'
+    + '<div style="flex:1;min-width:0">'
+    + '<b>' + escapeHtml(imThreadTitle(t)) + '</b>'
+    + '<span class="muted small" style="margin-left:6px">' + (t.archived ? '留档' : '在线') + (t.aiEnabled ? ' · AI 模式' : '') + '</span>'
+    + '<div class="muted small">' + escapeHtml((t.members || []).map((m) => m.name).join('、')) + ' · 消息 ' + t.msgCount + ' 条 · 留档原文 ' + t.tombCount + ' 条'
+    + (t.lastMsgAt ? ' · 最近 ' + fmtTime(t.lastMsgAt) : '') + '</div>'
+    + '</div>'
+    + '<button class="btn small" data-im-view="' + escapeHtml(t.id) + '">查看</button>'
+    + ((t.tombCount || t.archived) ? '<button class="btn small danger" data-im-purge="' + escapeHtml(t.id) + '">清理</button>' : '')
+    + '</div>').join('');
+  box.querySelectorAll('[data-im-view]').forEach((b) => b.addEventListener('click', () => viewImThread(b.dataset.imView)));
+  box.querySelectorAll('[data-im-purge]').forEach((b) => b.addEventListener('click', async () => {
+    const ok = await window.OCUI.confirm({
+      title: '彻底清理该会话的留档？',
+      message: '留档中的消息原文与不再被引用的附件文件会被物理删除，不可恢复；在线会话不受影响。',
+      danger: true, confirmText: '清理',
+    });
+    if (!ok) return;
+    const r2 = await api('/api/admin/im/purge', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ threadIds: [b.dataset.imPurge] }),
+    });
+    const d2 = await r2.json().catch(() => ({}));
+    if (!r2.ok) return toast((d2.error && d2.error.message) || '清理失败', true);
+    toast('已清理（附件文件 ' + (d2.files || 0) + ' 个）');
+    await loadImThreads();
+  }));
+}
+
+async function viewImThread(tid) {
+  const r = await api('/api/admin/im/view?thread=' + encodeURIComponent(tid));
+  const d = await r.json();
+  if (!r.ok) return toast((d.error && d.error.message) || '加载失败', true);
+  const fmt = (ts) => { const x = new Date(Number(ts) || 0); return isNaN(x.getTime()) ? '' : x.toLocaleString(); };
+  const rows = [];
+  if ((d.messages || []).length) {
+    rows.push('<div class="muted small" style="margin:10px 0 4px;font-weight:700">当前消息</div>');
+    for (const m of d.messages) {
+      const who = m.kind === 'ai' ? 'AI' : (m.name || m.from);
+      const body = m.deleted ? '<i class="muted">消息已删除</i>' : escapeHtml(m.text || '');
+      rows.push('<div style="margin:6px 0"><b>' + escapeHtml(String(who)) + '</b> <span class="muted small">' + fmt(m.at) + '</span>'
+        + '<div style="white-space:pre-wrap;word-break:break-word">' + body + '</div></div>');
+    }
+  }
+  const arch = d.archive || {};
+  if ((arch.events || []).length || (arch.msgs || []).length) {
+    rows.push('<div class="muted small" style="margin:14px 0 4px;font-weight:700">删除留档</div>');
+    for (const e of arch.events || []) {
+      const what = e.type === 'msgs' ? '删除了消息 ' + (e.ids || []).join(', ')
+        : (e.type === 'delete' ? '删除了整个会话' : (e.type === 'disband' ? '解散了群聊' : escapeHtml(e.type)));
+      rows.push('<div class="muted small" style="margin:4px 0">⚠ ' + escapeHtml(e.byName || e.by || '') + ' 于 ' + fmt(e.at) + ' ' + what + '</div>');
+    }
+    for (const m of arch.msgs || []) {
+      const who = m.kind === 'ai' ? 'AI' : (m.name || m.from);
+      const file = m.file ? ' [附件 ' + (m.file.name || '') + ' · ' + fmtSizeAdm(m.file.size) + ']' : '';
+      rows.push('<div style="margin:6px 0"><b>' + escapeHtml(String(who)) + '</b> <span class="muted small">' + fmt(m.at) + '</span>'
+        + '<div style="white-space:pre-wrap;word-break:break-word">' + escapeHtml(m.text || '') + escapeHtml(file) + '</div></div>');
+    }
+  }
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask show';
+  mask.style.zIndex = '1700';
+  mask.innerHTML = '<div class="modal-card" style="width:min(680px,calc(100vw - 32px));max-height:80vh;display:flex;flex-direction:column;overflow:hidden">'
+    + '<h3 style="margin:0 0 8px">' + escapeHtml(imThreadTitle(d.thread || {})) + (d.thread && d.thread.archived ? '（留档）' : '') + '</h3>'
+    + '<div style="overflow-y:auto;min-height:0;flex:1">' + (rows.join('') || '<p class="muted small">暂无消息</p>') + '</div>'
+    + '<div style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn" data-act="close">关闭</button></div>'
+    + '</div>';
+  document.body.appendChild(mask);
+  mask.querySelector('[data-act="close"]').addEventListener('click', () => mask.remove());
+  mask.addEventListener('click', (e) => { if (e.target === mask) mask.remove(); });
+}
+function fmtSizeAdm(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(1) + ' MB';
+}
 let notesSearchTimer = null;
 document.addEventListener('input', (e) => {
   if (!e.target || e.target.id !== 'notes-user-search') return;

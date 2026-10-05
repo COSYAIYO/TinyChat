@@ -1030,6 +1030,13 @@ function tc_api_public_config($db) {
         'notesAllowFiles' => !isset($s['notesAllowFiles']) || !empty($s['notesAllowFiles']),
         'notesShareBodyOnly' => !array_key_exists('notesShareBodyOnly', $s) || !empty($s['notesShareBodyOnly']),
         'notesAiCustomizable' => !array_key_exists('notesAiCustomizable', $s) || !empty($s['notesAiCustomizable']),
+        // 在线聊天(IM):前台据此决定入口是否显示与上传前置校验
+        'imEnabled' => !isset($s['imEnabled']) || !empty($s['imEnabled']),
+        'imAllowFiles' => !isset($s['imAllowFiles']) || !empty($s['imAllowFiles']),
+        'imMaxImageMb' => (int) (isset($s['imMaxImageMb']) ? $s['imMaxImageMb'] : 10),
+        'imMaxFileMb' => (int) (isset($s['imMaxFileMb']) ? $s['imMaxFileMb'] : 20),
+        // 在线浏览器:前台据此决定入口是否显示(关闭时隐藏)
+        'browserEnabled' => !isset($s['browserEnabled']) || !empty($s['browserEnabled']),
         // 性能优化:前台据此决定是否加载内置字体 / KaTeX / 代码高亮 / Mermaid
         'perf' => array(
             'noWebfonts' => !empty($s['perfNoWebfonts']),
@@ -5581,10 +5588,12 @@ function tc_api_note_attachment_upload() {
         $isImage = isset($images[$ext]);
         $mime = $isImage ? $images[$ext] : (isset($docs[$ext]) ? $docs[$ext] : 'application/octet-stream');
         $sniffed = '';
-        // 单文件上限:图片固定 10MB;其余按后台设置 notesMaxFileMb
+        // 单文件上限:图片按后台 notesMaxImageMb(默认 10MB);其余按 notesMaxFileMb
         $fileMb = isset($db['settings']['notesMaxFileMb']) ? (int) $db['settings']['notesMaxFileMb'] : 50;
         if ($fileMb <= 0) $fileMb = 50;
-        $max = $isImage ? 10 * 1048576 : $fileMb * 1048576;
+        $imgMb = isset($db['settings']['notesMaxImageMb']) ? (int) $db['settings']['notesMaxImageMb'] : 10;
+        if ($imgMb <= 0) $imgMb = 10;
+        $max = ($isImage ? $imgMb : $fileMb) * 1048576;
         $size = (int) (isset($f['size']) ? $f['size'] : 0);
         if ($size <= 0 || $size > $max) tc_fail(400, '文件大小超出限制（' . round($max / 1048576) . 'MB）');
         // 用户空间配额(0=不限):先按已用量 + 本次大小判断,避免超限写入

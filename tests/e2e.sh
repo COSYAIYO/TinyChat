@@ -74,6 +74,7 @@ DATA_DIR="$TMP/data" ADMIN_NAME=admin ADMIN_PASSWORD=e2e-pass \
   TC_JINA_SEARCH_BASE="http://127.0.0.1:$MOCK_PORT" \
   TC_MISTRAL_OCR_BASE="http://127.0.0.1:$MOCK_PORT" \
   TC_PAGE_FETCH_BASE="http://127.0.0.1:$MOCK_PORT" \
+  TC_WEB_FETCH_BASE="http://127.0.0.1:$MOCK_PORT" \
   TC_WECHAT_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" TC_WECHAT_API_BASE="http://127.0.0.1:$OAUTH_PORT" \
   TC_QQ_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
   TC_LINUXDO_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
@@ -1930,6 +1931,48 @@ OFF=$(curl -s -X POST "$BASE/api/sync/settings" -H "$AUTH" -H "Content-Type: app
 assert_contains "关闭后推送被忽略" "$OFF" '"syncSettings":false'
 assert_contains "关闭后不写库" "$(curl -s "$BASE/api/sync/settings" -H "$AUTH")" '"theme":"light"'
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"syncSettings":true}' > /dev/null
+
+# ---------- 在线浏览器:服务端反向代理 ----------
+# 目标站由 TC_WEB_FETCH_BASE 指向 mock 的 /page/*(与 TC_PAGE_FETCH_BASE 同一套约定):
+# 被代理页面跑在 sandbox iframe 里,页面里所有地址都要回填成同源代理地址,否则用户浏览器会直连目标站。
+say ""
+say "== 在线浏览器 =="
+# base64url 编码(与 lib/web.php 的 tc_web_b64d 对应);用 php 保证跨平台一致
+b64url() { php -r 'echo rtrim(strtr(base64_encode($argv[1]), "+/", "-_"), "=");' "$1"; }
+assert_eq "/browser 返回会话页" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/browser")" "200"
+TICKET_JSON=$(curl -s -X POST "$BASE/api/web/ticket" -H "$AUTH")
+assert_contains "票据签发" "$TICKET_JSON" '"ticket":"'
+TICKET=$(printf '%s' "$TICKET_JSON" | jget ticket)
+assert_has "内置收藏夹含 Google 学术" "$TICKET_JSON" 'Google 学术'
+assert_eq "未登录取票据被拒" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/web/ticket")" "401"
+PU=$(b64url "https://example.com/page/x")
+wp=$(curl -s -D "$TMP/web.h" "$BASE/api/web/page?u=$PU&t=$TICKET")
+assert_has "代理页面注入垫片配置" "$wp" 'window.__OCW'
+assert_has "上游正文透传" "$wp" 'MOCK-PAGE-BODY-OK'
+assert_has "站内链接改写到代理" "$wp" '/api/web/page?u='
+if printf '%s' "$wp" | grep -qF 'href="/nav0"'; then bad "站内链接仍是原始地址"; else ok "站内链接已改写"; fi
+if printf '%s' "$wp" | grep -qF '&amp;amp;'; then bad "属性被二次转义(t 参数失效)"; else ok "属性只转义一次"; fi
+WEHHDR=$(cat "$TMP/web.h")
+assert_has "代理响应 X-Frame-Options 改为 SAMEORIGIN" "$WEHHDR" 'X-Frame-Options: SAMEORIGIN'
+assert_has "代理响应不缓存(避免跨用户串号)" "$WEHHDR" 'Cache-Control: no-store'
+assert_eq "伪造票据被拒" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/page?u=$PU&t=bad.ticket.sig")" "403"
+# SSRF 闸门在测试钩子生效前先拦一道:内网/云元数据地址必须进不来
+assert_eq "内网地址被 SSRF 闸门拒绝" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/page?u=$(b64url 'http://169.254.169.254/latest/meta-data')&t=$TICKET")" "400"
+wr=$(curl -s "$BASE/api/web/read?u=$PU&t=$TICKET")
+assert_contains "阅读模式抽到标题" "$wr" 'mock page'
+assert_contains "阅读模式抽到正文" "$wr" '上海市气象局'
+if printf '%s' "$wr" | grep -qF 'MOCK-SCRIPT-SHOULD-NOT-APPEAR'; then bad "正文混入脚本内容"; else ok "正文不含脚本内容"; fi
+if printf '%s' "$wr" | grep -qF 'MOCK-COMMENT-SHOULD-NOT-APPEAR'; then bad "正文混入注释"; else ok "正文不含注释"; fi
+assert_contains "内容超过上限时标记截断字段" "$wr" '"truncated"'
+WBM=$(curl -s -X POST "$BASE/api/web/bookmarks" -H "$AUTH" -H "Content-Type: application/json" -d '{"bookmarks":[{"name":"E2E 站","url":"example.org"},{"name":"","url":"bad"}]}')
+assert_contains "收藏夹保存并补全协议" "$WBM" '"url":"https://example.org"'
+assert_contains "收藏夹读回一致" "$(curl -s "$BASE/api/web/bookmarks" -H "$AUTH")" 'E2E 站'
+# 总开关:关闭后票据与代理都要拒绝(即便票据尚未过期)
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"browserEnabled":false}' > /dev/null
+assert_eq "关闭后票据接口拒绝" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/web/ticket" -H "$AUTH")" "403"
+assert_eq "关闭后页面代理拒绝" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/page?u=$PU&t=$TICKET")" "403"
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"browserEnabled":true}' > /dev/null
+assert_contains "公共配置暴露 browserEnabled" "$(curl -s "$BASE/api/config")" '"browserEnabled":true'
 
 
 say ""

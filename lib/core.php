@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.132');
+define('TC_VERSION', '2.0.134');
 // 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
 define('TC_NOTE_MAX_CHARS', 500000);
 define('TC_DB_VERSION', 2);
@@ -202,6 +202,33 @@ $TC_SETTINGS_DEFAULTS = array(
     'notesAiDailyLimit' => 50,
     // 允许用户自定义右键菜单的动作(关闭后固定为内置五项,齿轮只读)
     'notesAiCustomizable' => true,
+    // 笔记图片附件单文件上限(MB)——此前写死 10MB,收进后台设置
+    'notesMaxImageMb' => 10,
+    // ---- 在线聊天(IM) ----
+    // 好友/单聊/群聊总开关(关闭后前台入口隐藏、接口拒绝)
+    'imEnabled' => true,
+    // 每用户空间上限(MB),0 = 不限;聊天附件独立存放在 data/im/{uid}/,不占笔记配额
+    'imQuotaMb' => 500,
+    // 聊天单文件大小上限(MB,非图片)
+    'imMaxFileMb' => 20,
+    // 聊天图片单文件上限(MB)
+    'imMaxImageMb' => 10,
+    // 允许在聊天中发送非图片文件(关闭后仅图片)
+    'imAllowFiles' => true,
+    // 「召唤 AI」每用户每日次数上限(消息以 AI 开头或会话开启 AI 模式时计数),0 = 不限
+    'imAiDailyLimit' => 50,
+    // 好友搜索可见性:普通用户始终能搜到管理员与「对所有人可见」名单里的用户
+    'imVisibleUsers' => array(),
+    // 所有人默认互为好友:开启后注册用户之间无需添加即可直接聊天(虚拟关系)
+    'imMutualFriends' => false,
+    // ---- 在线浏览器(服务端反向代理) ----
+    // 总开关(关闭后前台入口隐藏、代理接口与票据一律拒绝)。
+    // 注意:开启后本机出网会被用户用来访问任意公网站点,出口 IP 与流量算在本站账上。
+    'browserEnabled' => true,
+    // 网页 AI 总结每用户每日次数上限(0 = 不限);单次调用仍照常扣减用户额度
+    'webAiDailyLimit' => 50,
+    // 浏览器主页收藏夹:留空用内置默认(Google 学术/arXiv/PubMed/…),配置后覆盖默认
+    'webBookmarks' => array(),
 );
 $TC_SETTINGS_DEFAULTS['mailTemplates'] = tc_mail_default_templates();
 
@@ -1023,6 +1050,45 @@ function tc_normalize_settings($raw) {
     $s['notesShareBodyOnly'] = !array_key_exists('notesShareBodyOnly', $s) || !empty($s['notesShareBodyOnly']);
     $s['notesAiDailyLimit'] = min(10000, max(0, (int) (isset($s['notesAiDailyLimit']) ? $s['notesAiDailyLimit'] : 50)));
     $s['notesAiCustomizable'] = !array_key_exists('notesAiCustomizable', $s) || !empty($s['notesAiCustomizable']);
+    // 笔记图片单文件上限(MB):此前写死 10MB,收进后台设置(1~2048)
+    $s['notesMaxImageMb'] = min(2048, max(1, (int) (isset($s['notesMaxImageMb']) ? $s['notesMaxImageMb'] : 10) ?: 10));
+    // 在线聊天(IM):总开关、附件空间/大小限制与 AI 召唤每日上限
+    $s['imEnabled'] = !array_key_exists('imEnabled', $s) || !empty($s['imEnabled']);
+    $s['imQuotaMb'] = min(102400, max(0, (int) (isset($s['imQuotaMb']) ? $s['imQuotaMb'] : 500)));
+    $s['imMaxFileMb'] = min(2048, max(1, (int) (isset($s['imMaxFileMb']) ? $s['imMaxFileMb'] : 20) ?: 20));
+    $s['imMaxImageMb'] = min(2048, max(1, (int) (isset($s['imMaxImageMb']) ? $s['imMaxImageMb'] : 10) ?: 10));
+    $s['imAllowFiles'] = !array_key_exists('imAllowFiles', $s) || !empty($s['imAllowFiles']);
+    $s['imAiDailyLimit'] = min(10000, max(0, (int) (isset($s['imAiDailyLimit']) ? $s['imAiDailyLimit'] : 50)));
+    $s['imShowAllMembers'] = !empty($s['imMutualFriends']);   // 旧开关语义并入新开关(兼容存量数据)
+    unset($s['imShowAllMembers']);
+    $s['imMutualFriends'] = !empty($s['imMutualFriends']);
+    // 「对所有人可见」名单:接受数组或逗号/换行分隔的字符串,去重去空,每人最多 100 个
+    $vuIn = isset($s['imVisibleUsers']) ? $s['imVisibleUsers'] : array();
+    if (is_string($vuIn)) $vuIn = preg_split('/[\s,，、;；]+/u', $vuIn);
+    $vuOut = array();
+    foreach ((array) $vuIn as $vn) {
+        $vn = tc_utf_cut(trim((string) $vn), 32);
+        if ($vn === '') continue;
+        $vuOut[$vn] = true;
+        if (count($vuOut) >= 100) break;
+    }
+    $s['imVisibleUsers'] = array_keys($vuOut);
+    // 在线浏览器:总开关、网页总结每日上限、收藏夹(逐项清洗,不让 javascript: 之类落进主页)
+    $s['browserEnabled'] = !array_key_exists('browserEnabled', $s) || !empty($s['browserEnabled']);
+    $s['webAiDailyLimit'] = min(10000, max(0, (int) (isset($s['webAiDailyLimit']) ? $s['webAiDailyLimit'] : 50)));
+    $wbIn = isset($s['webBookmarks']) && is_array($s['webBookmarks']) ? $s['webBookmarks'] : array();
+    $wbOut = array();
+    foreach ($wbIn as $wb) {
+        if (!is_array($wb)) continue;
+        $wbName = tc_utf_cut(trim((string) (isset($wb['name']) ? $wb['name'] : '')), 40);
+        $wbUrl = tc_utf_cut(trim((string) (isset($wb['url']) ? $wb['url'] : '')), 500);
+        if ($wbName === '' || $wbUrl === '') continue;
+        if (!preg_match('#^https?://#i', $wbUrl)) $wbUrl = 'https://' . ltrim($wbUrl, '/');
+        if (!preg_match('#^https?://#i', $wbUrl)) continue;
+        $wbOut[] = array('name' => $wbName, 'url' => $wbUrl);
+        if (count($wbOut) >= 200) break;
+    }
+    $s['webBookmarks'] = $wbOut;
     $s['perfNoWebfonts'] = !empty($s['perfNoWebfonts']);
     $s['perfNoKatex'] = !empty($s['perfNoKatex']);
     $s['perfNoHighlight'] = !empty($s['perfNoHighlight']);
@@ -1295,6 +1361,18 @@ function tc_empty_db() {
         'demoSnapshot' => null,
         // 演示还原标记:{userId: 时间戳},客户端据此整体采纳云端(见 tc_demo_revert)
         'demoReverted' => new stdClass(),
+        // 在线聊天(IM):会话(单聊/群聊)元数据,量小整键存
+        'imThreads' => new stdClass(),
+        // 好友关系与好友请求:按用户拆成 friend:{uid} 行,值为 {friends:[], reqs:[]}
+        'userFriends' => new stdClass(),
+        // IM 已读游标:按用户拆成 imst:{uid} 行,值为 {lastRead:{threadId: msgId}}
+        'userImState' => new stdClass(),
+        // 会话消息:按会话拆成 immsg:{threadId} 行(与 note:{uid} 同一套省写放大机制),
+        // 值为 {msgs:[{id,from,name,text,at,kind,...}]},只保留每个会话最近若干条
+        'imMessages' => new stdClass(),
+        // IM 删除留档:按会话拆成 imdel:{threadId} 行(与 chatdel:{uid} 同一套墓碑语义),
+        // 双向删除的消息原文/整会话快照留在这里供管理员查看,清理才物理删除
+        'imDeleted' => new stdClass(),
     );
 }
 
@@ -2100,10 +2178,28 @@ function tc_db_load_with_baseline($pdo) {
     $origDeleted = array();
     $origNotes = array();
     $origSettings = array();
+    $origMsgs = array();
+    $origArch = array();
     $rows = $pdo->query('SELECT k, v FROM store')->fetchAll();
     foreach ($rows as $row) {
         $k = (string) $row['k'];
         $raw = (string) $row['v'];
+        if (strncmp($k, 'imdel:', 6) === 0) {
+            $origArch[substr($k, 6)] = $raw;
+            $val = json_decode($raw, true);
+            if (is_array($val)) {
+                $db['imDeleted']->{substr($k, 6)} = $val;
+            }
+            continue;
+        }
+        if (strncmp($k, 'immsg:', 6) === 0) {
+            $origMsgs[substr($k, 6)] = $raw;
+            $val = json_decode($raw, true);
+            if (is_array($val)) {
+                $db['imMessages']->{substr($k, 6)} = $val;
+            }
+            continue;
+        }
         if (strncmp($k, 'chatdel:', 8) === 0) {
             $origDeleted[substr($k, 8)] = $raw;
             $val = json_decode($raw, true);
@@ -2141,7 +2237,7 @@ function tc_db_load_with_baseline($pdo) {
         if ($val === null && $raw !== 'null') continue;
         $db[$k] = $val;
     }
-    return array(tc_migrate_db($db), $orig, $origChats, $origDeleted, $origNotes, $origSettings);
+    return array(tc_migrate_db($db), $orig, $origChats, $origDeleted, $origNotes, $origSettings, $origMsgs, $origArch);
 }
 
 // 整库快照写入(迁移导入 / 恢复备份用):清空后按顶层键落行
@@ -2173,6 +2269,18 @@ function tc_db_write_snapshot($pdo, $db) {
             }
             continue;
         }
+        if ($k === 'imMessages') {
+            foreach (tc_assoc($v) as $tid => $row) {
+                $ins->execute(array(':k' => 'immsg:' . $tid, ':v' => tc_json_encode($row)));
+            }
+            continue;
+        }
+        if ($k === 'imDeleted') {
+            foreach (tc_assoc($v) as $tid => $row) {
+                $ins->execute(array(':k' => 'imdel:' . $tid, ':v' => tc_json_encode($row)));
+            }
+            continue;
+        }
         $ins->execute(array(':k' => $k, ':v' => tc_json_encode($v)));
     }
 }
@@ -2191,9 +2299,9 @@ function tc_with_db($write, $fn) {
     // 先取锁后读,锁内读到的一定是最新状态,diff 也建立在最新基线上。
     if ($write) $pdo->exec('BEGIN IMMEDIATE');
     $db = null;
-    $orig = $origChats = $origDeleted = $origNotes = $origSettings = array();
+    $orig = $origChats = $origDeleted = $origNotes = $origSettings = $origMsgs = $origArch = array();
     try {
-        list($db, $orig, $origChats, $origDeleted, $origNotes, $origSettings) = tc_db_load_with_baseline($pdo);
+        list($db, $orig, $origChats, $origDeleted, $origNotes, $origSettings, $origMsgs, $origArch) = tc_db_load_with_baseline($pdo);
     } catch (Throwable $e) {
         if ($write) { try { $pdo->exec('ROLLBACK'); } catch (Throwable $e2) {} }
         throw $e;
@@ -2206,6 +2314,7 @@ function tc_with_db($write, $fn) {
         'write' => $write, 'committed' => false, 'pdo' => $pdo,
         'orig' => $orig, 'origChats' => $origChats, 'origDeleted' => $origDeleted,
         'origNotes' => $origNotes, 'origSettings' => $origSettings,
+        'origMsgs' => $origMsgs, 'origArch' => $origArch,
     );
     try {
         $ret = $fn($db);
@@ -2250,9 +2359,13 @@ function tc_db_commit() {
         $newDeleted = tc_assoc(isset($db['userDeletedChats']) ? $db['userDeletedChats'] : null);
         $newNotes = tc_assoc(isset($db['userNotes']) ? $db['userNotes'] : null);
         $newSettings = tc_assoc(isset($db['userSettings']) ? $db['userSettings'] : null);
+        $newMsgs = tc_assoc(isset($db['imMessages']) ? $db['imMessages'] : null);
+        $newArch = tc_assoc(isset($db['imDeleted']) ? $db['imDeleted'] : null);
         $origDeleted = isset($ctx['origDeleted']) ? $ctx['origDeleted'] : array();
         $origNotes = isset($ctx['origNotes']) ? $ctx['origNotes'] : array();
         $origSettings = isset($ctx['origSettings']) ? $ctx['origSettings'] : array();
+        $origMsgs = isset($ctx['origMsgs']) ? $ctx['origMsgs'] : array();
+        $origArch = isset($ctx['origArch']) ? $ctx['origArch'] : array();
         foreach ($db as $k => $v) {
             if ($k === 'userChats') {
                 foreach ($newChats as $uid => $row) {
@@ -2295,6 +2408,28 @@ function tc_db_commit() {
                 }
                 foreach ($origSettings as $uid => $json) {
                     if (!array_key_exists($uid, $newSettings)) $del->execute(array(':k' => 'uset:' . $uid));
+                }
+                continue;
+            }
+            if ($k === 'imMessages') {
+                foreach ($newMsgs as $tid => $row) {
+                    $json = tc_json_encode($row);
+                    if (isset($origMsgs[$tid]) && $origMsgs[$tid] === $json) continue;
+                    $ups->execute(array(':k' => 'immsg:' . $tid, ':v' => $json, ':v2' => $json));
+                }
+                foreach ($origMsgs as $tid => $json) {
+                    if (!array_key_exists($tid, $newMsgs)) $del->execute(array(':k' => 'immsg:' . $tid));
+                }
+                continue;
+            }
+            if ($k === 'imDeleted') {
+                foreach ($newArch as $tid => $row) {
+                    $json = tc_json_encode($row);
+                    if (isset($origArch[$tid]) && $origArch[$tid] === $json) continue;
+                    $ups->execute(array(':k' => 'imdel:' . $tid, ':v' => $json, ':v2' => $json));
+                }
+                foreach ($origArch as $tid => $json) {
+                    if (!array_key_exists($tid, $newArch)) $del->execute(array(':k' => 'imdel:' . $tid));
                 }
                 continue;
             }
