@@ -1409,3 +1409,33 @@
 .shm-ops { display: flex; gap: 5px; flex-shrink: 0; }
 .shm-ops .btn { white-space: nowrap; }
 .notes-shm-edit-mask { z-index: 1680; }
+
+/* ---------- 窄屏:笔记设置(右键菜单动作)/ 已分享管理 ----------
+   实测 390×844:
+   - 已分享管理行是 [标题+说明 | 三个 nowrap 按钮] 的横向布局,按钮固定约 290px,
+     文字列被压到 23px —— 标题与「持链接可查看 · 剩余 7 天」竖着排成一条,每行一个字,
+     整行高度被撑到 229px。窄屏改为上下两段:文字占满宽度、按钮等宽三列。
+   - .modal-footer 是 nowrap + 按钮 flex:0 0 auto(见 chrome.css),三枚按钮
+     (已分享管理 / 重新查看使用导航 / 完成)比弹窗宽,溢出方向朝左,
+     「已分享管理」被裁到弹窗外(实测 x=-4)。窄屏改为换行:主按钮独占一行。
+   断点取 600px:更宽时文字列仍有 120px 以上,不需要退化。 */
+@media (max-width: 600px) {
+  .notes-aimgr-modal .modal-footer,
+  .notes-shm-modal .modal-footer,
+  .notes-share-modal .modal-footer { flex-wrap: wrap; }
+  .notes-aimgr-modal .modal-footer .btn,
+  .notes-shm-modal .modal-footer .btn,
+  .notes-share-modal .modal-footer .btn { flex: 1 1 auto; min-height: 40px; justify-content: center; }
+  .notes-aimgr-modal .modal-footer .btn.primary,
+  .notes-share-modal .modal-footer .btn.primary { flex: 1 1 100%; order: 2; }
+
+  .shm-item { flex-direction: column; align-items: stretch; gap: 8px; }
+  /* 允许换行,标题不再被省略成「这...」 */
+  .shm-main b { white-space: normal; overflow-wrap: anywhere; }
+  .shm-ops { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .shm-ops .btn { width: 100%; min-height: 38px; justify-content: center; padding-left: 6px; padding-right: 6px; }
+
+  /* 修改分享设置:有效期标签与下拉同排时被挤成两行(「链接有效 / 期」),改为上下排 */
+  .ns-expire { flex-direction: column; align-items: stretch; gap: 6px; }
+  .ns-expire select { width: 100%; }
+}
