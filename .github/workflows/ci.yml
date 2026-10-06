@@ -58,6 +58,12 @@ jobs:
         # 与页面路由也返回 403,且发生在 .htaccess 之前 —— 只能靠改名字避开。
         # 这类问题在自建服务器上永远复现不了,用静态扫描挡住回归。
         run: node tests/waf-paths.js
+      - name: 在线浏览器 iframe 沙箱契约自检(不得带 allow-same-origin / escape-sandbox)
+        # 被代理页由本站服务器转发,在浏览器眼里是同源文档;唯一防线是 iframe 的 sandbox
+        # 属性里不带 allow-same-origin。曾误带 allow-popups-to-escape-sandbox:弹窗会完全
+        # 脱离沙箱、且垫片把 window.open 改写成本站同源地址,于是能直读 localStorage 里的
+        # 令牌。功能照常、界面上看不出任何异常,只是属性里多一个词 —— 读代码极易看漏。
+        run: node tests/web-frame-sandbox.js
       - name: AI 整理解析自检(弱模型畸形输出 / 降级格式 / 输入裁剪)
         run: node tests/notes-archive.js
       - name: 弹窗框架契约自检(关闭回调不递归爆栈 / Esc 链路)
@@ -66,6 +72,8 @@ jobs:
         run: node tests/settings-merge.js
       - name: 用户设置云同步自检(白名单收敛 / 分片落库 / 注销清理)
         run: php tests/settings-sync.php
+      - name: 内置模型元数据自检(注入 / 不覆盖手工与同步 / 同步跳过内置)
+        run: php tests/model-meta-builtin.php
       - name: 演示管理员还原自检(拍摄/到期还原/反复还原)
         run: php tests/demo-revert.php
       - name: 生图响应解析自检(各平台返回形态)
@@ -86,6 +94,12 @@ jobs:
         run: php tests/stream-capture.php
       - name: JSON 边车文件并发自检(登录计数 / 附件索引 / 笔记 AI 配额)
         run: php tests/json-sidecars.php
+      - name: 在线聊天自检(AI 触发边界 / 好友请求语义 / 单聊复用 / immsg 与 imdel 分片落库)
+        run: php tests/im-social.php
+      - name: 在线浏览器代理自检(票据验签 / URL 绝对化 / SSRF / HTML·CSS 改写 / cookie jar)
+        run: php tests/web-proxy.php
+      - name: 拓展功能可见性自检(默认语义 / 仅管理员 / 名单 / 用户组 / 境内 IP 段二分查找)
+        run: php tests/feature-access.php
 
   e2e:
     name: E2E(PHP ${{ matrix.php }})
@@ -154,3 +168,17 @@ jobs:
       # 必须原样还原」与两行式输入框带来的底部留白联动。
       - name: ChatGPT 主题包自检(覆盖生效 / 深色 / 窄屏 / 切回默认还原)
         run: node tests/theme-gpt-gui.mjs
+      # 方块主题的核心承诺是「不画分割线」—— 靠读 CSS 源码看不出哪条 border 没被压掉,
+      # 必须真量一遍边框宽度;Claude 主题的整栏通排 + 加宽输入框会牵动底部留白,
+      # 一并在这里量。
+      - name: 方块 / Claude 主题包自检(边框归零 / 深色 / 窄屏 / 切回默认还原)
+        run: node tests/theme-packs-gui.mjs
+      # 两条都踩过,且都属于「读代码看不出来」:
+      #   1) 被代理页里的 <form> 只把 action 换成代理地址是不够的 —— 浏览器提交时会丢掉
+      #      action 上已有的查询串,于是搜索框点了跳到空页、地址栏也不动(必应实测过);
+      #   2) index.php 开头 tc_send_cors() 给每个响应发的全局 X-Frame-Options: DENY +
+      #      CSP frame-ancestors 'none' 会把代理页整个拦掉。成功分支写了覆盖,失败分支
+      #      没写,于是抓取失败时用户看到一片空白而不是提示。
+      # 后者只能真浏览器量:响应头列表里有没有那一行,和「浏览器肯不肯渲染」是两回事。
+      - name: 在线浏览器表单提交 + 代理页可嵌自检(字段不丢 / 失败页不是白屏)
+        run: node tests/web-form-submit.js

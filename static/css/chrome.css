@@ -313,8 +313,10 @@
   font-weight: 500;
 }
 
-/* 会话行:左右内缩,选中只改字色+浅底,去掉左指示条 */
-.chat-item-wrap { padding: 0 6px; width: auto; }
+/* 会话行:左右内缩由 .chat-item 自己给,wrap 不再额外加内边距。
+   以前 wrap 有 6px 内缩、而同一列的「今天/昨天」分组标题没有,
+   两边文字就差 2px,看着就是没对齐。 */
+.chat-item-wrap { padding: 0; width: auto; }
 .chat-item {
   height: 34px;
   padding: 0 8px;
@@ -385,6 +387,102 @@
 .account-chip .account-chevron { flex: 0 0 auto; }
 .account-chip .avatar { flex: 0 0 auto; }
 
+/* ============================================================
+   侧栏「左方间距」统一:一条竖线规则
+   ------------------------------------------------------------
+   侧栏里每一行(新建对话 / 助手库 / 模型 / 搜索 / 分组标题 / 会话项 /
+   账户行)都必须是同一套几何:图标从同一个 x 开始,文字也从同一个 x 开始。
+   此前每个区块各自写 padding,实测在同一列里排出了 5 种文字左边缘
+   (default 主题 40/42/46/48/50),看上去就是"左边没对齐"。
+   主题包此前也各写各的 padding,于是四个主题都有这个毛病。
+
+   这里把几何收敛成四个变量,主题只改这几个数、不再逐行调 padding:
+     --sidebar-pad      侧栏各区块(header/model/list/footer)的左右内缩
+     --sidebar-row-pad  行内左右内边距,悬浮底色/卡片比内容外扩这么多
+     --sidebar-icon-col 图标(或头像)列宽,所有行的图标都落在这条竖格里
+     --sidebar-gap      图标列与文字之间的间距
+   于是:图标左缘 = --sidebar-pad + --sidebar-row-pad,
+        文字左缘 = 上面再 + --sidebar-icon-col + --sidebar-gap。
+
+   用 html[data-oc-theme] 前缀是为了压过主题包里的同名规则(它们都是
+   html[data-oc-theme="xxx"] .chat-item 这种两段式,比这里少一个类);
+   主题包因此只能通过上面四个变量影响几何,皮肤类属性(底色/圆角/高度)
+   仍然归主题包自己管。
+   ============================================================ */
+:root {
+  --sidebar-pad: 10px;
+  --sidebar-row-pad: 8px;
+  --sidebar-icon-col: 24px;
+  --sidebar-gap: 8px;
+  /* 正文相对「外观→字号」的倍数:默认 1(用户选 14px 就是 14px)。
+     主题想让正文更松,只改这个倍数 —— 字号偏好始终是唯一基准,
+     直接写 font-size:1.143rem 会让 14px 变成 16px,用户看到的字号跟设置对不上。 */
+  --msg-scale: 1;
+}
+
+/* 区块级:左右内缩统一 */
+html[data-oc-theme] .sidebar .sidebar-header,
+html[data-oc-theme] .sidebar .sidebar-model-wrap,
+html[data-oc-theme] .sidebar .sidebar-footer,
+html[data-oc-theme] .sidebar .chat-list {
+  padding-left: var(--sidebar-pad);
+  padding-right: var(--sidebar-pad);
+}
+/* 搜索框在 .chat-list 内,不能再自带左右 margin(否则叠加成双倍内缩) */
+html[data-oc-theme] .sidebar .chat-search {
+  margin-left: 0;
+  margin-right: 0;
+  /* 显式做成 flex:图标列宽 + gap 才一定生效,占位文字才会落在统一的那条竖线上 */
+  display: flex;
+  align-items: center;
+}
+/* 会话项 wrap 不参与内缩,统一交给 .chat-item,免得和分组标题差 2px */
+html[data-oc-theme] .sidebar .chat-item-wrap { padding-left: 0; padding-right: 0; }
+
+/* 行级:左右内边距 + 图标与文字的间距都取同一组值 */
+html[data-oc-theme] .sidebar .new-chat-btn,
+html[data-oc-theme] .sidebar .assistant-lib-btn,
+html[data-oc-theme] .sidebar .model-picker,
+html[data-oc-theme] .sidebar .chat-search,
+html[data-oc-theme] .sidebar .chat-item,
+html[data-oc-theme] .sidebar .chat-group,
+html[data-oc-theme] .sidebar .account-chip {
+  padding-left: var(--sidebar-row-pad);
+  padding-right: var(--sidebar-row-pad);
+  gap: var(--sidebar-gap);
+}
+/* 「新建对话」的文字也要落在同一条竖线上:以前默认外观是居中的,
+   整列里只有它一个不左对齐(主题包又各自左对齐,四个主题还不一致)。 */
+html[data-oc-theme] .sidebar .new-chat-btn { justify-content: flex-start; }
+
+/* 图标列:所有行的图标/头像都占满同一宽度的竖格,并在这格里居中。
+   裸 <svg> 给了 CSS 宽度后会按 viewBox 等比缩放并水平居中,图标本身不会被拉大;
+   包在 span 里的图标用 flex 居中,观感一致。 */
+html[data-oc-theme] .sidebar .new-chat-btn > svg,
+html[data-oc-theme] .sidebar .model-icon,
+html[data-oc-theme] .sidebar .chat-search > svg,
+html[data-oc-theme] .sidebar .chat-icon,
+html[data-oc-theme] .sidebar .chat-group-chev,
+html[data-oc-theme] .sidebar .avatar {
+  flex: 0 0 var(--sidebar-icon-col);
+  width: var(--sidebar-icon-col);
+  min-width: var(--sidebar-icon-col);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* 搜索框的文字从图标列之后开始,输入框自身不能再加左内边距 */
+html[data-oc-theme] .sidebar .chat-search input { padding-left: 0; }
+
+/* 纵向节奏:模型选择区和各入口行之间用统一的 2px,不再有的 2px 有的 0 */
+html[data-oc-theme] .sidebar .sidebar-model-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+html[data-oc-theme] .sidebar .sidebar-model-wrap > * { margin-bottom: 0; }
+
+
 /* ---------- 4. 消息区:用户气泡去描边,头像去框 ---------- */
 .msg.user .msg-content {
   border: none;
@@ -406,7 +504,10 @@
   right: 0;
   bottom: 0;
   z-index: 24;
-  padding: 24px 20px 8px;
+  /* 左右内边距必须是 0:.composer-wrap 的 max-width 是百分比,
+     百分比是按「容器的内容盒」算的 —— 这里留 20px 会让输入栏比消息列窄 40px
+     (消息列的容器 .chat-area 没有左右内边距)。缩进改由 .composer-wrap 自己给。 */
+  padding: 24px 0 8px;
   border-top: none;
   background: linear-gradient(180deg, transparent 0%, color-mix(in srgb, var(--bg-app) 28%, transparent) 36%, color-mix(in srgb, var(--bg-app) 62%, transparent) 100%);
   pointer-events: none;
@@ -737,13 +838,17 @@
 /* 输入框左侧「≡」菜单:PC 与移动端统一的控制入口(绘画 / 模型对比 / 文件 / 联网 / 思考)。
    原先只在窄屏出现,PC 上另有独立的附件、联网、思考按钮;现统一为这一个菜单,两端一致。 */
 .composer-left { position: relative; }
+/* 比 .send-btn(42px)大一档,刻意如此:发送按钮是一整块实心圆底,菜单按钮是透明的、
+   只有中间一个图标,同样 42px 时它看上去明显更小、两个圆不协调。
+   46px 是把发送按钮那圈柔和边缘算进去后的视觉外径 —— 用它对齐视觉大小,而不是给
+   菜单按钮也加一层投影(那样会在透明按钮上凭空多出一圈灰)。 */
 .composer-more {
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 46px;
+  height: 46px;
   padding: 0;
   border: none;
   border-radius: 999px;
@@ -3473,6 +3578,140 @@ select,
   box-shadow: none !important;
 }
 
+/* ---------- 拓展功能:可见范围选择 + 功能总览磁贴 ---------- */
+/* 一份设置渲染三处(浏览器/笔记/聊天),样式也共用;类名里的 feat 是 feature 的缩写 */
+.feat-access {
+  margin: 4px 0 16px;
+  padding: 14px 16px 4px;
+  border-radius: var(--radius-md, 12px);
+  background: var(--bg-surface-2, var(--bg-hover));
+}
+.feat-access-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-bottom: 10px;
+}
+.feat-access-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-bottom: 12px;
+}
+.feat-access-modes label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.964rem;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.feat-access-modes input[type="radio"] {
+  flex: 0 0 auto;
+  width: 14px;
+  min-width: 14px;
+  max-width: 14px;
+  height: 14px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--brand, var(--accent));
+  cursor: pointer;
+}
+.feat-access-lists { padding-top: 2px; }
+.feat-access-lists .field:last-child { margin-bottom: 10px; }
+.feat-access-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  min-height: 30px;
+  align-items: center;
+}
+.feat-access-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 13px;
+  border-radius: 999px;
+  background: var(--bg-surface, var(--bg-input));
+  font-size: 0.929rem;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background 0.15s ease;
+}
+.feat-access-group:hover { background: var(--bg-hover); }
+/* 组名是用户填的自由文本,长组名要能换行撑开胶囊而不是溢出;但绝不能被压成竖排 */
+.feat-access-group > span { white-space: normal; overflow-wrap: anywhere; line-height: 1.45; }
+/* style.css 的 .field input{width:100%} 会把复选框拉成整行宽,把后面的文字挤成竖排 —— 
+   这里钉回固有尺寸;唯一性由 .feat-access-group 限定,不影响其他表单控件 */
+.feat-access-group input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 14px;
+  min-width: 14px;
+  max-width: 14px;
+  height: 14px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--brand, var(--accent));
+  cursor: pointer;
+}
+
+.ext-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 18px;
+  border-radius: var(--radius-md, 12px);
+  background: var(--bg-surface-2, var(--bg-hover));
+}
+.ext-tile.off { opacity: 0.62; }
+.ext-tile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.ext-tile-name { font-weight: 650; font-size: 1.036rem; }
+.ext-tile-badge {
+  flex: 0 0 auto;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--bg-active);
+  color: var(--text-tertiary);
+  font-size: 0.786rem;
+  font-weight: 600;
+}
+.ext-tile-badge.on {
+  background: color-mix(in srgb, var(--brand, var(--accent)) 14%, transparent);
+  color: var(--brand, var(--accent));
+}
+.ext-tile-desc {
+  margin: 0;
+  font-size: 0.893rem;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+.ext-tile-state {
+  margin: 2px 0 8px;
+  font-size: 0.893rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.ext-tile-state b { color: var(--text); font-weight: 600; }
+.ext-tile .btn.small { align-self: flex-start; }
+
+@media (max-width: 560px) {
+  .feat-access { padding: 12px 13px 2px; }
+  .feat-access-modes { gap: 8px 14px; }
+  .ext-tile { padding: 14px 15px; }
+}
+
 /* ---------- 模型/供应商 logo(模型选择器、供应商筛选、会话列表) ---------- */
 .oc-menu-item .item-logo {
   width: 16px;
@@ -3622,6 +3861,18 @@ a.btn {
   margin-bottom: 14px;
 }
 .pkg-form-grid .field { margin: 0; }
+/* 同一行的两个字段,标签文字长短常不一样(一个一行、另一个两行),默认对齐会让两个
+   输入框落在不同高度上 —— 实测「网页 AI 总结每日次数上限」与「子资源并发预取数」
+   就是错开的,看着像排版没对齐。让单元格等高、标签占住剩余空间,把控件顶到同一条基线。 */
+.pkg-form-grid > .field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.pkg-form-grid > .field > span:first-child { flex: 0 0 auto; }
+.pkg-form-grid > .field > input,
+.pkg-form-grid > .field > textarea,
+.pkg-form-grid > .field > select { margin-top: auto; }
 @media (max-width: 720px) { .pkg-form-grid { grid-template-columns: 1fr; } }
 
 /* 后台:一个套餐一张卡片 */
@@ -4800,8 +5051,15 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
   margin: 0;
   min-width: 0;
 }
-/* textarea 占满整宽,首行缩进由 JS 写 text-indent */
+/* textarea 占满整宽,首行缩进由 JS 写 text-indent。
+   display:block 是必需的,不是顺手写的:textarea 默认按 inline-block 排版,它坐在
+   「基线」上,行盒还必须给下方 descender 留位置,于是 .composer-flow 会比 textarea
+   高出约 5px(14px 字号下实测 5.4px,字号越大差得越多),而这截空白全在下方 ——
+   输入框里那行字因此整体偏上,看着不在中间,点下方的空白也聚焦不到输入框。
+   去掉 inline 排版后 flow 的高度严格等于 textarea,上下内边距才真正相等。
+   @ 行是绝对定位(top: 10px = textarea 的 padding-top),不参与这个行盒,不受影响。 */
 .composer-flow textarea {
+  display: block;
   width: 100%;
   flex: 1 1 auto;
   padding-top: 10px;
@@ -4943,6 +5201,9 @@ body.is-demo-admin #users-purge-guests { display: none !important; }
 }
 .mm-table .mm-src.manual { background: color-mix(in srgb, #d97706 14%, transparent); color: #b45309; }
 [data-theme="dark"] .mm-table .mm-src.manual { color: #fbbf24; }
+/* 内置:随发布包分发的开箱即用值,用品牌蓝与手工/同步区分 */
+.mm-table .mm-src.builtin { background: color-mix(in srgb, #2563eb 12%, transparent); color: #1d4ed8; }
+[data-theme="dark"] .mm-table .mm-src.builtin { color: #93c5fd; }
 .mm-table .mm-src.sync { background: var(--bg-active); color: var(--text-tertiary); }
 /* 自动补的兜底值:用警示色,与「手工/同步」区分开 */
 .mm-table .mm-src.auto { background: color-mix(in srgb, #dc2626 12%, transparent); color: #b91c1c; }

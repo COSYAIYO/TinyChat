@@ -297,7 +297,7 @@
     const toggle = document.getElementById('chat-mode-toggle');
     const iconEl = document.getElementById('chat-mode-icon');
     const row = document.getElementById('chat-mode-row');
-    if (label) label.textContent = group ? '群聊' : '简单对话';
+    if (label) label.textContent = group ? '多角色对话/简单' : '简单对话/多角色';
     if (toggle) toggle.checked = group;
     if (iconEl && window.OC && OC.icon) iconEl.innerHTML = OC.icon(group ? 'group' : 'chat', 15);
     if (row) row.title = group ? '群聊模式：点击打开群聊设置' : '简单对话模式：打开开关进入群聊';

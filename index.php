@@ -7,7 +7,9 @@ define('TC_ROOT', __DIR__);
 require_once __DIR__ . '/lib/core.php';
 require_once __DIR__ . '/lib/integrity.php';
 require_once __DIR__ . '/lib/api.php';
+require_once __DIR__ . '/lib/im.php';
 require_once __DIR__ . '/lib/proxy.php';
+require_once __DIR__ . '/lib/web.php';
 require_once __DIR__ . '/lib/tasks.php';
 require_once __DIR__ . '/lib/oauth.php';
 require_once __DIR__ . '/lib/updater.php';
@@ -77,6 +79,10 @@ if ($method === 'GET' || $method === 'HEAD') {
         '/app' => 'index.html',
         // AI 笔记独立地址:刷新后仍停留在笔记页(前端 boot 时检测该路径自动打开)
         '/ainotes' => 'index.html',
+        // 在线聊天独立地址:刷新后仍停留在聊天页(前端 boot 时检测该路径自动打开)
+        '/im' => 'index.html',
+        // 在线浏览器独立地址:刷新后仍停留在浏览器页(前端 boot 时检测该路径自动打开)
+        '/browser' => 'index.html',
         '/login' => 'login.html',
         '/login.html' => 'login.html',
         '/admin' => 'admin.html',
@@ -198,6 +204,39 @@ function tc_dispatch($method, $path) {
         array('DELETE', '#^/api/notes/share$#', 'tc_api_note_share_close'),
         array('GET', '#^/api/notes/shared/([A-Za-z0-9]+)$#', 'tc_api_note_shared_get'),
         array('POST', '#^/api/notes/shared/([A-Za-z0-9]+)$#', 'tc_api_note_shared_edit'),
+        // 在线聊天(IM):好友 / 单聊 / 群聊 / 附件 / AI 召唤(handler 在 lib/im.php)
+        array('GET', '#^/api/im/users/search$#', 'tc_api_im_user_search'),
+        array('GET', '#^/api/friends$#', 'tc_api_friends_list'),
+        array('POST', '#^/api/friends/request$#', 'tc_api_friend_request'),
+        array('POST', '#^/api/friends/respond$#', 'tc_api_friend_respond'),
+        array('DELETE', '#^/api/friends/([^/]+)$#', 'tc_api_friend_remove'),
+        array('GET', '#^/api/im/threads$#', 'tc_api_im_threads'),
+        array('POST', '#^/api/im/threads$#', 'tc_api_im_thread_create'),
+        array('POST', '#^/api/im/threads/([^/]+)/members$#', 'tc_api_im_thread_add_members'),
+        array('POST', '#^/api/im/threads/([^/]+)/ai$#', 'tc_api_im_thread_ai_toggle'),
+        array('POST', '#^/api/im/threads/([^/]+)/rename$#', 'tc_api_im_thread_rename'),
+        array('DELETE', '#^/api/im/threads/([^/]+)$#', 'tc_api_im_thread_delete'),
+        array('GET', '#^/api/im/messages$#', 'tc_api_im_messages'),
+        array('POST', '#^/api/im/messages$#', 'tc_api_im_send'),
+        array('POST', '#^/api/im/messages/delete$#', 'tc_api_im_msg_delete'),
+        array('POST', '#^/api/im/upload$#', 'tc_api_im_upload'),
+        array('GET', '#^/api/im/file$#', 'tc_api_im_file'),
+        array('POST', '#^/api/im/files/gc$#', 'tc_api_im_files_gc'),
+        array('GET', '#^/api/im/updates$#', 'tc_api_im_updates'),
+        // 管理端:会话列表 / 查看消息与删除留档 / 物理清理
+        array('GET', '#^/api/admin/im/threads$#', 'tc_api_admin_im_threads'),
+        array('GET', '#^/api/admin/im/view$#', 'tc_api_admin_im_view'),
+        array('POST', '#^/api/admin/im/purge$#', 'tc_api_admin_im_purge'),
+        // 在线浏览器:服务端反向代理(页面/子资源)、正文抽取、网页 AI 总结(handler 在 lib/web.php)
+        array('GET', '#^/api/web/page$#', 'tc_api_web_page'),
+        array('POST', '#^/api/web/page$#', 'tc_api_web_page'),
+        array('GET', '#^/api/web/res$#', 'tc_api_web_res'),
+        array('POST', '#^/api/web/ticket$#', 'tc_api_web_ticket'),
+        array('GET', '#^/api/web/read$#', 'tc_api_web_read'),
+        array('POST', '#^/api/web/summary$#', 'tc_api_web_summary'),
+        array('GET', '#^/api/web/usage$#', 'tc_api_web_usage'),
+        array('GET', '#^/api/web/bookmarks$#', 'tc_api_web_bookmarks_get'),
+        array('POST', '#^/api/web/bookmarks$#', 'tc_api_web_bookmarks_save'),
         array('GET', '#^/api/assistants$#', 'tc_api_list_assistants'),
         array('POST', '#^/api/assistants/categories$#', 'tc_api_create_assistant_category'),
         array('POST', '#^/api/assistants/categories/([^/]+)$#', 'tc_api_update_assistant_category'),

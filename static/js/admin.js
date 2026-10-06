@@ -4243,6 +4243,7 @@ function mmFmtTokens(v) {
   return escapeHtml(n.toLocaleString('en-US'));
 }
 function mmSourceBadge(item) {
+  if (item.source === 'builtin') return '<span class="mm-src builtin" title="随发布包内置的开箱即用值，同步与清空都不会覆盖">内置</span>';
   if (item.source === 'manual') return '<span class="mm-src manual" title="手工维护，同步不会覆盖">手工</span>';
   if (item.source === 'auto') return '<span class="mm-src auto" title="模型未匹配到本表时自动补的兜底值，需人工复核">自动</span>';
   return '<span class="mm-src sync" title="来自 litellm 价格表">同步</span>';
@@ -4321,7 +4322,7 @@ async function refreshModelMeta() {
       + '<th title="每百万输出 token 的价格，仅作估算参考">输出 $/M</th>'
       + '<th title="每百万缓存读取 token 的价格">缓存读 $/M</th>'
       + '<th title="每百万缓存写入 token 的价格">缓存写 $/M</th>'
-      + '<th title="手工维护的条目不会被 litellm 同步覆盖">来源</th>'
+      + '<th title="内置与手工维护的条目不会被 litellm 同步覆盖">来源</th>'
       + '<th class="mm-ops"></th>'
       + '</tr>';
     const rows = items.map((it) => {
@@ -4519,6 +4520,9 @@ async function clearModelMeta() {
 
 const TAB_LOADERS = {
   notes: loadNotesSettings,
+  im: loadImSettings,
+  web: loadWebSettings,
+  'ext-overview': () => loadExtOverview(),
   overview: () => { loadStats(); loadSystemBoard(); },
   usage: () => loadStats(),
   users: () => loadUsers(),
@@ -4676,12 +4680,15 @@ $('usage-export')?.addEventListener('click', async () => {
 
 // ---------- AI 笔记:设置 + 使用用户列表 + 审阅 ----------
 async function loadNotesSettings() {
+  await ensureGroupsCache();
   const r = await api('/api/admin/settings');
   const s = ((await r.json()) || {}).settings || {};
   if ($('notes-enabled')) $('notes-enabled').checked = s.notesEnabled !== false;
+  renderFeatureAccessBlock('notes', s);
   if ($('notes-allow-files')) $('notes-allow-files').checked = s.notesAllowFiles !== false;
   if ($('notes-quota')) $('notes-quota').value = Number(s.notesQuotaMb != null ? s.notesQuotaMb : 200);
   if ($('notes-max-file')) $('notes-max-file').value = Number(s.notesMaxFileMb != null ? s.notesMaxFileMb : 50);
+  if ($('notes-max-image')) $('notes-max-image').value = Number(s.notesMaxImageMb != null ? s.notesMaxImageMb : 10);
   if ($('notes-share-body-only')) $('notes-share-body-only').checked = s.notesShareBodyOnly !== false;
   if ($('notes-ai-limit')) $('notes-ai-limit').value = Number(s.notesAiDailyLimit != null ? s.notesAiDailyLimit : 50);
   if ($('notes-ai-customizable')) $('notes-ai-customizable').checked = s.notesAiCustomizable !== false;
@@ -4753,6 +4760,9 @@ async function viewUserNotes(userId) {
 const ADMIN_GROUPS = {
   // 二级首项叫「运营数据」,避免与上方一级分组「概览」重名让人分不清
   overview: [{ id: 'overview', label: '运营数据' }, { id: 'usage', label: '用量分析' }, { id: 'announce', label: '全站公告' }, { id: 'logs', label: '运行日志' }],
+  // 拓展功能:三个「对话之外的附加面板」单独成组。此前散在「平台配置」里,与供应商/邮件/存储
+  // 这类基础设施混在一起;它们共同点是「面向用户的附加功能」,还共享同一套可见性模型。
+  extensions: [{ id: 'ext-overview', label: '总览' }, { id: 'web', label: '在线浏览器' }, { id: 'notes', label: 'AI 笔记' }, { id: 'im', label: '在线聊天' }],
   users: [{ id: 'users', label: '用户' }, { id: 'groups', label: '用户组' }, { id: 'access', label: '模型授权' }, { id: 'verify', label: '用户验证' }, { id: 'invite', label: '邀请码' }],
   billing: [
     { id: 'packages', label: '额度套餐' },
@@ -4760,7 +4770,7 @@ const ADMIN_GROUPS = {
     { id: 'codes-gen', label: '生成兑换码' },
     { id: 'codes-fixed', label: '添加固定兑换码' },
   ],
-  platform: [{ id: 'providers', label: '供应商' }, { id: 'modelmeta', label: '模型元数据' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'notes', label: '笔记' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'oauth', label: '第三方登录' }, { id: 'storage', label: '存储管理' }, { id: 'update', label: '版本更新' }],
+  platform: [{ id: 'providers', label: '供应商' }, { id: 'modelmeta', label: '模型元数据' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'oauth', label: '第三方登录' }, { id: 'storage', label: '存储管理' }, { id: 'update', label: '版本更新' }],
   thinking: [{ id: 'thinking', label: '思考策略' }],
   content: [{ id: 'assistants', label: '助手库' }],
 };
@@ -4804,9 +4814,11 @@ document.addEventListener('click', async (e) => {
         notesAllowFiles: $('notes-allow-files').checked,
         notesQuotaMb: Number($('notes-quota').value || 0),
         notesMaxFileMb: Number($('notes-max-file').value || 50),
+        notesMaxImageMb: Number($('notes-max-image').value || 10),
         notesShareBodyOnly: $('notes-share-body-only').checked,
         notesAiDailyLimit: Number($('notes-ai-limit').value || 0),
         notesAiCustomizable: $('notes-ai-customizable').checked,
+        ...(readFeatureAccess('notes') || {}),
       };
       const r = await api('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const d = await r.json().catch(() => ({}));
@@ -4818,12 +4830,341 @@ document.addEventListener('click', async (e) => {
     } finally { save.disabled = false; }
     return;
   }
+  const imSave = e.target.closest('#im-settings-save');
+  if (imSave) {
+    imSave.disabled = true;
+    try {
+      const body = {
+        imEnabled: $('im-enabled').checked,
+        imAllowFiles: $('im-allow-files').checked,
+        imMutualFriends: $('im-mutual-friends').checked,
+        imVisibleUsers: $('im-visible-users').value,
+        imQuotaMb: Number($('im-quota').value || 0),
+        imMaxFileMb: Number($('im-max-file').value || 20),
+        imMaxImageMb: Number($('im-max-image').value || 10),
+        imAiDailyLimit: Number($('im-ai-limit').value || 0),
+        ...(readFeatureAccess('im') || {}),
+      };
+      const r = await api('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((d.error && d.error.message) || '保存失败');
+      toast('聊天设置已保存');
+      await loadImSettings();
+    } catch (err) {
+      toast(err.message || '保存失败', true);
+    } finally { imSave.disabled = false; }
+    return;
+  }
+  const webSave = e.target.closest('#web-settings-save');
+  if (webSave) {
+    webSave.disabled = true;
+    try {
+      const body = {
+        browserEnabled: $('web-enabled').checked,
+        webCnOnly: $('web-cn-only').checked,
+        webConcurrency: Number($('web-concurrency').value || 6),
+        webAiDailyLimit: Number($('web-ai-limit').value || 0),
+        webBookmarks: parseWebBookmarks($('web-bookmarks').value),
+        ...(readFeatureAccess('web') || {}),
+      };
+      const r = await api('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((d.error && d.error.message) || '保存失败');
+      toast('浏览器设置已保存');
+      await loadWebSettings();
+    } catch (err) {
+      toast(err.message || '保存失败', true);
+    } finally { webSave.disabled = false; }
+    return;
+  }
+  if (e.target.closest('#im-threads-refresh')) {
+    loadImThreads().catch((err) => toast('加载失败: ' + err.message, true));
+    return;
+  }
 });
 document.addEventListener('keydown', (e) => {
   const toggle = e.target.closest && e.target.closest('#notes-users-toggle');
   if (!toggle) return;
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle.click(); }
 });
+
+// ---------- 拓展功能:可见性(总开关之外的「谁能用」) ----------
+// 三个功能共用同一套模型:<feat>Enabled 是全站总开关,<feat>Access 决定可见范围
+// (all=所有人 / admin=仅管理员 / list=仅名单),名单支持用户名与用户组。
+// 服务端 tc_feature_allowed 是唯一权威,这里只负责把同一份设置渲染出来。
+const FEATURE_META = {
+  web: { label: '在线浏览器', desc: '服务端代理抓取网页并在同源下渲染' },
+  notes: { label: 'AI 笔记', desc: 'Markdown 写作、附件上传与分享' },
+  im: { label: '在线聊天', desc: '好友、单聊与群聊' },
+};
+
+// 渲染一个功能的「可见范围」区块;分组列表按需从 /api/admin/groups 拉取并缓存
+let adminGroupsCache = null;
+async function ensureGroupsCache() {
+  if (adminGroupsCache) return adminGroupsCache;
+  try {
+    const r = await api('/api/admin/groups');
+    const d = await r.json();
+    adminGroupsCache = Array.isArray(d.groups) ? d.groups : [];
+  } catch (e) { adminGroupsCache = []; }
+  return adminGroupsCache;
+}
+
+function renderFeatureAccessBlock(feat, s) {
+  const host = $(feat + '-access-block');
+  if (!host) return;
+  const mode = ['all', 'admin', 'list'].indexOf(s[feat + 'Access']) >= 0 ? s[feat + 'Access'] : 'all';
+  const users = Array.isArray(s[feat + 'AccessUsers']) ? s[feat + 'AccessUsers'].join(', ') : '';
+  const groups = Array.isArray(s[feat + 'AccessGroups']) ? s[feat + 'AccessGroups'].map(String) : [];
+  const list = adminGroupsCache || [];
+  // 只在需要时重建 DOM:每次加载都整块重写会把用户正在输入的内容抹掉
+  if (host.dataset.rendered !== '1') {
+    host.innerHTML =
+      '<div class="feat-access">'
+      + '<div class="feat-access-head"><b>可见范围</b>'
+      + '<span class="muted small">管理员始终可用，不受此处限制</span></div>'
+      + '<div class="feat-access-modes">'
+      + '<label><input type="radio" name="' + feat + '-access" value="all"> <span>所有人</span></label>'
+      + '<label><input type="radio" name="' + feat + '-access" value="admin"> <span>仅管理员</span></label>'
+      + '<label><input type="radio" name="' + feat + '-access" value="list"> <span>仅名单内</span></label>'
+      + '</div>'
+      + '<div class="feat-access-lists">'
+      + '<label class="field"><span>允许的用户名（逗号或换行分隔）</span>'
+      + '<input id="' + feat + '-access-users" type="text" autocomplete="off" placeholder="如：Alice, Bob"></label>'
+      + '<div class="field"><span>允许的用户组（可多选）</span><div class="feat-access-groups" id="' + feat + '-access-groups"></div></div>'
+      + '</div>'
+      + '</div>';
+    host.dataset.rendered = '1';
+  }
+  const gbox = $(feat + '-access-groups');
+  if (gbox) {
+    const want = list.map((g) => ({ id: String(g.id), name: String(g.name || g.id), on: groups.indexOf(String(g.id)) >= 0 }));
+    // 分组列表为空(还没建组)时给一句说明,免得看起来像丢了控件
+    gbox.innerHTML = want.length
+      ? want.map((g) => '<label class="feat-access-group"><input type="checkbox" data-gid="' + escapeHtml(g.id) + '"'
+          + (g.on ? ' checked' : '') + '> <span>' + escapeHtml(g.name) + '</span></label>').join('')
+      : '<p class="muted small">还没有用户组，可在「用户与权限 → 用户组」新建。</p>';
+  }
+  host.querySelectorAll('input[type=radio][name="' + feat + '-access"]').forEach((el) => { el.checked = el.value === mode; });
+  const uEl = $(feat + '-access-users');
+  if (uEl && document.activeElement !== uEl) uEl.value = users;
+  // 只有「仅名单内」需要填名单,其余两种模式下把名单区收起来,减少误操作
+  const lists = host.querySelector('.feat-access-lists');
+  if (lists) lists.classList.toggle('hidden', mode !== 'list');
+}
+
+// 读回某个功能的可见性设置,拼进保存体
+function readFeatureAccess(feat) {
+  const host = $(feat + '-access-block');
+  if (!host || host.dataset.rendered !== '1') return null;
+  const picked = host.querySelector('input[type=radio][name="' + feat + '-access"]:checked');
+  const mode = picked ? picked.value : 'all';
+  const uEl = $(feat + '-access-users');
+  const gEl = $(feat + '-access-groups');
+  const groups = [];
+  if (gEl) gEl.querySelectorAll('input[type=checkbox][data-gid]').forEach((el) => { if (el.checked) groups.push(el.dataset.gid); });
+  const body = {};
+  body[feat + 'Access'] = mode;
+  body[feat + 'AccessUsers'] = uEl ? uEl.value : '';
+  body[feat + 'AccessGroups'] = groups;
+  return body;
+}
+
+// 「仅名单内」被选中时展开名单区(事件委托,页面只挂一次)
+document.addEventListener('change', (e) => {
+  const el = e.target;
+  if (!el || el.type !== 'radio' || !el.name || !/-access$/.test(el.name)) return;
+  const feat = el.name.replace(/-access$/, '');
+  const host = $(feat + '-access-block');
+  const lists = host && host.querySelector('.feat-access-lists');
+  if (lists) lists.classList.toggle('hidden', el.value !== 'list');
+});
+
+// ---------- 拓展功能:总览(三个功能一眼看全) ----------
+async function loadExtOverview() {
+  await ensureGroupsCache();
+  const r = await api('/api/admin/settings');
+  const s = ((await r.json()) || {}).settings || {};
+  const switchOn = { web: s.browserEnabled !== false, notes: s.notesEnabled !== false, im: s.imEnabled !== false };
+  const modeText = (feat) => {
+    const m = s[feat + 'Access'];
+    if (m === 'admin') return '仅管理员';
+    if (m === 'list') {
+      const u = Array.isArray(s[feat + 'AccessUsers']) ? s[feat + 'AccessUsers'].length : 0;
+      const g = Array.isArray(s[feat + 'AccessGroups']) ? s[feat + 'AccessGroups'].length : 0;
+      return '仅名单（' + u + ' 个用户 · ' + g + ' 个分组）';
+    }
+    return '所有人';
+  };
+  const grid = $('ext-status-grid');
+  if (grid) {
+    grid.innerHTML = ['web', 'notes', 'im'].map((f) => {
+      const on = switchOn[f];
+      const mode = modeText(f);
+      const effective = !on ? '已关闭' : (mode === '所有人' ? '所有登录用户' : mode);
+      return '<div class="ext-tile' + (on ? '' : ' off') + '">'
+        + '<div class="ext-tile-head"><span class="ext-tile-name">' + FEATURE_META[f].label + '</span>'
+        + '<span class="ext-tile-badge' + (on ? ' on' : '') + '">' + (on ? '已开启' : '已关闭') + '</span></div>'
+        + '<p class="ext-tile-desc">' + FEATURE_META[f].desc + '</p>'
+        + '<p class="ext-tile-state">可用范围：<b>' + escapeHtml(effective) + '</b></p>'
+        + '<button class="btn small" type="button" data-ext-go="' + f + '">前往设置</button>'
+        + '</div>';
+    }).join('');
+    grid.querySelectorAll('[data-ext-go]').forEach((b) => b.addEventListener('click', () => showAdminTab(b.dataset.extGo)));
+  }
+  const note = $('ext-status-note');
+  if (note) {
+    const anyOff = ['web', 'notes', 'im'].some((f) => !switchOn[f]);
+    note.textContent = anyOff
+      ? '提醒：已关闭的功能会连同其接口一起拒绝，前台入口也不显示。'
+      : '三个功能当前都开着。修改后用户下次刷新页面生效。';
+  }
+}
+
+// ---------- 在线浏览器:设置(总开关 / 可见范围 / 总结次数上限 / 主页收藏夹) ----------
+async function loadWebSettings() {
+  await ensureGroupsCache();
+  const r = await api('/api/admin/settings');
+  const s = ((await r.json()) || {}).settings || {};
+  if ($('web-enabled')) $('web-enabled').checked = s.browserEnabled !== false;
+  if ($('web-cn-only')) $('web-cn-only').checked = s.webCnOnly !== false;
+  if ($('web-concurrency')) $('web-concurrency').value = Number(s.webConcurrency != null ? s.webConcurrency : 6);
+  if ($('web-ai-limit')) $('web-ai-limit').value = Number(s.webAiDailyLimit != null ? s.webAiDailyLimit : 50);
+  renderFeatureAccessBlock('web', s);
+  if ($('web-bookmarks')) {
+    const list = Array.isArray(s.webBookmarks) ? s.webBookmarks : [];
+    $('web-bookmarks').value = list.map((b) => (b && b.name ? b.name + '|' + (b.url || '') : '')).filter((x) => x.indexOf('|') > 0).join('\n');
+  }
+}
+
+// 「名称|网址」逐行解析;网址缺协议时补 https://
+function parseWebBookmarks(text) {
+  const out = [];
+  String(text || '').split(/\r?\n/).forEach((line) => {
+    const t = line.trim();
+    if (!t) return;
+    const at = t.indexOf('|');
+    let name = '', url = '';
+    if (at < 0) { name = t; url = t; } else { name = t.slice(0, at).trim(); url = t.slice(at + 1).trim(); }
+    if (!name || !url) return;
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url.replace(/^\/+/, '');
+    out.push({ name: name.slice(0, 40), url: url.slice(0, 500) });
+  });
+  return out;
+}
+
+// ---------- 在线聊天:设置 + 会话与留档 ----------
+async function loadImSettings() {
+  await ensureGroupsCache();
+  const r = await api('/api/admin/settings');
+  const s = ((await r.json()) || {}).settings || {};
+  if ($('im-enabled')) $('im-enabled').checked = s.imEnabled !== false;
+  renderFeatureAccessBlock('im', s);
+  if ($('im-allow-files')) $('im-allow-files').checked = s.imAllowFiles !== false;
+  if ($('im-mutual-friends')) $('im-mutual-friends').checked = s.imMutualFriends === true;
+  if ($('im-visible-users')) $('im-visible-users').value = Array.isArray(s.imVisibleUsers) ? s.imVisibleUsers.join(', ') : (s.imVisibleUsers || '');
+  if ($('im-quota')) $('im-quota').value = Number(s.imQuotaMb != null ? s.imQuotaMb : 500);
+  if ($('im-max-file')) $('im-max-file').value = Number(s.imMaxFileMb != null ? s.imMaxFileMb : 20);
+  if ($('im-max-image')) $('im-max-image').value = Number(s.imMaxImageMb != null ? s.imMaxImageMb : 10);
+  if ($('im-ai-limit')) $('im-ai-limit').value = Number(s.imAiDailyLimit != null ? s.imAiDailyLimit : 50);
+  await loadImThreads();
+}
+
+function imThreadTitle(t) {
+  if (t.type === 'group') return '群聊：' + (t.title || '未命名');
+  const names = (t.members || []).map((m) => m.name).filter((n) => !!n);
+  return '单聊：' + (names.join(' & ') || '未知成员');
+}
+
+async function loadImThreads() {
+  const r = await api('/api/admin/im/threads');
+  const d = await r.json();
+  if (!r.ok) throw new Error((d.error && d.error.message) || '加载失败');
+  const box = $('im-threads');
+  if (!box) return;
+  const live = d.threads.filter((t) => !t.archived).length;
+  if ($('im-threads-overview')) {
+    $('im-threads-overview').textContent = d.threads.length + ' 个会话（在线 ' + live + ' / 留档 ' + (d.threads.length - live) + '）';
+  }
+  if (!d.threads.length) { box.innerHTML = '<p class="muted small">还没有会话。</p>'; return; }
+  box.innerHTML = d.threads.map((t) => ''
+    + '<div class="pkg-card" style="display:flex;align-items:center;gap:10px">'
+    + '<div style="flex:1;min-width:0">'
+    + '<b>' + escapeHtml(imThreadTitle(t)) + '</b>'
+    + '<span class="muted small" style="margin-left:6px">' + (t.archived ? '留档' : '在线') + (t.aiEnabled ? ' · AI 模式' : '') + '</span>'
+    + '<div class="muted small">' + escapeHtml((t.members || []).map((m) => m.name).join('、')) + ' · 消息 ' + t.msgCount + ' 条 · 留档原文 ' + t.tombCount + ' 条'
+    + (t.lastMsgAt ? ' · 最近 ' + fmtTime(t.lastMsgAt) : '') + '</div>'
+    + '</div>'
+    + '<button class="btn small" data-im-view="' + escapeHtml(t.id) + '">查看</button>'
+    + ((t.tombCount || t.archived) ? '<button class="btn small danger" data-im-purge="' + escapeHtml(t.id) + '">清理</button>' : '')
+    + '</div>').join('');
+  box.querySelectorAll('[data-im-view]').forEach((b) => b.addEventListener('click', () => viewImThread(b.dataset.imView)));
+  box.querySelectorAll('[data-im-purge]').forEach((b) => b.addEventListener('click', async () => {
+    const ok = await window.OCUI.confirm({
+      title: '彻底清理该会话的留档？',
+      message: '留档中的消息原文与不再被引用的附件文件会被物理删除，不可恢复；在线会话不受影响。',
+      danger: true, confirmText: '清理',
+    });
+    if (!ok) return;
+    const r2 = await api('/api/admin/im/purge', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ threadIds: [b.dataset.imPurge] }),
+    });
+    const d2 = await r2.json().catch(() => ({}));
+    if (!r2.ok) return toast((d2.error && d2.error.message) || '清理失败', true);
+    toast('已清理（附件文件 ' + (d2.files || 0) + ' 个）');
+    await loadImThreads();
+  }));
+}
+
+async function viewImThread(tid) {
+  const r = await api('/api/admin/im/view?thread=' + encodeURIComponent(tid));
+  const d = await r.json();
+  if (!r.ok) return toast((d.error && d.error.message) || '加载失败', true);
+  const fmt = (ts) => { const x = new Date(Number(ts) || 0); return isNaN(x.getTime()) ? '' : x.toLocaleString(); };
+  const rows = [];
+  if ((d.messages || []).length) {
+    rows.push('<div class="muted small" style="margin:10px 0 4px;font-weight:700">当前消息</div>');
+    for (const m of d.messages) {
+      const who = m.kind === 'ai' ? 'AI' : (m.name || m.from);
+      const body = m.deleted ? '<i class="muted">消息已删除</i>' : escapeHtml(m.text || '');
+      rows.push('<div style="margin:6px 0"><b>' + escapeHtml(String(who)) + '</b> <span class="muted small">' + fmt(m.at) + '</span>'
+        + '<div style="white-space:pre-wrap;word-break:break-word">' + body + '</div></div>');
+    }
+  }
+  const arch = d.archive || {};
+  if ((arch.events || []).length || (arch.msgs || []).length) {
+    rows.push('<div class="muted small" style="margin:14px 0 4px;font-weight:700">删除留档</div>');
+    for (const e of arch.events || []) {
+      const what = e.type === 'msgs' ? '删除了消息 ' + (e.ids || []).join(', ')
+        : (e.type === 'delete' ? '删除了整个会话' : (e.type === 'disband' ? '解散了群聊' : escapeHtml(e.type)));
+      rows.push('<div class="muted small" style="margin:4px 0">⚠ ' + escapeHtml(e.byName || e.by || '') + ' 于 ' + fmt(e.at) + ' ' + what + '</div>');
+    }
+    for (const m of arch.msgs || []) {
+      const who = m.kind === 'ai' ? 'AI' : (m.name || m.from);
+      const file = m.file ? ' [附件 ' + (m.file.name || '') + ' · ' + fmtSizeAdm(m.file.size) + ']' : '';
+      rows.push('<div style="margin:6px 0"><b>' + escapeHtml(String(who)) + '</b> <span class="muted small">' + fmt(m.at) + '</span>'
+        + '<div style="white-space:pre-wrap;word-break:break-word">' + escapeHtml(m.text || '') + escapeHtml(file) + '</div></div>');
+    }
+  }
+  const mask = document.createElement('div');
+  mask.className = 'modal-mask show';
+  mask.style.zIndex = '1700';
+  mask.innerHTML = '<div class="modal-card" style="width:min(680px,calc(100vw - 32px));max-height:80vh;display:flex;flex-direction:column;overflow:hidden">'
+    + '<h3 style="margin:0 0 8px">' + escapeHtml(imThreadTitle(d.thread || {})) + (d.thread && d.thread.archived ? '（留档）' : '') + '</h3>'
+    + '<div style="overflow-y:auto;min-height:0;flex:1">' + (rows.join('') || '<p class="muted small">暂无消息</p>') + '</div>'
+    + '<div style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn" data-act="close">关闭</button></div>'
+    + '</div>';
+  document.body.appendChild(mask);
+  mask.querySelector('[data-act="close"]').addEventListener('click', () => mask.remove());
+  mask.addEventListener('click', (e) => { if (e.target === mask) mask.remove(); });
+}
+function fmtSizeAdm(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(1) + ' MB';
+}
 let notesSearchTimer = null;
 document.addEventListener('input', (e) => {
   if (!e.target || e.target.id !== 'notes-user-search') return;

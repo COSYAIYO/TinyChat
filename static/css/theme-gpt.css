@@ -140,6 +140,9 @@ html[data-oc-theme="chatgpt"][data-theme="dark"] {
 }
 
 /* ---------- 3. 侧栏:实色、无毛玻璃、无分隔线 ---------- */
+/* 侧栏几何(内缩 / 行内边距 / 图标列宽 / 间距)统一由 chrome.css 的
+   「侧栏左边缘统一」一节实现,主题只报数:ChatGPT 的侧栏内缩略宽一点。 */
+html[data-oc-theme="chatgpt"] { --sidebar-pad: 12px; }
 html[data-oc-theme="chatgpt"] .sidebar {
   background: var(--bg-sidebar);
   backdrop-filter: none;
@@ -217,18 +220,22 @@ html[data-oc-theme="chatgpt"] .msg.user .msg-content {
   box-shadow: none;
   padding: 11px 20px;
   max-width: 72%;
-  font-size: 1.143rem !important;
+  /* 用户气泡跟正文同一个字号基准,不再单独写死 rem */
+  font-size: calc(var(--fs) * var(--msg-scale)) !important;
   line-height: 1.6;
 }
 html[data-oc-theme="chatgpt"] .msg.user .msg-actions { max-width: 72%; }
 
-/* 正文排版:16px / 1.75。默认外观是 14px / 1.7,行距与段距都更紧,读起来"密"很多;
+/* 正文排版:比默认外观松一档,行距与段距也更大;
    ChatGPT 的呼吸感主要就来自这里,比改配色更影响观感。
    这里必须带 !important:chrome.css 有一张上百个选择器的字号总表,把 .msg .msg-content
    连同输入框、按钮一起钉死在 var(--fs) 上,普通声明再高优先级也压不过它。
-   rem 在本项目等于 --fs(style.css 里 html{font-size:var(--fs)}),所以字号偏好依然生效。 */
+   倍数走 --msg-scale(基准是用户的 --fs),不能写死 rem ——
+   写 1.143rem 会让「外观→字号」选 14px 实际渲染 16px,用户看到的和设置对不上。
+   这里用 0.98 略收一点,配合更大的行距,读起来更接近网页正文的疏朗感。 */
+html[data-oc-theme="chatgpt"] { --msg-scale: 0.98; }
 html[data-oc-theme="chatgpt"] .msg .msg-content {
-  font-size: 1.143rem !important;
+  font-size: calc(var(--fs) * var(--msg-scale)) !important;
   line-height: 1.75;
 }
 html[data-oc-theme="chatgpt"] .msg.assistant p { margin: 0 0 1.15em; }
@@ -279,15 +286,12 @@ html[data-oc-theme="chatgpt"] .msg .msg-avatar {
 }
 
 /* ---------- 6. 消息操作:桌面端悬停才出现 ---------- */
-/* 默认外观让操作条常驻,一行图标一直挂在正文下方;ChatGPT 是悬停才浮出来,
-   静止时正文周围是干净的。触屏没有 hover,那里保持常驻,否则等于没有入口。 */
-@media (hover: hover) {
-  html[data-oc-theme="chatgpt"] .msg .msg-actions {
-    opacity: 0 !important;
-    transition: opacity 0.12s ease;
-  }
-  html[data-oc-theme="chatgpt"] .msg:hover .msg-actions,
-  html[data-oc-theme="chatgpt"] .msg:focus-within .msg-actions { opacity: 1 !important; }
+/* 操作条常驻,与默认外观一致。
+   之前这里做成「悬停才浮出来」,结果同一排按钮在默认外观看得见、切到本主题就没了;
+   主题只该改样式,不该改交互有无 —— 用户报的正是这一点。 */
+html[data-oc-theme="chatgpt"] .msg .msg-actions {
+  opacity: 1 !important;
+  transition: opacity 0.12s ease;
 }
 html[data-oc-theme="chatgpt"] .msg-action { color: var(--text-tertiary); border-radius: 8px; }
 html[data-oc-theme="chatgpt"] .msg-action:hover { background: var(--bg-hover); color: var(--text); }
@@ -339,10 +343,11 @@ html[data-oc-theme="chatgpt"] ::-webkit-scrollbar-thumb:hover {
 }
 
 /* ---------- 9. 消息区:更窄的内容栏 + 更松的段距 ---------- */
-/* 默认外观 820px / 32px 内边距,一行能排很长;ChatGPT 的内容栏更窄、上下留白更多,
-   正文因此更"好读",整屏观感也更接近。 */
+/* 默认外观 32px 内边距,一行能排很长;ChatGPT 的内容栏上下留白更多,
+   正文因此更"好读",整屏观感也更接近。
+   宽度交给 --content-w(默认 61.8%,拖拽条改它);写死 768px 会让拖拽调宽失效。 */
 html[data-oc-theme="chatgpt"] .messages {
-  max-width: 768px;
+  max-width: var(--content-w);
   padding: 40px 28px 28px;
 }
 html[data-oc-theme="chatgpt"] .msg { padding: 26px 0; }
@@ -438,11 +443,14 @@ html[data-oc-theme="chatgpt"] .visual-actions .code-copy:hover {
   color: var(--text);
 }
 
-/* ---------- 12. 空态:只有标题与一句说明 ---------- */
+/* ---------- 12. 空态:只剩一个标题 ---------- */
 /* ChatGPT 的空态就是一个居中的标题,没有任务启动器;默认外观那九个预设
    (润色改写 / 中英翻译 / …)是 TinyChat 自己的功能入口,九宫格铺在正中间,
    一眼就是「这不是 ChatGPT」。这个主题下整块隐藏 —— 它们不是被删掉,
    只是在这个外观里不出现,切回默认主题原样回来。
+   标题下面那行「选择模型后输入问题,或点下面一个任务直接开始」跟着一起藏:
+   它后半句指的就是刚被藏掉的九个预设,留着等于让用户去点已经不在的东西 ——
+   这不是配色问题,是把一行文案留在了它描述的对象已经消失的位置上。
    「暂无可用的 API 供应商」那行提示是另一处(.empty-hint),没有跟着藏:
    它说的是「现在还不能用」,藏了会让人找不到原因。 */
 /* chrome.css 把 .empty-state h2 钉在 --fs-display(20px)上,ID 选择器带 !important 才压得住 */
@@ -451,7 +459,7 @@ html[data-oc-theme="chatgpt"] #empty-title {
   font-weight: 600;
   letter-spacing: 0;
 }
-html[data-oc-theme="chatgpt"] .empty-lead { font-size: 1rem; color: var(--text-secondary); }
+html[data-oc-theme="chatgpt"] .empty-lead { display: none; }
 html[data-oc-theme="chatgpt"] .empty-suggests { display: none; }
 /* 九个预设占掉的正是中间那块高度,藏了之后剩下的标题块会贴在顶部、下面空一大片。
    默认的 8vh 是按「有预设」调的位置,这里补回到可见区域的视觉中心附近
@@ -489,23 +497,26 @@ html[data-oc-theme="chatgpt"] .chat-item {
    position:absolute),所以消息区底部留白与「回到底部」按钮要同步上移,否则最后
    一条消息会被压住。 */
 html[data-oc-theme="chatgpt"] .chat-area { padding-bottom: 190px; }
-html[data-oc-theme="chatgpt"] .composer-wrap { max-width: 768px; }   /* 与消息列同宽 */
+html[data-oc-theme="chatgpt"] .composer-wrap { max-width: var(--content-w); }   /* 与消息列同宽 */
 html[data-oc-theme="chatgpt"] .composer {
   flex-wrap: wrap;
-  align-items: flex-end;
+  /* 居中对齐而不是贴底:工具行的两个圆按钮故意不等高(菜单钮 46 / 发送钮 42,
+     透明按钮要做大一点才与实心圆底看上去一样大),贴底会让它们的圆心差 2px */
+  align-items: center;
   row-gap: 6px;
   padding: 12px 12px 10px;
 }
 html[data-oc-theme="chatgpt"] .composer-flow { order: 1; flex: 1 1 100%; align-self: stretch; }
 html[data-oc-theme="chatgpt"] .composer-left { order: 2; }
 html[data-oc-theme="chatgpt"] .composer-right { order: 3; margin-left: auto; }
-/* 输入字号与正文一致(16px)。@ 行与 textarea 首行是「同一行盒」的约定:
-   两边都用 line-height 1.5 且同字号,height:1.5em 才对得上,所以这里必须一起改。 */
+/* 输入字号与正文一致。@ 行与 textarea 首行是「同一行盒」的约定:
+   两边都用 line-height 1.5 且同字号,height:1.5em 才对得上,所以这里必须一起改。
+   字号同样跟着 --msg-scale,和正文保持同一个倍数。 */
 html[data-oc-theme="chatgpt"] .composer-flow textarea,
 html[data-oc-theme="chatgpt"] .composer-at-row,
 html[data-oc-theme="chatgpt"] .composer-flow .composer-at,
 html[data-oc-theme="chatgpt"] .composer-flow .note-mention-chip {
-  font-size: 1.143rem !important;
+  font-size: calc(var(--fs) * var(--msg-scale)) !important;
   line-height: 1.5;
 }
 /* 上内边距保持 10px:@ 行按这个值定位首行 */

@@ -4037,6 +4037,8 @@ async function refreshMe() {
     if (r.ok) {
       state.user = data.user;
       state.usage = Array.isArray(data.usage) ? data.usage : [];
+      // 拓展功能的按人可用性(仅管理员 / 仅名单):落盘并广播,让已渲染的入口重判
+      if (data.features && window.OCFeatures) window.OCFeatures.set(data.features);
       renderUser();
       loadAccountPackages();
     }
@@ -4415,9 +4417,15 @@ function applySyncedSettings() {
     const w = parseInt(localStorage.getItem('oc_sidebar_width') || '', 10);
     if (Number.isFinite(w) && w > 0) sidebar.style.setProperty('--sidebar-w', w + 'px');
   }
-  // 对话列宽度
-  const cw = parseInt(localStorage.getItem('oc_content_width') || '', 10);
-  if (Number.isFinite(cw) && cw > 0) document.documentElement.style.setProperty('--content-w', cw + 'px');
+  // 对话列宽度:新格式是 "61.8%"(旧格式是 px,initChatResizers 会换算后覆盖;
+  // 这里先按原样写进去,避免首屏闪一下默认值)。0 表示「没设过」,保持 CSS 默认。
+  const cwRaw = String(localStorage.getItem('oc_content_width') || '').trim();
+  if (cwRaw && cwRaw !== '0') {
+    const cw = parseFloat(cwRaw);
+    if (Number.isFinite(cw) && cw > 0) {
+      document.documentElement.style.setProperty('--content-w', cwRaw.endsWith('%') ? cw.toFixed(1) + '%' : cw + 'px');
+    }
+  }
   // 群聊配置与模式(丢弃内存缓存重新加载)
   if (window.OCGroup && window.OCGroup.reload) { try { window.OCGroup.reload(); } catch (e) {} }
   // 笔记界面(动作配置 / 排序 / 分栏宽度 / 悬浮工具条位置)
@@ -7752,32 +7760,53 @@ function toggleSidebar() {
   }
 
   // ============ 对话列两侧拖拽调宽 ============
+  // 宽度以「可用主区宽度的百分比」表示,默认 61.8%(见 redesign.css 的 --content-w)。
+  // 之所以按百分比而不是 px:同一个设置要在 1280 的笔记本和 2560 的显示器上都合理,
+  // px 会让宽屏上内容栏永远只占一小条、窄屏上又几乎撑满。
   (function initChatResizers() {
     const left = $('chat-resizer-left');
     const right = $('chat-resizer-right');
     const mainEl = document.querySelector('main.main');
     if (!left || !right || !mainEl) return;
 
-    const MIN_W = 480;
-    const PAD = 48;
+    const MIN_PCT = 50;    // 最窄:占主区一半
+    const MAX_PCT = 100;   // 最宽:铺满主区
     const root = document.documentElement;
 
-    function mainMax() {
-      return Math.max(MIN_W, Math.floor(mainEl.getBoundingClientRect().width - PAD));
+    function clampPct(p) {
+      if (!Number.isFinite(p)) return 61.8;
+      return Math.round(Math.min(MAX_PCT, Math.max(MIN_PCT, p)) * 10) / 10;
     }
-    function clampW(w) {
-      return Math.round(Math.min(mainMax(), Math.max(MIN_W, w)));
+    function applyPct(p) {
+      root.style.setProperty('--content-w', clampPct(p) + '%');
     }
-    function applyW(w) {
-      root.style.setProperty('--content-w', clampW(w) + 'px');
+    // 当前生效的百分比:可能来自我们写进去的 px(旧版本存的),换算回百分比
+    function currentPct() {
+      const raw = String(getComputedStyle(root).getPropertyValue('--content-w') || '').trim();
+      if (raw.endsWith('%')) return clampPct(parseFloat(raw));
+      const px = parseFloat(raw);
+      const avail = mainEl.getBoundingClientRect().width;
+      if (Number.isFinite(px) && avail > 0) return clampPct((px / avail) * 100);
+      return 61.8;
     }
 
-    const saved = parseInt(localStorage.getItem('oc_content_width') || '', 10);
-    if (saved >= MIN_W) applyW(saved);
+    // 旧版本把宽度存成 px;这里统一按「当时的主区宽度」换算成百分比后再用,
+    // 免得升级后旧值在更宽的屏上显得过窄。
+    const savedRaw = localStorage.getItem('oc_content_width');
+    if (savedRaw) {
+      const savedPct = savedRaw.endsWith('%')
+        ? parseFloat(savedRaw)
+        : (() => {
+            const px = parseFloat(savedRaw);
+            const avail = mainEl.getBoundingClientRect().width;
+            return (Number.isFinite(px) && avail > 0) ? (px / avail) * 100 : NaN;
+          })();
+      if (Number.isFinite(savedPct)) applyPct(savedPct);
+    }
 
     function persist() {
-      const cur = parseInt(getComputedStyle(root).getPropertyValue('--content-w'), 10);
-      if (cur >= MIN_W) { localStorage.setItem('oc_content_width', String(cur)); syncTouch('contentWidth'); }
+      localStorage.setItem('oc_content_width', currentPct() + '%');
+      syncTouch('contentWidth');
     }
 
     function startDrag(e, side) {
@@ -7785,13 +7814,16 @@ function toggleSidebar() {
       e.preventDefault();
       e.stopPropagation();
       const startX = e.clientX;
-      const startW = parseInt(getComputedStyle(root).getPropertyValue('--content-w'), 10) || 820;
-      const sign = side === 'left' ? -2 : 2;
+      const avail = Math.max(1, mainEl.getBoundingClientRect().width);
+      const startPct = currentPct();
+      const sign = side === 'left' ? -1 : 1;
       left.classList.add('active');
       right.classList.add('active');
       document.body.classList.add('chat-resizing');
       const onMove = (ev) => {
-        applyW(startW + (ev.clientX - startX) * sign);
+        // 拖 1px 改动的百分比 = 1px / 主区宽度;乘 2 是因为左右各拖一边,
+        // 用户期望「拖一点就有明显变化」。
+        applyPct(startPct + ((ev.clientX - startX) * sign * 2 / avail) * 100);
       };
       const onUp = () => {
         persist();
@@ -7808,39 +7840,61 @@ function toggleSidebar() {
     left.addEventListener('mousedown', (e) => startDrag(e, 'left'));
     right.addEventListener('mousedown', (e) => startDrag(e, 'right'));
 
-    function nudge(delta) {
-      const cur = parseInt(getComputedStyle(root).getPropertyValue('--content-w'), 10) || 820;
-      applyW(cur + delta);
+    function nudge(deltaPct) {
+      applyPct(currentPct() + deltaPct);
       persist();
     }
     [left, right].forEach((el) => {
       el.addEventListener('keydown', (e) => {
-        if (e.key === 'ArrowLeft') { e.preventDefault(); nudge(el === left ? 16 : -16); }
-        if (e.key === 'ArrowRight') { e.preventDefault(); nudge(el === left ? -16 : 16); }
+        // 键盘每次调 2%(约等于拖 20px 左右),够精确也不至于要点很多下
+        if (e.key === 'ArrowLeft') { e.preventDefault(); nudge(el === left ? 2 : -2); }
+        if (e.key === 'ArrowRight') { e.preventDefault(); nudge(el === left ? -2 : 2); }
       });
     });
 
+    // 百分比宽度天然随窗口缩放,不需要再在 resize 里夹一次;
+    // 但拖拽中窗口尺寸变了会让 startPct 失准,直接结束这次拖拽更稳妥。
     window.addEventListener('resize', () => {
-      if (window.innerWidth <= 768) return;
-      const cur = parseInt(getComputedStyle(root).getPropertyValue('--content-w'), 10);
-      if (cur > mainMax()) applyW(mainMax());
+      if (document.body.classList.contains('chat-resizing')) {
+        left.classList.remove('active');
+        right.classList.remove('active');
+        document.body.classList.remove('chat-resizing');
+      }
     });
   })();
 })();
 // 阻止侧边栏收起在移动端的默认行为无碍
 
 const inputEl = $('input');
+// 占位符按「窗口宽窄」和「@ 行是否占位」两条维度选:
+//   - 窄屏(≤768px):最短的「输入消息」;
+//   - 宽屏且没有 @ 行:完整长提示;
+//   - 宽屏但有 @ 行(chip 在):**短提示**。
+// 第三种是必须的:选中助手后正文有悬挂缩进(首行让出 @ 行宽度,实测 76.7px),
+// 首行可用宽度显著变窄,长占位符会折成两行 —— 空输入框就会撑高到 62px 而不是 41px,
+// 观感像「输入框莫名变高」(这正是 theme 收窄对话列后暴露出来的)。
+// 缩进激活时自动换成短提示,既保留指引又不会折行。
+function applyComposerPlaceholder() {
+  // 自己取元素,不用上面那个 inputEl 常量:本函数是函数声明(会被提升),
+  // 而 syncComposerIndent 在初始化早期就可能调到它,那时 inputEl 还在 TDZ 里。
+  const inp = $('input');
+  if (!inp) return;
+  const desktop = inp.dataset.placeholderDesktop || '';
+  const compact = inp.dataset.placeholderCompact || desktop;
+  const mobile = inp.dataset.placeholderMobile || '';
+  const narrow = window.matchMedia('(max-width: 768px)').matches;
+  const row = $('composer-at-row');
+  const chip = $('composer-assistant');
+  const box = $('note-mention-row');
+  const hasAt = !!(row && ((chip && !chip.classList.contains('hidden')) || (box && !box.classList.contains('hidden'))));
+  inp.placeholder = narrow ? mobile : (hasAt ? compact : desktop);
+}
 (function syncComposerPlaceholder() {
-  const desktop = inputEl.dataset.placeholderDesktop || '';
-  const mobile = inputEl.dataset.placeholderMobile || '';
-  const apply = () => {
-    const narrow = window.matchMedia('(max-width: 768px)').matches;
-    inputEl.placeholder = narrow ? mobile : desktop;
-  };
-  apply();
+  applyComposerPlaceholder();
   const mq = window.matchMedia('(max-width: 768px)');
-  if (mq.addEventListener) mq.addEventListener('change', apply);
-  else mq.addListener(apply);
+  const onChange = () => applyComposerPlaceholder();
+  if (mq.addEventListener) mq.addEventListener('change', onChange);
+  else mq.addListener(onChange);
 })();
 inputEl.addEventListener('input', () => {
   autosizeInput();
@@ -8206,6 +8260,9 @@ function syncComposerIndent() {
   if (!row || !inp) return;
   const hasAt = (row.querySelector('#composer-assistant') && !row.querySelector('#composer-assistant').classList.contains('hidden'))
     || (row.querySelector('#note-mention-row') && !row.querySelector('#note-mention-row').classList.contains('hidden'));
+  // 占位符要跟着 @ 行一起换:有 @ 行时首行让出了缩进,原来那句长提示会折成两行、
+  // 把空输入框撑高(见 applyComposerPlaceholder 的说明)。缩进变 → 提示也要重算。
+  if (typeof applyComposerPlaceholder === 'function') applyComposerPlaceholder();
   if (!hasAt) { inp.style.textIndent = ''; resyncInputHeight(inp); return; }
   // 用 next frame 测量:chip 刚插入 DOM 时宽度尚未确定,直接测量会偏小/为 0
   // 缩进量按 @ 行实际宽度换算成 em(相对输入字号):

@@ -1030,6 +1030,18 @@ function tc_api_public_config($db) {
         'notesAllowFiles' => !isset($s['notesAllowFiles']) || !empty($s['notesAllowFiles']),
         'notesShareBodyOnly' => !array_key_exists('notesShareBodyOnly', $s) || !empty($s['notesShareBodyOnly']),
         'notesAiCustomizable' => !array_key_exists('notesAiCustomizable', $s) || !empty($s['notesAiCustomizable']),
+        // 在线聊天(IM):前台据此决定入口是否显示与上传前置校验
+        'imEnabled' => !isset($s['imEnabled']) || !empty($s['imEnabled']),
+        'imAllowFiles' => !isset($s['imAllowFiles']) || !empty($s['imAllowFiles']),
+        'imMaxImageMb' => (int) (isset($s['imMaxImageMb']) ? $s['imMaxImageMb'] : 10),
+        'imMaxFileMb' => (int) (isset($s['imMaxFileMb']) ? $s['imMaxFileMb'] : 20),
+        // 在线浏览器:前台据此决定入口是否显示(关闭时隐藏)
+        'browserEnabled' => !isset($s['browserEnabled']) || !empty($s['browserEnabled']),
+        // 仅限中国 IP 网站:前台在浏览器里提前提示,避免用户对着境外地址反复试
+        'webCnOnly' => !array_key_exists('webCnOnly', $s) || !empty($s['webCnOnly']),
+        // 境内 IP 段数据是否可用。开关默认开着,而数据缺失会让所有站点一起被拒;
+        // 前台据此报「服务器缺少数据」而不是「该站点不在允许范围内」,省得用户白试半天。
+        'webCnDataReady' => function_exists('tc_web_cn_data_ready') ? tc_web_cn_data_ready() : false,
         // 性能优化:前台据此决定是否加载内置字体 / KaTeX / 代码高亮 / Mermaid
         'perf' => array(
             'noWebfonts' => !empty($s['perfNoWebfonts']),
@@ -1292,6 +1304,9 @@ function tc_api_me() {
         $user = tc_require_auth($db);
         tc_json(200, array(
             'user' => tc_sanitize_user($user),
+            // 本账号实际可用的拓展功能(总开关 × 「仅管理员 / 仅名单」访问级别)。
+            // /api/config 是匿名的、发不出按人判定的结果,所以按人的那一层放在这里。
+            'features' => tc_features_public($db, $user),
             'tools' => tc_user_tools_public($user, $db['settings']),
             'usage' => tc_usage_rows($db, $user['id'], tc_last_n_days(14)),
         ));
@@ -2756,12 +2771,15 @@ function tc_api_admin_model_meta_list() {
         $perPage = isset($_GET['perPage']) ? min(200, max(10, (int) $_GET['perPage'])) : 50;
 
         $meta = isset($db['modelMeta']) && is_array($db['modelMeta']) ? $db['modelMeta'] : array();
-        // 本地供应商实际用到的模型名:用于「在用」标记,同时让这些模型在默认排序里靠前
+        // 本地供应商实际用到的模型名:用于「在用」标记,同时让这些模型在默认排序里靠前。
+        // 渠道给模型加前缀/后缀时(XXX/deepseek-flash)归到包含匹配到的那个条目上,
+        // 否则表里那条被复用的元数据不会显示「在用」。
         $inUse = array();
         foreach ($db['providers'] as $p) {
             foreach ((isset($p['models']) ? $p['models'] : array()) as $m) {
                 if (!is_array($m) || empty($m['id'])) continue;
-                $inUse[tc_model_meta_key($m['id'])] = true;
+                $rk = tc_model_meta_resolve($db, $m['id']);
+                $inUse[$rk !== null ? $rk : tc_model_meta_key($m['id'])] = true;
             }
         }
         $rows = array();
@@ -2843,14 +2861,15 @@ function tc_api_admin_model_meta_delete() {
     });
 }
 
-// 清空整表(仅 litellm 来源;手工条目保留)
+// 清空整表(仅 litellm 来源;手工与内置条目保留)
 function tc_api_admin_model_meta_clear() {
     tc_with_db(true, function (&$db) {
         $admin = tc_require_admin($db);
         if (tc_is_demo_user($admin)) tc_fail(403, '演示账号不能清空模型元数据');
         $kept = array();
         foreach ((isset($db['modelMeta']) && is_array($db['modelMeta']) ? $db['modelMeta'] : array()) as $k => $v) {
-            if (isset($v['source']) && $v['source'] === 'manual') $kept[$k] = $v;
+            $src = isset($v['source']) ? (string) $v['source'] : '';
+            if ($src === 'manual' || $src === 'builtin') $kept[$k] = $v;
         }
         $db['modelMeta'] = $kept;
         unset($db['modelMetaSyncedAt']);
@@ -2895,7 +2914,9 @@ function tc_model_meta_sync_indexed(&$db, $raw) {
     $meta = isset($db['modelMeta']) && is_array($db['modelMeta']) ? $db['modelMeta'] : array();
     $added = 0; $updated = 0; $skipped = 0; $reviewCleared = 0;
     foreach ($index as $key => $item) {
-        if (isset($meta[$key]) && isset($meta[$key]['source']) && $meta[$key]['source'] === 'manual') { $skipped++; continue; }
+        // 手工与内置条目都不被同步覆盖:前者是管理员定的,后者是随发布包分发的基准值
+        $src = isset($meta[$key]['source']) ? (string) $meta[$key]['source'] : '';
+        if ($src === 'manual' || $src === 'builtin') { $skipped++; continue; }
         // 已有条目上管理员手动停用过的,同步回来后保持停用(不能因为上游有数据就擅自重新启用)
         if (isset($meta[$key])) {
             $updated++;
@@ -4735,9 +4756,12 @@ function tc_utf_cut($s, $n) {
     return function_exists('mb_substr') ? mb_substr($s, 0, $n) : substr($s, 0, $n);
 }
 
-// 笔记功能总开关:关闭时前台入口隐藏,接口一律拒绝(避免旧标签页继续写入)
-function tc_note_feature_guard($db) {
-    if (empty($db['settings']['notesEnabled'])) tc_fail(403, '本站未开放 AI 笔记功能');
+// 笔记功能可用性:总开关 × 访问级别(全站 / 仅管理员 / 仅名单),见 lib/features.php。
+// 关闭时前台入口隐藏,接口一律拒绝(避免旧标签页继续写入)。
+function tc_note_feature_guard($db, $user = null) {
+    if ($user === null) $user = tc_require_auth($db);
+    if (!tc_feature_allowed($db, $user, 'notes')) tc_fail(403, '本站未开放 AI 笔记功能，或你的账号没有使用权限');
+    return $user;
 }
 // 图片魔数校验:扩展名可伪造,这里按文件头判断真实类型。
 // 返回检测到的 MIME,或 ''(不是受支持的图片)。
@@ -5141,7 +5165,7 @@ function tc_note_find_in_doc($doc, $noteId) {
 function tc_api_notes_get() {
     tc_with_db(false, function ($db) {
         $user = tc_require_auth($db);
-        tc_note_feature_guard($db);
+        tc_note_feature_guard($db, $user);
         tc_json(200, array(
             'doc' => tc_sanitize_notes_doc(tc_notes_of($db, $user['id'])),
             'revision' => tc_notes_revision_of($db, $user['id']),
@@ -5154,7 +5178,7 @@ function tc_api_notes_get() {
 function tc_api_notes_save() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
-        tc_note_feature_guard($db);
+        tc_note_feature_guard($db, $user);
         if (!tc_rate_limit_check('notesync:' . $user['id'], 60)) {
             tc_fail(429, '同步过于频繁，请稍后再试');
         }
@@ -5289,10 +5313,16 @@ function tc_settings_ui($raw) {
     if (!is_array($raw)) return $out;
     $bools = array('sidebarCollapsed', 'notesGuideSeen');
     $ints = array(
-        'sidebarWidth' => array(120, 1200), 'contentWidth' => array(400, 2400),
+        'sidebarWidth' => array(120, 1200),
         'notesSideW' => array(120, 1200), 'announcementSeen' => array(0, 4102444800000),
         'videoSeconds' => array(1, 600),
     );
+    // 对话列宽度:客户端已改成百分比(50~100,可带一位小数)。
+    // 不能再用旧的 px 区间 400~2400 —— 客户端推 100(%)会被夹到 400,
+    // 下次拉取就写回 400%,宽度设置直接失效(实测推 100 回来变 400)。
+    // 上界仍留到 2400:升级前存的是 px,客户端会按当前主区宽度自己换算成百分比。
+    // 用 float 而不是 int:61.8 不能被截成 61。
+    $floats = array('contentWidth' => array(50, 2400));
     $enums = array('composerMode' => array('simple', 'group'));
     $strs = array('imageModel' => 200, 'imageSize' => 64, 'videoModel' => 200, 'videoRatio' => 32);
     foreach ($raw as $k => $v) {
@@ -5301,6 +5331,13 @@ function tc_settings_ui($raw) {
         if (isset($enums[$k])) {
             $v = (string) $v;
             if (in_array($v, $enums[$k], true)) $out[$k] = $v;
+            continue;
+        }
+        if (isset($floats[$k])) {
+            if (!is_numeric($v)) continue;
+            $val = round(min($floats[$k][1], max($floats[$k][0], (float) $v)), 1);
+            // 整数就按整数存(JSON 里是 100 而不是 100.0),小数保留一位(61.8)
+            $out[$k] = ($val == (int) $val) ? (int) $val : $val;
             continue;
         }
         if (isset($ints[$k])) {
@@ -5533,7 +5570,7 @@ function tc_api_sync_save_settings() {
 function tc_api_note_attachment_upload() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
-        tc_note_feature_guard($db);
+        tc_note_feature_guard($db, $user);
         if (!tc_rate_limit_check('noteupload:' . $user['id'], 60, 3600000)) {
             tc_fail(429, '上传过于频繁，请稍后再试');
         }
@@ -5575,10 +5612,12 @@ function tc_api_note_attachment_upload() {
         $isImage = isset($images[$ext]);
         $mime = $isImage ? $images[$ext] : (isset($docs[$ext]) ? $docs[$ext] : 'application/octet-stream');
         $sniffed = '';
-        // 单文件上限:图片固定 10MB;其余按后台设置 notesMaxFileMb
+        // 单文件上限:图片按后台 notesMaxImageMb(默认 10MB);其余按 notesMaxFileMb
         $fileMb = isset($db['settings']['notesMaxFileMb']) ? (int) $db['settings']['notesMaxFileMb'] : 50;
         if ($fileMb <= 0) $fileMb = 50;
-        $max = $isImage ? 10 * 1048576 : $fileMb * 1048576;
+        $imgMb = isset($db['settings']['notesMaxImageMb']) ? (int) $db['settings']['notesMaxImageMb'] : 10;
+        if ($imgMb <= 0) $imgMb = 10;
+        $max = ($isImage ? $imgMb : $fileMb) * 1048576;
         $size = (int) (isset($f['size']) ? $f['size'] : 0);
         if ($size <= 0 || $size > $max) tc_fail(400, '文件大小超出限制（' . round($max / 1048576) . 'MB）');
         // 用户空间配额(0=不限):先按已用量 + 本次大小判断,避免超限写入
@@ -5688,7 +5727,7 @@ function tc_api_note_attachment_delete() {
 function tc_api_note_attachments_gc() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
-        tc_note_feature_guard($db);
+        tc_note_feature_guard($db, $user);
         if (!tc_rate_limit_check('notegc:' . $user['id'], 12, 3600000)) {
             tc_fail(429, '回收操作过于频繁，请稍后再试');
         }
@@ -5823,7 +5862,7 @@ function tc_api_note_attachment_serve() {
 function tc_api_note_share_create() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
-        tc_note_feature_guard($db);
+        tc_note_feature_guard($db, $user);
         if (!tc_rate_limit_check('noteshare:' . $user['id'], 30, 3600000)) {
             tc_fail(429, '创建分享过于频繁，请稍后再试');
         }
@@ -6116,7 +6155,7 @@ function tc_note_ai_consume($db, $userId) {
 function tc_api_notes_ai_consume() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
-        tc_note_feature_guard($db);
+        tc_note_feature_guard($db, $user);
         if (!tc_rate_limit_check('noteai:' . $user['id'], 30)) tc_fail(429, '操作过于频繁，请稍后再试');
         tc_note_ai_consume($db, $user['id']);
         $limit = (int) ($db['settings']['notesAiDailyLimit'] ?? 50);
