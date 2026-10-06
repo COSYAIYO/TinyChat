@@ -1106,6 +1106,11 @@ function tc_web_serve($kind) {
     // SAMEORIGIN **不会**因为 iframe 带 sandbox、不带 allow-same-origin 而被拦 ——
     // 嵌它的父页面本身就是本站同源,实测 sandbox 与否结论一致(故不能靠「省略」解决)。
     // 真正的隔离由外层 iframe 的 sandbox(不透明源)承担,不靠 XFO。
+    //
+    // 这两行里**真正拦人的是第二行(CSP)**:现代 Chrome 只要响应带了 CSP 的
+    // frame-ancestors,就完全忽略 X-Frame-Options。实测:把本行改回 DENY、CSP 保持
+    // 'self',页面照常渲染;反过来 XFO 保持 SAMEORIGIN、CSP 改成 'none',则整页被拦。
+    // 所以两行都要写对,别以为改错第一行无所谓(老浏览器仍按 XFO 判定)。
     header('X-Frame-Options: SAMEORIGIN');
     header("Content-Security-Policy: default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; frame-ancestors 'self'");
     $q = tc_query();
