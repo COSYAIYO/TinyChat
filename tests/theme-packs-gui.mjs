@@ -382,8 +382,13 @@ check('输入框与消息列同宽', cWrap.w && (await box('.messages')).w && Ma
   cWrap.w + ' vs ' + (await box('.messages')).w);
 check('输入框是中等圆角 16px(不是胶囊)', (await css('.composer', 'border-radius')) === '16px',
   await css('.composer', 'border-radius'));
-check('输入框有描边(Claude 这个位置是描边不是投影)', ((await borderWidths('.composer')).left || 0) === 1,
+// 输入框不描边:它是一块比暖米白画布更亮的白纸,边界靠柔和投影读出来。
+// 之前断言的是「有一条 1px 描边」——本轮把描边去掉,改用投影,断言随之反转。
+check('输入框没有描边(靠暖调柔和投影浮起)',
+  ((await borderWidths('.composer')).left || 0) === 0 && ((await borderWidths('.composer')).top || 0) === 0,
   JSON.stringify(await borderWidths('.composer')));
+check('输入框有投影(无描边时靠它定义边界)', (await css('.composer', 'box-shadow')) !== 'none',
+  await css('.composer', 'box-shadow'));
 check('消息区底部留白已让开变高的输入框', (await css('.chat-area', 'padding-bottom')) === '186px',
   await css('.chat-area', 'padding-bottom'));
 check('回到底部按钮在输入框上方(留有余量,不是贴着)', (await css('.scroll-bottom-btn', 'bottom')) === '182px',
@@ -448,9 +453,9 @@ await injectDemo(page);
 await sleep(300);
 
 // --- 11.1 引用块里那根 ::before 装饰竖条 ---
-// 默认外观的引用块靠 markdown.css 的 ::before 画一根 3px 竖条。两个新主题都不用它:
-// 方块主题把引用做成内嵌色块,Claude 用 border-left。只把 border-left 归零是压不住伪元素的
-// ——它是独立一层,会变成浮在色块里的浅蓝竖线(方块主题),或和主题自己的线并排成两条(Claude)。
+// 默认外观的引用块靠 markdown.css 的 ::before 画一根 3px 竖条。三个主题都不用「线」:
+// 方块与 Claude 做成内嵌/底衬色块,GPT 改成只靠缩进与颜色。只把 border-left 归零是压不住
+// 伪元素的 —— 它是独立一层,会变成浮在色块里的浅蓝竖线,或与主题自己的线并排成两条。
 const bqBefore = (p) => p.evaluate(() => {
   const n = document.querySelector('.msg.assistant .md-prose blockquote');
   if (!n) return 'MISSING';
@@ -521,11 +526,20 @@ check('切到 Claude 主题', await pickTheme(page, 'claude'));
 await injectDemo(page);
 await sleep(300);
 const bqBeforeC = await bqBefore(page);
-check('Claude 主题:引用块只有主题自己的左边线一条(::before 已撤掉)',
+check('Claude 主题:引用块 ::before 装饰条已撤掉(不是留着一条线)',
   bqBeforeC.content === 'none' || parseFloat(bqBeforeC.width) === 0, JSON.stringify(bqBeforeC));
+// Claude 的引用块本轮从「左侧竖线 + 无底色」改成「暖色圆角底衬」——
+// 竖线属于「有框线的矩形」,改用底色后与整体语言一致,断言随之更新。
 const bqC = await bqLine('.msg.assistant .md-prose blockquote');
-check('Claude 主题:引用块是「左边线 + 无底色 + 直角」(markdown.css 的 10px 圆角与灰底已压掉)',
-  bqC.left === 2 && bqC.bg === 'rgba(0, 0, 0, 0)' && num(bqC.radius) === 0, JSON.stringify(bqC));
+check('Claude 主题:引用块是暖色圆角底衬、没有左侧竖线',
+  bqC.left === 0 && bqC.bg !== 'rgba(0, 0, 0, 0)' && num(bqC.radius) > 0, JSON.stringify(bqC));
+check('Claude 主题:输入框没有描边(改用投影)',
+  ((await borderWidths('.composer')).left || 0) === 0, JSON.stringify(await borderWidths('.composer')));
+check('Claude 主题:侧栏没有右边线',
+  ((await borderWidths('.sidebar')).right || 0) === 0, JSON.stringify(await borderWidths('.sidebar')));
+check('Claude 主题:表格没有外框',
+  ((await borderWidths('.msg.assistant .md-prose .table-wrap')).left || 0) === 0,
+  JSON.stringify(await borderWidths('.msg.assistant .md-prose .table-wrap')));
 const cClear = await composerClear();
 check('Claude 主题:消息区底部留白让开了变高的输入区', cClear.pad >= (await box('.composer-area')).h - 10,
   cClear.pad + ' vs 输入区高 ' + (await box('.composer-area')).h);

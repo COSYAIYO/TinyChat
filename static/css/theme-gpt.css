@@ -147,8 +147,12 @@ html[data-oc-theme="chatgpt"] .sidebar {
   background: var(--bg-sidebar);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+  /* 竖线有两个来源:style.css 的 .sidebar::after 伪元素,以及 redesign.css /
+     chrome.css 给 .sidebar 本身的 border-right。只关掉伪元素是不够的 ——
+     chrome.css 的 border-right 是在伪元素之后写下的,它会留下一条实实在在的线,
+     与「靠色阶差分区」的立论矛盾。两处都要清。 */
+  border-right: 0;
 }
-/* ChatGPT 靠侧栏与画布的色阶差分区,不画竖线 */
 html[data-oc-theme="chatgpt"] .sidebar::after { display: none; }
 
 /* 新建对话:ChatGPT 里是一行轻量入口,不是实心按钮 */
@@ -183,20 +187,25 @@ html[data-oc-theme="chatgpt"] .sidebar-footer {
   border-top-color: transparent;
 }
 
-/* ---------- 4. 输入区:实心胶囊 + 轻描边 ---------- */
+/* ---------- 4. 输入区:实心胶囊,靠投影浮起(不描边) ---------- */
+/* 不画描边:ChatGPT 的输入框是一块比画布更亮的**实心圆角块**,边界靠一层很浅的
+   柔和投影读出来。浅色下画布与输入框都是白纸,一条 1px 灰边就成了整屏唯一一根线,
+   比填充本身还显眼,整体读感从「块」塌成「线框」。
+   阴影用两层:贴着边缘的一圈定义轮廓,大半径的一层给悬浮感 —— 这是扁平设计里
+   替代描边的标准做法,不是「加了个阴影」这么简单。
+   聚焦同样不换描边色,只把镜头推近一档,保持一致。 */
 html[data-oc-theme="chatgpt"] .composer {
-  background: var(--bg-surface);
-  border: 1px solid var(--hairline-strong);
+  background: var(--bg-input);
+  border: 0;
   border-radius: 28px;
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 10px 30px rgba(0, 0, 0, 0.07);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
-/* 聚焦只把描边压深一点:ChatGPT 不做彩色光圈 */
 html[data-oc-theme="chatgpt"] .composer:focus-within {
-  border-color: color-mix(in srgb, var(--text) 34%, transparent);
-  box-shadow: var(--shadow-md);
-  background: var(--bg-surface);
+  border-color: transparent;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 14px 40px rgba(0, 0, 0, 0.1);
+  background: var(--bg-input);
 }
 html[data-oc-theme="chatgpt"] .composer-at { font-weight: 500; }
 
@@ -261,11 +270,21 @@ html[data-oc-theme="chatgpt"] .msg.assistant h2 { font-size: 1.429rem !important
 html[data-oc-theme="chatgpt"] .msg.assistant h3 { font-size: 1.286rem !important; }
 html[data-oc-theme="chatgpt"] .msg.assistant h4 { font-size: 1.143rem !important; }
 html[data-oc-theme="chatgpt"] .msg.assistant blockquote {
-  border-left: 2px solid var(--hairline-strong);
+  /* 不画左侧竖线:ChatGPT 的引用是一段**缩进的浅灰文字**,靠内侧留白与颜色区分,
+     不是一条装饰线。默认外观(markdown.css)与其它主题都习惯画 border-left,
+     这里连同 ::before 装饰条一起清掉 —— 只清 border-left 会留下伪元素那根蓝线。 */
+  border-left: 0;
   border-radius: 0;
   background: transparent;
   padding: 0 0 0 1em;
   color: var(--text-secondary);
+}
+html[data-oc-theme="chatgpt"] .msg.assistant blockquote::before,
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose blockquote::before {
+  content: none !important;
+  display: none !important;
+  width: 0 !important;
+  background: none !important;
 }
 html[data-oc-theme="chatgpt"] .msg.assistant a {
   color: var(--text);
@@ -274,9 +293,12 @@ html[data-oc-theme="chatgpt"] .msg.assistant a {
 }
 html[data-oc-theme="chatgpt"] .msg.assistant a:hover { border-bottom-color: var(--text); }
 /* 行内代码:不加边框,底色与代码块同源;字号由 chrome.css 统一钉在 --fs 上(14px),
-   正好是 ChatGPT 的比例(正文 16px 里的行内代码略小一号),不再单独覆盖 */
+   正好是 ChatGPT 的比例(正文 16px 里的行内代码略小一号),不再单独覆盖。
+   markdown.css 默认给行内代码描了一圈边(color-mix 到 accent),黑白主题下 accent 就是
+   近黑色,那圈边会被放大成一根细黑框;这里去掉边框,只留填充。 */
 html[data-oc-theme="chatgpt"] .msg.assistant code {
   background: var(--bg-code);
+  border: 0;
   border-radius: 6px;
   padding: 0.15em 0.4em;
 }
@@ -299,10 +321,12 @@ html[data-oc-theme="chatgpt"] .msg-actions .reply-meta,
 html[data-oc-theme="chatgpt"] .msg-actions .reply-time { color: var(--text-tertiary); }
 
 /* ---------- 7. 弹窗与按钮:圆角与单色主操作 ---------- */
+/* 弹窗不描边:面板浮在暗色蒙层之上,边界已经由蒙层对比与投影给出,再勾一圈
+   1px 线只是给矩形「画框」。去掉边框,把投影推深一档补回层次。 */
 html[data-oc-theme="chatgpt"] .modal {
   border-radius: 20px;
-  border: 1px solid var(--hairline);
-  box-shadow: var(--shadow-pop);
+  border: 0;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.16);
 }
 /* 按钮形状交给 chrome.css 的圆角总表(全站药丸),这里只管颜色:
    主操作在浅色下是黑底白字、深色下白底黑字,和发送键同一套语义 */
@@ -315,12 +339,13 @@ html[data-oc-theme="chatgpt"] .btn.primary:hover {
   color: var(--primary-text);
 }
 
-/* 用户菜单 / 下拉:深色下用悬浮面板色,和侧栏拉开层次 */
+/* 用户菜单 / 下拉:深色下用悬浮面板色,和侧栏拉开层次。同样不描边 —— 面板自身的
+   底色与投影已经把它和背景分开,加一圈线只会读成「带框的菜单」。 */
 html[data-oc-theme="chatgpt"] .user-menu {
   border-radius: 14px;
-  border: 1px solid var(--hairline);
+  border: 0;
   background: var(--bg-elevated);
-  box-shadow: var(--shadow-pop);
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.14);
 }
 html[data-oc-theme="chatgpt"] .user-menu-item { border-radius: 9px; }
 
@@ -362,8 +387,11 @@ html[data-oc-theme="chatgpt"] .msg + .msg { margin-top: 0; }
    本主题选择器多一层属性前缀,同权重时压得住。 */
 html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .code-block .code-header,
 html[data-oc-theme="chatgpt"] .code-block .code-header {
+  /* 顶栏与代码之间不画分割线:两者底色本来就差一档(tint 4% vs 纯 --bg-code),
+     靠色阶就能分开。原来的 border-bottom 在黑白主题里是一根清晰的横线,
+     属于「有框线的矩形」,与整体语言冲突。 */
   background: color-mix(in srgb, var(--text) 4%, var(--bg-code)) !important;
-  border-bottom: 1px solid var(--hairline) !important;
+  border-bottom: 0 !important;
   border-radius: 12px 12px 0 0 !important;
   min-height: 34px;
   padding: 5px 12px !important;
@@ -407,9 +435,20 @@ html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap table {
 }
 html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap table th {
   padding-top: 0 !important;
-  border-bottom: 1px solid var(--hairline-strong) !important;
+  /* 表头底线降到最浅一档:它是分隔表头与表体的**功能线**,不是装饰框。
+     原来用 hairline-strong(0.16 黑)是整张表最重的一笔,比内容还抢眼;
+     换成 hairline(0.08)后它退回成一条安静的节奏线。 */
+  border-bottom: 1px solid var(--hairline) !important;
   font-weight: 500 !important;
   color: var(--text-secondary) !important;
+}
+/* 表格外框:默认外观给的是一圈 hairline 卡片框,那是典型的「有框线的矩形」。
+   GPT 的表格是正文的一部分,不套框:去掉 .table-wrap 的边、底与投影,
+   行与行之间仍保留极浅的横线(表体行的底线来自 markdown.css 的 td)。 */
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap table th:first-child,
 html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap table td:first-child {
@@ -442,6 +481,18 @@ html[data-oc-theme="chatgpt"] .visual-actions .code-copy:hover {
   background: var(--bg-hover) !important;
   color: var(--text);
 }
+
+/* 表格排序箭头:表头可点击排序,markdown.css 会给每个表头画一个 0.3 透明度的
+   小箭头。它是**功能**不是装饰,但在简洁排版里,每一列表头都挂一个半透明小勾,
+   静止时看着像渲染残留。这里改成「静止隐藏、悬停/已排序才出现」——
+   可发现性由 cursor:pointer 与 title="点击排序" 保留,视觉噪声去掉。 */
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap th.sortable::after {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap th.sortable:hover::after { opacity: 0.45; }
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap th.sort-asc::after,
+html[data-oc-theme="chatgpt"] .msg.assistant .md-prose .table-wrap th.sort-desc::after { opacity: 1; }
 
 /* ---------- 12. 空态:只剩一个标题 ---------- */
 /* ChatGPT 的空态就是一个居中的标题,没有任务启动器;默认外观那九个预设
@@ -530,8 +581,8 @@ html[data-oc-theme="chatgpt"] .scroll-bottom-btn {
   bottom: 176px;              /* 让开变高的输入框 */
   border-radius: 50%;
   background: var(--bg-elevated);
-  border: 1px solid var(--hairline);
-  box-shadow: var(--shadow-md);
+  border: 0;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }

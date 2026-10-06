@@ -159,6 +159,9 @@ html[data-oc-theme="block"] .sidebar {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   padding: 10px 8px 8px;
+  /* 侧栏自身的 border-right(redesign.css / chrome.css 写入)也是「线」,
+     与本主题「一条线都不画」的立论直接冲突。除了 .sidebar::after,这里也要清零。 */
+  border-right: 0;
 }
 html[data-oc-theme="block"] .sidebar-brand { padding: 6px 8px 10px; }
 /* 左右外边距一律取 --sidebar-pad,卡片、搜索框、会话行共用同一条左边缘 */
@@ -352,6 +355,7 @@ html[data-oc-theme="block"] .msg.assistant a {
 html[data-oc-theme="block"] .msg.assistant a:hover { text-decoration: underline; }
 html[data-oc-theme="block"] .msg.assistant code {
   background: var(--bg-code);
+  border: 0;                 /* 去掉 markdown.css 给行内代码描的那圈边 */
   border-radius: 6px;
   padding: 0.15em 0.4em;
 }
@@ -378,6 +382,16 @@ html[data-oc-theme="block"] .msg.assistant .md-prose .table-wrap table th {
 html[data-oc-theme="block"] .msg.assistant .md-prose .table-wrap table tbody tr:nth-child(even) td {
   background: transparent !important;
 }
+/* 表头排序箭头:表头可点击排序,markdown.css 会给每个表头画一个 0.3 透明度的小勾。
+   本主题「一条线都不留」,静止时那一排小勾就是最显眼的杂点。改成悬停/已排序才出现,
+   排序功能不受影响(点击、title="点击排序" 都在)。 */
+html[data-oc-theme="block"] .msg.assistant .md-prose .table-wrap th.sortable::after {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+html[data-oc-theme="block"] .msg.assistant .md-prose .table-wrap th.sortable:hover::after { opacity: 0.45; }
+html[data-oc-theme="block"] .msg.assistant .md-prose .table-wrap th.sort-asc::after,
+html[data-oc-theme="block"] .msg.assistant .md-prose .table-wrap th.sort-desc::after { opacity: 1; }
 
 /* ---------- 8. 代码块:一整块圆角卡片,顶栏不再是深色药丸 ---------- */
 html[data-oc-theme="block"] .msg.assistant .md-prose .code-block .code-header,
