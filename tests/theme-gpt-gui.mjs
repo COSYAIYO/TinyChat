@@ -174,6 +174,18 @@ const box = (sel) => page.evaluate((s) => {
   const b = n.getBoundingClientRect();
   return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height), bottom: Math.round(b.bottom) };
 }, sel);
+// 元素四边各自的实际边框宽度。本轮打磨的核心是「拒绝一切有框线的矩形」,
+// 所以不能只看 border-radius / 颜色 —— 要逐边量出边框是否真的为 0。
+const borderWidths = (sel) => page.evaluate((s) => {
+  const n = document.querySelector(s);
+  if (!n) return 'MISSING';
+  const c = getComputedStyle(n);
+  const out = {};
+  for (const [k, v] of Object.entries({ top: 'borderTopWidth', right: 'borderRightWidth', bottom: 'borderBottomWidth', left: 'borderLeftWidth' })) {
+    out[k] = parseFloat(c[v]) || 0;
+  }
+  return out;
+}, sel);
 
 // 走真实入口切主题:用户菜单 → 主题市场 → 点卡片
 async function pickTheme(p, id) {
@@ -231,13 +243,65 @@ check('偶数行无斑马纹', (await css('.msg.assistant .md-prose .table-wrap 
 check('表格首列贴齐正文左缘', (await css('.msg.assistant .md-prose .table-wrap table td:first-child', 'padding-left')) === '0px');
 const tableFs = await css('.msg.assistant .md-prose .table-wrap table', 'font-size');
 check('表格字号跟随正文', near(tableFs, num(bodyFs)), tableFs);
-check('代码块顶栏不是深灰药丸', (await css('.msg.assistant .md-prose .code-block .code-header', 'background-color')) !== 'rgba(0, 0, 0, 0)'
-  && (await css('.msg.assistant .md-prose .code-block .code-header', 'border-bottom-width')) === '1px');
+check('代码块顶栏不是深灰药丸', (await css('.msg.assistant .md-prose .code-block .code-header', 'background-color')) !== 'rgba(0, 0, 0, 0)');
+// 顶栏与代码之间不画横线:两者底色差一档(tint 4%),靠色阶就能分开。
+// 之前断言的是「有一条 1px 底线」——那正是「有框线的矩形」,与本次打磨的方向相反。
+check('代码块顶栏没有底边线(靠色阶分区,不画线)',
+  (await css('.msg.assistant .md-prose .code-block .code-header', 'border-bottom-width')) === '0px',
+  await css('.msg.assistant .md-prose .code-block .code-header', 'border-bottom-width'));
 check('代码块左右内边距 16px', (await css('.msg.assistant .md-prose .code-block pre', 'padding-left')) === '16px',
   await css('.msg.assistant .md-prose .code-block pre', 'padding'));
 check('复制键是幽灵按钮(透明底)', (await css('.msg.assistant .md-prose .code-block .code-copy', 'background-color')) === 'rgba(0, 0, 0, 0)');
-check('引用只有左侧细线、无底色', (await css('.msg.assistant .md-prose blockquote', 'background-color')) === 'rgba(0, 0, 0, 0)'
-  && (await css('.msg.assistant .md-prose blockquote', 'border-left-width')) === '2px');
+// 引用块:GPT 是「缩进的浅灰文字」,既不画左侧竖线也不垫底色。
+// 之前断言的是「只有左侧细线」——本轮把线去掉,连同默认外观的 ::before 装饰条一起撤掉。
+check('引用块没有左侧竖线、也没有底色(只靠缩进与颜色)',
+  (await css('.msg.assistant .md-prose blockquote', 'border-left-width')) === '0px'
+  && (await css('.msg.assistant .md-prose blockquote', 'background-color')) === 'rgba(0, 0, 0, 0)',
+  'border-left=' + (await css('.msg.assistant .md-prose blockquote', 'border-left-width'))
+  + ' bg=' + (await css('.msg.assistant .md-prose blockquote', 'background-color')));
+check('引用块的 ::before 装饰竖条已撤掉(否则会在透明底上浮出一根线)',
+  await page.evaluate(() => {
+    const n = document.querySelector('.msg.assistant .md-prose blockquote');
+    if (!n) return 'MISSING';
+    const c = getComputedStyle(n, '::before');
+    return c.content === 'none' || parseFloat(c.width) === 0;
+  }) === true);
+
+// 「拒绝一切有框线的矩形」的正面断言:凡是被当作「块」用的容器都不能有边框。
+// 这些容器全部靠底色差 / 投影分层,边框一律为 0。
+console.log('== 3.5 无框线:靠色阶与投影分层,不画边框 ==');
+check('侧栏没有右边线(伪元素已关,自身 border-right 也已清零)',
+  ((await borderWidths('.sidebar')).right || 0) === 0, JSON.stringify(await borderWidths('.sidebar')));
+const gptComposerBw = await borderWidths('.composer');
+check('输入框没有描边(靠柔和投影浮起)', (gptComposerBw.left || 0) === 0 && (gptComposerBw.top || 0) === 0,
+  JSON.stringify(gptComposerBw));
+check('输入框有投影(无描边时靠它定义边界)', (await css('.composer', 'box-shadow')) !== 'none',
+  await css('.composer', 'box-shadow'));
+check('弹窗没有描边', ((await borderWidths('.modal')).left || 0) === 0, JSON.stringify(await borderWidths('.modal')));
+check('表格没有外框', ((await borderWidths('.msg.assistant .md-prose .table-wrap')).left || 0) === 0
+  && ((await borderWidths('.msg.assistant .md-prose .table-wrap')).top || 0) === 0,
+  JSON.stringify(await borderWidths('.msg.assistant .md-prose .table-wrap')));
+// 表头底线是表头/表体的**功能**分隔,不是装饰框,保留但降到最浅一档(hairline 0.08)
+check('表头底线降到最浅一档(功能线,不是装饰框)',
+  (await css('.msg.assistant .md-prose .table-wrap table th', 'border-bottom-width')) === '1px'
+  && (await css('.msg.assistant .md-prose .table-wrap table th', 'border-bottom-color')) === 'rgba(13, 13, 13, 0.08)',
+  await css('.msg.assistant .md-prose .table-wrap table th', 'border-bottom-color'));
+// 表头排序箭头是功能(表头可点击排序),但静止时不画 —— 每个表头挂一个半透明小勾像渲染残留
+check('表头排序箭头静止时不显示(悬停/已排序才出现)',
+  (await page.evaluate(() => {
+    const n = document.querySelector('.msg.assistant .md-prose .table-wrap th.sortable');
+    if (!n) return 'MISSING';
+    return getComputedStyle(n, '::after').opacity;
+  })) === '0');
+check('已排序的表头箭头仍可见(功能没被删掉)',
+  (await page.evaluate(() => {
+    const th = document.querySelector('.msg.assistant .md-prose .table-wrap th.sortable');
+    if (!th) return 'MISSING';
+    th.classList.add('sort-asc');
+    const v = getComputedStyle(th, '::after').opacity;
+    th.classList.remove('sort-asc');
+    return v;
+  })) === '1');
 
 // 操作条现在四套主题一致:常驻可见,靠颜色深浅表达状态,悬停/聚焦再提亮。
 // 曾经这里断言的是「静止 opacity: 0、悬停才浮现」,但同一排按钮在默认外观看得见、
