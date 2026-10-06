@@ -209,12 +209,28 @@ html[data-oc-theme="claude"] .msg.assistant h3 { font-size: 1.286rem !important;
 html[data-oc-theme="claude"] .msg.assistant h4 { font-size: 1.143rem !important; }
 
 /* 引用:Claude 是左侧一条细线 + 无底色 */
-html[data-oc-theme="claude"] .msg.assistant blockquote {
+/* 选择器要同时覆盖 `.md-prose blockquote`(markdown.css 的正文排版,带自己的
+   .msg.assistant .md-prose 前缀)与裸 blockquote —— 只写 `.msg.assistant blockquote`
+   特异性(0,2,1)低于 `.msg.assistant .md-prose blockquote`(0,3,1),border-radius 就压不住。 */
+html[data-oc-theme="claude"] .msg.assistant blockquote,
+html[data-oc-theme="claude"] .msg.assistant .md-prose blockquote {
   border-left: 2px solid var(--hairline-strong);
   border-radius: 0;
   background: transparent;
   padding: 0 0 0 1em;
   color: var(--text-secondary);
+  position: static;
+}
+/* 默认外观另有一根 ::before 装饰条(markdown.css,绝对定位在 left:7px)。
+   本主题已经用 border-left 画了左侧细线,再留这根就是**两条线并排**
+   (实测:主题的暖灰线在边缘、默认的浅蓝线在 7px 处,颜色还不一样)。
+   这里去掉伪元素,只保留 border-left 这一条。 */
+html[data-oc-theme="claude"] .msg.assistant .md-prose blockquote::before,
+html[data-oc-theme="claude"] .msg.assistant blockquote::before {
+  content: none !important;
+  display: none !important;
+  width: 0 !important;
+  background: none !important;
 }
 /* 链接用 Claude 的强调蓝 */
 html[data-oc-theme="claude"] .msg.assistant a {
@@ -307,7 +323,10 @@ html[data-oc-theme="claude"] .msg.assistant .md-prose .table-wrap table td {
   padding: 10px 14px !important;
 }
 html[data-oc-theme="claude"] .msg.assistant .md-prose .table-wrap table th {
-  padding-top: 0 !important;
+  /* 表头也要有上内边距:置 0 时表头那行文字会顶到表格上边缘,而表体每格有 10px,
+     两行的竖向节奏对不上(实测表头 35px 高、表体 46px 高,看着像表头被压扁了)。
+     表头仍比表体略紧,保持「表头是标签、表体是内容」的层次。 */
+  padding-top: 8px !important;
   border-bottom: 1px solid var(--hairline-strong) !important;
   font-weight: 600 !important;
   color: var(--text-secondary) !important;
@@ -363,8 +382,10 @@ html[data-oc-theme="claude"] .attach-btn { border-radius: 50%; color: var(--text
 html[data-oc-theme="claude"] .composer-hint { opacity: 0.62; }
 
 /* ---------- 10. 回到底部:让开变高的输入框 ---------- */
+/* 同样留够余量:贴边算出来的时候桌面只剩 6px、移动端只剩 2px,圆角加投影看着就
+   像叠在输入框上。这里各再让开 10px。 */
 html[data-oc-theme="claude"] .scroll-bottom-btn {
-  bottom: 172px;
+  bottom: 182px;
   border-radius: 50%;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
@@ -483,8 +504,11 @@ html[data-oc-theme="claude"][data-theme="dark"] .empty-logo .oc-icon {
 /* 窄屏约束:两行式输入框在手机上同样成立,只是留白幅度不同;内容栏要收窄内边距,
    否则 28px 的左右留白会把正文挤成窄柱。 */
 @media (max-width: 768px) {
-  html[data-oc-theme="claude"] .chat-area { padding-bottom: 164px; }
-  html[data-oc-theme="claude"] .scroll-bottom-btn { bottom: 158px; }
+  /* 两行式输入框在窄屏是 113px 高,158px 的预留不够(实测滚动到底时最后一条
+     仍被压住 189px 中的一部分)。这里按「输入框 + 区域上下内边距 + 回到底部按钮」
+     重新给足,并让按钮停在输入框上方而不是压进去。 */
+  html[data-oc-theme="claude"] .chat-area { padding-bottom: 196px; }
+  html[data-oc-theme="claude"] .scroll-bottom-btn { bottom: 178px; }
   html[data-oc-theme="claude"] .messages { padding: 22px 14px 18px; }
   html[data-oc-theme="claude"] .msg { padding: 16px 0; }
   html[data-oc-theme="claude"] .msg.user .msg-content { max-width: 90%; padding: 11px 15px; }
@@ -498,8 +522,8 @@ html[data-oc-theme="claude"][data-theme="dark"] .empty-logo .oc-icon {
 /* 超窄屏(<560px):再收一档;正文仍保持 16px —— Claude 的排版感主要来自这里,
    字号再小就不像了 */
 @media (max-width: 560px) {
-  html[data-oc-theme="claude"] .chat-area { padding-bottom: 158px; }
-  html[data-oc-theme="claude"] .scroll-bottom-btn { bottom: 152px; }
+  html[data-oc-theme="claude"] .chat-area { padding-bottom: 190px; }
+  html[data-oc-theme="claude"] .scroll-bottom-btn { bottom: 172px; }
   html[data-oc-theme="claude"] .messages { padding: 18px 11px 14px; }
   html[data-oc-theme="claude"] .msg.user .msg-content { max-width: 94%; }
   html[data-oc-theme="claude"] .msg.user .msg-actions { max-width: 94%; }

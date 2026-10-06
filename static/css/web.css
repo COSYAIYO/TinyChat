@@ -379,6 +379,15 @@
   color: var(--text-tertiary);
 }
 .web-fav { width: 17px; height: 17px; object-fit: contain; }
+/* favicon 取不到时由 JS 换成这个地球图标(收藏夹卡片与标签页共用)。
+   必须给它同样的尺寸:不然替换后容器塌成左上角一个小点,一排卡片上的图标位置参差。 */
+.web-fav-fallback {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 17px; height: 17px;
+}
+.web-fav-fallback svg { width: 17px; height: 17px; display: block; }
+.web-tab-ico .web-fav-fallback,
+.web-tab-ico .web-fav-fallback svg { width: 14px; height: 14px; }
 .web-bm-text { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .web-bm-name { font-size: 13px; line-height: 1.2; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .web-bm-host { font-size: 11.5px; line-height: 1.2; color: var(--text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

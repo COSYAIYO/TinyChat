@@ -3760,6 +3760,18 @@ a.btn {
   margin-bottom: 14px;
 }
 .pkg-form-grid .field { margin: 0; }
+/* 同一行的两个字段,标签文字长短常不一样(一个一行、另一个两行),默认对齐会让两个
+   输入框落在不同高度上 —— 实测「网页 AI 总结每日次数上限」与「子资源并发预取数」
+   就是错开的,看着像排版没对齐。让单元格等高、标签占住剩余空间,把控件顶到同一条基线。 */
+.pkg-form-grid > .field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.pkg-form-grid > .field > span:first-child { flex: 0 0 auto; }
+.pkg-form-grid > .field > input,
+.pkg-form-grid > .field > textarea,
+.pkg-form-grid > .field > select { margin-top: auto; }
 @media (max-width: 720px) { .pkg-form-grid { grid-template-columns: 1fr; } }
 
 /* 后台:一个套餐一张卡片 */

@@ -302,6 +302,13 @@ const bPadL = num(await css('.messages', 'padding-left'));
 check('窄屏消息内边距收窄到窄屏档(10px,不是桌面端 26px)', bPadL === 10, String(bPadL));
 check('窄屏助手卡片圆角降到 18px', (await css('.msg.assistant .msg-content', 'border-radius')) === '18px',
   await css('.msg.assistant .msg-content', 'border-radius'));
+// 窄屏输入框更高,按钮若不跟着上移就会糊在圆角上
+const bBtnGapM = await page.evaluate(() => {
+  const b = document.querySelector('#scroll-bottom-btn'), c = document.querySelector('.composer');
+  if (!b || !c) return null;
+  return Math.round(c.getBoundingClientRect().top - b.getBoundingClientRect().bottom);
+});
+check('窄屏回到底部按钮仍在输入框上方且有余量', bBtnGapM !== null && bBtnGapM >= 6, 'btnGap=' + bBtnGapM);
 check('窄屏下仍无分割线(表格行线)', ((await borderWidths('.msg.assistant .md-prose .table-wrap table td')).top || 0) === 0);
 await page.setViewportSize({ width: 1280, height: 900 });
 await sleep(500);
@@ -371,7 +378,7 @@ check('输入框有描边(Claude 这个位置是描边不是投影)', ((await bo
   JSON.stringify(await borderWidths('.composer')));
 check('消息区底部留白已让开变高的输入框', (await css('.chat-area', 'padding-bottom')) === '186px',
   await css('.chat-area', 'padding-bottom'));
-check('回到底部按钮同步上移', (await css('.scroll-bottom-btn', 'bottom')) === '172px',
+check('回到底部按钮在输入框上方(留有余量,不是贴着)', (await css('.scroll-bottom-btn', 'bottom')) === '182px',
   await css('.scroll-bottom-btn', 'bottom'));
 const cTaFs = await css('.composer textarea', 'font-size');
 check('输入字号与正文一致', near(cTaFs, num(claudeBodyFs)), cTaFs);
@@ -402,9 +409,10 @@ await page.setViewportSize({ width: 390, height: 844 });
 await sleep(600);
 check('窄屏仍是两行式', (await box('.composer-left')).y >= (await box('.composer-flow')).bottom - 2,
   (await box('.composer-left')).y + ' vs ' + (await box('.composer-flow')).bottom);
-// 同方块主题:390px 命中 560px 档(158/152),不是 768px 档(164/158)
-check('窄屏底部留白 158px(560px 档)', (await css('.chat-area', 'padding-bottom')) === '158px', await css('.chat-area', 'padding-bottom'));
-check('窄屏回到底部按钮 152px(560px 档)', (await css('.scroll-bottom-btn', 'bottom')) === '152px');
+// 同方块主题:390px 命中 560px 档(190/172),不是 768px 档(196/178)
+check('窄屏底部留白 190px(560px 档)', (await css('.chat-area', 'padding-bottom')) === '190px', await css('.chat-area', 'padding-bottom'));
+check('窄屏回到底部按钮 172px(560px 档)', (await css('.scroll-bottom-btn', 'bottom')) === '172px',
+  await css('.scroll-bottom-btn', 'bottom'));
 // 留白必须真的让开了输入框:最后一条消息的底边不能被输入框盖住
 const cMsg = await box('.messages');
 const cComp = await box('.composer-area');
@@ -413,11 +421,114 @@ check('底部留白大于输入区高度(最后一条消息不被压住)',
   (await css('.chat-area', 'padding-bottom')) + ' vs 输入区高 ' + cComp.h);
 check('窄屏输入框不溢出', (await box('.composer')).w <= 390, JSON.stringify(await box('.composer')));
 check('窄屏用户气泡不溢出', (await box('.msg.user .msg-content')).w <= 390);
+const cBtnGapM = await page.evaluate(() => {
+  const b = document.querySelector('#scroll-bottom-btn'), c = document.querySelector('.composer');
+  if (!b || !c) return null;
+  return Math.round(c.getBoundingClientRect().top - b.getBoundingClientRect().bottom);
+});
+check('窄屏回到底部按钮仍在输入框上方且有余量(不是贴着圆角)', cBtnGapM !== null && cBtnGapM >= 6, 'btnGap=' + cBtnGapM);
 await page.setViewportSize({ width: 1280, height: 900 });
 await sleep(500);
 
+/* ================= 细节回归:这几条都是实测踩过的坑 ================= */
+// 每一条都对应一个真实发生过的缺陷,断言里带上「量出来的数」,不是照着 CSS 抄的期望值。
+// 上一节停在 Claude 主题,这里必须显式切回方块,否则下面的「方块主题」断言其实在量 Claude。
+console.log('== 11. 方块主题:细节回归(踩过的坑) ==');
+check('切回方块主题', await pickTheme(page, 'block'));
+check('data-oc-theme 回到 block', (await page.evaluate(() => document.documentElement.getAttribute('data-oc-theme'))) === 'block');
+await injectDemo(page);
+await sleep(300);
+
+// --- 11.1 引用块里那根 ::before 装饰竖条 ---
+// 默认外观的引用块靠 markdown.css 的 ::before 画一根 3px 竖条。两个新主题都不用它:
+// 方块主题把引用做成内嵌色块,Claude 用 border-left。只把 border-left 归零是压不住伪元素的
+// ——它是独立一层,会变成浮在色块里的浅蓝竖线(方块主题),或和主题自己的线并排成两条(Claude)。
+const bqBefore = (p) => p.evaluate(() => {
+  const n = document.querySelector('.msg.assistant .md-prose blockquote');
+  if (!n) return 'MISSING';
+  const c = getComputedStyle(n, '::before');
+  return { content: c.content, width: c.width, display: c.display, bg: c.backgroundColor };
+});
+const bqLine = (sel) => page.evaluate((s) => {
+  const n = document.querySelector(s);
+  if (!n) return 'MISSING';
+  const c = getComputedStyle(n);
+  return { left: parseFloat(c.borderLeftWidth) || 0, bg: c.backgroundColor, radius: c.borderRadius };
+}, sel);
+
+check('方块主题:引用块 ::before 装饰条已撤掉(不是留着一条浅蓝竖线)',
+  (await bqBefore(page)).content === 'none' || parseFloat((await bqBefore(page)).width) === 0,
+  JSON.stringify(await bqBefore(page)));
+const bqBlock = await bqLine('.msg.assistant .md-prose blockquote');
+check('方块主题:引用块是圆角色块、没有左边线(不会出现两条线并排)',
+  bqBlock.left === 0 && bqBlock.bg !== 'rgba(0, 0, 0, 0)' && num(bqBlock.radius) > 0,
+  JSON.stringify(bqBlock));
+
+// --- 11.2 消息区底部留白 / 回到底部按钮 ---
+// .composer-area 是 position:absolute;bottom:0,靠 .chat-area 的 padding-bottom 让它「悬浮在
+// 留白里」。这里曾被写成 padding 简写(把 padding-bottom 一起归零),最后一条消息直接被输入框压住。
+// 「按钮压住输入框」要拿 **.composer**(真正的输入框圆角块)比,不能拿 .composer-area ——
+// 后者是整个底部区域的容器,padding-top 有 24px,拿它比永远算出负数。
+const composerClear = async () => {
+  const ca = await box('.chat-area');
+  const cp = await box('.composer-area');
+  const com = await box('.composer');
+  const btn = await box('.scroll-bottom-btn');
+  return {
+    pad: num(await css('.chat-area', 'padding-bottom')),
+    // 留白至少要让开输入区高度,否则最后一条消息压在输入框下面
+    slack: Math.round(ca.bottom - cp.y),
+    btnGap: btn && com ? Math.round(com.y - btn.bottom) : null,
+  };
+};
+const bClear = await composerClear();
+check('方块主题:消息区底部留白不为 0(padding 简写踩过的坑)', bClear.pad > 100, String(bClear.pad));
+check('方块主题:留白让开了输入区(最后一条消息不被压住)', bClear.slack >= 0,
+  'slack=' + bClear.slack + ' pad=' + bClear.pad);
+check('方块主题:回到底部按钮停在输入框上方且有余量(不是贴着圆角)', bClear.btnGap !== null && bClear.btnGap >= 6,
+  'btnGap=' + bClear.btnGap);
+
+// --- 11.3 blockquote 之外的「不画线」承诺在窄屏也成立 ---
+// --- 11.4 后台输入框在方块主题下不能白底白字 ---
+// 方块主题把 .field input 的背景设成卡片白、边框设成透明。后台的输入框原本靠一条浅描边
+// 跟白卡片区分,边框一透明 + 背景同白,整个字段就「消失」了 —— 只剩标签浮在上面。
+const beforeStyle = await page.evaluate(() => {
+  const i = document.querySelector('.admin-card input:not([type=checkbox]):not([type=radio]), .field input:not([type=checkbox]):not([type=radio])');
+  if (!i) return null;
+  const c = getComputedStyle(i);
+  const card = i.closest('.admin-card, .field, .card');
+  return {
+    bg: c.backgroundColor, border: c.borderTopColor, bw: parseFloat(c.borderTopWidth) || 0,
+    cardBg: card ? getComputedStyle(card).backgroundColor : null,
+  };
+});
+if (beforeStyle && beforeStyle.cardBg) {
+  check('方块主题:表单输入框与所在卡片有明显区分(不会白底白字看不见)',
+    beforeStyle.bg !== beforeStyle.cardBg || beforeStyle.bw > 0,
+    JSON.stringify(beforeStyle));
+}
+
+console.log('== 12. Claude 主题:细节回归 ==');
+check('切到 Claude 主题', await pickTheme(page, 'claude'));
+await injectDemo(page);
+await sleep(300);
+const bqBeforeC = await bqBefore(page);
+check('Claude 主题:引用块只有主题自己的左边线一条(::before 已撤掉)',
+  bqBeforeC.content === 'none' || parseFloat(bqBeforeC.width) === 0, JSON.stringify(bqBeforeC));
+const bqC = await bqLine('.msg.assistant .md-prose blockquote');
+check('Claude 主题:引用块是「左边线 + 无底色 + 直角」(markdown.css 的 10px 圆角与灰底已压掉)',
+  bqC.left === 2 && bqC.bg === 'rgba(0, 0, 0, 0)' && num(bqC.radius) === 0, JSON.stringify(bqC));
+const cClear = await composerClear();
+check('Claude 主题:消息区底部留白让开了变高的输入区', cClear.pad >= (await box('.composer-area')).h - 10,
+  cClear.pad + ' vs 输入区高 ' + (await box('.composer-area')).h);
+check('Claude 主题:回到底部按钮停在输入框上方且有余量', cClear.btnGap !== null && cClear.btnGap >= 6,
+  'btnGap=' + cClear.btnGap);
+// 表头 padding-top 置 0 时,表头文字顶到表格上边缘,与表体每格 10px 的竖向节奏对不上
+const thPad = num(await css('.msg.assistant .md-prose .table-wrap table th', 'padding-top'));
+check('Claude 主题:表头有上边距(与表体的竖向节奏对齐)', thPad > 0, String(thPad));
+
 /* ================= 收尾 ================= */
-console.log('== 11. 切回默认主题:一切原样还原 ==');
+console.log('== 13. 切回默认主题:一切原样还原 ==');
 check('能切回默认主题', await pickTheme(page, 'default'));
 check('data-oc-theme 回到 default', (await page.evaluate(() => document.documentElement.getAttribute('data-oc-theme'))) === 'default');
 check('主题样式表已移除', !(await page.evaluate(() => !!document.getElementById('oc-theme-pack-css'))));
@@ -436,6 +547,11 @@ check('助手卡片投影已撤掉', (await css('.msg.assistant .msg-content', '
 check('消息区留白回到 132px', (await css('.chat-area', 'padding-bottom')) === '132px',
   await css('.chat-area', 'padding-bottom'));
 check('操作条恢复常驻', (await css('.msg.assistant .msg-actions', 'opacity')) === '1');
+// 反向保护:两个主题把引用块的 ::before 装饰条撤掉了,默认外观必须还在 ——
+// 若哪天有人把这条规则写到了公共选择器上,默认外观会静默丢掉自己的设计。
+const bqDef = await bqBefore(page);
+check('默认外观的引用块 ::before 装饰条仍在(主题的覆盖没有外泄)',
+  bqDef.content !== 'none' && parseFloat(bqDef.width) > 0, JSON.stringify(bqDef));
 
 check('无页面 JS 报错', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '));
 

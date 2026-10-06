@@ -127,11 +127,50 @@
     const eng = ENGINES.find((e) => e.id === S.engine) || ENGINES[0];
     return eng.q.replace('%s', encodeURIComponent(s));
   }
-  // 站点图标:直接用目标站自己的 favicon(经代理取,不算直连)
-  function faviconHtml(url, size) {
+  // 站点图标:直接用目标站自己的 favicon(经代理取,不算直连)。
+  // 取不到时(没网、目标站没有 favicon.ico、被 403)必须退成地球图标:否则浏览器会
+  // 留一个「裂图」或一个空方块,收藏夹一排卡片上全是空格子,看着像没做完。
+  // 用 error 事件而非 onerror 属性,避免内联事件被 CSP 拦掉。
+  function faviconHtml(url) {
     let host = '';
     try { host = new URL(url).hostname; } catch (e) { return SVG_GLOBE_SM; }
     return '<img class="web-fav" loading="lazy" alt="" src="/api/web/res?u=' + b64url('https://' + host + '/favicon.ico') + '&t=' + encodeURIComponent(S.ticket) + '">';
+  }
+  // 给容器里所有 .web-fav 挂上「加载失败就换成地球」的处理(元素是 innerHTML 造的,
+  // 用事件委托最省事:失败事件不冒泡,得在捕获阶段接)。
+  // 除了 error,还要处理「一直不回来」:目标站没有 favicon.ico 时,代理那条请求可能
+  // 长时间挂着不结束也不报错,卡片上就会一直留一个空格子(实测有 4 个站点是这样)。
+  // 所以再加一条超时:到点还没 load 出来就按失败处理。
+  const FAV_TIMEOUT = 6000;
+  function swapFaviconToGlobe(img) {
+    if (!img || !img.parentNode || img.dataset.favDone === '1') return;
+    img.dataset.favDone = '1';
+    const span = document.createElement('span');
+    span.className = 'web-fav-fallback';
+    span.innerHTML = SVG_GLOBE_SM;
+    img.parentNode.replaceChild(span, img);
+  }
+  function bindFaviconFallback(root) {
+    if (!root) return;
+    if (!root.__ocFavBound) {
+      root.__ocFavBound = true;
+      root.addEventListener('error', function (e) {
+        const img = e.target;
+        if (img && img.classList && img.classList.contains('web-fav')) swapFaviconToGlobe(img);
+      }, true);
+      root.addEventListener('load', function (e) {
+        const img = e.target;
+        if (img && img.dataset) img.dataset.favDone = '1';
+      }, true);
+    }
+    // 每次重渲染后给新出现的图重新排超时(已完成的会被 favDone 挡掉)
+    root.querySelectorAll('img.web-fav').forEach(function (img) {
+      if (img.dataset.favTimer === '1') return;
+      img.dataset.favTimer = '1';
+      setTimeout(function () {
+        if (img.isConnected && img.dataset.favDone !== '1' && !img.complete) swapFaviconToGlobe(img);
+      }, FAV_TIMEOUT);
+    });
   }
 
   // ============ 内网闸门(客户端预检,服务端 tc_web_guard 才是权威) ============
@@ -410,6 +449,7 @@
         + '<button class="web-tab-x" data-close="' + i + '" aria-label="关闭标签页">' + icon('close', 11) + '</button>'
         + '</div>';
     }).join('');
+    bindFaviconFallback(S.els.tabs);
   }
 
   function updateChrome(force) {
@@ -545,6 +585,7 @@
     });
     el.querySelector('.web-bm-add-btn').addEventListener('click', () => addBookmarkPrompt(t));
     el.querySelector('.web-bm-grid').addEventListener('click', onBookmarkClick);
+    bindFaviconFallback(el.querySelector('.web-bm-grid'));
     updateChrome(true);
   }
 
