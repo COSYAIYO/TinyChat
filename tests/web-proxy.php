@@ -267,5 +267,26 @@ $eq(tc_web_ai_consume($db4, $u3), true, '上限 0 表示不限');
 $other = 'u_limit_b';
 $eq(tc_web_ai_used_today($other), 0, '不同用户各自计数');
 
+// ---------- 13) 子资源短缓存 ----------
+foreach (array('image/png', 'image/svg+xml; charset=utf-8', 'font/woff2', 'application/javascript', 'text/javascript', 'video/mp4', 'application/wasm') as $c) {
+    if (tc_web_cacheable_ctype($c)) $ok('可缓存类型放行 ' . $c); else $bad('可缓存类型被拒: ' . $c);
+}
+// HTML/CSS 带票据改写、其它文本/JSON 可能带个性化数据,都不能进缓存
+foreach (array('text/html', 'text/css', 'application/json', 'text/plain', 'application/octet-stream', '') as $c) {
+    if (!tc_web_cacheable_ctype($c)) $ok('不可缓存类型被拒 ' . ($c === '' ? '(空)' : $c)); else $bad('不可缓存类型被放行: ' . $c);
+}
+$cdUrl = 'https://example.com/cache-a.png';
+if (tc_web_cache_get($cdUrl) === null) $ok('未写入前缓存不命中'); else $bad('未写入就命中缓存');
+tc_web_cache_put($cdUrl, 'image/png', 200, 'PNGDATA');
+$chit = tc_web_cache_get($cdUrl);
+if (is_array($chit) && $chit['ctype'] === 'image/png' && $chit['status'] === 200 && $chit['body'] === 'PNGDATA') $ok('缓存写入后可读回类型与字节'); else $bad('缓存读回不正确');
+if (tc_web_cache_get('https://example.com/cache-b.png') === null) $ok('不同地址互不命中'); else $bad('不同地址串了缓存');
+tc_web_cache_put('https://example.com/cache-big.bin', 'image/png', 200, str_repeat('x', TC_WEB_CACHE_MAX_BYTES + 1));
+if (tc_web_cache_get('https://example.com/cache-big.bin') === null) $ok('超过单条上限的内容不落盘'); else $bad('超大内容被缓存');
+// 两份响应用同一 URL 时以新写入的为准(站点资源换了要能覆盖)
+tc_web_cache_put($cdUrl, 'image/jpeg', 200, 'NEWBYTES');
+$chit2 = tc_web_cache_get($cdUrl);
+if (is_array($chit2) && $chit2['ctype'] === 'image/jpeg' && $chit2['body'] === 'NEWBYTES') $ok('同 URL 重复写入覆盖旧缓存'); else $bad('旧缓存未被覆盖');
+
 echo $fail === 0 ? "\n全部通过\n" : "\n失败 {$fail} 项\n";
 exit($fail === 0 ? 0 : 1);

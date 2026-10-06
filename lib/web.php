@@ -43,10 +43,16 @@ function tc_web_ua() {
     return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 }
 
-// ============ 总开关 ============
+// ============ 总开关 + 访问级别 ============
 
-function tc_web_feature_guard($db) {
-    if (empty($db['settings']['browserEnabled'])) tc_fail(403, '本站未开放在线浏览器功能');
+// 功能可用性判定统一走 tc_feature_allowed(见 lib/features.php):
+// 总开关 × 访问级别(全站 / 仅管理员 / 仅名单)同时成立才放行。
+// 调用点都在 tc_require_auth 之后,把已取到的 $user 传进来即可避免重复验令牌;
+// 少数不传的调用点自己取一次登录态。
+function tc_web_feature_guard($db, $user = null) {
+    if ($user === null) $user = tc_require_auth($db);
+    if (!tc_feature_allowed($db, $user, 'web')) tc_fail(403, '本站未开放在线浏览器功能，或你的账号没有使用权限');
+    return $user;
 }
 
 // 收藏夹内置站点。用户自己的收藏另存 data/web/{uid}/bookmarks.json;
@@ -379,6 +385,9 @@ function tc_web_guard($url) {
     foreach (tc_web_self_hosts() as $self) {
         if ($host === $self || strtolower((string) $g['ip']) === $self) return false;
     }
+    // 带上全部解析结果:tc_web_cn_target_ok 要按「有没有一个 IP 落在中国大陆网段」判定,
+    // 只给首个 IP 会把国内 CDN + 海外节点混合解析的站点误判为境外。
+    $ips = isset($g['ips']) && is_array($g['ips']) && $g['ips'] ? array_values($g['ips']) : array($g['ip']);
     $testBase = rtrim((string) (getenv('TC_WEB_FETCH_BASE') ?: ''), '/');
     if ($testBase !== '') {
         $t = @parse_url($testBase);
@@ -386,14 +395,88 @@ function tc_web_guard($url) {
             $p = @parse_url($url);
             $path = isset($p['path']) ? (string) $p['path'] : '/';
             $port = isset($t['port']) ? (int) $t['port'] : (strtolower((string) $t['scheme']) === 'https' ? 443 : 80);
-            return array('url' => $testBase . $path . (isset($p['query']) && $p['query'] !== '' ? '?' . $p['query'] : ''), 'resolve' => $t['host'] . ':' . $port . ':127.0.0.1');
+            // ips 仍是原始目标(改写前)的解析结果:测试钩子只换真实连接目标,
+            // 「是否中国 IP 站点」要按用户输入的那个域名判,否则测试里恒为境外。
+            return array('url' => $testBase . $path . (isset($p['query']) && $p['query'] !== '' ? '?' . $p['query'] : ''), 'resolve' => $t['host'] . ':' . $port . ':127.0.0.1', 'ips' => $ips);
         }
     }
-    return array('url' => $url, 'resolve' => $g['host'] . ':' . $g['port'] . ':' . $g['ip']);
+    return array('url' => $url, 'resolve' => $g['host'] . ':' . $g['port'] . ':' . $g['ip'], 'ips' => $ips);
 }
 
-// 把 href/src 里的地址变成走代理的地址;不该代理的(hash/javascript:/data:/已是代理地址)原样返回。
-// 约定:返回值一律是**未做 HTML 转义**的原始值 —— 调用方负责在写回属性时统一转义一次。
+// 把已经写进输出缓冲的内容推给浏览器并断开与 PHP 的关系。
+// 没有输出缓冲(或已被上层关掉)时什么也不做 —— 此时 echo 已经直接发出去了。
+function tc_web_flush_to_client() {
+    while (ob_get_level() > 0) {
+        if (!@ob_end_flush()) break;
+    }
+    @flush();
+}
+
+// 单页面子资源并发上限(后台可调,默认 6)。测试钩子里为 0 表示不预热。
+function tc_web_concurrency_of() {
+    if (getenv('TC_WEB_PREFETCH') === '0') return 0;
+    $v = (int) (isset($GLOBALS['_tc_web_concurrency']) ? $GLOBALS['_tc_web_concurrency'] : 6);
+    return max(0, min(16, $v));
+}
+
+// 「仅限中国 IP 网站」的目标判定:$guard 来自 tc_web_guard,已带解析结果。// 域名解析出的多个 IP 里只要有一个在国内就放行(国内大站常见国内 CDN + 海外节点混合解析),
+// 直接填 IP 的情况按该 IP 判定。地址段数据缺失时一律拒绝 —— 开关是「默认开启」的安全边界,
+// 数据读不到时放行等于悄悄把边界撤掉。
+function tc_web_cn_target_ok($guard) {
+    if (!is_array($guard)) return false;
+    if (!tc_web_cn_data_ready()) return false;
+    $ips = isset($guard['ips']) && is_array($guard['ips']) ? $guard['ips'] : array();
+    if (!$ips && !empty($guard['ip'])) $ips = array($guard['ip']);
+    return tc_cn_ips_any($ips);
+}
+
+// 境内 IP 段数据就绪了吗(文件在、能加载)。单独抽出来是为了让「数据缺失」与
+// 「站点不在境内」这两种拒绝走不同的报错文案,否则线上出问题时分不清是哪一种。
+function tc_web_cn_data_ready() {
+    if (!function_exists('tc_cn_ips_any')) {
+        $f = __DIR__ . '/cnip.php';
+        if (!is_file($f)) return false;
+        require_once $f;
+    }
+    return function_exists('tc_cn_ip_available') && tc_cn_ip_available();
+}
+
+// 测试钩子生效时(TC_WEB_FETCH_BASE 指向本机 mock)目标解析结果必然不在国内网段,
+// 因此 e2e 里要能关掉这道判定,否则所有浏览器用例都会被它挡死。
+function tc_web_cn_only_on($db) {
+    $s = isset($db['settings']) && is_array($db['settings']) ? $db['settings'] : array();
+    $on = !array_key_exists('webCnOnly', $s) || !empty($s['webCnOnly']);
+    if ($on && getenv('TC_WEB_CN_ONLY') === '0') return false;
+    return $on;
+}
+
+// 读不到库时的兜底:与设置默认值(webCnOnly = true)保持一致。
+// 注意这里只能是「默认值」,不能直接返回 true —— 调用方必须用读库的结果覆盖它,
+// 否则用户关掉 webCnOnly 也仍然被挡。
+function tc_web_cn_only_default() {
+    return getenv('TC_WEB_CN_ONLY') !== '0';
+}
+
+// 按票据里的 uid 复核「这个用户还能不能用在线浏览器」。票据是签发给某个用户的,
+// 但它能被复制、会进 Referer 与日志,所以每个入口拿到 uid 后都必须再问一次权限,
+// 不能只验签就算过 —— 少了这一步,管理员在后台关掉功能后,旧票据仍可继续出网抓取。
+function tc_web_ticket_user_allowed($uid) {
+    $allowed = false;
+    try {
+        tc_with_db(false, function ($db) use ($uid, &$allowed) {
+            foreach ($db['users'] as $u) {
+                if ((string) $u['id'] !== $uid) continue;
+                if (tc_feature_allowed($db, $u, 'web')) $allowed = true;
+                break;
+            }
+        });
+    } catch (Throwable $e) {
+        $allowed = false;
+    }
+    return $allowed;
+}
+
+// 把 href/src 里的地址变成走代理的地址;不该代理的(hash/javascript:/data:/已是代理地址)原样返回。// 约定:返回值一律是**未做 HTML 转义**的原始值 —— 调用方负责在写回属性时统一转义一次。
 // 这条约定很重要:导航类替换跑在通用替换之前,通用替换会再看到 `href="/api/web/page?u=..&amp;t=.."`,
 // 若这里把已转义文本原样回吐、调用方又转义一遍,就会得到 `&amp;amp;`(t 参数失效)。
 function tc_web_proxify($u, $base, $ticket, $kind = 'res') {
@@ -469,9 +552,20 @@ function tc_web_fetch($url, $userId, $opts = array()) {
     $referer = (string) (isset($opts['referer']) ? $opts['referer'] : '');
     $cur = (string) $url;
     $from = $referer;
+    // 「仅限访问中国 IP 网站」:默认开启(见设置 webCnOnly)。判定放在闸门之后、出网之前,
+    // 每一跳都判 —— 只判首跳会被「国内站 302 到境外」绕过。
+    $cnOnly = !isset($opts['cnOnly']) || !empty($opts['cnOnly']);
     for ($hop = 0; $hop <= TC_WEB_MAX_HOPS; $hop++) {
         $guard = tc_web_guard($cur);
         if (!$guard) return array('ok' => false, 'error' => '该地址不允许访问(仅支持公网 http/https 地址)', 'code' => 400);
+        if ($cnOnly && !tc_web_cn_target_ok($guard)) {
+            // 区分「这个站不在境内」和「境内网段数据根本没加载上」:后者会让所有站点
+            // 一起被拒(开关默认开着),报错说成「该站点不在允许范围内」就没法排查了。
+            $why = tc_web_cn_data_ready()
+                ? '本站已开启「仅限访问中国 IP 网站」,该站点不在允许范围内'
+                : '本站开启了「仅限访问中国 IP 网站」,但服务器缺少境内 IP 段数据(lib/cn-ip.bin),无法判定该站点';
+            return array('ok' => false, 'error' => $why, 'code' => 403);
+        }
         if (!function_exists('curl_init')) return array('ok' => false, 'error' => '服务器未启用 cURL,无法访问外部网站', 'code' => 500);
         $target = $guard['url'];
         $ch = curl_init($target);
@@ -688,9 +782,222 @@ function tc_web_referer_of($ref) {
     return preg_match('#^https?://#i', (string) $u) ? $u : '';
 }
 
+// ============ 子资源短缓存 ============
+// 一个页面动辄几十上百个子资源,浏览器每次翻页都重新要一遍;站点自己的 favicon/图片/CSS
+// 还会被反复取用。这里把「与用户无关」的响应在本地留一小会儿,命中就不再出网。
+//
+// 缓存里存的永远是**上游原始字节**,不是改写后的成品:HTML/CSS 的地址要按当次票据改写,
+// 存改写结果会把上一个用户的票据扩散出去。命中后照样走一遍改写,只是省掉了出网那一段。
+// 只有请求不带任何用户 cookie(URL 参数 c 与本地 jar 都为空)时才允许读写 —— 带 cookie 的
+// 响应可能是个性化的,拿来复用就是串号。
+define('TC_WEB_CACHE_TTL', 600);                 // 秒:既是本地缓存寿命,也是给浏览器的 max-age
+define('TC_WEB_CACHE_MAX_BYTES', 2 * 1024 * 1024);
+
+function tc_web_cache_dir() {
+    $dir = tc_data_dir() . '/webcache';
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    return $dir;
+}
+
+function tc_web_cache_key($url) {
+    return hash('sha256', (string) $url);
+}
+
+// 命中返回 array(ctype, status, body, raw);未命中返回 null。
+// raw=true 表示 body 是 HTML/CSS 原始字节,调用方仍需改写地址后才能输出。
+function tc_web_cache_get($url) {
+    if (TC_WEB_CACHE_TTL <= 0) return null;
+    $file = tc_web_cache_dir() . '/' . tc_web_cache_key($url);
+    if (!is_file($file)) return null;
+    if ((int) @filemtime($file) < time() - TC_WEB_CACHE_TTL) { @unlink($file); return null; }
+    $raw = @file_get_contents($file);
+    if (!is_string($raw)) return null;
+    $nl = strpos($raw, "\n");
+    if ($nl === false) return null;
+    $meta = json_decode(substr($raw, 0, $nl), true);
+    if (!is_array($meta) || empty($meta['ct'])) { @unlink($file); return null; }
+    return array(
+        'ctype' => (string) $meta['ct'],
+        'status' => (int) (isset($meta['st']) ? $meta['st'] : 200),
+        'raw' => !empty($meta['rw']),
+        'body' => substr($raw, $nl + 1),
+    );
+}
+
+function tc_web_cache_put($url, $ctype, $status, $body, $needsRewrite = false) {
+    if (TC_WEB_CACHE_TTL <= 0) return;
+    if (!is_string($body) || $body === '' || strlen($body) > TC_WEB_CACHE_MAX_BYTES) return;
+    $dir = tc_web_cache_dir();
+    if (!is_dir($dir)) return;
+    $key = tc_web_cache_key($url);
+    $tmp = $dir . '/.' . $key . '.' . bin2hex(random_bytes(4)) . '.tmp';
+    $head = tc_json_encode(array('ct' => (string) $ctype, 'st' => (int) $status, 'rw' => $needsRewrite ? 1 : 0));
+    if (@file_put_contents($tmp, $head . "\n" . $body, LOCK_EX) === false) { @unlink($tmp); return; }
+    if (!@rename($tmp, $dir . '/' . $key)) { @unlink($tmp); return; }
+    // 低频清理:每次写都扫目录不值当,抽签决定
+    if (random_int(1, 50) !== 1) return;
+    $cut = time() - TC_WEB_CACHE_TTL;
+    foreach ((array) @scandir($dir) as $name) {
+        if ($name === '.' || $name === '..') continue;
+        $full = $dir . '/' . $name;
+        if ((int) @filemtime($full) < $cut) @unlink($full);
+    }
+}
+
+// 哪些类型可以「原样透传」进缓存。HTML 与 CSS 要改写地址,走的是另一条分支
+// (缓存里存原始字节,命中后照样改写),因此不在这里返回 true;
+// 其它 text/* 与 json 可能带用户数据,一律不进缓存。
+function tc_web_cacheable_ctype($ctype) {
+    $c = strtolower(trim((string) preg_replace('/;.*$/', '', (string) $ctype)));
+    if ($c === '') return false;
+    if (strpos($c, 'image/') === 0 || strpos($c, 'font/') === 0) return true;
+    if (strpos($c, 'audio/') === 0 || strpos($c, 'video/') === 0) return true;
+    if ($c === 'application/javascript' || $c === 'text/javascript') return true;
+    if ($c === 'application/x-javascript' || $c === 'application/ecmascript') return true;
+    return $c === 'application/wasm';
+}
+
+// HTML / CSS 也要缓存,但存的是上游原始字节(命中后仍按当次票据改写)。
+function tc_web_rewritable_ctype($ctype) {
+    $c = strtolower(trim((string) preg_replace('/;.*$/', '', (string) $ctype)));
+    return strpos($c, 'text/html') !== false || strpos($c, 'application/xhtml') !== false || strpos($c, 'text/css') !== false;
+}
+
+// 从 HTML 里挑出「值得提前并行抓」的静态子资源地址。
+// 只挑图片与样式表:它们是首屏渲染的直接阻塞项,而脚本/接口请求可能带副作用或带 cookie,
+// 提前拉既可能改变站点行为,也可能把个性化内容写进公共缓存(缓存只收无 cookie 的响应)。
+// 上限刻意保守:虚拟主机的进程/连接有限,一次开几十个并发会把页面本身也拖慢。
+function tc_web_prefetch_urls($html, $base, $limit)
+{
+    $limit = (int) $limit;
+    if ($limit <= 0) return array();
+    $out = array();
+    $seen = array();
+    $add = function ($raw) use (&$out, &$seen, $base, $limit) {
+        if (count($out) >= $limit) return;
+        $u = html_entity_decode(trim((string) $raw), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        if ($u === '') return;
+        $abs = tc_web_abs($u, $base);
+        if (!preg_match('#^https?://#i', (string) $abs)) return;
+        if (isset($seen[$abs])) return;
+        $seen[$abs] = true;
+        $out[] = $abs;
+    };
+    // <link rel=stylesheet href=...>(带引号与裸值两种写法都收)
+    if (preg_match_all('#<link\b[^>]*>#i', (string) $html, $links)) {
+        foreach ($links[0] as $tag) {
+            if (stripos($tag, 'stylesheet') === false) continue;
+            if (preg_match('#\bhref\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'>]+))#i', $tag, $m)) {
+                $add(isset($m[1]) && $m[1] !== '' ? $m[1] : (isset($m[2]) && $m[2] !== '' ? $m[2] : (isset($m[3]) ? $m[3] : '')));
+            }
+        }
+    }
+    // <img src=...>(srcset 的第一项通常是默认图,一并算上)
+    if (preg_match_all('#<img\b[^>]*>#i', (string) $html, $imgs, PREG_SET_ORDER)) {
+        foreach ($imgs as $set) {
+            $tag = $set[0];
+            if (!preg_match('#\bdata-src\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'>]+))#i', $tag, $dm)) {
+                $dm = null;
+            }
+            // 懒加载站点真实地址在 data-src/data-original 里,src 往往是占位图
+            if ($dm) {
+                $add(isset($dm[1]) && $dm[1] !== '' ? $dm[1] : (isset($dm[2]) && $dm[2] !== '' ? $dm[2] : (isset($dm[3]) ? $dm[3] : '')));
+            }
+            if (preg_match('#\bsrc\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'>]+))#i', $tag, $m)) {
+                $add(isset($m[1]) && $m[1] !== '' ? $m[1] : (isset($m[2]) && $m[2] !== '' ? $m[2] : (isset($m[3]) ? $m[3] : '')));
+            }
+        }
+    }
+    return $out;
+}
+
+// 并行预取一组子资源并写进本地缓存。用 curl_multi 让多个 TLS 握手与往返同时进行 ——
+// 串行抓 20 张图的耗时约等于 20 次握手之和,并行后约为最慢的那一个。
+// 只在参数允许(无 cookie 依赖)时调用;任何单项失败都静默跳过,不影响页面本身。
+function tc_web_prefetch_warm($urls, $userId, $cnOnly, $concurrency)
+{
+    if (!is_array($urls) || !$urls || !function_exists('curl_multi_init')) return 0;
+    $urls = array_slice(array_values(array_unique($urls)), 0, max(1, (int) $concurrency) * 2);
+    $concurrency = max(1, min(16, (int) $concurrency));
+    $multi = curl_multi_init();
+    $warm = 0;
+    $active = array();
+    $pending = $urls;
+    $deadline = time() + 8;      // 预算是「让首屏快点出来」,不能反过来把页面拖住
+    $start = function ($url) use ($multi, $userId, &$active, $cnOnly) {
+        $guard = tc_web_guard($url);
+        if (!$guard) return null;
+        if ($cnOnly && !tc_web_cn_target_ok($guard)) return null;
+        $buf = '';
+        $ctype = '';
+        $status = 0;
+        $ch = curl_init($guard['url']);
+        $hdrs = array('User-Agent: ' . tc_web_ua(), 'Accept-Language: zh-CN,zh;q=0.9,en;q=0.8');
+        $cookie = tc_web_jar_header($userId, $url, '');
+        if ($cookie !== '') { curl_close($ch); return null; }   // 带 cookie 的响应不能进公共缓存
+        curl_setopt_array($ch, array(
+            CURLOPT_HTTPHEADER => $hdrs,
+            CURLOPT_RETURNTRANSFER => false,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_CONNECTTIMEOUT => 4,
+            CURLOPT_TIMEOUT => 6,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+            CURLOPT_RESOLVE => array($guard['resolve']),
+            CURLOPT_ENCODING => '',
+            CURLOPT_HEADERFUNCTION => function ($ch, $line) use (&$ctype, &$status) {
+                $trim = trim($line);
+                if (preg_match('#^HTTP/\d(?:\.\d)?\s+(\d{3})#', $trim, $m)) { $status = (int) $m[1]; return strlen($line); }
+                $eq = strpos($trim, ':');
+                if ($eq !== false && strtolower(trim(substr($trim, 0, $eq))) === 'content-type') $ctype = trim(substr($trim, $eq + 1));
+                return strlen($line);
+            },
+            CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$buf) {
+                if (strlen($buf) + strlen($data) > TC_WEB_CACHE_MAX_BYTES) return 0;   // 超限直接放弃预热
+                $buf .= $data;
+                return strlen($data);
+            },
+        ));
+        $ca = tc_cacert_path();
+        if ($ca) curl_setopt($ch, CURLOPT_CAINFO, $ca);
+        curl_multi_add_handle($multi, $ch);
+        $active[(int) $ch] = array('ch' => $ch, 'url' => $url, 'buf' => &$buf, 'ctype' => &$ctype, 'status' => &$status);
+        return $ch;
+    };
+    for ($i = 0; $i < $concurrency && $pending; $i++) $start(array_shift($pending));
+    do {
+        $running = 0;
+        do { $mrc = curl_multi_exec($multi, $running); } while ($mrc === CURLM_CALL_MULTI_PERFORM);
+        while ($info = curl_multi_info_read($multi)) {
+            $ch = $info['handle'];
+            $key = (int) $ch;
+            $meta = isset($active[$key]) ? $active[$key] : null;
+            if ($meta) {
+                $body = $meta['buf'];
+                $ct = $meta['ctype'];
+                $st = $meta['status'];
+                // 只收 200 且类型可缓存的:预热写进去的东西必须和正常路径写进去的完全一致
+                if (curl_errno($ch) === 0 && $st === 200 && $body !== '' && tc_web_cacheable_ctype($ct)
+                    && strlen($body) <= TC_WEB_CACHE_MAX_BYTES) {
+                    tc_web_cache_put($meta['url'], $ct, 200, $body);
+                    $warm++;
+                }
+                curl_multi_remove_handle($multi, $ch);
+                curl_close($ch);
+                unset($active[$key]);
+            }
+            if ($pending && time() < $deadline) $start(array_shift($pending));
+        }
+        if ($running) curl_multi_select($multi, 0.3);
+    } while ($running && time() < $deadline);
+    foreach ($active as $meta) { curl_multi_remove_handle($multi, $meta['ch']); curl_close($meta['ch']); }
+    curl_multi_close($multi);
+    return $warm;
+}
+
 function tc_web_fail_page($msg) {
-    $m = htmlspecialchars((string) $msg, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-    return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
+    $m = htmlspecialchars((string) $msg, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');    return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
         . '<meta name="viewport" content="width=device-width,initial-scale=1"><title>无法打开该网页</title>'
         . '<style>body{margin:0;background:#0f172a;color:#e2e8f0;font:15px/1.8 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}'
         . '.w{max-width:560px;margin:0 auto;padding:20vh 24px}h1{font-size:17px;margin:0 0 10px}p{color:#94a3b8;margin:0 0 8px}</style></head>'
@@ -723,30 +1030,65 @@ function tc_web_serve($kind) {
         echo '地址无效';
         exit;
     }
-    // 文档请求才查库确认「用户还在、功能还开着」;子资源一次页面加载有几十上百个,
-    // 每次都读一遍 JSON 库不划算(票据本身已有时效与签名)。
-    if ($kind === 'page') {
-        $allowed = false;
-        try {
-            tc_with_db(false, function ($db) use ($uid, &$allowed) {
-                if (!empty($db['settings']['browserEnabled'])) {
-                    foreach ($db['users'] as $u) {
-                        if ((string) $u['id'] === $uid) { $allowed = true; break; }
-                    }
-                }
-            });
-        } catch (Throwable $e) {
-            $allowed = false;
-        }
-        if (!$allowed) {
-            http_response_code(403);
-            header('Content-Type: text/html; charset=utf-8');
-            header('Cache-Control: no-store');
-            echo tc_web_fail_page('在线浏览器已关闭或账号已失效。');
-            exit;
-        }
-    }
     $method = strtoupper((string) (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : 'GET'));
+    // 命中本地缓存就省掉出网那一段。只有这次请求不带任何用户 cookie(页面传来的 c 或 jar 里的)
+    // 才允许读缓存 —— 带 cookie 的响应可能是个性化的,拿来复用就是串号。
+    // 只对 GET 生效:POST 有副作用,必须真出网。
+    $useCache = $method === 'GET'
+        && !isset($_SERVER['HTTP_RANGE']) && !isset($q['c'])
+        && tc_web_jar_header($uid, $url, '') === '';
+    // 注意:这里不读缓存就返回。缓存命中要排在下面的「权限判定」之后 —— 否则管理员
+    // 关掉功能后,同一张图仍能从缓存里被取走(实测就是这样漏的)。命中路径见 $hitBody。
+    $hitBody = null;
+    if ($useCache) {
+        $hit = tc_web_cache_get($url);
+        // 缓存里存的可能是需要按当次票据改写的 HTML/CSS(raw=1),那种交给下面统一分支;
+        // 这里只留住「原样透传」的类型,等权限过了再返回。
+        if ($hit !== null && !$hit['raw']) $hitBody = $hit;
+    }
+    // 页面与子资源都要过同一套判定(用户还在、功能还开着、这个账号还有权限)。
+    // 子资源一次页面加载有几十上百个,但「不读库」不等于「不判」:票据里带着 uid,
+    // 按 uid 复核一次即可,省掉的是重复读结构化数据的开销,不是判定本身。
+    // 顺带把预热要用的两项设置读出来:并发上限与 cnOnly。
+    $cnOnly = tc_web_cn_only_default();
+    $allowed = false;
+    try {
+        tc_with_db(false, function ($db) use ($uid, &$allowed, &$cnOnly) {
+            $cnOnly = tc_web_cn_only_on($db);
+            $GLOBALS['_tc_web_concurrency'] = (int) (isset($db['settings']['webConcurrency']) ? $db['settings']['webConcurrency'] : 6);
+            foreach ($db['users'] as $u) {
+                if ((string) $u['id'] !== $uid) continue;
+                if (tc_feature_allowed($db, $u, 'web')) $allowed = true;
+                break;
+            }
+        });
+    } catch (Throwable $e) {
+        // 读不到库一律按「不放行」处理:宁可误关,也不要因为一次读库失败而变成开放代理
+        $allowed = false;
+    }
+    if (!$allowed) {
+        http_response_code(403);
+        header('Cache-Control: no-store');
+        if ($kind === 'page') {
+            header('Content-Type: text/html; charset=utf-8');
+            echo tc_web_fail_page('在线浏览器已关闭，或你的账号没有使用权限。');
+        } else {
+            // 子资源在 iframe 里加载,返回整页错误文档只会变成一张裂图;给纯文本更清楚。
+            header('Content-Type: text/plain; charset=utf-8');
+            echo '在线浏览器已关闭，或你的账号没有使用权限';
+        }
+        exit;
+    }
+    // 权限已过,现在才允许用缓存应答。原样透传的类型直接回,省掉整段出网。
+    if ($hitBody !== null) {
+        header('Content-Type: ' . $hitBody['ctype']);
+        header('Cache-Control: private, max-age=' . TC_WEB_CACHE_TTL);
+        header('X-Robots-Tag: noindex, nofollow');
+        header('Referrer-Policy: no-referrer');
+        http_response_code($hitBody['status'] >= 200 && $hitBody['status'] < 600 ? $hitBody['status'] : 200);
+        echo $hitBody['body'];
+        exit;
+    }
     $body = null;
     $reqCtype = '';
     if ($method === 'POST') {
@@ -754,15 +1096,26 @@ function tc_web_serve($kind) {
         $body = $raw;
         $reqCtype = isset($_SERVER['CONTENT_TYPE']) ? (string) $_SERVER['CONTENT_TYPE'] : 'application/x-www-form-urlencoded';
     }
-    $res = tc_web_fetch($url, $uid, array(
-        'method' => $method,
-        'body' => $body,
-        'ctype' => $reqCtype,
-        'cookie' => isset($q['c']) ? (string) $q['c'] : '',
-        'referer' => tc_web_referer_of(isset($_SERVER['HTTP_REFERER']) ? $_SERVER['HTTP_REFERER'] : ''),
-        'accept' => isset($_SERVER['HTTP_ACCEPT']) ? (string) $_SERVER['HTTP_ACCEPT'] : '',
-        'range' => isset($_SERVER['HTTP_RANGE']) ? (string) $_SERVER['HTTP_RANGE'] : '',
-    ));
+    // 页面与样式表也能吃本地缓存,但缓存里存的是上游原始字节,命中后照常按当次票据改写。
+    $cachedRaw = null;
+    if ($useCache) {
+        $cachedRaw = tc_web_cache_get($url);
+        if ($cachedRaw !== null && !$cachedRaw['raw']) $cachedRaw = null;   // 上面已处理过透传类型
+    }
+    if ($cachedRaw !== null) {
+        $res = array('ok' => true, 'status' => $cachedRaw['status'], 'ctype' => $cachedRaw['ctype'], 'body' => $cachedRaw['body'], 'url' => $url, 'range' => '');
+    } else {
+        $res = tc_web_fetch($url, $uid, array(
+            'method' => $method,
+            'body' => $body,
+            'ctype' => $reqCtype,
+            'cookie' => isset($q['c']) ? (string) $q['c'] : '',
+            'referer' => tc_web_referer_of(isset($_SERVER['HTTP_REFERER']) ? $_SERVER['HTTP_REFERER'] : ''),
+            'accept' => isset($_SERVER['HTTP_ACCEPT']) ? (string) $_SERVER['HTTP_ACCEPT'] : '',
+            'range' => isset($_SERVER['HTTP_RANGE']) ? (string) $_SERVER['HTTP_RANGE'] : '',
+            'cnOnly' => $cnOnly,
+        ));
+    }
     if (empty($res['ok'])) {
         http_response_code((int) (isset($res['code']) ? $res['code'] : 502));
         header('Content-Type: text/html; charset=utf-8');
@@ -787,15 +1140,42 @@ function tc_web_serve($kind) {
     if ($isHtml) {
         $charset = tc_web_charset($res['body'], $res['ctype']);
         $converted = ($charset !== '' && $charset !== 'utf-8' && $charset !== 'utf8');
-        $html = $converted ? tc_web_to_utf8($res['body'], $charset) : $res['body'];
-        $html = tc_web_rewrite_html($html, $base, $ticket, $converted);
+        // 存进缓存的是「转好 UTF-8 但仍未改写地址」的字节:改写要按当次票据做,
+        // 存成品等于把上一个用户的票据发给下一个人。
+        $rawHtml = $converted ? tc_web_to_utf8($res['body'], $charset) : $res['body'];
+        if ($cachedRaw === null && $useCache && (int) $res['status'] === 200) {
+            tc_web_cache_put($url, 'text/html; charset=utf-8', 200, $rawHtml, true);
+        }
+        // 文档响应始终 no-store,不因为「进了我们自己的缓存」而放宽:改写后的 HTML 里
+        // 带着当次票据(每个用户不同),任何中间缓存把它存下来再发给别人就是串号。
+        // 上面那次 cache_put 是给服务端自己用的,不影响这里对客户端的声明。
+        header('Cache-Control: no-store, must-revalidate');
+        $html = tc_web_rewrite_html($rawHtml, $base, $ticket, $converted);
         $html = tc_web_inject($html, tc_web_shim_payload($base, $ticket, tc_web_jar_snapshot($uid, $base)));
         header('Content-Type: text/html; charset=utf-8');
+        // Content-Length 必须给:没有它,HTTP/1.1 靠「连接关闭」来标记正文结束,
+        // 客户端要一直等到我们预热完、脚本退出才认为收全了 —— 首屏于是被预热拖住。
+        // 带上长度后,客户端收满这些字节就能立刻渲染,与应用进程还在不在无关。
+        header('Content-Length: ' . strlen($html));
         echo $html;
+        tc_web_flush_to_client();
+        // 文档已交出去,这里再花几秒预热子资源不会让用户多等首屏;
+        // 预热的成品直接进本地缓存,浏览器随后要它时即是命中。
+        $budget = tc_web_concurrency_of();
+        if ($kind === 'page' && $budget > 0) {
+            $warm = tc_web_prefetch_urls($html, $base, $budget * 3);
+            if ($warm) tc_web_prefetch_warm($warm, $uid, $cnOnly, $budget);
+        }
         exit;
     }
     if ($isCss) {
         header('Content-Type: text/css; charset=utf-8');
+        // 与 HTML 同理:缓存原始 CSS 字节(同样是未改写的),每次按当次票据改写后输出
+        if ($useCache && (int) $res['status'] === 200) {
+            tc_web_cache_put($url, 'text/css; charset=utf-8', 200, $res['body'], true);
+        }
+        // 样式表同样内嵌了当次票据,不因为走了服务端缓存就对客户端放宽
+        header('Cache-Control: no-store, must-revalidate');
         echo tc_web_rewrite_css_urls($res['body'], $base, $ticket);
         exit;
     }
@@ -805,6 +1185,14 @@ function tc_web_serve($kind) {
     header('Content-Type: ' . $outCtype);
     if (!empty($res['range'])) header('Content-Range: ' . preg_replace('/[\r\n]+/', '', (string) $res['range']));
     else header('Accept-Ranges: bytes');
+    // 与用户无关的静态类型:让浏览器自己存一小会儿(不再每次翻页都回头要),
+    // 服务端也留一份,同一张图被多次请求时省掉重复出网(206 分片不进缓存)。
+    if ($useCache && tc_web_cacheable_ctype($ctype)) {
+        header('Cache-Control: private, max-age=' . TC_WEB_CACHE_TTL);
+        if (empty($res['range']) && (int) $res['status'] === 200) {
+            tc_web_cache_put($url, $ctype, 200, $res['body']);
+        }
+    }
     http_response_code((int) $res['status'] >= 200 && (int) $res['status'] < 600 ? (int) $res['status'] : 200);
     echo $res['body'];
     exit;
@@ -819,7 +1207,7 @@ function tc_api_web_res() { tc_web_serve('res'); }
 function tc_api_web_ticket() {
     tc_with_db(false, function ($db) {
         $user = tc_require_auth($db);
-        tc_web_feature_guard($db);
+        tc_web_feature_guard($db, $user);
         if (!tc_rate_limit_check('webticket:' . $user['id'], 60)) tc_fail(429, '请求过于频繁，请稍后再试');
         $uid = (string) $user['id'];
         tc_json(200, array(
@@ -836,7 +1224,7 @@ function tc_api_web_ticket() {
 function tc_api_web_bookmarks_get() {
     tc_with_db(false, function ($db) {
         $user = tc_require_auth($db);
-        tc_web_feature_guard($db);
+        tc_web_feature_guard($db, $user);
         tc_json(200, array('bookmarks' => tc_web_user_bookmarks($user['id'])));
     });
 }
@@ -845,7 +1233,7 @@ function tc_api_web_bookmarks_get() {
 function tc_api_web_bookmarks_save() {
     tc_with_db(false, function ($db) {
         $user = tc_require_auth($db);
-        tc_web_feature_guard($db);
+        tc_web_feature_guard($db, $user);
         if (!tc_rate_limit_check('webmark:' . $user['id'], 30)) tc_fail(429, '保存过于频繁，请稍后再试');
         $b = tc_read_json_body(262144);
         $list = isset($b['bookmarks']) && is_array($b['bookmarks']) ? $b['bookmarks'] : array();
@@ -894,6 +1282,8 @@ function tc_api_web_read() {
     if (!tc_rate_limit_check('webread:' . $uid, 120)) tc_fail(429, '请求过于频繁，请稍后再试');
     $url = tc_web_b64d(isset($q['u']) ? (string) $q['u'] : '');
     if ($url === '') tc_fail(400, '地址无效');
+    // 阅读模式同样要过权限判定:它只凭票据就出网抓正文,不判的话总开关形同虚设。
+    if (!tc_web_ticket_user_allowed($uid)) tc_fail(403, '在线浏览器已关闭，或你的账号没有使用权限');
     $page = tc_web_extract($url, $uid);
     if (empty($page['ok'])) tc_fail((int) (isset($page['code']) ? $page['code'] : 502), isset($page['error']) ? $page['error'] : '读取失败');
     tc_json(200, array('url' => $page['url'], 'title' => $page['title'], 'text' => $page['text'], 'truncated' => !empty($page['truncated'])));
@@ -901,7 +1291,15 @@ function tc_api_web_read() {
 
 // 抓取 + 抽正文。标题优先 <title>,正文复用全站同一套 tc_html_to_text。
 function tc_web_extract($url, $uid) {
-    $res = tc_web_fetch($url, $uid, array());
+    // 「仅限访问中国 IP 网站」要看后台设置,不能沿用 tc_web_fetch 的默认 true ——
+    // 否则管理员把它关掉之后,阅读模式这一路仍然只认国内站,同一个地址页面能开、阅读模式却报错。
+    $cnOnly = tc_web_cn_only_default();
+    try {
+        tc_with_db(false, function ($db) use (&$cnOnly) { $cnOnly = tc_web_cn_only_on($db); });
+    } catch (Throwable $e) {
+        // 读不到库就维持默认值:宁可严一点,也不要因为一次读库失败而放行境外站点
+    }
+    $res = tc_web_fetch($url, $uid, array('cnOnly' => $cnOnly));
     if (empty($res['ok'])) return $res;
     $charset = tc_web_charset($res['body'], $res['ctype']);
     $html = ($charset !== '' && $charset !== 'utf-8' && $charset !== 'utf8') ? tc_web_to_utf8($res['body'], $charset) : $res['body'];
@@ -1021,7 +1419,7 @@ function tc_api_web_summary() {
     $body = array();
     tc_with_db(false, function ($db) use (&$uid, &$body) {
         $user = tc_require_auth($db);
-        tc_web_feature_guard($db);
+        tc_web_feature_guard($db, $user);
         $uid = (string) $user['id'];
         if (!tc_rate_limit_check('websum:' . $uid, 20)) tc_fail(429, '总结过于频繁，请稍后再试');
         $b = tc_read_json_body(1024 * 1024);
@@ -1045,7 +1443,7 @@ function tc_api_web_summary() {
     $err = '';
     tc_with_db(true, function (&$db) use (&$plan, &$err, $body) {
         $user = tc_require_auth($db);
-        tc_web_feature_guard($db);
+        tc_web_feature_guard($db, $user);
         if (!tc_web_ai_consume($db, $user['id'])) {
             $err = '今日网页总结次数已用完（上限 ' . tc_web_ai_limit($db) . ' 次），管理员可在后台调整';
             return;
@@ -1143,7 +1541,7 @@ function tc_web_ai_call($plan) {
 function tc_api_web_usage() {
     tc_with_db(false, function ($db) {
         $user = tc_require_auth($db);
-        tc_web_feature_guard($db);
+        tc_web_feature_guard($db, $user);
         $uid = (string) $user['id'];
         tc_json(200, array('dailyLimit' => tc_web_ai_limit($db), 'dailyUsed' => tc_web_ai_used_today($uid)));
     });

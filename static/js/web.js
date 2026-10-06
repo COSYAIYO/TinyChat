@@ -25,6 +25,7 @@
   const S = {
     ready: false, open: false,
     tabs: [], active: 0, seq: 0,     // 多标签页:tabs[i] = { id, view, url, title, hist, hi, reader, ... }
+    tabsSig: '',                     // 标签栏渲染签名(没变就不整栏重写,免得 favicon 被反复重取)
     ticket: '', exp: 0,              // 代理票据(短期)
     defaults: [], mine: [],          // 内置收藏 / 自己的收藏
     engine: 'scholar',
@@ -52,9 +53,10 @@
   function icon(name, size) {
     return (window.OC && window.OC.icon) ? window.OC.icon(name, size || 15) : '';
   }
-  const SVG_LOGO = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">'
-    + '<circle cx="12" cy="12" r="9"/><path d="M3.2 12h17.6"/>'
-    + '<path d="M12 3.1c2.6 2.5 4 5.6 4 8.9s-1.4 6.4-4 8.9c-2.6-2.5-4-5.6-4-8.9s1.4-6.4 4-8.9z"/></svg>';
+  // 左上角品牌 logo:亮/暗两版,用法与侧边栏 / 登录页一致(靠 [data-theme] 切换显示哪一张)。
+  // 地址用相对写法,和 index.html 一样 —— 站点被部署到子目录时绝对路径会 404。
+  const BRAND_HTML = '<img class="web-brand-logo web-brand-light" src="./logo.svg" alt="TinyChat">'
+    + '<img class="web-brand-logo web-brand-dark" src="./logo-dark.svg" alt="">';
   const SVG_HOME = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
     + '<path d="M4 10.6 12 4.2l8 6.4"/><path d="M6.2 9.8V20h11.6V9.8"/></svg>';
   const SVG_GLOBE_SM = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true">'
@@ -74,7 +76,26 @@
   function webEnabled() {
     try {
       const cfg = JSON.parse(localStorage.getItem('oc_cfg') || 'null');
-      if (cfg && typeof cfg.browserEnabled === 'boolean') return cfg.browserEnabled;
+      if (cfg && typeof cfg.browserEnabled === 'boolean' && !cfg.browserEnabled) return false;
+    } catch (e) {}
+    // 总开关之外还有「仅管理员 / 仅名单」这层按人判定(/api/me 下发)
+    if (window.OCFeatures && !window.OCFeatures.allowed('web')) return false;
+    return true;
+  }
+  // 「仅限中国 IP 网站」是否开启(前台提示用;权威判定在服务端)
+  function cnOnly() {
+    try {
+      const cfg = JSON.parse(localStorage.getItem('oc_cfg') || 'null');
+      if (cfg && typeof cfg.webCnOnly === 'boolean') return cfg.webCnOnly;
+    } catch (e) {}
+    return true;
+  }
+  // 境内 IP 段数据在服务端是否就绪。开关默认开着,而数据缺失时服务端会把所有站点一起
+  // 拒掉 —— 这里提前把「服务器缺数据」和「该站不在境内」分开说,省得用户对着地址反复试。
+  function cnDataReady() {
+    try {
+      const cfg = JSON.parse(localStorage.getItem('oc_cfg') || 'null');
+      if (cfg && typeof cfg.webCnDataReady === 'boolean') return cfg.webCnDataReady;
     } catch (e) {}
     return true;
   }
@@ -149,6 +170,7 @@
     if (isPrivateHost(u.hostname)) return '内网地址不可访问（含本机与本站自身）';
     if (u.hostname.indexOf('.') < 0) return '无法识别的地址';
     if (u.username || u.password) return '地址不允许携带账号信息';
+    if (cnOnly() && !cnDataReady()) return '服务器缺少境内 IP 段数据，暂时无法访问任何站点（请联系管理员）';
     return '';
   }
 
@@ -212,18 +234,23 @@
     mask.innerHTML =
       '<div class="web-fs" role="dialog" aria-modal="true" aria-label="在线浏览器">'
       + '<div class="web-chrome">'
-      // 第一行:logo 在最左上角,右边是标签页与新建标签
+      // 第一行:左上角是品牌 logo,紧跟着「返回 AI 主页」,再是网页导航(返回/前进/刷新/首页),
+      // 然后才是标签页与新建标签 —— 顶部这排要能一眼分清「离开浏览器」与「在网页间后退」
       + '<div class="web-tabs-row">'
-      + '<button class="web-logo" id="web-logo" data-tip="首页" aria-label="回到首页">' + SVG_LOGO + '</button>'
-      + '<div class="web-tabs" id="web-tabs" role="tablist" aria-label="标签页"></div>'
-      + '<button class="web-icon-btn web-sm" id="web-tab-new" data-tip="新建标签页（Ctrl+T）" aria-label="新建标签页">' + icon('plus', 14) + '</button>'
-      + '</div>'
-      // 第二行:左上角依次是返回/前进/刷新/首页,右侧是地址栏与动作区
-      + '<div class="web-head">'
+      + '<span class="web-brand">' + BRAND_HTML + '</span>'
+      + '<button class="web-back-home" id="web-back-home" data-tip="返回 AI 主页" aria-label="返回 AI 主页">'
+      + icon('chevronLeft', 15) + '<span>返回</span></button>'
+      + '<span class="web-nav-sep" aria-hidden="true"></span>'
       + '<button class="web-icon-btn" id="web-back" data-tip="返回上一页" aria-label="返回上一页">' + icon('chevronLeft', 16) + '</button>'
       + '<button class="web-icon-btn" id="web-fwd" data-tip="前进" aria-label="前进">' + icon('chevronRight', 16) + '</button>'
       + '<button class="web-icon-btn" id="web-reload" data-tip="刷新" aria-label="刷新">' + icon('refresh', 15) + '</button>'
       + '<button class="web-icon-btn" id="web-home" data-tip="首页" aria-label="首页">' + SVG_HOME + '</button>'
+      + '<span class="web-nav-sep" aria-hidden="true"></span>'
+      + '<div class="web-tabs" id="web-tabs" role="tablist" aria-label="标签页"></div>'
+      + '<button class="web-icon-btn web-sm" id="web-tab-new" data-tip="新建标签页（Ctrl+T）" aria-label="新建标签页">' + icon('plus', 14) + '</button>'
+      + '</div>'
+      // 第二行:地址栏与右侧动作区
+      + '<div class="web-head">'
       + '<form class="web-addr" id="web-addr-form" autocomplete="off">'
       + '<span class="web-addr-scheme hidden" id="web-addr-scheme"></span>'
       + '<input type="text" id="web-addr" placeholder="输入网址，或直接搜索（默认 Google 学术）" spellcheck="false" aria-label="地址栏">'
@@ -264,7 +291,7 @@
     S.els.aiBody = mask.querySelector('#web-ai-body');
 
     mask.querySelector('#web-close').addEventListener('click', close);
-    mask.querySelector('#web-logo').addEventListener('click', goHome);
+    mask.querySelector('#web-back-home').addEventListener('click', close);
     mask.querySelector('#web-home').addEventListener('click', goHome);
     mask.querySelector('#web-back').addEventListener('click', goBack);
     mask.querySelector('#web-fwd').addEventListener('click', goForward);
@@ -352,20 +379,28 @@
   async function loadTicket(force) {
     // 服务端的 exp 与 Date.now() 同为毫秒(服务端 tc_now() 也是毫秒),留 1 分钟余量提前换票
     if (!force && S.ticket && S.exp > Date.now() + 60000) return;
-    const d = await apiJson('/api/web/ticket', { method: 'POST' });
+    // 票据与收藏夹互相不依赖,并发取:串行会让「点开浏览器到能用」白白多等一个来回
+    const got = await Promise.all([
+      apiJson('/api/web/ticket', { method: 'POST' }),
+      apiJson('/api/web/bookmarks').catch(() => ({ bookmarks: [] })),
+    ]);
+    const d = got[0];
+    const u = got[1];
     S.ticket = d.ticket || '';
     S.exp = Number(d.exp) || 0;
     S.defaults = Array.isArray(d.bookmarks) ? d.bookmarks : [];
     S.usage = { limit: Number(d.dailyLimit) || 0, used: Number(d.dailyUsed) || 0 };
-    try {
-      const u = await apiJson('/api/web/bookmarks');
-      S.mine = Array.isArray(u.bookmarks) ? u.bookmarks : [];
-    } catch (e) { S.mine = []; }
+    S.mine = Array.isArray(u.bookmarks) ? u.bookmarks : [];
   }
 
   // ============ 标签栏 / 地址栏 ============
   function renderTabs() {
     if (!S.els.tabs) return;
+    // 每次 iframe 上报地址/标题、每次切页都会走到这里;整栏重写会换掉所有 favicon 节点,
+    // 被代理的站点图标于是被反复重取。签名没变就什么都不做。
+    const sig = S.active + '|' + S.tabs.map((t) => t.id + ',' + (t.url || '') + ',' + tabTitle(t)).join('|');
+    if (sig === S.tabsSig) return;
+    S.tabsSig = sig;
     S.els.tabs.innerHTML = S.tabs.map((t, i) => {
       const active = i === S.active;
       return '<div class="web-tab' + (active ? ' active' : '') + '" data-tab="' + i + '" role="tab"'
@@ -784,6 +819,23 @@
     const iconEl = document.getElementById('web-entry-icon');
     if (iconEl && window.OC && OC.icon) iconEl.innerHTML = OC.icon('search', 15);
     btn.addEventListener('click', open);
+    // 悬停/聚焦即预取票据:点开时通常已经就绪,省掉「打开到能用」的等待
+    let warm = false;
+    const prewarm = () => {
+      if (warm) return;
+      warm = true;
+      loadTicket().catch(() => { warm = false; });
+    };
+    btn.addEventListener('pointerenter', prewarm);
+    btn.addEventListener('focus', prewarm);
+    btn.addEventListener('touchstart', prewarm, { passive: true });
+    // /api/me 带回按人判定后会广播:入口可能先渲染、权限后到(或反之),这里重判一次,
+    // 免得出现「入口看得见、点进去 403」
+    window.addEventListener('oc:features', () => {
+      const ok = webEnabled();
+      btn.classList.toggle('hidden', !ok);
+      if (!ok && S.open) close();
+    });
     if (isWebPath()) {
       let tries = 0;
       const boot = () => {

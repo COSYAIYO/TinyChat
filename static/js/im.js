@@ -41,8 +41,10 @@
   function imEnabled() {
     try {
       const cfg = JSON.parse(localStorage.getItem('oc_cfg') || 'null');
-      if (cfg && typeof cfg.imEnabled === 'boolean') return cfg.imEnabled;
+      if (cfg && typeof cfg.imEnabled === 'boolean' && !cfg.imEnabled) return false;
     } catch (e) {}
+    // 总开关之外还有「仅管理员 / 仅名单」这层按人判定(/api/me 下发)
+    if (window.OCFeatures && !window.OCFeatures.allowed('im')) return false;
     return true;
   }
   function pad2(n) { return String(n).padStart(2, '0'); }
@@ -1589,6 +1591,15 @@
       const shown = S.open && S.els.mask && S.els.mask.classList.contains('show');
       if (isImPath() && !shown) open();
       else if (!isImPath() && shown) close();
+    });
+    // /api/me 带回按人判定后会广播:入口可能先渲染、权限后到(或反之),这里重判一次
+    window.addEventListener('oc:features', () => {
+      const ok = imEnabled();
+      btn.classList.toggle('hidden', !ok);
+      if (!ok) {
+        if (S.badgeTimer) { clearInterval(S.badgeTimer); S.badgeTimer = null; }
+        if (S.open) close();
+      } else warmUp();
     });
   }
 

@@ -1424,7 +1424,8 @@ function tc_capture_stream_text(&$target, $chunk, $format, &$carry = null) {
 }
 
 // SSRF 防护:校验 URL 指向公网地址 —— 拒绝内网/保留 IP(含 127.0.0.1、云元数据 169.254.169.254)、
-// localhost 类主机名、非常规端口;域名会做真实 DNS 解析,返回选定 IP 供请求固定解析结果
+// localhost 类主机名、非常规端口;域名会做真实 DNS 解析,返回选定 IP 供请求固定解析结果。
+// ips 保留全部解析结果,供「按归属地筛选目标站」这类判定使用(只能看到一个 IP 会漏判)。
 function tc_url_public_host($url) {
     $p = @parse_url((string) $url);
     if (!$p || empty($p['host'])) return false;
@@ -1442,15 +1443,15 @@ function tc_url_public_host($url) {
     if (filter_var($host, FILTER_VALIDATE_IP)) {
         if ($ipOk($host)) $ips[] = $host;
     } else {
-        foreach ((array) @gethostbynamel($host) as $ip) if ($ipOk($ip)) $ips[] = $ip;
+        foreach ((array) @gethostbynamel($host) as $ip) if ($ipOk($ip) && !in_array($ip, $ips, true)) $ips[] = $ip;
         if (!$ips && function_exists('dns_get_record')) {
             foreach ((array) @dns_get_record($host, DNS_AAAA) as $rec) {
                 $v6 = isset($rec['ipv6']) ? $rec['ipv6'] : '';
-                if ($ipOk($v6)) $ips[] = $v6;
+                if ($ipOk($v6) && !in_array($v6, $ips, true)) $ips[] = $v6;
             }
         }
     }
-    return $ips ? array('ip' => $ips[0], 'port' => $port, 'host' => $host) : false;
+    return $ips ? array('ip' => $ips[0], 'ips' => $ips, 'port' => $port, 'host' => $host) : false;
 }
 
 function tc_fetch_pages_parallel($urls, $timeoutMs = 8000, $maxChars = 1800) {

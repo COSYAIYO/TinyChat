@@ -4522,6 +4522,7 @@ const TAB_LOADERS = {
   notes: loadNotesSettings,
   im: loadImSettings,
   web: loadWebSettings,
+  'ext-overview': () => loadExtOverview(),
   overview: () => { loadStats(); loadSystemBoard(); },
   usage: () => loadStats(),
   users: () => loadUsers(),
@@ -4679,9 +4680,11 @@ $('usage-export')?.addEventListener('click', async () => {
 
 // ---------- AI 笔记:设置 + 使用用户列表 + 审阅 ----------
 async function loadNotesSettings() {
+  await ensureGroupsCache();
   const r = await api('/api/admin/settings');
   const s = ((await r.json()) || {}).settings || {};
   if ($('notes-enabled')) $('notes-enabled').checked = s.notesEnabled !== false;
+  renderFeatureAccessBlock('notes', s);
   if ($('notes-allow-files')) $('notes-allow-files').checked = s.notesAllowFiles !== false;
   if ($('notes-quota')) $('notes-quota').value = Number(s.notesQuotaMb != null ? s.notesQuotaMb : 200);
   if ($('notes-max-file')) $('notes-max-file').value = Number(s.notesMaxFileMb != null ? s.notesMaxFileMb : 50);
@@ -4757,6 +4760,9 @@ async function viewUserNotes(userId) {
 const ADMIN_GROUPS = {
   // 二级首项叫「运营数据」,避免与上方一级分组「概览」重名让人分不清
   overview: [{ id: 'overview', label: '运营数据' }, { id: 'usage', label: '用量分析' }, { id: 'announce', label: '全站公告' }, { id: 'logs', label: '运行日志' }],
+  // 拓展功能:三个「对话之外的附加面板」单独成组。此前散在「平台配置」里,与供应商/邮件/存储
+  // 这类基础设施混在一起;它们共同点是「面向用户的附加功能」,还共享同一套可见性模型。
+  extensions: [{ id: 'ext-overview', label: '总览' }, { id: 'web', label: '在线浏览器' }, { id: 'notes', label: 'AI 笔记' }, { id: 'im', label: '在线聊天' }],
   users: [{ id: 'users', label: '用户' }, { id: 'groups', label: '用户组' }, { id: 'access', label: '模型授权' }, { id: 'verify', label: '用户验证' }, { id: 'invite', label: '邀请码' }],
   billing: [
     { id: 'packages', label: '额度套餐' },
@@ -4764,7 +4770,7 @@ const ADMIN_GROUPS = {
     { id: 'codes-gen', label: '生成兑换码' },
     { id: 'codes-fixed', label: '添加固定兑换码' },
   ],
-  platform: [{ id: 'providers', label: '供应商' }, { id: 'modelmeta', label: '模型元数据' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'notes', label: '笔记' }, { id: 'im', label: '在线聊天' }, { id: 'web', label: '在线浏览器' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'oauth', label: '第三方登录' }, { id: 'storage', label: '存储管理' }, { id: 'update', label: '版本更新' }],
+  platform: [{ id: 'providers', label: '供应商' }, { id: 'modelmeta', label: '模型元数据' }, { id: 'thinking', label: 'AI 思考' }, { id: 'chat', label: '对话设置' }, { id: 'perf', label: '性能优化' }, { id: 'openapi', label: '开放 API' }, { id: 'search', label: '联网搜索' }, { id: 'docs', label: '文档解析' }, { id: 'moderation', label: '内容安全' }, { id: 'oauth', label: '第三方登录' }, { id: 'storage', label: '存储管理' }, { id: 'update', label: '版本更新' }],
   thinking: [{ id: 'thinking', label: '思考策略' }],
   content: [{ id: 'assistants', label: '助手库' }],
 };
@@ -4812,6 +4818,7 @@ document.addEventListener('click', async (e) => {
         notesShareBodyOnly: $('notes-share-body-only').checked,
         notesAiDailyLimit: Number($('notes-ai-limit').value || 0),
         notesAiCustomizable: $('notes-ai-customizable').checked,
+        ...(readFeatureAccess('notes') || {}),
       };
       const r = await api('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const d = await r.json().catch(() => ({}));
@@ -4836,6 +4843,7 @@ document.addEventListener('click', async (e) => {
         imMaxFileMb: Number($('im-max-file').value || 20),
         imMaxImageMb: Number($('im-max-image').value || 10),
         imAiDailyLimit: Number($('im-ai-limit').value || 0),
+        ...(readFeatureAccess('im') || {}),
       };
       const r = await api('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const d = await r.json().catch(() => ({}));
@@ -4853,8 +4861,11 @@ document.addEventListener('click', async (e) => {
     try {
       const body = {
         browserEnabled: $('web-enabled').checked,
+        webCnOnly: $('web-cn-only').checked,
+        webConcurrency: Number($('web-concurrency').value || 6),
         webAiDailyLimit: Number($('web-ai-limit').value || 0),
         webBookmarks: parseWebBookmarks($('web-bookmarks').value),
+        ...(readFeatureAccess('web') || {}),
       };
       const r = await api('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const d = await r.json().catch(() => ({}));
@@ -4877,12 +4888,149 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle.click(); }
 });
 
-// ---------- 在线浏览器:设置(总开关 / 总结次数上限 / 主页收藏夹) ----------
+// ---------- 拓展功能:可见性(总开关之外的「谁能用」) ----------
+// 三个功能共用同一套模型:<feat>Enabled 是全站总开关,<feat>Access 决定可见范围
+// (all=所有人 / admin=仅管理员 / list=仅名单),名单支持用户名与用户组。
+// 服务端 tc_feature_allowed 是唯一权威,这里只负责把同一份设置渲染出来。
+const FEATURE_META = {
+  web: { label: '在线浏览器', desc: '服务端代理抓取网页并在同源下渲染' },
+  notes: { label: 'AI 笔记', desc: 'Markdown 写作、附件上传与分享' },
+  im: { label: '在线聊天', desc: '好友、单聊与群聊' },
+};
+
+// 渲染一个功能的「可见范围」区块;分组列表按需从 /api/admin/groups 拉取并缓存
+let adminGroupsCache = null;
+async function ensureGroupsCache() {
+  if (adminGroupsCache) return adminGroupsCache;
+  try {
+    const r = await api('/api/admin/groups');
+    const d = await r.json();
+    adminGroupsCache = Array.isArray(d.groups) ? d.groups : [];
+  } catch (e) { adminGroupsCache = []; }
+  return adminGroupsCache;
+}
+
+function renderFeatureAccessBlock(feat, s) {
+  const host = $(feat + '-access-block');
+  if (!host) return;
+  const mode = ['all', 'admin', 'list'].indexOf(s[feat + 'Access']) >= 0 ? s[feat + 'Access'] : 'all';
+  const users = Array.isArray(s[feat + 'AccessUsers']) ? s[feat + 'AccessUsers'].join(', ') : '';
+  const groups = Array.isArray(s[feat + 'AccessGroups']) ? s[feat + 'AccessGroups'].map(String) : [];
+  const list = adminGroupsCache || [];
+  // 只在需要时重建 DOM:每次加载都整块重写会把用户正在输入的内容抹掉
+  if (host.dataset.rendered !== '1') {
+    host.innerHTML =
+      '<div class="feat-access">'
+      + '<div class="feat-access-head"><b>可见范围</b>'
+      + '<span class="muted small">管理员始终可用，不受此处限制</span></div>'
+      + '<div class="feat-access-modes">'
+      + '<label><input type="radio" name="' + feat + '-access" value="all"> <span>所有人</span></label>'
+      + '<label><input type="radio" name="' + feat + '-access" value="admin"> <span>仅管理员</span></label>'
+      + '<label><input type="radio" name="' + feat + '-access" value="list"> <span>仅名单内</span></label>'
+      + '</div>'
+      + '<div class="feat-access-lists">'
+      + '<label class="field"><span>允许的用户名（逗号或换行分隔）</span>'
+      + '<input id="' + feat + '-access-users" type="text" autocomplete="off" placeholder="如：Alice, Bob"></label>'
+      + '<div class="field"><span>允许的用户组（可多选）</span><div class="feat-access-groups" id="' + feat + '-access-groups"></div></div>'
+      + '</div>'
+      + '</div>';
+    host.dataset.rendered = '1';
+  }
+  const gbox = $(feat + '-access-groups');
+  if (gbox) {
+    const want = list.map((g) => ({ id: String(g.id), name: String(g.name || g.id), on: groups.indexOf(String(g.id)) >= 0 }));
+    // 分组列表为空(还没建组)时给一句说明,免得看起来像丢了控件
+    gbox.innerHTML = want.length
+      ? want.map((g) => '<label class="feat-access-group"><input type="checkbox" data-gid="' + escapeHtml(g.id) + '"'
+          + (g.on ? ' checked' : '') + '> <span>' + escapeHtml(g.name) + '</span></label>').join('')
+      : '<p class="muted small">还没有用户组，可在「用户与权限 → 用户组」新建。</p>';
+  }
+  host.querySelectorAll('input[type=radio][name="' + feat + '-access"]').forEach((el) => { el.checked = el.value === mode; });
+  const uEl = $(feat + '-access-users');
+  if (uEl && document.activeElement !== uEl) uEl.value = users;
+  // 只有「仅名单内」需要填名单,其余两种模式下把名单区收起来,减少误操作
+  const lists = host.querySelector('.feat-access-lists');
+  if (lists) lists.classList.toggle('hidden', mode !== 'list');
+}
+
+// 读回某个功能的可见性设置,拼进保存体
+function readFeatureAccess(feat) {
+  const host = $(feat + '-access-block');
+  if (!host || host.dataset.rendered !== '1') return null;
+  const picked = host.querySelector('input[type=radio][name="' + feat + '-access"]:checked');
+  const mode = picked ? picked.value : 'all';
+  const uEl = $(feat + '-access-users');
+  const gEl = $(feat + '-access-groups');
+  const groups = [];
+  if (gEl) gEl.querySelectorAll('input[type=checkbox][data-gid]').forEach((el) => { if (el.checked) groups.push(el.dataset.gid); });
+  const body = {};
+  body[feat + 'Access'] = mode;
+  body[feat + 'AccessUsers'] = uEl ? uEl.value : '';
+  body[feat + 'AccessGroups'] = groups;
+  return body;
+}
+
+// 「仅名单内」被选中时展开名单区(事件委托,页面只挂一次)
+document.addEventListener('change', (e) => {
+  const el = e.target;
+  if (!el || el.type !== 'radio' || !el.name || !/-access$/.test(el.name)) return;
+  const feat = el.name.replace(/-access$/, '');
+  const host = $(feat + '-access-block');
+  const lists = host && host.querySelector('.feat-access-lists');
+  if (lists) lists.classList.toggle('hidden', el.value !== 'list');
+});
+
+// ---------- 拓展功能:总览(三个功能一眼看全) ----------
+async function loadExtOverview() {
+  await ensureGroupsCache();
+  const r = await api('/api/admin/settings');
+  const s = ((await r.json()) || {}).settings || {};
+  const switchOn = { web: s.browserEnabled !== false, notes: s.notesEnabled !== false, im: s.imEnabled !== false };
+  const modeText = (feat) => {
+    const m = s[feat + 'Access'];
+    if (m === 'admin') return '仅管理员';
+    if (m === 'list') {
+      const u = Array.isArray(s[feat + 'AccessUsers']) ? s[feat + 'AccessUsers'].length : 0;
+      const g = Array.isArray(s[feat + 'AccessGroups']) ? s[feat + 'AccessGroups'].length : 0;
+      return '仅名单（' + u + ' 个用户 · ' + g + ' 个分组）';
+    }
+    return '所有人';
+  };
+  const grid = $('ext-status-grid');
+  if (grid) {
+    grid.innerHTML = ['web', 'notes', 'im'].map((f) => {
+      const on = switchOn[f];
+      const mode = modeText(f);
+      const effective = !on ? '已关闭' : (mode === '所有人' ? '所有登录用户' : mode);
+      return '<div class="ext-tile' + (on ? '' : ' off') + '">'
+        + '<div class="ext-tile-head"><span class="ext-tile-name">' + FEATURE_META[f].label + '</span>'
+        + '<span class="ext-tile-badge' + (on ? ' on' : '') + '">' + (on ? '已开启' : '已关闭') + '</span></div>'
+        + '<p class="ext-tile-desc">' + FEATURE_META[f].desc + '</p>'
+        + '<p class="ext-tile-state">可用范围：<b>' + escapeHtml(effective) + '</b></p>'
+        + '<button class="btn small" type="button" data-ext-go="' + f + '">前往设置</button>'
+        + '</div>';
+    }).join('');
+    grid.querySelectorAll('[data-ext-go]').forEach((b) => b.addEventListener('click', () => showAdminTab(b.dataset.extGo)));
+  }
+  const note = $('ext-status-note');
+  if (note) {
+    const anyOff = ['web', 'notes', 'im'].some((f) => !switchOn[f]);
+    note.textContent = anyOff
+      ? '提醒：已关闭的功能会连同其接口一起拒绝，前台入口也不显示。'
+      : '三个功能当前都开着。修改后用户下次刷新页面生效。';
+  }
+}
+
+// ---------- 在线浏览器:设置(总开关 / 可见范围 / 总结次数上限 / 主页收藏夹) ----------
 async function loadWebSettings() {
+  await ensureGroupsCache();
   const r = await api('/api/admin/settings');
   const s = ((await r.json()) || {}).settings || {};
   if ($('web-enabled')) $('web-enabled').checked = s.browserEnabled !== false;
+  if ($('web-cn-only')) $('web-cn-only').checked = s.webCnOnly !== false;
+  if ($('web-concurrency')) $('web-concurrency').value = Number(s.webConcurrency != null ? s.webConcurrency : 6);
   if ($('web-ai-limit')) $('web-ai-limit').value = Number(s.webAiDailyLimit != null ? s.webAiDailyLimit : 50);
+  renderFeatureAccessBlock('web', s);
   if ($('web-bookmarks')) {
     const list = Array.isArray(s.webBookmarks) ? s.webBookmarks : [];
     $('web-bookmarks').value = list.map((b) => (b && b.name ? b.name + '|' + (b.url || '') : '')).filter((x) => x.indexOf('|') > 0).join('\n');
@@ -4907,9 +5055,11 @@ function parseWebBookmarks(text) {
 
 // ---------- 在线聊天:设置 + 会话与留档 ----------
 async function loadImSettings() {
+  await ensureGroupsCache();
   const r = await api('/api/admin/settings');
   const s = ((await r.json()) || {}).settings || {};
   if ($('im-enabled')) $('im-enabled').checked = s.imEnabled !== false;
+  renderFeatureAccessBlock('im', s);
   if ($('im-allow-files')) $('im-allow-files').checked = s.imAllowFiles !== false;
   if ($('im-mutual-friends')) $('im-mutual-friends').checked = s.imMutualFriends === true;
   if ($('im-visible-users')) $('im-visible-users').value = Array.isArray(s.imVisibleUsers) ? s.imVisibleUsers.join(', ') : (s.imVisibleUsers || '');

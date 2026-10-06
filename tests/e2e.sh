@@ -80,6 +80,7 @@ DATA_DIR="$TMP/data" ADMIN_NAME=admin ADMIN_PASSWORD=e2e-pass \
   TC_LINUXDO_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
   TC_NODELOC_OAUTH_BASE="http://127.0.0.1:$OAUTH_PORT" \
   TC_ALLOW_PRIVATE_UPSTREAM=1 \
+  TC_WEB_CN_ONLY=0 \
   php -S "127.0.0.1:$PORT" router.php >"$TMP/app.log" 2>&1 &
 APP_PID=$!
 TC_MOCK_ECHO_FILE="$TMP/pf_echo_out.txt" php -S "127.0.0.1:$MOCK_PORT" tests/mock-upstream.php >"$TMP/mock.log" 2>&1 &
@@ -1849,7 +1850,7 @@ assert_contains "被拒后用量接口反映已用" "$(curl -s "$BASE/api/notes/
 # 笔记 AI 用途标签:调用后余量明细应出现「AI 笔记编辑/问答」等可读用途
 curl -s -X POST "$BASE/api/admin/users/update" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"notemate","quota":100,"groupId":null}' > /dev/null || true
 NMT2=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" -d '{"name":"notemate","password":"notemate123"}' | jget token)
-PUP=$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d '{"name":"e2e-note-bill","baseUrl":"http://127.0.0.1:8100/v1","apiKey":"k","apiFormat":"chat","scope":"global","costPerCall":3,"models":[{"id":"e2e-bill","name":"b","enabled":true}],"enabled":true}' | python -c "import sys,json;print(json.load(sys.stdin).get('provider',{}).get('id',''))")
+PUP=$(curl -s -X POST "$BASE/api/providers" -H "$AUTH" -H "Content-Type: application/json" -d "{\"name\":\"e2e-note-bill\",\"baseUrl\":\"http://127.0.0.1:$MOCK_PORT/v1\",\"apiKey\":\"k\",\"apiFormat\":\"chat\",\"scope\":\"global\",\"costPerCall\":3,\"models\":[{\"id\":\"e2e-bill\",\"name\":\"b\",\"enabled\":true}],\"enabled\":true}" | python -c "import sys,json;print(json.load(sys.stdin).get('provider',{}).get('id',''))")
 if [ -n "$PUP" ]; then
   curl -s -X POST "$BASE/api/proxy/chat" -H "Authorization: Bearer $NMT2" -H "Content-Type: application/json" -d "{\"model\":\"e2e-bill\",\"providerId\":\"$PUP\",\"stream\":false,\"_purpose\":\"note-edit\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" > /dev/null
   LED=$(curl -s "$BASE/api/me/quota/ledger?limit=5" -H "Authorization: Bearer $NMT2")
@@ -1935,6 +1936,9 @@ curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: applicat
 # ---------- 在线浏览器:服务端反向代理 ----------
 # 目标站由 TC_WEB_FETCH_BASE 指向 mock 的 /page/*(与 TC_PAGE_FETCH_BASE 同一套约定):
 # 被代理页面跑在 sandbox iframe 里,页面里所有地址都要回填成同源代理地址,否则用户浏览器会直连目标站。
+# 另:站点默认开着「仅限访问中国 IP 网站」(webCnOnly),而 mock 跑在本机、解析结果不在境内,
+# 所以这个实例用 TC_WEB_CN_ONLY=0 关掉该判定(在启动处)。这道判定本身由 tests/feature-access.php
+# 用真实境内/境外网段单独覆盖,不在这里假装 mock 是境内站。
 say ""
 say "== 在线浏览器 =="
 # base64url 编码(与 lib/web.php 的 tc_web_b64d 对应);用 php 保证跨平台一致
@@ -1955,6 +1959,23 @@ if printf '%s' "$wp" | grep -qF '&amp;amp;'; then bad "属性被二次转义(t �
 WEHHDR=$(cat "$TMP/web.h")
 assert_has "代理响应 X-Frame-Options 改为 SAMEORIGIN" "$WEHHDR" 'X-Frame-Options: SAMEORIGIN'
 assert_has "代理响应不缓存(避免跨用户串号)" "$WEHHDR" 'Cache-Control: no-store'
+# 静态子资源短缓存:第一次出网、第二次命中本地。mock 每次请求的尾巴都是新的随机字节,
+# 两次响应逐字节相同就证明第二次没有再出网(仅凭「200 且内容非空」证明不了缓存生效)。
+CAU=$(b64url "https://example.com/page/cache-probe.png")
+CR1=$(curl -s -D "$TMP/res1.h" "$BASE/api/web/res?u=$CAU&t=$TICKET")
+CRH1=$(cat "$TMP/res1.h")
+CR2=$(curl -s "$BASE/api/web/res?u=$CAU&t=$TICKET")
+assert_has "静态子资源按图片类型透传" "$CRH1" 'Content-Type: image/png'
+assert_has "静态子资源带私有缓存头" "$CRH1" 'Cache-Control: private, max-age='
+assert_eq "第二次请求命中本地缓存(响应逐字节相同)" "$CR2" "$CR1"
+# 按「这张图自己的缓存键落盘了」断言,不数目录里文件总数 —— 上面那个页面请求也会写入
+# 自己的 HTML 缓存条目(top 上方 /page/x),数总数会把两件事混在一起。
+CPKEY=$(php -r 'echo hash("sha256", $argv[1]);' "https://example.com/page/cache-probe.png")
+if [ -f "$TMP/data/webcache/$CPKEY" ]; then ok "子资源缓存已落盘"; else bad "子资源缓存未落盘"; fi
+# 带用户 cookie 的请求必须绕开缓存(同一地址对不同用户可能是个性化响应,复用就是串号)
+CR3=$(curl -s "$BASE/api/web/res?u=$CAU&c=sid%3D1&t=$TICKET")
+if [ -n "$CR3" ] && [ "$CR3" != "$CR1" ]; then ok "带 cookie 的子资源请求绕开缓存"; else bad "带 cookie 的请求仍命中缓存"; fi
+assert_has "带 cookie 的子资源仍按图片类型透传" "$(curl -s -D - -o /dev/null "$BASE/api/web/res?u=$CAU&c=sid%3D1&t=$TICKET")" 'Content-Type: image/png'
 assert_eq "伪造票据被拒" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/page?u=$PU&t=bad.ticket.sig")" "403"
 # SSRF 闸门在测试钩子生效前先拦一道:内网/云元数据地址必须进不来
 assert_eq "内网地址被 SSRF 闸门拒绝" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/page?u=$(b64url 'http://169.254.169.254/latest/meta-data')&t=$TICKET")" "400"
@@ -1981,8 +2002,24 @@ assert_contains "收藏夹读回一致" "$(curl -s "$BASE/api/web/bookmarks" -H 
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"browserEnabled":false}' > /dev/null
 assert_eq "关闭后票据接口拒绝" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/web/ticket" -H "$AUTH")" "403"
 assert_eq "关闭后页面代理拒绝" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/page?u=$PU&t=$TICKET")" "403"
+# 子资源与阅读模式也必须一起关掉。子资源走的是「不读库」的快路径,一度只验签不判权限,
+# 于是总开关关掉后页面 403、同一个票据的子资源却照常出网 —— 关一半等于没关。
+assert_eq "关闭后子资源代理拒绝" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/res?u=$CAU&t=$TICKET")" "403"
+assert_eq "关闭后阅读模式拒绝" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/read?u=$PU&t=$TICKET")" "403"
+# 关掉后不能还能从缓存里取到东西(缓存命中必须排在权限判定之后)
+assert_eq "关闭后子资源缓存不再命中" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/res?u=$CAU&t=$TICKET")" "403"
 curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"browserEnabled":true}' > /dev/null
+assert_eq "重新开启后页面代理恢复" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/page?u=$PU&t=$TICKET")" "200"
+assert_eq "重新开启后子资源代理恢复" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/res?u=$CAU&t=$TICKET")" "200"
+assert_eq "重新开启后阅读模式恢复" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/read?u=$PU&t=$TICKET")" "200"
+# 「仅管理员」同样要覆盖到子资源:只判页面的话,普通用户仍能拿别人的票据间接抓取任意子资源
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webAccess":"admin"}' > /dev/null
+assert_eq "仅管理员时管理员子资源可用" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/web/res?u=$CAU&t=$TICKET")" "200"
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webAccess":"all"}' > /dev/null
 assert_contains "公共配置暴露 browserEnabled" "$(curl -s "$BASE/api/config")" '"browserEnabled":true'
+# 前台要靠这个字段区分「该站不在境内」与「服务器没装境内 IP 段数据」:
+# 后者会让所有站点一起被拒,只说「该站点不在允许范围内」没法排查
+assert_contains "公共配置暴露境内 IP 段数据就绪标记" "$(curl -s "$BASE/api/config")" '"webCnDataReady":true'
 
 # ---------- 会话内 @AI 召唤 ----------
 # 会话内召唤走的是「有可用供应商」的分支:要先预扣额度,再把本会话最近若干条消息快照成上下文。
@@ -2010,29 +2047,52 @@ S2=$(curl -s -X POST "$BASE/api/auth/login" -H "Content-Type: application/json" 
 SUAUTH="Authorization: Bearer $SU"
 S2AUTH="Authorization: Bearer $S2"
 SUID=$(curl -s "$BASE/api/im/users/search?q=Summoned" -H "$SUAUTH" | grep -o '"id":"[a-f0-9]*"' | head -1 | cut -d'"' -f4)
-# 双向请求自动匹配成好友,随后建单聊
+# 新装实例的用户发现默认是关的(可见性名单为空),搜索拿不到别人的 id;
+# 从管理端用户列表取,免得这节用例依赖一个跟 @AI 召唤无关的开关。
+[ -n "$SUID" ] || SUID=$(curl -s "$BASE/api/admin/users" -H "$AUTH" | grep -o '"id":"[a-f0-9]*","name":"Summoned"' | cut -d'"' -f4)
+# 双向请求自动匹配成好友;成功了才会有会话
 curl -s -X POST "$BASE/api/friends/request" -H "$SUAUTH" -H "Content-Type: application/json" -d '{"name":"Summoned"}' > /dev/null
-curl -s -X POST "$BASE/api/friends/request" -H "$S2AUTH" -H "Content-Type: application/json" -d '{"name":"Summoner"}' > /dev/null
-STID=$(curl -s -X POST "$BASE/api/im/threads" -H "$SUAUTH" -H "Content-Type: application/json" -d "{\"type\":\"dm\",\"uid\":\"$SUID\"}" | jget id)
-[ -n "$STID" ] && ok "召唤用例:建单聊" || bad "召唤用例:建单聊"
+S2R=$(curl -s -X POST "$BASE/api/friends/request" -H "$S2AUTH" -H "Content-Type: application/json" -d '{"name":"Summoner"}')
+assert_contains "召唤用例:双向请求自动匹配成好友" "$S2R" '"matched"'
+# 会话 id 在 thread.id 里,且同一份 JSON 的 members[].id 也是 "id" 键;用 jget 那条
+# 贪婪 sed 取到的是最后一个成员(对方)的 uid,拿它发消息必然 404「会话不存在」。
+# 这里按路径解析,别再用 grep/sed 在这层嵌套上取 id。
+STID=$(curl -s -X POST "$BASE/api/im/threads" -H "$SUAUTH" -H "Content-Type: application/json" -d "{\"type\":\"dm\",\"uid\":\"$SUID\"}" \
+  | python -c "import sys,json;print(json.load(sys.stdin).get('thread',{}).get('id',''))")
+if [ -n "$STID" ]; then ok "召唤用例:取得单聊会话"; else bad "召唤用例:取得单聊会话 (SUID=[$SUID] STID 为空)"; fi
+# 消息体同样走文件:命令行参数里的中文在 Windows 上会被 curl 按本地码页重编码成非法
+# UTF-8,服务端 json_decode 直接失败(实测报「请求体格式错误」)。Linux 上两种写法等价。
+im_msg_body() { printf '%s' "$2" > "$TMP/im-$1.json"; }
 # 先塞历史,让「上下文快照」确实有内容可读(故障点就在这里)
-curl -s -X POST "$BASE/api/im/messages" -H "$SUAUTH" -H "Content-Type: application/json" -d "{\"thread\":\"$STID\",\"text\":\"今天天气不错\"}" > /dev/null
-curl -s -X POST "$BASE/api/im/messages" -H "$S2AUTH" -H "Content-Type: application/json" -d "{\"thread\":\"$STID\",\"text\":\"是挺晴朗的\"}" > /dev/null
+im_msg_body h1 "{\"thread\":\"$STID\",\"text\":\"今天天气不错\"}"
+im_msg_body h2 "{\"thread\":\"$STID\",\"text\":\"是挺晴朗的\"}"
+curl -s -X POST "$BASE/api/im/messages" -H "$SUAUTH" -H "Content-Type: application/json" --data-binary @"$TMP/im-h1.json" > /dev/null
+curl -s -X POST "$BASE/api/im/messages" -H "$S2AUTH" -H "Content-Type: application/json" --data-binary @"$TMP/im-h2.json" > /dev/null
+im_msg_body a1 "{\"thread\":\"$STID\",\"text\":\"@AI 帮我总结一下\",\"providerId\":\"$PROV\",\"model\":\"mock-model\"}"
 SUM=$(curl -s -w '\n%{http_code}' -X POST "$BASE/api/im/messages" -H "$SUAUTH" -H "Content-Type: application/json" \
-  -d "{\"thread\":\"$STID\",\"text\":\"@AI 帮我总结一下\",\"providerId\":\"$PROV\",\"model\":\"mock-model\"}")
-assert_eq "@AI 召唤不返回 500(上下文快照不再读未赋值变量)" "$(printf '%s' "$SUM" | tail -1)" "200"
+  --data-binary @"$TMP/im-a1.json")
+cp "$TMP/im-a1.json" "$TMP/im-a1.sent.json" 2>/dev/null || true
+if [ "${E2E_DEBUG:-0}" = "1" ]; then
+  say "    [debug] SUID=$SUID STID=$STID PROV=$PROV"
+  say "    [debug] body=$(cat "$TMP/im-a1.json")"
+  say "    [debug] resp=$(printf '%s' "$SUM" | tr '\n' ' ')"
+fi
+assert_eq "@AI 召唤不返回 500：上下文快照不再读未赋值变量" "$(printf '%s' "$SUM" | tail -1)" "200"
 assert_contains "@AI 召唤进入异步回复" "$(printf '%s' "$SUM" | sed '$d')" '"pending":true'
 # 关掉「AI 读取上下文」后同一分支仍要能走通
 curl -s -X POST "$BASE/api/im/threads/$STID/ai" -H "$SUAUTH" -H "Content-Type: application/json" -d '{"context":false}' > /dev/null
+im_msg_body a2 "{\"thread\":\"$STID\",\"text\":\"@AI 再总结一次\",\"providerId\":\"$PROV\",\"model\":\"mock-model\"}"
 assert_eq "关闭上下文后召唤仍不 500" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/im/messages" -H "$SUAUTH" -H "Content-Type: application/json" \
-  -d "{\"thread\":\"$STID\",\"text\":\"@AI 再总结一次\",\"providerId\":\"$PROV\",\"model\":\"mock-model\"}")" "200"
+  --data-binary @"$TMP/im-a2.json")" "200"
 # 整会话 AI 模式:不带 @ 的普通消息也走召唤分支
 curl -s -X POST "$BASE/api/im/threads/$STID/ai" -H "$SUAUTH" -H "Content-Type: application/json" -d '{"enabled":true}' > /dev/null
+im_msg_body a3 "{\"thread\":\"$STID\",\"text\":\"不带 at 的一句\",\"providerId\":\"$PROV\",\"model\":\"mock-model\"}"
 assert_eq "整会话 AI 模式普通消息不 500" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/im/messages" -H "$SUAUTH" -H "Content-Type: application/json" \
-  -d "{\"thread\":\"$STID\",\"text\":\"不带 @ 的一句\",\"providerId\":\"$PROV\",\"model\":\"mock-model\"}")" "200"
+  --data-binary @"$TMP/im-a3.json")" "200"
 # 供应商不存在时应回错误提示而不是 500
+im_msg_body a4 "{\"thread\":\"$STID\",\"text\":\"@AI 用不存在的供应商\",\"providerId\":\"ffffffffffffffffffffffffffffffff\"}"
 assert_contains "无效供应商回错误提示而非 500" "$(curl -s -X POST "$BASE/api/im/messages" -H "$SUAUTH" -H "Content-Type: application/json" \
-  -d "{\"thread\":\"$STID\",\"text\":\"@AI 用不存在的供应商\",\"providerId\":\"ffffffffffffffffffffffffffffffff\"}")" '"error"'
+  --data-binary @"$TMP/im-a4.json")" '"error"'
 
 
 say ""

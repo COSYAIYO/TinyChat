@@ -92,6 +92,8 @@ jobs:
         run: php tests/im-social.php
       - name: 在线浏览器代理自检(票据验签 / URL 绝对化 / SSRF / HTML·CSS 改写 / cookie jar)
         run: php tests/web-proxy.php
+      - name: 拓展功能可见性自检(默认语义 / 仅管理员 / 名单 / 用户组 / 境内 IP 段二分查找)
+        run: php tests/feature-access.php
 
   e2e:
     name: E2E(PHP ${{ matrix.php }})
@@ -160,3 +162,8 @@ jobs:
       # 必须原样还原」与两行式输入框带来的底部留白联动。
       - name: ChatGPT 主题包自检(覆盖生效 / 深色 / 窄屏 / 切回默认还原)
         run: node tests/theme-gpt-gui.mjs
+      # 方块主题的核心承诺是「不画分割线」—— 靠读 CSS 源码看不出哪条 border 没被压掉,
+      # 必须真量一遍边框宽度;Claude 主题的整栏通排 + 加宽输入框会牵动底部留白,
+      # 一并在这里量。
+      - name: 方块 / Claude 主题包自检(边框归零 / 深色 / 窄屏 / 切回默认还原)
+        run: node tests/theme-packs-gui.mjs

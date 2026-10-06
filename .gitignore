@@ -3,6 +3,9 @@
 data/*
 !data/.htaccess
 !data/.gitkeep
+# 本地起测试实例时用的独立数据目录(data-8999 等,见 README 的本地测试写法):
+# 里面是 sqlite 库、cookie jar 与网页缓存,属于运行期数据,不入库
+data-*/
 config.php
 *.log
 .tmp/

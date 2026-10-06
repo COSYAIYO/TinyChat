@@ -33,8 +33,12 @@ if (!defined('TC_IM_ATTACH_COOKIE')) define('TC_IM_ATTACH_COOKIE', 'tc_im_attach
 
 // ============ 总开关与通用小工具 ============
 
-function tc_im_feature_guard($db) {
-    if (empty($db['settings']['imEnabled'])) tc_fail(403, '本站未开放在线聊天功能');
+// 功能可用性判定统一走 tc_feature_allowed(见 lib/features.php):
+// 总开关 × 访问级别(全站 / 仅管理员 / 仅名单)同时成立才放行。
+function tc_im_feature_guard($db, $user = null) {
+    if ($user === null) $user = tc_require_auth($db);
+    if (!tc_feature_allowed($db, $user, 'im')) tc_fail(403, '本站未开放在线聊天功能，或你的账号没有使用权限');
+    return $user;
 }
 
 // 会话 id / 消息 id 的合法性校验(threadId 是 tc_uid 随机串,不接收用户自造格式)
@@ -457,7 +461,7 @@ function tc_im_are_friends($db, $a, $b) {
 function tc_api_im_user_search() {
     tc_with_db(false, function ($db) {
         $user = tc_require_auth($db);
-        tc_im_feature_guard($db);
+        tc_im_feature_guard($db, $user);
         if (!tc_rate_limit_check('imsearch:' . $user['id'], 30)) tc_fail(429, '搜索过于频繁，请稍后再试');
         $q = tc_utf_cut(trim((string) (isset($_GET['q']) ? $_GET['q'] : '')), 64);
         if ($q === '') tc_json(200, array('users' => array()));
@@ -514,7 +518,7 @@ function tc_api_im_user_search() {
 function tc_api_friends_list() {
     tc_with_db(false, function ($db) {
         $user = tc_require_auth($db);
-        tc_im_feature_guard($db);
+        tc_im_feature_guard($db, $user);
         $idx = tc_im_users_index($db);
         $doc = tc_im_friends_doc($db, $user['id']);
         $friendIds = array();
@@ -591,7 +595,7 @@ function tc_api_friends_list() {
 function tc_api_friend_request() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
-        tc_im_feature_guard($db);
+        tc_im_feature_guard($db, $user);
         if (!tc_rate_limit_check('imfr:' . $user['id'], 10)) tc_fail(429, '操作过于频繁，请稍后再试');
         $b = tc_read_json_body(65536);
         $name = tc_utf_cut(trim((string) (isset($b['name']) ? $b['name'] : '')), 32);
@@ -680,7 +684,7 @@ function tc_im_requests_out(&$db, $uid) {
 function tc_api_friend_respond() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
-        tc_im_feature_guard($db);
+        tc_im_feature_guard($db, $user);
         if (!tc_rate_limit_check('imfr:' . $user['id'], 10)) tc_fail(429, '操作过于频繁，请稍后再试');
         $b = tc_read_json_body(65536);
         $reqId = substr(trim((string) (isset($b['id']) ? $b['id'] : '')), 0, 64);
@@ -723,7 +727,7 @@ function tc_api_friend_respond() {
 function tc_api_friend_remove($uid) {
     tc_with_db(true, function (&$db) use ($uid) {
         $user = tc_require_auth($db);
-        tc_im_feature_guard($db);
+        tc_im_feature_guard($db, $user);
         $uid = preg_replace('/[^a-f0-9]/', '', (string) $uid);
         if ($uid === '') tc_fail(400, '无效的用户');
         // 管理员虚拟好友 / 「所有人默认互为好友」模式下的关系不可解除
@@ -757,7 +761,7 @@ function tc_api_friend_remove($uid) {
 function tc_api_im_threads() {
     tc_with_db(false, function ($db) {
         $user = tc_require_auth($db);
-        tc_im_feature_guard($db);
+        tc_im_feature_guard($db, $user);
         $idx = tc_im_users_index($db);
         $state = tc_im_state_doc($db, $user['id']);
         $out = array();
@@ -776,7 +780,7 @@ function tc_api_im_threads() {
 function tc_api_im_thread_create() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
-        tc_im_feature_guard($db);
+        tc_im_feature_guard($db, $user);
         if (!tc_rate_limit_check('imthread:' . $user['id'], 10)) tc_fail(429, '操作过于频繁，请稍后再试');
         $b = tc_read_json_body(131072);
         $type = (string) (isset($b['type']) ? $b['type'] : 'dm');
@@ -833,7 +837,7 @@ function tc_api_im_thread_create() {
 function tc_api_im_thread_add_members($tid) {
     tc_with_db(true, function (&$db) use ($tid) {
         $user = tc_require_auth($db);
-        tc_im_feature_guard($db);
+        tc_im_feature_guard($db, $user);
         if (!tc_rate_limit_check('imthread:' . $user['id'], 10)) tc_fail(429, '操作过于频繁，请稍后再试');
         if (!tc_im_tid_ok($tid)) tc_fail(400, '会话不存在');
         $threads = tc_im_threads_all($db);
@@ -866,7 +870,7 @@ function tc_api_im_thread_add_members($tid) {
 function tc_api_im_thread_ai_toggle($tid) {
     tc_with_db(true, function (&$db) use ($tid) {
         $user = tc_require_auth($db);
-        tc_im_feature_guard($db);
+        tc_im_feature_guard($db, $user);
         if (!tc_im_tid_ok($tid)) tc_fail(400, '会话不存在');
         $threads = tc_im_threads_all($db);
         if (!isset($threads[$tid]) || !tc_im_thread_member($threads[$tid], $user['id'])) tc_fail(404, '会话不存在');
@@ -892,7 +896,7 @@ function tc_api_im_thread_ai_toggle($tid) {
 function tc_api_im_thread_rename($tid) {
     tc_with_db(true, function (&$db) use ($tid) {
         $user = tc_require_auth($db);
-        tc_im_feature_guard($db);
+        tc_im_feature_guard($db, $user);
         if (!tc_rate_limit_check('imthread:' . $user['id'], 10)) tc_fail(429, '操作过于频繁，请稍后再试');
         if (!tc_im_tid_ok($tid)) tc_fail(400, '会话不存在');
         $threads = tc_im_threads_all($db);
@@ -918,7 +922,7 @@ function tc_api_im_thread_rename($tid) {
 function tc_api_im_thread_delete($tid) {
     tc_with_db(true, function (&$db) use ($tid) {
         $user = tc_require_auth($db);
-        tc_im_feature_guard($db);
+        tc_im_feature_guard($db, $user);
         if (!tc_im_tid_ok($tid)) tc_fail(400, '会话不存在');
         $threads = tc_im_threads_all($db);
         if (!isset($threads[$tid]) || !tc_im_thread_member($threads[$tid], $user['id'])) tc_fail(404, '会话不存在');
@@ -979,7 +983,7 @@ function tc_api_im_messages() {
     // 写事务:拉取即已读,已读游标要落盘(空闲轮询不推进游标、不产生写放大)
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
-        tc_im_feature_guard($db);
+        tc_im_feature_guard($db, $user);
         if (!tc_rate_limit_check('immsg:' . $user['id'], 120)) tc_fail(429, '拉取过于频繁，请稍后再试');
         $q = tc_query();
         $tid = (string) (isset($q['thread']) ? $q['thread'] : '');
@@ -1019,7 +1023,7 @@ function tc_api_im_send() {
     $payload = array();
     tc_with_db(true, function (&$db) use (&$ctx, &$payload) {
         $user = tc_require_auth($db);
-        tc_im_feature_guard($db);
+        tc_im_feature_guard($db, $user);
         if (!tc_rate_limit_check('imsend:' . $user['id'], 30)) tc_fail(429, '发送过于频繁，请稍后再试');
         $b = tc_read_json_body(131072);
         $tid = (string) (isset($b['thread']) ? $b['thread'] : '');
@@ -1367,7 +1371,7 @@ function tc_im_usage_of($data, $format) {
 function tc_api_im_msg_delete() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
-        tc_im_feature_guard($db);
+        tc_im_feature_guard($db, $user);
         if (!tc_rate_limit_check('imsend:' . $user['id'], 30)) tc_fail(429, '操作过于频繁，请稍后再试');
         $b = tc_read_json_body(65536);
         $tid = (string) (isset($b['thread']) ? $b['thread'] : '');
@@ -1425,7 +1429,7 @@ function tc_api_im_msg_delete() {
 function tc_api_im_updates() {
     tc_with_db(false, function ($db) {
         $user = tc_require_auth($db);
-        tc_im_feature_guard($db);
+        tc_im_feature_guard($db, $user);
         if (!tc_rate_limit_check('impoll:' . $user['id'], 120)) tc_fail(429, '轮询过于频繁，请稍后再试');
         $idx = tc_im_users_index($db);
         $doc = tc_im_friends_doc($db, $user['id']);
@@ -1469,7 +1473,7 @@ function tc_api_im_updates() {
 function tc_api_im_upload() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
-        tc_im_feature_guard($db);
+        tc_im_feature_guard($db, $user);
         if (!tc_rate_limit_check('imupload:' . $user['id'], 60, 3600000)) tc_fail(429, '上传过于频繁，请稍后再试');
         if (empty($_FILES['file']) || !is_array($_FILES['file'])) tc_fail(400, '缺少上传文件');
         $f = $_FILES['file'];
@@ -1680,7 +1684,7 @@ function tc_api_im_file() {
 function tc_api_im_files_gc() {
     tc_with_db(true, function (&$db) {
         $user = tc_require_auth($db);
-        tc_im_feature_guard($db);
+        tc_im_feature_guard($db, $user);
         if (!tc_rate_limit_check('imgc:' . $user['id'], 12, 3600000)) tc_fail(429, '回收操作过于频繁，请稍后再试');
         $alive = array();
         foreach (tc_im_msgs_all($db) as $doc) {

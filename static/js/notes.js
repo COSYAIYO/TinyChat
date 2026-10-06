@@ -3684,8 +3684,10 @@
   function notesFeatureEnabled() {
     try {
       const cfg = JSON.parse(localStorage.getItem('oc_cfg') || 'null');
-      if (cfg && typeof cfg.notesEnabled === 'boolean') return cfg.notesEnabled;
+      if (cfg && typeof cfg.notesEnabled === 'boolean' && !cfg.notesEnabled) return false;
     } catch (e) {}
+    // 总开关之外还有「仅管理员 / 仅名单」这层按人判定(/api/me 下发)
+    if (window.OCFeatures && !window.OCFeatures.allowed('notes')) return false;
     return true;
   }
   function initEntry() {
@@ -3695,6 +3697,12 @@
       const iconEl = document.getElementById('notes-entry-icon');
       if (iconEl && window.OC && OC.icon) iconEl.innerHTML = OC.icon('notebook', 15);
       btn.addEventListener('click', open);
+      // /api/me 带回按人判定后会广播:入口可能先渲染、权限后到(或反之),这里重判一次
+      window.addEventListener('oc:features', () => {
+        const ok = notesFeatureEnabled();
+        btn.classList.toggle('hidden', !ok);
+        if (!ok && N.ready && N.els.mask && N.els.mask.classList.contains('show')) close();
+      });
     }
     // 直接访问 /ainotes(或刷新)时自动进入笔记;登录态未就绪时等 app 初始化完再试
     if (isNotesPath()) {

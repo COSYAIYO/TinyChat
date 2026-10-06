@@ -64,6 +64,28 @@
         light: { bg: '#ffffff', panel: '#f9f9f9', text: '#0d0d0d', accent: '#0d0d0d', bubble: '#f4f4f4' },
         dark: { bg: '#212121', panel: '#171717', text: '#ececec', accent: '#ffffff', bubble: '#303030' }
       }
+    },
+    {
+      id: 'block',
+      name: '方块',
+      desc: '苹果产品页式的圆角矩形分块，不画分割线，靠留白与浅投影分区，自带配色',
+      ownsPalette: true,
+      css: 'static/css/theme-block.min.css',
+      swatch: {
+        light: { bg: '#f5f5f7', panel: '#ffffff', text: '#1d1d1f', accent: '#0071e3', bubble: '#e8e8ed' },
+        dark: { bg: '#000000', panel: '#1c1c1e', text: '#f5f5f7', accent: '#0a84ff', bubble: '#2c2c2e' }
+      }
+    },
+    {
+      id: 'claude',
+      name: 'Claude 风格',
+      desc: '暖米白纸感配色、陶土橙点缀，助手整栏通排与宽扁输入框，自带配色',
+      ownsPalette: true,
+      css: 'static/css/theme-claude.min.css',
+      swatch: {
+        light: { bg: '#faf9f5', panel: '#ffffff', text: '#1f1e1d', accent: '#c96442', bubble: '#f0eee6' },
+        dark: { bg: '#262624', panel: '#30302e', text: '#f5f4ef', accent: '#d97757', bubble: '#30302e' }
+      }
     }
   ];
   window.OC_THEME_PACKS = PACKS;

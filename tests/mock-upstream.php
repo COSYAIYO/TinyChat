@@ -41,6 +41,14 @@ if (strpos($uri, '/jina-markdown') !== false) {
     echo "Search results:\n\nTitle From Markdown\n\n[MD:" . $q . "](https://example.com/jina-md)\n\nMD 摘要内容 " . $q . "\n";
     return;
 }
+// ---- 静态子资源 mock(配合在线浏览器的子资源短缓存):每次请求都换一段随机尾巴 ----
+// 上层若真命中了本地缓存,前后两次拿到的响应必须逐字节相同 —— 这正是「没再出网」的证据。
+// 必须在 /page/ 分支之前判定,否则会被当成 HTML 页面。
+if (strpos($uri, '/page/cache-probe.png') !== false) {
+    header('Content-Type: image/png');
+    echo "\x89PNG\r\n\x1a\n" . bin2hex(random_bytes(16));
+    return;
+}
 // ---- 网页正文 mock(配合 TC_PAGE_FETCH_BASE,验证搜索结果正文真的进了模型上下文) ----
 // 页面刻意做成「导航在前、正文在后,且正文里带裸 < 与 HTML 注释」:
 // 裸 < 曾让 strip_tags 吞掉后面整段正文(真实缺陷),这里作为回归样本保留。

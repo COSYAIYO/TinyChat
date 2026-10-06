@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.134');
+define('TC_VERSION', '2.0.136');
 // 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
 define('TC_NOTE_MAX_CHARS', 500000);
 define('TC_DB_VERSION', 2);
@@ -229,8 +229,18 @@ $TC_SETTINGS_DEFAULTS = array(
     'webAiDailyLimit' => 50,
     // 浏览器主页收藏夹:留空用内置默认(Google 学术/arXiv/PubMed/…),配置后覆盖默认
     'webBookmarks' => array(),
+    // 仅允许访问「解析到中国 IP」的网站(默认开启)。
+    // 动机:代理出网走的是本站服务器,境外站点的滥用/合规风险与流量都记在本站账上;
+    // 限制成国内站后,「看国内资料」这个主要用途不受影响,风险面小很多。
+    'webCnOnly' => true,
+    // 单页面子资源并发抓取上限(1 = 串行)。调大能让重图片的页面更快出来,
+    // 但并发出网会同时占用多个连接与内存,虚拟主机上不宜过高。
+    'webConcurrency' => 6,
 );
 $TC_SETTINGS_DEFAULTS['mailTemplates'] = tc_mail_default_templates();
+// 三个拓展功能的访问级别(全站 / 仅管理员 / 仅名单)与名单
+require_once __DIR__ . '/features.php';
+$TC_SETTINGS_DEFAULTS = array_merge($TC_SETTINGS_DEFAULTS, tc_feature_access_defaults());
 
 function tc_load_config() {
     // 环境变量只在「已设置且非空」时才算数:未设置的值不能把 config.php 里的配置抹掉。
@@ -1089,6 +1099,15 @@ function tc_normalize_settings($raw) {
         if (count($wbOut) >= 200) break;
     }
     $s['webBookmarks'] = $wbOut;
+    // 仅限中国 IP 站点:默认开启(旧库缺字段也按开启);并发上限 1~16
+    $s['webCnOnly'] = !array_key_exists('webCnOnly', $s) || !empty($s['webCnOnly']);
+    $s['webConcurrency'] = min(16, max(1, (int) (isset($s['webConcurrency']) ? $s['webConcurrency'] : 6) ?: 6));
+    // 三个拓展功能的访问级别与名单(在线浏览器 / AI 笔记 / 在线聊天)
+    foreach (array('notes', 'im', 'web') as $feat) {
+        $s[$feat . 'Access'] = tc_feature_access_mode(isset($s[$feat . 'Access']) ? $s[$feat . 'Access'] : 'all');
+        $s[$feat . 'AccessUsers'] = tc_feature_access_list(isset($s[$feat . 'AccessUsers']) ? $s[$feat . 'AccessUsers'] : array());
+        $s[$feat . 'AccessGroups'] = tc_feature_access_list(isset($s[$feat . 'AccessGroups']) ? $s[$feat . 'AccessGroups'] : array(), 50);
+    }
     $s['perfNoWebfonts'] = !empty($s['perfNoWebfonts']);
     $s['perfNoKatex'] = !empty($s['perfNoKatex']);
     $s['perfNoHighlight'] = !empty($s['perfNoHighlight']);
