@@ -207,7 +207,10 @@ await injectDemo(page);
 
 console.log('== 2. 正文排版:覆盖必须真的生效(被上游 !important 钉住的几处)==');
 const bodyFs = await css('.msg.assistant .msg-content', 'font-size');
-check('正文字号 16px(chrome.css 字号总表是 !important,普通声明压不过)', near(bodyFs, 16), bodyFs);
+// 正文不再写死 16px:主题只给相对倍数(--msg-scale = 0.98),
+// 基准始终是用户在「外观→字号」里的选择(这里注入的默认是 14px)。
+// 写死绝对值会让设置里的 14px 实际渲染成 16px,用户看到的和设置对不上。
+check('正文按「字号」设置缩放(14px × 0.98 ≈ 13.7px,不写死 16px)', near(bodyFs, 14 * 0.98, 0.4), bodyFs);
 const h2Fs = await css('.msg.assistant .md-prose h2', 'font-size');
 check('二级标题 20px', near(h2Fs, 20), h2Fs);
 const bodyLh = await css('.msg.assistant .msg-content', 'line-height');
@@ -236,12 +239,15 @@ check('复制键是幽灵按钮(透明底)', (await css('.msg.assistant .md-pros
 check('引用只有左侧细线、无底色', (await css('.msg.assistant .md-prose blockquote', 'background-color')) === 'rgba(0, 0, 0, 0)'
   && (await css('.msg.assistant .md-prose blockquote', 'border-left-width')) === '2px');
 
-console.log('== 4. 消息操作:桌面端悬停才出现 ==');
-check('静止时操作条不可见', (await css('.msg.assistant .msg-actions', 'opacity')) === '0',
+// 操作条现在四套主题一致:常驻可见,靠颜色深浅表达状态,悬停/聚焦再提亮。
+// 曾经这里断言的是「静止 opacity: 0、悬停才浮现」,但同一排按钮在默认外观看得见、
+// 切到主题就「消失」,用户报的就是这个 —— 与默认外观对齐才是对的。
+console.log('== 4. 消息操作常驻(不悬停也看得见,悬停只提亮)==');
+check('静止时操作条可见', (await css('.msg.assistant .msg-actions', 'opacity')) === '1',
   await css('.msg.assistant .msg-actions', 'opacity'));
 await page.hover('#zz-demo .msg.assistant .msg-content');
 await sleep(300);
-check('悬停后操作条浮现', (await css('.msg.assistant .msg-actions', 'opacity')) === '1',
+check('悬停后操作条仍然可见(不变暗也不消失)', (await css('.msg.assistant .msg-actions', 'opacity')) === '1',
   await css('.msg.assistant .msg-actions', 'opacity'));
 await page.mouse.move(5, 5);
 await sleep(300);
@@ -332,8 +338,12 @@ const flowBox = await box('.composer-flow');
 const leftBox = await box('.composer-left');
 const rightBox = await box('.composer-right');
 check('输入行在上、工具行在下', leftBox.y >= flowBox.bottom - 2, leftBox.y + ' vs flow.bottom ' + flowBox.bottom);
-check('发送键仍在输入框右下角', rightBox.y >= flowBox.bottom - 2 && Math.abs((rightBox.x + rightBox.w) - (wrap.x + wrap.w)) <= 24,
-  JSON.stringify(rightBox));
+// 基准用 .composer(输入框卡片本身)而不是 .composer-wrap:wrap 现在带 12px 左右内缩
+// (给窄屏留边距),拿它当右界会多算 12px,把「贴住输入框右下角」误判成偏了 25px。
+const composerCard = await box('.composer');
+check('发送键仍在输入框右下角',
+  rightBox.y >= flowBox.bottom - 2 && Math.abs((rightBox.x + rightBox.w) - (composerCard.x + composerCard.w)) <= 20,
+  JSON.stringify(rightBox) + ' vs card right ' + (composerCard.x + composerCard.w));
 // 输入框两端的两个圆按钮要「看上去」一样大:发送钮是实心圆底,菜单钮是透明的,
 // 所以菜单钮刻意做大一档(46 vs 42),靠外径补上那圈柔和边缘的视觉差;
 // 但不许给它加投影 —— 透明按钮上多一圈灰会更显脏。
@@ -344,7 +354,7 @@ check('折叠菜单钮比发送钮大一档(46 vs 42,补上实心圆底的视觉
 check('折叠菜单钮没有投影', (await css('.composer-more', 'box-shadow')) === 'none', await css('.composer-more', 'box-shadow'));
 check('两个钮垂直居中对齐', Math.abs((moreBox.y + moreBox.h / 2) - (sendBox.y + sendBox.h / 2)) <= 1,
   JSON.stringify({ moreCenter: moreBox.y + moreBox.h / 2, sendCenter: sendBox.y + sendBox.h / 2 }));
-check('菜单钮图标 22px(发送钮 20px)', Math.abs((await box('.composer-more .oc-icon')).w - 22) <= 0.5,
+check('菜单钮图标 26px(发送钮 20px)', Math.abs((await box('.composer-more .oc-icon')).w - 26) <= 0.5,
   String((await box('.composer-more .oc-icon')).w));
 check('消息区底部留白已让开变高的输入框', (await css('.chat-area', 'padding-bottom')) === '190px',
   await css('.chat-area', 'padding-bottom'));
@@ -398,7 +408,12 @@ await injectDemo(page);
 check('头像恢复显示', (await css('.msg.assistant .msg-avatar', 'display')) === 'flex', await css('.msg.assistant .msg-avatar', 'display'));
 check('正文字号回到 14px', (await css('.msg.assistant .msg-content', 'font-size')) === '14px', await css('.msg.assistant .msg-content', 'font-size'));
 check('输入框回到单行', (await css('.composer', 'flex-wrap')) === 'nowrap', await css('.composer', 'flex-wrap'));
-check('输入框宽度回到 820px', (await box('.composer-wrap')).w === 820, String((await box('.composer-wrap')).w));
+// 切回默认外观后输入框宽度必须与消息列一致(两者都吃 --content-w),而不是某个写死的像素值:
+// 对话列宽度现在由用户在「外观」里调(默认 61.8%),写死 820px 只在旧默认下成立。
+const backWrap = await box('.composer-wrap');
+const backMsgs = await box('.messages');
+check('输入框宽度回到默认(与消息列同宽,由 --content-w 决定)',
+  backWrap.w > 0 && backMsgs.w > 0 && Math.abs(backWrap.w - backMsgs.w) <= 1, backWrap.w + ' vs ' + backMsgs.w);
 // 默认外观自身的不变量,和主题无关,放在这里是因为这节正好是默认外观的现场:
 // textarea 默认是 inline-block,坐在文字基线上,行盒还要给下方 descender 留位置,
 // 于是 .composer-flow 比 textarea 高出一截且空白全在下方,输入框里那行字看着偏上。

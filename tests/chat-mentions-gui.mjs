@@ -242,9 +242,22 @@ const snap = await page.evaluate(() => {
     refTextHit: document.querySelector('#messages') ? document.querySelector('#messages').innerText.includes('参考笔记') : false,
     contentW: content ? Math.round(content.getBoundingClientRect().width) : 0,
     proseW: prose ? Math.round(prose.getBoundingClientRect().width) : 0,
+    // 消息行、头像与正文左边缘:用来把「正文有没有被挤窄」写成与列宽无关的相对判据。
+    // 直接减 avatarW 不成立 —— 头像与正文之间还有行内 gap,且正文自身可能有内边距,
+    // 所以按「正文左边缘到行右边缘」来算可用宽度,这才是它该占满的区域。
+    msgRowW: (() => { const a = document.querySelectorAll('#messages .msg.assistant'); const l = a[a.length - 1]; return l ? Math.round(l.getBoundingClientRect().width) : 0; })(),
+    msgRowRight: (() => { const a = document.querySelectorAll('#messages .msg.assistant'); const l = a[a.length - 1]; return l ? Math.round(l.getBoundingClientRect().right) : 0; })(),
+    msgRowPadRight: (() => { const a = document.querySelectorAll('#messages .msg.assistant'); const l = a[a.length - 1]; return l ? parseFloat(getComputedStyle(l).paddingRight) || 0 : 0; })(),
+    avatarW: (() => { const a = document.querySelectorAll('#messages .msg.assistant'); const l = a[a.length - 1]; const av = l ? l.querySelector('.msg-avatar') : null; return av ? Math.round(av.getBoundingClientRect().width) : 0; })(),
+    contentLeft: content ? Math.round(content.getBoundingClientRect().left) : 0,
     msgChildren: last ? Array.from(last.children).map((el) => el.className) : [],
     // 引用 chip 与紧随其后的正文必须同高:overflow:hidden 的 inline-block 以底边当基线,
     // 若按 baseline 对齐会把 chip 抬高一整个行高(实测段落 30.6px vs 行高 23.8px)。
+    //
+    // 注意不能拿「整个段落高度」当判据:对话列宽度是可调的(默认 61.8%),窄列下
+    // 三个 chip 加正文本来就会折成两行,段落高 47.6 = 2×23.8 完全正常 —— 那样断言
+    // 会变成「只在宽列下成立」的假保证。真正的不变量是 chip 的**底边落在自己的行盒里**:
+    // 首行顶部 = pTop,首行底边 = pTop + 行高,chip 底边必须与之齐平(±2 容纳亚像素)。
     firstLine: (() => {
       const p = bubble ? bubble.querySelector('p') : null;
       if (!p) return null;
@@ -257,10 +270,18 @@ const snap = await page.evaluate(() => {
         rg.selectNodeContents(n);
         textBottom = rg.getBoundingClientRect().bottom;
       });
+      const pRect = p.getBoundingClientRect();
+      const chipRect = chip ? chip.getBoundingClientRect() : null;
       return {
         lineHeight: lh,
-        paragraphHeight: Math.round(p.getBoundingClientRect().height * 100) / 100,
-        chipBottom: chip ? Math.round(chip.getBoundingClientRect().bottom * 100) / 100 : null,
+        paragraphHeight: Math.round(pRect.height * 100) / 100,
+        pTop: Math.round(pRect.top * 100) / 100,
+        lineCount: lh > 0 ? Math.round(pRect.height / lh) : 0,
+        // 该 chip 自己所在行的底边(按它顶部落在第几行算,不假设只有一行)
+        ownLineBottom: (chipRect && lh > 0)
+          ? Math.round((pRect.top + (Math.floor((chipRect.top - pRect.top) / lh) + 1) * lh) * 100) / 100
+          : null,
+        chipBottom: chipRect ? Math.round(chipRect.bottom * 100) / 100 : null,
         textBottom: textBottom == null ? null : Math.round(textBottom * 100) / 100,
       };
     })(),
@@ -293,13 +314,19 @@ check('@助手 用品牌蓝(实际 ' + (asstChip && asstChip.color) + ')', !!ass
 check('@文件夹 用红色(实际 ' + (folderChip && folderChip.color) + ')', !!folderChip && isRed(folderChip.color));
 check('@笔记 用红色(实际 ' + (noteChip && noteChip.color) + ')', !!noteChip && isRed(noteChip.color));
 const fl = snap.firstLine;
-check('引用 chip 与正文在同一行高上(行高 ' + (fl && fl.lineHeight) + ', 段落高 ' + (fl && fl.paragraphHeight) + ')',
-  !!fl && fl.lineHeight > 0 && fl.paragraphHeight <= fl.lineHeight * 1.35);
-check('引用 chip 底边与正文文本底边齐平(chip ' + (fl && fl.chipBottom) + ' / 正文 ' + (fl && fl.textBottom) + ')',
-  !!fl && fl.chipBottom != null && fl.textBottom != null && Math.abs(fl.chipBottom - fl.textBottom) <= 2);
+// 不变量:chip 底边与自己所在的行盒底边齐平(与列宽无关)。
+// 判据写成「chip 底边 == pTop + 整数倍行高」而不是「段落只有一行」:列宽可变、
+// 窄列下三个 chip 会折行,后者会变成只在宽列成立的假保证。
+check('引用 chip 与正文在同一行高上(行高 ' + (fl && fl.lineHeight) + ', 行数 ' + (fl && fl.lineCount) + ')',
+  !!fl && fl.lineHeight > 0 && fl.lineCount >= 1 && Math.abs(fl.paragraphHeight - fl.lineCount * fl.lineHeight) <= 1.5);
+check('引用 chip 底边与所在行底边齐平(chip ' + (fl && fl.chipBottom) + ' / 行底 ' + (fl && fl.ownLineBottom) + ')',
+  !!fl && fl.chipBottom != null && fl.ownLineBottom != null && Math.abs(fl.chipBottom - fl.ownLineBottom) <= 2);
 check('发送后输入区的笔记引用 chip 已清空', composer.notesHidden === true);
 check('发送后输入框高度跟随内容重算(不再停在旧缩进的高度上): 实际 ' + composer.h + ' / 需要 ' + composer.want,
   Math.abs(composer.h - composer.want) <= 1);
+// 空输入框必须只有一行:选中助手后正文有悬挂缩进(首行让出 @ 行宽度),列宽变窄时
+// 原来那句 35 字的长占位符会折成两行、把空输入框撑到 62px —— 观感就是「输入框莫名变高」。
+// 现在缩进激活时自动换短占位符(见 index.html 的 data-placeholder-compact)。
 check('发送后输入框回到单行高度(实际 ' + composer.h + 'px)', composer.h <= 48);
 
 console.log('\n== 3. 回答末尾只有一处「参考笔记」、正文不被挤窄 ==');
@@ -309,7 +336,12 @@ check('来源行列出了这轮真正用到的笔记(实际 ' + JSON.stringify(s
 check('来源行挂在 .msg-content 内(随内容一起重绘,不会叠加)', snap.refRowInContent === 1);
 check('正文宽度 = 内容区宽度(未被来源行挤压): prose ' + snap.proseW + ' / content ' + snap.contentW,
   snap.proseW > 0 && Math.abs(snap.proseW - snap.contentW) <= 2);
-check('正文占据消息绝大部分(>=600px,实际 ' + snap.contentW + ')', snap.contentW >= 600);
+// 这里问的是「正文有没有被别的东西挤窄」,不是「绝对值够不够大」——原来写死 600px
+// 只在旧的固定 820px 列宽下成立,列宽改成可调百分比(默认 61.8%)后就是一条假断言。
+// 真正的判据:正文从自己的左边缘一直铺到消息行的右侧内边缘(行内 gap 与头像都算进去)。
+check('正文占满消息行可用宽度(正文 ' + snap.contentW + ' / 可用 ' + (snap.msgRowRight - snap.msgRowPadRight - snap.contentLeft) + ')',
+  snap.contentW > 0 && snap.msgRowRight > 0 &&
+  Math.abs(snap.contentW - (snap.msgRowRight - snap.msgRowPadRight - snap.contentLeft)) <= 2);
 check('.msg 下没有挂在正文之外的提示条/来源行: ' + JSON.stringify(snap.msgChildren),
   !snap.msgChildren.includes('note-answer-hint') && !snap.msgChildren.includes('note-ref-row'));
 

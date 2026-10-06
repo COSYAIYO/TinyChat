@@ -7866,17 +7866,35 @@ function toggleSidebar() {
 // 阻止侧边栏收起在移动端的默认行为无碍
 
 const inputEl = $('input');
+// 占位符按「窗口宽窄」和「@ 行是否占位」两条维度选:
+//   - 窄屏(≤768px):最短的「输入消息」;
+//   - 宽屏且没有 @ 行:完整长提示;
+//   - 宽屏但有 @ 行(chip 在):**短提示**。
+// 第三种是必须的:选中助手后正文有悬挂缩进(首行让出 @ 行宽度,实测 76.7px),
+// 首行可用宽度显著变窄,长占位符会折成两行 —— 空输入框就会撑高到 62px 而不是 41px,
+// 观感像「输入框莫名变高」(这正是 theme 收窄对话列后暴露出来的)。
+// 缩进激活时自动换成短提示,既保留指引又不会折行。
+function applyComposerPlaceholder() {
+  // 自己取元素,不用上面那个 inputEl 常量:本函数是函数声明(会被提升),
+  // 而 syncComposerIndent 在初始化早期就可能调到它,那时 inputEl 还在 TDZ 里。
+  const inp = $('input');
+  if (!inp) return;
+  const desktop = inp.dataset.placeholderDesktop || '';
+  const compact = inp.dataset.placeholderCompact || desktop;
+  const mobile = inp.dataset.placeholderMobile || '';
+  const narrow = window.matchMedia('(max-width: 768px)').matches;
+  const row = $('composer-at-row');
+  const chip = $('composer-assistant');
+  const box = $('note-mention-row');
+  const hasAt = !!(row && ((chip && !chip.classList.contains('hidden')) || (box && !box.classList.contains('hidden'))));
+  inp.placeholder = narrow ? mobile : (hasAt ? compact : desktop);
+}
 (function syncComposerPlaceholder() {
-  const desktop = inputEl.dataset.placeholderDesktop || '';
-  const mobile = inputEl.dataset.placeholderMobile || '';
-  const apply = () => {
-    const narrow = window.matchMedia('(max-width: 768px)').matches;
-    inputEl.placeholder = narrow ? mobile : desktop;
-  };
-  apply();
+  applyComposerPlaceholder();
   const mq = window.matchMedia('(max-width: 768px)');
-  if (mq.addEventListener) mq.addEventListener('change', apply);
-  else mq.addListener(apply);
+  const onChange = () => applyComposerPlaceholder();
+  if (mq.addEventListener) mq.addEventListener('change', onChange);
+  else mq.addListener(onChange);
 })();
 inputEl.addEventListener('input', () => {
   autosizeInput();
@@ -8242,6 +8260,9 @@ function syncComposerIndent() {
   if (!row || !inp) return;
   const hasAt = (row.querySelector('#composer-assistant') && !row.querySelector('#composer-assistant').classList.contains('hidden'))
     || (row.querySelector('#note-mention-row') && !row.querySelector('#note-mention-row').classList.contains('hidden'));
+  // 占位符要跟着 @ 行一起换:有 @ 行时首行让出了缩进,原来那句长提示会折成两行、
+  // 把空输入框撑高(见 applyComposerPlaceholder 的说明)。缩进变 → 提示也要重算。
+  if (typeof applyComposerPlaceholder === 'function') applyComposerPlaceholder();
   if (!hasAt) { inp.style.textIndent = ''; resyncInputHeight(inp); return; }
   // 用 next frame 测量:chip 刚插入 DOM 时宽度尚未确定,直接测量会偏小/为 0
   // 缩进量按 @ 行实际宽度换算成 em(相对输入字号):
