@@ -136,6 +136,10 @@ jobs:
         run: node tests/notes-archive-gui.mjs
       - name: 对话页 @引用 自检(残留 @ / 回显配色 / 不重复不挤窄 / 窄屏)
         run: node tests/chat-mentions-gui.mjs
+      # 会话项整行的 click 会重渲染侧栏,把正在编辑的重命名输入框换掉 → 一点就提交。
+      # 这种「点了反而不能改」的接线问题只能真浏览器点出来。
+      - name: 对话重命名自检(点进输入框仍在编辑 / 回车才提交 / Esc 不写回)
+        run: node tests/chat-rename-gui.mjs
       # 窄屏侧栏此前恒在屏外(-100%)且没有任何规则能移回来,手机上进不了笔记;
       # 这类「点了没反应」的接线/断点问题只能真浏览器点出来。
       - name: 移动端笔记侧栏自检(抽屉开启 / 遮罩收起 / 选中即收 / 宽屏不受影响)

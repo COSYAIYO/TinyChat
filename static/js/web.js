@@ -5,7 +5,7 @@
  * 结构:侧栏「在线浏览器」入口 → 全屏弹窗,弹窗自成一体的「浏览器壳」:
  *   标签栏:logo | 多标签页(各自独立地址栈与 iframe,可关闭) | 新建标签
  *   工具条:后退·前进·刷新·首页 | 地址栏 | 阅读模式·原站打开·AI 总结·关闭
- *   首页:收藏夹(内置 Google 学术 / arXiv / PubMed 等 + 自己的收藏)+ 搜索引擎切换
+ *   首页:收藏夹(内置百度/知乎/B站/CSDN 等国内常用站点 + 自己的收藏)+ 搜索引擎切换
  *   网页:iframe 加载同源代理地址(用户看到的是真实渲染出来的网页,不是正文抽取)
  *   阅读:服务端抽正文后的干净视图(JS 重站点渲染失败时的兜底)
  *
@@ -28,22 +28,26 @@
     tabsSig: '',                     // 标签栏渲染签名(没变就不整栏重写,免得 favicon 被反复重取)
     ticket: '', exp: 0,              // 代理票据(短期)
     defaults: [], mine: [],          // 内置收藏 / 自己的收藏
-    engine: 'scholar',
+    engine: 'baidu',
     sum: { busy: false, text: '', err: '', model: '', q: '' },
-    usage: { limit: 0, used: 0 },
+    usage: { limit: 0, used: 0, trafficLimitMb: 0, trafficRemainingMb: -1 },
     textWait: null,
     els: {},
   };
 
+  // 搜索引擎列表:默认以国内引擎打头(与「仅限中国 IP 网站」默认开启相匹配 ——
+  // 把 Google/维基放在首位,用户第一次搜索就撞上「该站点不在允许范围内」)。
   const ENGINES = [
-    { id: 'scholar', name: 'Google 学术', q: 'https://scholar.google.com/scholar?q=%s' },
-    { id: 'google', name: 'Google', q: 'https://www.google.com/search?q=%s' },
-    { id: 'bing', name: '必应', q: 'https://www.bing.com/search?q=%s' },
     { id: 'baidu', name: '百度', q: 'https://www.baidu.com/s?wd=%s' },
-    { id: 'arxiv', name: 'arXiv', q: 'https://arxiv.org/search/?searchtype=all&query=%s' },
-    { id: 'pubmed', name: 'PubMed', q: 'https://pubmed.ncbi.nlm.nih.gov/?term=%s' },
-    { id: 'wiki', name: '维基百科', q: 'https://zh.wikipedia.org/w/index.php?search=%s' },
+    { id: 'bing', name: '必应', q: 'https://cn.bing.com/search?q=%s' },
+    { id: 'sogou', name: '搜狗', q: 'https://www.sogou.com/web?query=%s' },
+    { id: 'so360', name: '360 搜索', q: 'https://www.so.com/s?q=%s' },
+    { id: 'zhihu', name: '知乎', q: 'https://www.zhihu.com/search?type=content&q=%s' },
+    { id: 'bilibili', name: '哔哩哔哩', q: 'https://search.bilibili.com/all?keyword=%s' },
+    { id: 'juejin', name: '掘金', q: 'https://juejin.cn/search?query=%s' },
+    { id: 'csdn', name: 'CSDN', q: 'https://so.csdn.net/so/search?q=%s' },
     { id: 'github', name: 'GitHub', q: 'https://github.com/search?q=%s' },
+    { id: 'google', name: 'Google', q: 'https://www.google.com/search?q=%s' },
   ];
 
   // ============ 小工具 ============
@@ -292,7 +296,7 @@
       + '<div class="web-head">'
       + '<form class="web-addr" id="web-addr-form" autocomplete="off">'
       + '<span class="web-addr-scheme hidden" id="web-addr-scheme"></span>'
-      + '<input type="text" id="web-addr" placeholder="输入网址，或直接搜索（默认 Google 学术）" spellcheck="false" aria-label="地址栏">'
+      + '<input type="text" id="web-addr" placeholder="输入网址，或直接搜索（默认 百度）" spellcheck="false" aria-label="地址栏">'
       + '<button type="submit" class="web-icon-btn web-sm" id="web-go" data-tip="前往" aria-label="前往">' + icon('search', 15) + '</button>'
       + '</form>'
       + '<div class="web-acts">'
@@ -400,9 +404,26 @@
       if (S.open && !S.tabs.length) newTab();     // 打开即给一个空白首页标签
       else renderTabs();
       updateChrome(true);
+      // 票据里带的用量是签发那一刻的;每次打开再取一次,首页/总结面板显示的就是最新值
+      refreshUsage();
     } catch (e) {
       toast('无法使用在线浏览器：' + e.message, true);
     }
+  }
+
+  // 拉一次今日用量(总结次数 + 已用流量)。失败静默:它只影响展示,不该挡住打开浏览器。
+  async function refreshUsage() {
+    try {
+      const u = await apiJson('/api/web/usage');
+      S.usage = {
+        limit: Number(u.dailyLimit) || 0,
+        used: Number(u.dailyUsed) || 0,
+        trafficLimitMb: Number(u.trafficLimitMb) || 0,
+        trafficRemainingMb: (u.trafficRemainingMb == null ? -1 : Number(u.trafficRemainingMb)),
+      };
+      const t = tab();
+      if (t && (t.view === 'home' || t.view === '')) renderHome(t);
+    } catch (e) { /* 用量拿不到不影响使用 */ }
   }
 
   function close() {
@@ -428,7 +449,13 @@
     S.ticket = d.ticket || '';
     S.exp = Number(d.exp) || 0;
     S.defaults = Array.isArray(d.bookmarks) ? d.bookmarks : [];
-    S.usage = { limit: Number(d.dailyLimit) || 0, used: Number(d.dailyUsed) || 0 };
+    S.usage = {
+      limit: Number(d.dailyLimit) || 0,
+      used: Number(d.dailyUsed) || 0,
+      // trafficRemainingMb = -1 表示不限流量(0 = 不限的设置在服务端转成 -1 下发)
+      trafficLimitMb: Number(d.trafficLimitMb) || 0,
+      trafficRemainingMb: (d.trafficRemainingMb == null ? -1 : Number(d.trafficRemainingMb)),
+    };
     S.mine = Array.isArray(u.bookmarks) ? u.bookmarks : [];
   }
 
@@ -554,6 +581,11 @@
   function renderHome(t) {
     const list = bookmarks();
     const engines = ENGINES.map((e) => '<button class="web-chip' + (e.id === S.engine ? ' active' : '') + '" data-engine="' + e.id + '">' + esc(e.name) + '</button>').join('');
+    // 今日流量余额:超限后抓取会被服务端拒,提前显示能让用户明白为什么打不开网页。
+    const quotaLine = S.usage.trafficRemainingMb >= 0
+      ? '<p class="web-home-quota">今日剩余流量约 ' + S.usage.trafficRemainingMb + ' MB'
+        + (S.usage.trafficLimitMb > 0 ? '（上限 ' + S.usage.trafficLimitMb + ' MB）' : '') + '</p>'
+      : '';
     const el = t.el;
     el.innerHTML =
       '<div class="web-home">'
@@ -565,6 +597,7 @@
       + '<button type="submit" class="web-search-go" aria-label="搜索">' + icon('search', 16) + '</button>'
       + '</form>'
       + '<div class="web-chips">' + engines + '</div>'
+      + quotaLine
       + '</div>'
       + '<div class="web-bm-head"><span>收藏夹</span>'
       + '<button class="web-link-btn web-bm-add-btn">' + icon('plus', 14) + ' 添加</button></div>'
@@ -622,7 +655,7 @@
     const wrap = document.createElement('div');
     wrap.className = 'web-bm-add';
     wrap.innerHTML = '<input type="text" class="web-bm-new" placeholder="名称，例如：机器学习论文">'
-      + '<input type="text" class="web-bm-new-url" placeholder="网址，例如 scholar.google.com">'
+      + '<input type="text" class="web-bm-new-url" placeholder="网址，例如 www.baidu.com">'
       + '<button class="web-btn-primary web-bm-save">保存</button>'
       + '<button class="web-link-btn web-bm-cancel">取消</button>';
     const head = t.el.querySelector('.web-bm-head');
@@ -819,7 +852,12 @@
       S.sum.busy = false;
       try {
         const u = await apiJson('/api/web/usage');
-        S.usage = { limit: Number(u.dailyLimit) || 0, used: Number(u.dailyUsed) || 0 };
+        S.usage = {
+          limit: Number(u.dailyLimit) || 0,
+          used: Number(u.dailyUsed) || 0,
+          trafficLimitMb: Number(u.trafficLimitMb) || 0,
+          trafficRemainingMb: (u.trafficRemainingMb == null ? -1 : Number(u.trafficRemainingMb)),
+        };
       } catch (e) { /* 用量拿不到不影响结果 */ }
       renderAiPanel();
     }
@@ -843,6 +881,10 @@
     }
     if (S.usage.limit > 0) {
       html += '<div class="web-ai-quota">今日剩余 ' + Math.max(0, S.usage.limit - S.usage.used) + ' / ' + S.usage.limit + ' 次</div>';
+    }
+    if (S.usage.trafficRemainingMb >= 0) {
+      html += '<div class="web-ai-quota">今日剩余流量约 ' + S.usage.trafficRemainingMb + ' MB'
+        + (S.usage.trafficLimitMb > 0 ? ' / ' + S.usage.trafficLimitMb + ' MB' : '') + '</div>';
     }
     body.innerHTML = html;
     if (window.OCRenderer && OCRenderer.enhance) { try { OCRenderer.enhance(body); } catch (e) {} }

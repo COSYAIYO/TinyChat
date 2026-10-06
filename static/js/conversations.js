@@ -115,6 +115,10 @@
       item.setAttribute('tabindex', '0');
       item.addEventListener('click', (e) => {
         if (e.target.closest('.chat-item-menu')) return;
+        // 点到内联重命名输入框不能当成「选中会话」:选中会重渲染整份列表,正在编辑的
+        // 输入框被换掉 → 触发 blur → 立刻按原值提交。用户看到的就是「点一下输入框,
+        // 还没改就保存了,根本没法点进去修改」。
+        if (e.target.closest('.rename-input')) return;
         if (opts.onSelect) opts.onSelect(c);
       });
       item.addEventListener('keydown', (e) => {

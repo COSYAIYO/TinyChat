@@ -1017,6 +1017,10 @@ function tc_api_public_config($db) {
             'updatedAt' => (int) (isset($s['announcement']['updatedAt']) ? $s['announcement']['updatedAt'] : 0),
         ),
         'registerInviteRequired' => !empty($s['registerInviteRequired']),
+        // 用户协议:启用时注册表单要展示勾选项。缺了它前台就不知道要不要露这个勾选框,
+        // 而注册接口在协议启用时会拒掉「没带 agreementAccepted」的请求 —— 表现为用户
+        // 填完注册表单却永远失败。登录页与主站登录弹窗都靠这个字段。
+        'agreementEnabled' => !empty($s['agreementEnabled']),
         // 账号注销模式:off=不开放, soft=软注销(改名+标记,原用户名/邮箱可重新注册), hard=删除全部数据
         'accountDeletionMode' => isset($s['accountDeletionMode']) ? (string) $s['accountDeletionMode'] : 'soft',
         // 演示模式:管理员的改动会在有效期后自动还原,前台据此提示
@@ -1039,6 +1043,10 @@ function tc_api_public_config($db) {
         'browserEnabled' => !isset($s['browserEnabled']) || !empty($s['browserEnabled']),
         // 仅限中国 IP 网站:前台在浏览器里提前提示,避免用户对着境外地址反复试
         'webCnOnly' => !array_key_exists('webCnOnly', $s) || !empty($s['webCnOnly']),
+        // 国内站引用海外 CDN 的静态资源时是否放行(默认放行;关掉后子资源也必须解析在境内)
+        'webCnAllowAssets' => !array_key_exists('webCnAllowAssets', $s) || !empty($s['webCnAllowAssets']),
+        // 每用户每日出网流量上限(MB,0 = 不限),前台据此展示今日剩余流量
+        'webDailyTrafficMb' => (int) (isset($s['webDailyTrafficMb']) ? $s['webDailyTrafficMb'] : 500),
         // 境内 IP 段数据是否可用。开关默认开着,而数据缺失会让所有站点一起被拒;
         // 前台据此报「服务器缺少数据」而不是「该站点不在允许范围内」,省得用户白试半天。
         'webCnDataReady' => function_exists('tc_web_cn_data_ready') ? tc_web_cn_data_ready() : false,

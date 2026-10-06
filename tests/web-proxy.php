@@ -275,7 +275,13 @@ $db = array('settings' => array());
 $def = tc_web_bookmarks_of($db);
 $names = array();
 foreach ($def as $b) $names[] = $b['name'];
-if (in_array('Google 学术', $names, true) && in_array('arXiv', $names, true)) $ok('内置默认收藏夹含 Google 学术 / arXiv'); else $bad('内置收藏夹缺少常用学术站');
+if (in_array('百度', $names, true) && in_array('知乎', $names, true) && in_array('哔哩哔哩', $names, true)) {
+    $ok('内置默认收藏夹以国内常用站点为主(与「仅限中国 IP」默认开启相匹配)');
+} else {
+    $bad('内置收藏夹缺少国内常用站: ' . implode(',', array_slice($names, 0, 6)));
+}
+// 境外常用站点作为补充保留在列表里,别一刀切掉(用户关掉 CN 限制后仍要能用)
+if (in_array('GitHub', $names, true) && in_array('Google', $names, true)) $ok('境外常用站点仍在列表中(供关闭 CN 限制时使用)'); else $bad('境外常用站点被整体移除');
 $db2 = array('settings' => array(
     'webBookmarks' => array(array('name' => ' 我的站 ', 'url' => 'https://a.example/'), array('name' => '', 'url' => 'https://bad/')),
 ));
@@ -394,6 +400,61 @@ $shimSrc = (string) file_get_contents(__DIR__ . '/../static/js/web-shim.js');
 if (strpos($shimSrc, "addEventListener('submit'") !== false) $ok('shim 监听了表单 submit'); else $bad('shim 没接管 submit,表单字段会丢');
 if (strpos($shimSrc, 'data-ocw-action') !== false) $ok('shim 读得到原始 action'); else $bad('shim 没读 data-ocw-action');
 if (strpos($shimSrc, 'encodeURIComponent') !== false) $ok('shim 对字段名/值做了 URL 编码'); else $bad('shim 未编码字段,特殊字符会破坏地址');
+
+// ---------- 子资源白名单(「仅限中国 IP」下国内页引用海外 CDN 的关键) ----------
+// 背景:百度首页自身解析在境内,但它引用的 ir.baidu.com 解析到 Akamai(境外)。若对每个
+// 子资源域名各自判归属,该资源被拒、首页残缺 —— 用户看到的就是「百度都打不开」。修法是
+// 把「已被某个境内页面引用过」的资源主机记进本用户白名单,res 请求遇到它才放宽。
+$hosts = tc_web_asset_hosts(
+    '<img src="https://ir.baidu.com/a.png"><img src="//ss1.bdstatic.com/b.png">'
+    . '<link href="/style.css"><img data-src="https://cdn.example.com/c.png">'
+    . '<style>body{background:url(https://img.example.net/d.png)}</style>',
+    'https://www.baidu.com/'
+);
+$hostSet = array_flip($hosts);
+if (isset($hostSet['ir.baidu.com'], $hostSet['ss1.bdstatic.com'], $hostSet['cdn.example.com'], $hostSet['img.example.net'])) {
+    $ok('资源主机抽取覆盖 src/协议相对/data-src/url()');
+} else {
+    $bad('资源主机抽取漏项: ' . implode(',', $hosts));
+}
+if (isset($hostSet['www.baidu.com'])) $ok('相对地址按 base 解析成主机'); else $bad('相对地址没解析出主机: ' . implode(',', $hosts));
+
+$uidT = 'u_test_asset_' . bin2hex(random_bytes(3));
+tc_web_cn_asset_allow($uidT, array('ir.baidu.com', 'ss1.bdstatic.com'));
+if (tc_web_cn_asset_ok($uidT, 'ir.baidu.com')) $ok('白名单内的主机放行'); else $bad('白名单内的主机没放行');
+if (!tc_web_cn_asset_ok($uidT, 'evil.example.com')) $ok('白名单外的主机不放行(不发散成开放代理)'); else $bad('白名单外的主机被放行');
+if (tc_web_cn_asset_ok($uidT, 'sub.ir.baidu.com')) $ok('子域按后缀匹配(站点常在子域间跳)'); else $bad('子域后缀没匹配上');
+if (!tc_web_cn_asset_ok($uidT, 'notir.baidu.com')) $ok('后缀匹配不误伤相近域名'); else $bad('后缀匹配把 notir.baidu.com 也算进去了');
+if (!tc_web_cn_asset_ok('u_other_' . $uidT, 'ir.baidu.com')) $ok('白名单按用户隔离(不跨用户)'); else $bad('白名单跨用户泄漏');
+// 非法域名不该进白名单(否则后缀匹配会被奇怪字符串放大)
+tc_web_cn_asset_allow($uidT, array('bad host', '', 'no-dot', 'a..b'));
+if (!tc_web_cn_asset_ok($uidT, 'bad host') && !tc_web_cn_asset_ok($uidT, 'no-dot')) $ok('非法主机名不进白名单'); else $bad('非法主机名被放进白名单');
+
+// ---------- 每日流量记账 ----------
+$uidQ = 'u_test_traffic_' . bin2hex(random_bytes(3));
+if (tc_web_traffic_used($uidQ) === 0) $ok('初始已用流量为 0'); else $bad('初始流量不为 0');
+tc_web_traffic_add($uidQ, 1048576);   // 1 MB
+if (tc_web_traffic_used($uidQ) === 1048576) $ok('流量按字节累加'); else $bad('流量累加不对: ' . tc_web_traffic_used($uidQ));
+tc_web_traffic_add($uidQ, 524288);    // 再 0.5 MB
+if (tc_web_traffic_used($uidQ) === 1572864) $ok('多次累加正确'); else $bad('多次累加不对: ' . tc_web_traffic_used($uidQ));
+if (tc_web_traffic_ok($uidQ, 2)) $ok('未超上限时放行'); else $bad('未超上限却拦住');
+if (!tc_web_traffic_ok($uidQ, 1)) $ok('超上限后拒绝(上限 1MB,已用 1.5MB)'); else $bad('超上限没拦住');
+if (tc_web_traffic_ok($uidQ, 0)) $ok('上限 0 = 不限,始终放行'); else $bad('上限 0 却拦住了');
+$remain = tc_web_traffic_remaining_mb($uidQ, 3);
+if ($remain === 2) $ok('剩余额度向上取整(3MB - 1.5MB = 2MB)'); else $bad('剩余额度算错: ' . var_export($remain, true));
+if (tc_web_traffic_remaining_mb($uidQ, 0) === -1) $ok('不限流量时剩余返回 -1(前台据此不显示)'); else $bad('不限流量的剩余值不对');
+
+// ---------- Sec-Fetch-Dest 推断(「容易被拦截」的对策之一) ----------
+$eq(tc_web_fetch_dest('', 'page'), 'document', '整页导航 -> document');
+$eq(tc_web_fetch_dest('text/css,*/*;q=0.1', 'res'), 'style', 'CSS -> style');
+$eq(tc_web_fetch_dest('image/avif,image/webp,*/*;q=0.8', 'res'), 'image', '图片 -> image');
+$eq(tc_web_fetch_dest('*/*', 'res'), 'empty', '未知类型 -> empty(不硬报 document)');
+
+// ---------- 境内 IP 优先(多 IP 时挑国内节点,更快也更少被风控) ----------
+// cnip.php 已由 web.php 按需载入,这里不要再 require 一次(会重复声明函数)。
+$pickMixed = tc_web_cn_pick_ip(array('ips' => array('8.8.8.8', '182.61.200.110', '1.1.1.1')));
+$eq($pickMixed, '182.61.200.110', '混合解析时挑出境内 IP');
+$eq(tc_web_cn_pick_ip(array('ips' => array('8.8.8.8'))), '', '全境外时挑不出境内 IP');
 
 echo $fail === 0 ? "\n全部通过\n" : "\n失败 {$fail} 项\n";
 exit($fail === 0 ? 0 : 1);

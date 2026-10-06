@@ -57,22 +57,35 @@ function tc_web_feature_guard($db, $user = null) {
 
 // 收藏夹内置站点。用户自己的收藏另存 data/web/{uid}/bookmarks.json;
 // 这里是「出厂默认」,管理端可用 settings.webBookmarks 覆盖。
+// 默认以国内常用站点为主(与「仅限中国 IP 网站」默认开启相匹配):
+// 开启该限制时,列一堆境外站只会让用户逐一点开、逐个被拒。境外常用站点保留在末尾。
 function tc_web_default_bookmarks() {
     return array(
-        array('name' => 'Google 学术', 'url' => 'https://scholar.google.com/'),
-        array('name' => 'arXiv', 'url' => 'https://arxiv.org/'),
-        array('name' => 'PubMed', 'url' => 'https://pubmed.ncbi.nlm.nih.gov/'),
-        array('name' => 'Semantic Scholar', 'url' => 'https://www.semanticscholar.org/'),
-        array('name' => 'Google', 'url' => 'https://www.google.com/'),
-        array('name' => '必应', 'url' => 'https://www.bing.com/'),
         array('name' => '百度', 'url' => 'https://www.baidu.com/'),
-        array('name' => '维基百科', 'url' => 'https://zh.wikipedia.org/'),
-        array('name' => 'GitHub', 'url' => 'https://github.com/'),
-        array('name' => 'Stack Overflow', 'url' => 'https://stackoverflow.com/'),
+        array('name' => '必应', 'url' => 'https://cn.bing.com/'),
         array('name' => '知乎', 'url' => 'https://www.zhihu.com/'),
         array('name' => '哔哩哔哩', 'url' => 'https://www.bilibili.com/'),
-        array('name' => 'Hacker News', 'url' => 'https://news.ycombinator.com/'),
-        array('name' => 'Nature', 'url' => 'https://www.nature.com/'),
+        array('name' => '微博', 'url' => 'https://weibo.com/'),
+        array('name' => '豆瓣', 'url' => 'https://www.douban.com/'),
+        array('name' => '小红书', 'url' => 'https://www.xiaohongshu.com/'),
+        array('name' => 'CSDN', 'url' => 'https://www.csdn.net/'),
+        array('name' => '掘金', 'url' => 'https://juejin.cn/'),
+        array('name' => '博客园', 'url' => 'https://www.cnblogs.com/'),
+        array('name' => 'OSCHINA', 'url' => 'https://www.oschina.net/'),
+        array('name' => '中国知网', 'url' => 'https://www.cnki.net/'),
+        array('name' => '万方数据', 'url' => 'https://www.wanfangdata.com.cn/'),
+        array('name' => '国家统计局', 'url' => 'https://www.stats.gov.cn/'),
+        array('name' => '中国政府网', 'url' => 'https://www.gov.cn/'),
+        array('name' => '淘宝', 'url' => 'https://www.taobao.com/'),
+        array('name' => '京东', 'url' => 'https://www.jd.com/'),
+        array('name' => '12306 铁路', 'url' => 'https://www.12306.cn/'),
+        array('name' => '腾讯网', 'url' => 'https://www.qq.com/'),
+        array('name' => '网易', 'url' => 'https://www.163.com/'),
+        array('name' => 'Bing 国际', 'url' => 'https://www.bing.com/'),
+        array('name' => 'Google', 'url' => 'https://www.google.com/'),
+        array('name' => 'GitHub', 'url' => 'https://github.com/'),
+        array('name' => 'Stack Overflow', 'url' => 'https://stackoverflow.com/'),
+        array('name' => '维基百科', 'url' => 'https://zh.wikipedia.org/'),
     );
 }
 
@@ -125,6 +138,170 @@ function tc_web_ticket_uid($ticket) {
 
 function tc_web_proxy_url($kind, $url, $ticket) {
     return '/api/web/' . ($kind === 'page' ? 'page' : 'res') . '?u=' . tc_web_b64e($url) . '&t=' . $ticket;
+}
+
+// ============ 「来源页」子资源白名单(仅限中国 IP 时用) ============
+//
+// 问题:判定「仅限中国 IP 网站」时若对每个子资源域名各自解析归属,国内大站会被误杀 ——
+// 实测百度首页会引用 ir.baidu.com(解析到 Akamai 的 23.206.26.151),该资源被拒后首页
+// 图片/统计打不开,用户看到的就是「百度都打不开」。
+//
+// 语义上,子资源是文档的一部分:文档解析在境内,它引用的资源就应当照常取回。于是服务端在
+// 成功取回一个**已通过闸门**的文档后,把它引用的资源主机名记进本用户的名单;后续 res 请求
+// 遇到「非境内主机但在名单里」就放行。名单按用户隔离并带过期(见 tc_web_cn_asset_allow),
+// 因此不会退化成「拿一个国内页当跳板抓任意海外站」的开放代理 —— 只有真正出现在该用户看过
+// 的国内页面里的资源主机才会被放行,且 HTML 文档本身永远不放宽(在 tc_web_fetch 里收口)。
+define('TC_WEB_CN_ASSET_TTL', 6 * 3600);   // 秒:名单条目寿命(比子资源缓存长,够撑完一次浏览)
+define('TC_WEB_CN_ASSET_MAX', 400);        // 每用户名单上限,防站点狂刷主机名把文件撑大
+
+function tc_web_cn_asset_path($userId) {
+    return tc_web_user_dir($userId) . '/cn-assets.json';
+}
+
+// 单请求内缓存:一次页面加载几十个子资源各查一次,不能每次读盘。
+// $bust=true 用于写入后失效(同一请求里刚加完就预热,必须读到新值)。
+function tc_web_cn_asset_load($userId, $bust = false) {
+    static $cache = array();
+    if (!$bust && isset($cache[$userId])) return $cache[$userId];
+    $j = json_decode((string) @file_get_contents(tc_web_cn_asset_path($userId)), true);
+    $now = time();
+    $out = array();
+    if (is_array($j)) {
+        foreach ($j as $host => $exp) {
+            $host = strtolower((string) $host);
+            if ($host === '' || (int) $exp < $now) continue;
+            $out[$host] = (int) $exp;
+        }
+    }
+    return $cache[$userId] = $out;
+}
+
+function tc_web_cn_asset_ok($userId, $host) {
+    $host = strtolower(trim((string) $host, '[]'));
+    if ($host === '') return false;
+    $list = tc_web_cn_asset_load($userId);
+    if (isset($list[$host])) return true;
+    // 也接受「条目是父域」的情况:页面引用 a.b.example.com,而名单里是 b.example.com
+    // 或 example.com(站点常在多个子域间跳,逐个子域记容易漏)。按后缀匹配。
+    foreach ($list as $h => $exp) {
+        if (substr($host, -strlen($h) - 1) === '.' . $h) return true;
+    }
+    return false;
+}
+
+// 记一批主机名。返回本次新增条数。
+function tc_web_cn_asset_allow($userId, $hosts) {
+    if (!is_array($hosts) || !$hosts) return 0;
+    $list = tc_web_cn_asset_load($userId, true);
+    $exp = time() + TC_WEB_CN_ASSET_TTL;
+    $added = 0;
+    foreach ($hosts as $h) {
+        $h = strtolower(trim((string) $h, '[]'));
+        // 只收合法域名:名单是要拼进后缀匹配的,塞进奇怪字符会误放行
+        if ($h === '' || !preg_match('/^[a-z0-9][a-z0-9.\-]*\.[a-z]{2,}$/', $h)) continue;
+        if (isset($list[$h])) { $list[$h] = $exp; continue; }
+        $list[$h] = $exp;
+        $added++;
+    }
+    if (!$added) return 0;
+    // 超限时先淘汰最旧的条目
+    if (count($list) > TC_WEB_CN_ASSET_MAX) {
+        asort($list);
+        $list = array_slice($list, -TC_WEB_CN_ASSET_MAX, null, true);
+    }
+    $dir = tc_web_user_dir($userId);
+    if (is_dir($dir)) @file_put_contents(tc_web_cn_asset_path($userId), tc_json_encode($list), LOCK_EX);
+    tc_web_cn_asset_load($userId, true);   // 让下次读拿到新表(此处只是重建缓存)
+    return $added;
+}
+
+// 从 HTML 里抽出全部「被引用资源」的主机名。用于把国内页的资源域记进白名单。
+// 覆盖 src/href/srcset/内联 style 的 url() —— 与改写那套保持同样的属性面,
+// 免得「改写了但没记名单」导致资源仍被拦。
+function tc_web_asset_hosts($html, $base = '') {
+    $hosts = array();
+    $add = function ($u) use (&$hosts, $base) {
+        $u = html_entity_decode(trim((string) $u), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        if ($u === '') return;
+        if ($base !== '' && !preg_match('#^https?://#i', $u)) $u = tc_web_abs($u, $base);
+        $h = @parse_url((string) $u, PHP_URL_HOST);
+        if (is_string($h) && $h !== '') $hosts[strtolower(trim($h, '[]'))] = 1;
+    };
+    if (preg_match_all('#(?:src|href|poster|data-src|data-original|data-lazy-src)\s*=\s*("([^"]*)"|\'([^\']*)\'|([^\s>"\']+))#is', (string) $html, $m, PREG_SET_ORDER)) {
+        foreach ($m as $set) {
+            $v = isset($set[2]) && $set[2] !== '' ? $set[2] : (isset($set[3]) && $set[3] !== '' ? $set[3] : (isset($set[4]) ? $set[4] : ''));
+            $add($v);
+        }
+    }
+    if (preg_match_all('#url\(\s*(["\']?)([^"\')]+?)\1\s*\)#i', (string) $html, $m, PREG_SET_ORDER)) {
+        foreach ($m as $set) $add(isset($set[2]) ? $set[2] : '');
+    }
+    return array_keys($hosts);
+}
+
+// ============ 每用户每日出网流量记账 ============
+//
+// 为什么要记:在线浏览器的每一个字节都经由本站出口取回,流量与带宽都记在站点账上。
+// 一个用户刷视频/下大图就能把整机流量吃光。这里按「用户 × 自然日」累计**出网字节**
+// (请求到的上游响应体大小),超过上限即拒绝新的抓取。
+//
+// 记账口径:
+//   - 只记真正从上游网络取回的字节(缓存命中不出网,不计数 —— 也就不该计流量);
+//   - 单次抓取的字节由 tc_web_fetch 返回的 'bytes' 字段给出(含跳转途中各跳的字节);
+//   - 计数与判限不放在同一把锁里也行:流量是「软上限」,不像次数那样精确到个位;
+//     但为了并发下不出现明显超发,仍用文件锁串行化读改写。
+function tc_web_traffic_path() {
+    return tc_data_dir() . '/web-traffic.json';
+}
+
+// 每日流量上限(MB);0 = 不限。
+function tc_web_traffic_limit_mb($db) {
+    return (int) (isset($db['settings']['webDailyTrafficMb']) ? $db['settings']['webDailyTrafficMb'] : 500);
+}
+
+// 今日已用字节。返回 array(used, limitMb)。
+function tc_web_traffic_used($userId) {
+    $j = json_decode((string) @file_get_contents(tc_web_traffic_path()), true);
+    $all = is_array($j) ? $j : array();
+    $row = isset($all[$userId]) && is_array($all[$userId]) ? $all[$userId] : array();
+    return ((string) (isset($row['date']) ? $row['date'] : '') === date('Y-m-d')) ? (int) (isset($row['b']) ? $row['b'] : 0) : 0;
+}
+
+// 累加本次抓取的字节。$limitMb > 0 时顺带返回「是否已超限」,供调用方决定要不要拦下一次。
+function tc_web_traffic_add($userId, $bytes, $limitMb = 0) {
+    $bytes = (int) $bytes;
+    if ($bytes <= 0) return array('used' => tc_web_traffic_used($userId), 'over' => false);
+    $day = date('Y-m-d');
+    $used = 0;
+    tc_json_mutate(tc_web_traffic_path(), function ($all) use ($userId, $day, $bytes, &$used) {
+        $all = is_array($all) ? $all : array();
+        // 顺手清掉非今日的行:文件不该无限增长
+        foreach ($all as $k => $v) {
+            if (!is_array($v) || (string) (isset($v['date']) ? $v['date'] : '') !== $day) unset($all[$k]);
+        }
+        $row = isset($all[$userId]) && is_array($all[$userId]) ? $all[$userId] : array();
+        $n = ((string) (isset($row['date']) ? $row['date'] : '') === $day) ? (int) (isset($row['b']) ? $row['b'] : 0) : 0;
+        $n += $bytes;
+        $all[$userId] = array('date' => $day, 'b' => $n);
+        $used = $n;
+        return $all;
+    }, array());
+    $limitBytes = $limitMb > 0 ? $limitMb * 1024 * 1024 : 0;
+    return array('used' => $used, 'over' => $limitBytes > 0 && $used >= $limitBytes);
+}
+
+// 抓取前的闸门:已超限就直接拒,省掉这次出网。返回 true 表示放行。
+function tc_web_traffic_ok($userId, $limitMb) {
+    if ($limitMb <= 0) return true;   // 0 = 不限
+    $used = tc_web_traffic_used($userId);
+    return $used < $limitMb * 1024 * 1024;
+}
+
+// 今日剩余额度(MB,0=不限时返回 -1 表示不适用),给前台展示用。
+function tc_web_traffic_remaining_mb($userId, $limitMb) {
+    if ($limitMb <= 0) return -1;
+    $usedMb = tc_web_traffic_used($userId) / 1048576;
+    return max(0, (int) ceil($limitMb - $usedMb));
 }
 
 // ============ 每用户 cookie jar ============
@@ -413,6 +590,11 @@ function tc_web_guard($url) {
     // 带上全部解析结果:tc_web_cn_target_ok 要按「有没有一个 IP 落在中国大陆网段」判定,
     // 只给首个 IP 会把国内 CDN + 海外节点混合解析的站点误判为境外。
     $ips = isset($g['ips']) && is_array($g['ips']) && $g['ips'] ? array_values($g['ips']) : array($g['ip']);
+    // 多 IP 时优先连境内节点(见 tc_web_cn_pick_ip):国内 CDN 的边缘节点既更快,
+    // 也不像海外数据中心 IP 那样容易触发站点风控。挑不到境内 IP 就沿用第一个。
+    $pinIp = $g['ip'];
+    $cnIp = tc_web_cn_pick_ip($g);
+    if ($cnIp !== '') $pinIp = $cnIp;
     $testBase = rtrim((string) (getenv('TC_WEB_FETCH_BASE') ?: ''), '/');
     if ($testBase !== '') {
         $t = @parse_url($testBase);
@@ -425,7 +607,7 @@ function tc_web_guard($url) {
             return array('url' => $testBase . $path . (isset($p['query']) && $p['query'] !== '' ? '?' . $p['query'] : ''), 'resolve' => $t['host'] . ':' . $port . ':127.0.0.1', 'ips' => $ips);
         }
     }
-    return array('url' => $url, 'resolve' => $g['host'] . ':' . $g['port'] . ':' . $g['ip'], 'ips' => $ips);
+    return array('url' => $url, 'resolve' => $g['host'] . ':' . $g['port'] . ':' . $pinIp, 'ips' => $ips);
 }
 
 // 把已经写进输出缓冲的内容推给浏览器并断开与 PHP 的关系。
@@ -453,6 +635,20 @@ function tc_web_cn_target_ok($guard) {
     $ips = isset($guard['ips']) && is_array($guard['ips']) ? $guard['ips'] : array();
     if (!$ips && !empty($guard['ip'])) $ips = array($guard['ip']);
     return tc_cn_ips_any($ips);
+}
+
+// 从解析结果里挑一个境内 IP。多 IP 时优先连境内节点:
+//   1) 更快 —— 国内 CDN 的边缘节点比海外节点近一个量级(实测百度首页 0.77s vs 首包要走海外);
+//   2) 更少被风控 —— 海外数据中心节点访问国内站更容易触发验证码。
+// 没有境内 IP 时返回空串,由调用方决定回退。
+function tc_web_cn_pick_ip($guard) {
+    if (!is_array($guard) || !tc_web_cn_data_ready()) return '';
+    $ips = isset($guard['ips']) && is_array($guard['ips']) ? $guard['ips'] : array();
+    if (!$ips && !empty($guard['ip'])) $ips = array($guard['ip']);
+    foreach ($ips as $ip) {
+        if (tc_cn_ip_contains($ip)) return (string) $ip;
+    }
+    return '';
 }
 
 // 境内 IP 段数据就绪了吗(文件在、能加载)。单独抽出来是为了让「数据缺失」与
@@ -564,6 +760,22 @@ function tc_web_to_utf8($body, $charset) {
 
 // ============ 抓取(逐跳校验,带 cookie) ============
 
+// Sec-Fetch-Dest 取值:按「这次请求要的是什么」给出与真实浏览器一致的值。
+// 顶层导航是 document(配合 Sec-Fetch-Mode: navigate),子资源按 Accept 推断类型;
+// 猜不出就落到 empty,而不是硬报 document —— 对一张图发 document 更可疑。
+function tc_web_fetch_dest($accept, $kind) {
+    if ($kind === 'page') return 'document';
+    $a = strtolower((string) $accept);
+    if ($a !== '') {
+        if (strpos($a, 'text/css') !== false) return 'style';
+        if (strpos($a, 'image/') !== false) return 'image';
+        if (strpos($a, 'font') !== false || strpos($a, 'woff') !== false) return 'font';
+        if (strpos($a, 'javascript') !== false || strpos($a, 'ecmascript') !== false) return 'script';
+        if (strpos($a, 'audio') !== false || strpos($a, 'video') !== false) return 'media';
+    }
+    return 'empty';
+}
+
 function tc_web_fetch($url, $userId, $opts = array()) {
     $maxBytes = (int) (isset($opts['maxBytes']) ? $opts['maxBytes'] : TC_WEB_MAX_BYTES);
     $timeoutMs = (int) (isset($opts['timeoutMs']) ? $opts['timeoutMs'] : TC_WEB_TIMEOUT_MS);
@@ -575,15 +787,28 @@ function tc_web_fetch($url, $userId, $opts = array()) {
     $range = (string) (isset($opts['range']) ? $opts['range'] : '');
     $clientCookie = (string) (isset($opts['cookie']) ? $opts['cookie'] : '');
     $referer = (string) (isset($opts['referer']) ? $opts['referer'] : '');
+    // 调用方是否声明这是「整页导航」,用于给出正确的 Sec-Fetch-Dest(见 tc_web_fetch_dest)。
+    $kindHint = (string) (isset($opts['kind']) ? $opts['kind'] : ($method === 'GET' && strpos(strtolower($accept), 'text/html') !== false ? 'page' : 'res'));
     $cur = (string) $url;
     $from = $referer;
     // 「仅限访问中国 IP 网站」:默认开启(见设置 webCnOnly)。判定放在闸门之后、出网之前,
     // 每一跳都判 —— 只判首跳会被「国内站 302 到境外」绕过。
     $cnOnly = !isset($opts['cnOnly']) || !empty($opts['cnOnly']);
+    // 子资源放宽:调用方已确认这个资源属于一个**已通过闸门的境内文档**(签名来源令牌,见
+    // tc_web_origin_token)。此时只对「非境内主机」放宽,且**只放宽非文档类型** —— 理由是
+    // 子资源按定义是页面的一部分(国内站引用海外 CDN 极常见),而 HTML 文档本身仍然必须
+    // 解析在境内,否则「用一个国内页把任意海外站当文档嵌进来」就绕开了这道开关。
+    // 放宽在拿到响应头之后仍要复核内容类型(见下方 $relaxedDocBlocked)。
+    $cnRelaxed = !empty($opts['cnRelaxed']);
+    // 本次调用累计从上游取回的字节(含跳转途中各跳)。用于按用户记每日流量:
+    // 这是「站点出口真实承担的流量」,而不是最终返回给浏览器的字节(后者还含我们注入的
+    // 垫片与改写膨胀,与本站出口开销无关)。跳转途中中途放弃的跳也算在里面。
+    $gotBytes = 0;
     for ($hop = 0; $hop <= TC_WEB_MAX_HOPS; $hop++) {
         $guard = tc_web_guard($cur);
         if (!$guard) return array('ok' => false, 'error' => '该地址不允许访问(仅支持公网 http/https 地址)', 'code' => 400);
-        if ($cnOnly && !tc_web_cn_target_ok($guard)) {
+        $hostIsCn = tc_web_cn_target_ok($guard);
+        if ($cnOnly && !$hostIsCn && !$cnRelaxed) {
             // 区分「这个站不在境内」和「境内网段数据根本没加载上」:后者会让所有站点
             // 一起被拒(开关默认开着),报错说成「该站点不在允许范围内」就没法排查了。
             $why = tc_web_cn_data_ready()
@@ -600,6 +825,21 @@ function tc_web_fetch($url, $userId, $opts = array()) {
             'Accept-Language: ' . $lang,
             'Upgrade-Insecure-Requests: 1',
         );
+        // 补齐现代浏览器必发的客户端提示头。缺了它们,不少站点(尤其带 WAF 的国内大站与
+        // 搜索引擎)会按「可疑客户端」处理:返回验证码页、空壳页,或直接 403 —— 这正是
+        // 用户反馈的「容易被拦截」。这些值是 Chrome 稳定版的固定取值,不随请求变化。
+        // 只声明与 UA 一致的平台/版本,不伪装成别的浏览器身份。
+        $hdrs[] = 'sec-ch-ua: "Chromium";v="131", "Not_A Brand";v="24", "Google Chrome";v="131"';
+        $hdrs[] = 'sec-ch-ua-mobile: ?0';
+        $hdrs[] = 'sec-ch-ua-platform: "Windows"';
+        // Sec-Fetch-* 描述「这次请求是谁发起的」。导航请求是 document+navigate,子资源按来源
+        // 类型给 image/script/style/font 等 —— 顶层导航与子资源用同一组值会露馅(浏览器不会
+        // 对 <img> 发 Sec-Fetch-Dest: document),反而更容易被判为脚本化流量。
+        $dest = tc_web_fetch_dest($accept, $kindHint);
+        $hdrs[] = 'Sec-Fetch-Dest: ' . $dest;
+        $hdrs[] = 'Sec-Fetch-Mode: ' . ($dest === 'document' ? 'navigate' : 'no-cors');
+        $hdrs[] = 'Sec-Fetch-Site: ' . ($from !== '' ? 'same-origin' : 'none');
+        $hdrs[] = 'Sec-Fetch-User: ?1';
         // 不要自己写 Accept-Encoding:手工发这个头会让 curl 关闭自动解压,拿回来的是压缩字节,
         // 正文抽取与 HTML 改写会全部落空(实测 example.com 返回 gzip 后正文为空)。
         // 交给 CURLOPT_ENCODING = '' 让它自己声明并自动解码。
@@ -631,6 +871,10 @@ function tc_web_fetch($url, $userId, $opts = array()) {
             CURLOPT_RESOLVE => array($guard['resolve']),
             CURLOPT_ENCODING => '',   // 自己声明可接受压缩并由 curl 自动解码
         );
+        // 允许协商 HTTP/2:国内主流站点普遍支持,多路复用省掉「每个子资源一次 TLS 握手」,
+        // 是首屏变快的主要来源之一(实测百度首页 HTTP/2 下 0.77s)。CURL_HTTP_VERSION_2TLS
+        // 只在 HTTPS 上协商 h2,明文 HTTP 仍走 1.1,对老站没有副作用。
+        if (defined('CURL_HTTP_VERSION_2TLS')) $optsCurl[CURLOPT_HTTP_VERSION] = CURL_HTTP_VERSION_2TLS;
         $ca = tc_cacert_path();
         if ($ca) $optsCurl[CURLOPT_CAINFO] = $ca;
         if ($body !== null) $optsCurl[CURLOPT_POSTFIELDS] = $body;
@@ -642,6 +886,7 @@ function tc_web_fetch($url, $userId, $opts = array()) {
         $location = '';
         $contentRange = '';
         $status = 0;
+        $hopBytes = 0;
         curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($ch, $line) use (&$ctype, &$setCookies, &$location, &$status, &$contentRange) {
             $trim = trim($line);
             if (preg_match('#^HTTP/\d(?:\.\d)?\s+(\d{3})#', $trim, $m)) { $status = (int) $m[1]; return strlen($line); }
@@ -666,13 +911,25 @@ function tc_web_fetch($url, $userId, $opts = array()) {
         $errno = curl_errno($ch);
         $err = curl_error($ch);
         curl_close($ch);
+        $hopBytes = strlen($buf);
+        $gotBytes += $hopBytes;
         if ($setCookies) tc_web_jar_store($userId, $cur, $setCookies);
-        if ($tooBig) return array('ok' => false, 'error' => '目标内容超过单次抓取上限', 'code' => 413);
+        if ($tooBig) {
+            // 单次上限拦下时,已经取回的部分照样算流量(它确实走了本站出口)
+            tc_web_traffic_add($userId, $gotBytes, (int) (isset($opts['trafficLimitMb']) ? $opts['trafficLimitMb'] : 0));
+            return array('ok' => false, 'error' => '目标内容超过单次抓取上限', 'code' => 413);
+        }
         // 只在「已经拿到有效响应」时才把 errno 当失败:写回调返回 0 主动中断也会置错误码
-        if ($status === 0) return array('ok' => false, 'error' => '无法连接目标站点(' . ($err !== '' ? $err : '网络错误 ' . $errno) . ')', 'code' => 502);
+        if ($status === 0) {
+            tc_web_traffic_add($userId, $gotBytes, (int) (isset($opts['trafficLimitMb']) ? $opts['trafficLimitMb'] : 0));
+            return array('ok' => false, 'error' => '无法连接目标站点(' . ($err !== '' ? $err : '网络错误 ' . $errno) . ')', 'code' => 502);
+        }
         if ($status >= 300 && $status < 400 && $location !== '' && $hop < TC_WEB_MAX_HOPS) {
             $next = tc_web_abs($location, $eff !== '' ? $eff : $cur);
-            if ($next === '' || !preg_match('#^https?://#i', $next)) return array('ok' => false, 'error' => '目标站点返回了非法跳转地址', 'code' => 502);
+            if ($next === '' || !preg_match('#^https?://#i', $next)) {
+                tc_web_traffic_add($userId, $gotBytes, (int) (isset($opts['trafficLimitMb']) ? $opts['trafficLimitMb'] : 0));
+                return array('ok' => false, 'error' => '目标站点返回了非法跳转地址', 'code' => 502);
+            }
             $from = $eff !== '' ? $eff : $cur;
             $cur = $next;
             // 307/308 要求保持方法与请求体;其余跳转按浏览器惯例转 GET(表单不再重发)
@@ -683,11 +940,24 @@ function tc_web_fetch($url, $userId, $opts = array()) {
             }
             continue;
         }
-        return array('ok' => true, 'status' => $status, 'body' => $buf, 'ctype' => $ctype, 'url' => $eff !== '' ? $eff : $cur, 'range' => $contentRange);
+        // 放宽分支的收口:来源页是国内站,允许取海外资源,但**不允许把海外站当文档拉进来**。
+        // 判据是响应类型而非请求意图 —— 站点完全可能把资源地址 302 到一个 HTML 登录页,
+        // 那种「伪资源」若被当文档渲染,就等于用国内页绕开了这道开关。所以这里在拿到响应头后
+        // 再拦一次:非境内主机 + 文档类型 = 拒。图片/脚本/样式/字体等子资源照常放行。
+        if ($cnRelaxed && $cnOnly && !$hostIsCn) {
+            $ctL = strtolower((string) $ctype);
+            if ($ctL === '' || strpos($ctL, 'text/html') !== false || strpos($ctL, 'application/xhtml') !== false) {
+                tc_web_traffic_add($userId, $gotBytes, (int) (isset($opts['trafficLimitMb']) ? $opts['trafficLimitMb'] : 0));
+                return array('ok' => false, 'error' => '该地址不属于允许访问的范围(仅限中国 IP 网站)', 'code' => 403);
+            }
+        }
+        // 记账放在成功返回处:一次调用(含全部跳转)取回的字节一次性计入该用户当日流量。
+        $traf = tc_web_traffic_add($userId, $gotBytes, (int) (isset($opts['trafficLimitMb']) ? $opts['trafficLimitMb'] : 0));
+        return array('ok' => true, 'status' => $status, 'body' => $buf, 'ctype' => $ctype, 'url' => $eff !== '' ? $eff : $cur, 'range' => $contentRange, 'bytes' => $gotBytes, 'trafficOver' => !empty($traf['over']));
     }
+    tc_web_traffic_add($userId, $gotBytes, (int) (isset($opts['trafficLimitMb']) ? $opts['trafficLimitMb'] : 0));
     return array('ok' => false, 'error' => '目标站点跳转次数过多', 'code' => 508);
 }
-
 // ============ HTML 改写 ============
 
 function tc_web_shim_js() {
@@ -1001,9 +1271,11 @@ function tc_web_prefetch_urls($html, $base, $limit)
 // 并行预取一组子资源并写进本地缓存。用 curl_multi 让多个 TLS 握手与往返同时进行 ——
 // 串行抓 20 张图的耗时约等于 20 次握手之和,并行后约为最慢的那一个。
 // 只在参数允许(无 cookie 依赖)时调用;任何单项失败都静默跳过,不影响页面本身。
-function tc_web_prefetch_warm($urls, $userId, $cnOnly, $concurrency)
+function tc_web_prefetch_warm($urls, $userId, $cnOnly, $concurrency, $cnAllowAssets = false, $trafficLimitMb = 0)
 {
     if (!is_array($urls) || !$urls || !function_exists('curl_multi_init')) return 0;
+    // 预热同样占用本站出口:超限用户不再预热(否则「拒绝抓取」会被预热路线绕过)。
+    if (!tc_web_traffic_ok($userId, (int) $trafficLimitMb)) return 0;
     $urls = array_slice(array_values(array_unique($urls)), 0, max(1, (int) $concurrency) * 2);
     $concurrency = max(1, min(16, (int) $concurrency));
     $multi = curl_multi_init();
@@ -1011,15 +1283,35 @@ function tc_web_prefetch_warm($urls, $userId, $cnOnly, $concurrency)
     $active = array();
     $pending = $urls;
     $deadline = time() + 8;      // 预算是「让首屏快点出来」,不能反过来把页面拖住
-    $start = function ($url) use ($multi, $userId, &$active, $cnOnly) {
+    $start = function ($url) use ($multi, $userId, &$active, $cnOnly, $cnAllowAssets) {
         $guard = tc_web_guard($url);
         if (!$guard) return null;
-        if ($cnOnly && !tc_web_cn_target_ok($guard)) return null;
+        // 与 tc_web_serve 同样的放宽口径:非境内主机但在本用户的子资源白名单里(说明它被
+        // 某个已通过闸门的国内页引用过)才预热 —— 否则国内页引用海外 CDN 的图片永远只能
+        // 等浏览器逐个回源,首屏又慢回去。
+        $relaxed = false;
+        if ($cnOnly && $cnAllowAssets) {
+            $h = @parse_url($url, PHP_URL_HOST);
+            if (is_string($h) && $h !== '' && tc_web_cn_asset_ok($userId, $h)) $relaxed = true;
+        }
+        if ($cnOnly && !$relaxed && !tc_web_cn_target_ok($guard)) return null;
         $buf = '';
         $ctype = '';
         $status = 0;
         $ch = curl_init($guard['url']);
-        $hdrs = array('User-Agent: ' . tc_web_ua(), 'Accept-Language: zh-CN,zh;q=0.9,en;q=0.8');
+        // 与 tc_web_fetch 同一套「像浏览器」的头:预热请求若被站点按可疑客户端拒掉,
+        // 等于白预热(用户随后取同一张图仍要重新出网),不如一开始就发合法的子资源请求头。
+        $hdrs = array(
+            'User-Agent: ' . tc_web_ua(),
+            'Accept-Language: zh-CN,zh;q=0.9,en;q=0.8',
+            'Accept: */*',
+            'sec-ch-ua: "Chromium";v="131", "Not_A Brand";v="24", "Google Chrome";v="131"',
+            'sec-ch-ua-mobile: ?0',
+            'sec-ch-ua-platform: "Windows"',
+            'Sec-Fetch-Site: same-origin',
+            'Sec-Fetch-Mode: no-cors',
+            'Sec-Fetch-Dest: empty',
+        );
         $cookie = tc_web_jar_header($userId, $url, '');
         if ($cookie !== '') { curl_close($ch); return null; }   // 带 cookie 的响应不能进公共缓存
         curl_setopt_array($ch, array(
@@ -1064,6 +1356,8 @@ function tc_web_prefetch_warm($urls, $userId, $cnOnly, $concurrency)
                 $body = $meta['buf'];
                 $ct = $meta['ctype'];
                 $st = $meta['status'];
+                // 预热的字节也要计入当日流量:它同样走了本站出口(用户没点到,但流量已经花了)。
+                if (strlen($body) > 0) tc_web_traffic_add($userId, strlen($body), (int) $trafficLimitMb);
                 // 只收 200 且类型可缓存的:预热写进去的东西必须和正常路径写进去的完全一致
                 if (curl_errno($ch) === 0 && $st === 200 && $body !== '' && tc_web_cacheable_ctype($ct)
                     && strlen($body) <= TC_WEB_CACHE_MAX_BYTES) {
@@ -1155,12 +1449,17 @@ function tc_web_serve($kind) {
     // 页面与子资源都要过同一套判定(用户还在、功能还开着、这个账号还有权限)。
     // 子资源一次页面加载有几十上百个,但「不读库」不等于「不判」:票据里带着 uid,
     // 按 uid 复核一次即可,省掉的是重复读结构化数据的开销,不是判定本身。
-    // 顺带把预热要用的两项设置读出来:并发上限与 cnOnly。
+    // 顺带把后续几处要用的设置读出来:并发上限、cnOnly、是否放宽国内页引用的海外资源、每日流量上限。
     $cnOnly = tc_web_cn_only_default();
+    $cnAllowAssets = true;
+    $trafficLimitMb = 0;
     $allowed = false;
     try {
-        tc_with_db(false, function ($db) use ($uid, &$allowed, &$cnOnly) {
+        tc_with_db(false, function ($db) use ($uid, &$allowed, &$cnOnly, &$cnAllowAssets, &$trafficLimitMb) {
             $cnOnly = tc_web_cn_only_on($db);
+            $s = isset($db['settings']) && is_array($db['settings']) ? $db['settings'] : array();
+            $cnAllowAssets = !array_key_exists('webCnAllowAssets', $s) || !empty($s['webCnAllowAssets']);
+            $trafficLimitMb = tc_web_traffic_limit_mb($db);
             $GLOBALS['_tc_web_concurrency'] = (int) (isset($db['settings']['webConcurrency']) ? $db['settings']['webConcurrency'] : 6);
             foreach ($db['users'] as $u) {
                 if ((string) $u['id'] !== $uid) continue;
@@ -1208,9 +1507,35 @@ function tc_web_serve($kind) {
         $cachedRaw = tc_web_cache_get($url);
         if ($cachedRaw !== null && !$cachedRaw['raw']) $cachedRaw = null;   // 上面已处理过透传类型
     }
+    // 子资源放宽:开了「仅限中国 IP」且这个 res 请求的目标主机出现在「该用户看过的国内
+    // 页面引用过的资源主机」名单里(见 tc_web_cn_asset_allow),就允许取回它 —— 国内站
+    // 引用海外 CDN 的图片/脚本是常态,逐个域名判归属会把首页打残。文档类型仍不放宽。
+    $cnRelaxed = false;
+    if ($kind === 'res' && $cnOnly && $cnAllowAssets) {
+        $h = @parse_url($url, PHP_URL_HOST);
+        if (is_string($h) && $h !== '' && tc_web_cn_asset_ok($uid, $h)) $cnRelaxed = true;
+    }
     if ($cachedRaw !== null) {
         $res = array('ok' => true, 'status' => $cachedRaw['status'], 'ctype' => $cachedRaw['ctype'], 'body' => $cachedRaw['body'], 'url' => $url, 'range' => '');
     } else {
+        // 每日流量闸门:要真出网了才判。命中本地缓存的分支在上面就返回了,不出网不计流量,
+        // 因此超限用户仍能重看已缓存的内容,只是不能再取新页面/新资源。
+        if (!tc_web_traffic_ok($uid, $trafficLimitMb)) {
+            $msg = '今日在线浏览器流量已用完（上限 ' . $trafficLimitMb . ' MB），明天恢复；管理员可在后台调整';
+            if ($kind === 'page') {
+                http_response_code(429);
+                header('Content-Type: text/html; charset=utf-8');
+                header('Cache-Control: no-store');
+                echo tc_web_fail_page($msg);
+            } else {
+                // 子资源请求返回整页错误文档会变成裂图,给纯文本更清楚(与权限失败同款处理)
+                http_response_code(429);
+                header('Content-Type: text/plain; charset=utf-8');
+                header('Cache-Control: no-store');
+                echo $msg;
+            }
+            exit;
+        }
         $res = tc_web_fetch($url, $uid, array(
             'method' => $method,
             'body' => $body,
@@ -1220,6 +1545,9 @@ function tc_web_serve($kind) {
             'accept' => isset($_SERVER['HTTP_ACCEPT']) ? (string) $_SERVER['HTTP_ACCEPT'] : '',
             'range' => isset($_SERVER['HTTP_RANGE']) ? (string) $_SERVER['HTTP_RANGE'] : '',
             'cnOnly' => $cnOnly,
+            'cnRelaxed' => $cnRelaxed,
+            'kind' => $kind,
+            'trafficLimitMb' => $trafficLimitMb,
         ));
     }
     if (empty($res['ok'])) {
@@ -1256,6 +1584,13 @@ function tc_web_serve($kind) {
         // 带着当次票据(每个用户不同),任何中间缓存把它存下来再发给别人就是串号。
         // 上面那次 cache_put 是给服务端自己用的,不影响这里对客户端的声明。
         header('Cache-Control: no-store, must-revalidate');
+        // 这个文档是本用户请求的、且已通过闸门(国内判定在 tc_web_fetch 里过了)。
+        // 把它引用的资源主机记进本用户的子资源白名单,后续海外 CDN 资源才不会被误拦。
+        // 注意只在国内判定开启时才需要记录 —— 关掉 webCnOnly 时子资源本来就不判归属。
+        if ($cnOnly && $cnAllowAssets && $kind === 'page') {
+            $assetHosts = tc_web_asset_hosts($rawHtml, $base);
+            if ($assetHosts) tc_web_cn_asset_allow($uid, $assetHosts);
+        }
         $html = tc_web_rewrite_html($rawHtml, $base, $ticket, $converted);
         $html = tc_web_inject($html, tc_web_shim_payload($base, $ticket, tc_web_jar_snapshot($uid, $base)));
         header('Content-Type: text/html; charset=utf-8');
@@ -1270,15 +1605,22 @@ function tc_web_serve($kind) {
         $budget = tc_web_concurrency_of();
         if ($kind === 'page' && $budget > 0) {
             $warm = tc_web_prefetch_urls($html, $base, $budget * 3);
-            if ($warm) tc_web_prefetch_warm($warm, $uid, $cnOnly, $budget);
+            if ($warm) tc_web_prefetch_warm($warm, $uid, $cnOnly, $budget, $cnAllowAssets, $trafficLimitMb);
         }
         exit;
     }
     if ($isCss) {
         header('Content-Type: text/css; charset=utf-8');
-        // 与 HTML 同理:缓存原始 CSS 字节(同样是未改写的),每次按当次票据改写后输出
-        if ($useCache && (int) $res['status'] === 200) {
+        // 与 HTML 同理:缓存原始 CSS 字节(同样是未改写的),每次按当次票据改写后输出。
+        // 放宽取回的(非境内主机)CSS 同样不进共享缓存,理由见下方子资源分支。
+        if ($useCache && !$cnRelaxed && (int) $res['status'] === 200) {
             tc_web_cache_put($url, 'text/css; charset=utf-8', 200, $res['body'], true);
+        }
+        // CSS 里的 url() 还引用着字体/图片(常在国内站的海外 CDN 上),这些主机同样要进
+        // 本用户的子资源白名单,否则样式表能取回、它引用的字体与背景图仍被拦。
+        if ($cnOnly && $cnAllowAssets) {
+            $cssHosts = tc_web_asset_hosts($res['body'], $base);
+            if ($cssHosts) tc_web_cn_asset_allow($uid, $cssHosts);
         }
         // 样式表同样内嵌了当次票据,不因为走了服务端缓存就对客户端放宽
         header('Cache-Control: no-store, must-revalidate');
@@ -1293,7 +1635,10 @@ function tc_web_serve($kind) {
     else header('Accept-Ranges: bytes');
     // 与用户无关的静态类型:让浏览器自己存一小会儿(不再每次翻页都回头要),
     // 服务端也留一份,同一张图被多次请求时省掉重复出网(206 分片不进缓存)。
-    if ($useCache && tc_web_cacheable_ctype($ctype)) {
+    // 放宽取回的(非境内主机)资源**不进共享缓存**:缓存命中路径在权限判定之后就直接回字节,
+    // 不再过 CN 闸门与白名单,一旦落盘就等于让「某用户看过的国内页引用过的海外资源」被所有人
+    // 取走,白名单的按用户隔离形同虚设。这类资源每次按需取回即可。
+    if ($useCache && !$cnRelaxed && tc_web_cacheable_ctype($ctype)) {
         header('Cache-Control: private, max-age=' . TC_WEB_CACHE_TTL);
         if (empty($res['range']) && (int) $res['status'] === 200) {
             tc_web_cache_put($url, $ctype, 200, $res['body']);
@@ -1322,6 +1667,9 @@ function tc_api_web_ticket() {
             'bookmarks' => tc_web_bookmarks_of($db),
             'dailyLimit' => tc_web_ai_limit($db),
             'dailyUsed' => tc_web_ai_used_today($uid),
+            // 每日流量:limitMb=0 表示不限;remainingMb=-1 表示不适用(前台据此不显示)
+            'trafficLimitMb' => tc_web_traffic_limit_mb($db),
+            'trafficRemainingMb' => tc_web_traffic_remaining_mb($uid, tc_web_traffic_limit_mb($db)),
         ));
     });
 }
@@ -1399,13 +1747,21 @@ function tc_api_web_read() {
 function tc_web_extract($url, $uid) {
     // 「仅限访问中国 IP 网站」要看后台设置,不能沿用 tc_web_fetch 的默认 true ——
     // 否则管理员把它关掉之后,阅读模式这一路仍然只认国内站,同一个地址页面能开、阅读模式却报错。
+    // 每日流量上限同理:阅读模式/AI 总结的服务端取数也走同一出口,必须与页面抓取同一口径。
     $cnOnly = tc_web_cn_only_default();
+    $trafficLimitMb = 0;
     try {
-        tc_with_db(false, function ($db) use (&$cnOnly) { $cnOnly = tc_web_cn_only_on($db); });
+        tc_with_db(false, function ($db) use (&$cnOnly, &$trafficLimitMb) {
+            $cnOnly = tc_web_cn_only_on($db);
+            $trafficLimitMb = tc_web_traffic_limit_mb($db);
+        });
     } catch (Throwable $e) {
         // 读不到库就维持默认值:宁可严一点,也不要因为一次读库失败而放行境外站点
     }
-    $res = tc_web_fetch($url, $uid, array('cnOnly' => $cnOnly));
+    if (!tc_web_traffic_ok($uid, $trafficLimitMb)) {
+        return array('ok' => false, 'error' => '今日在线浏览器流量已用完（上限 ' . $trafficLimitMb . ' MB），明天恢复；管理员可在后台调整', 'code' => 429);
+    }
+    $res = tc_web_fetch($url, $uid, array('cnOnly' => $cnOnly, 'kind' => 'page', 'trafficLimitMb' => $trafficLimitMb));
     if (empty($res['ok'])) return $res;
     $charset = tc_web_charset($res['body'], $res['ctype']);
     $html = ($charset !== '' && $charset !== 'utf-8' && $charset !== 'utf8') ? tc_web_to_utf8($res['body'], $charset) : $res['body'];
@@ -1649,6 +2005,12 @@ function tc_api_web_usage() {
         $user = tc_require_auth($db);
         tc_web_feature_guard($db, $user);
         $uid = (string) $user['id'];
-        tc_json(200, array('dailyLimit' => tc_web_ai_limit($db), 'dailyUsed' => tc_web_ai_used_today($uid)));
+        $limitMb = tc_web_traffic_limit_mb($db);
+        tc_json(200, array(
+            'dailyLimit' => tc_web_ai_limit($db),
+            'dailyUsed' => tc_web_ai_used_today($uid),
+            'trafficLimitMb' => $limitMb,
+            'trafficRemainingMb' => tc_web_traffic_remaining_mb($uid, $limitMb),
+        ));
     });
 }

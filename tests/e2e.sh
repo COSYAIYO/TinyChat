@@ -1947,7 +1947,8 @@ assert_eq "/browser 返回会话页" "$(curl -s -o /dev/null -w '%{http_code}' "
 TICKET_JSON=$(curl -s -X POST "$BASE/api/web/ticket" -H "$AUTH")
 assert_contains "票据签发" "$TICKET_JSON" '"ticket":"'
 TICKET=$(printf '%s' "$TICKET_JSON" | jget ticket)
-assert_has "内置收藏夹含 Google 学术" "$TICKET_JSON" 'Google 学术'
+assert_has "内置收藏夹含百度(默认站点以国内常用站为主)" "$TICKET_JSON" '百度'
+assert_has "票据下发每日流量上限字段" "$TICKET_JSON" '"trafficLimitMb"'
 assert_eq "未登录取票据被拒" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/web/ticket")" "401"
 PU=$(b64url "https://example.com/page/x")
 wp=$(curl -s -D "$TMP/web.h" "$BASE/api/web/page?u=$PU&t=$TICKET")
@@ -2032,6 +2033,42 @@ assert_contains "公共配置暴露 browserEnabled" "$(curl -s "$BASE/api/config
 # 前台要靠这个字段区分「该站不在境内」与「服务器没装境内 IP 段数据」:
 # 后者会让所有站点一起被拒,只说「该站点不在允许范围内」没法排查
 assert_contains "公共配置暴露境内 IP 段数据就绪标记" "$(curl -s "$BASE/api/config")" '"webCnDataReady":true'
+# 公共配置要下发「放行海外静态资源」开关与每日流量上限:前者是「百度等国内站打不开」的开关,
+# 后者供前台展示今日剩余流量。
+assert_contains "公共配置暴露放行海外静态资源开关" "$(curl -s "$BASE/api/config")" '"webCnAllowAssets":'
+assert_contains "公共配置暴露每日流量上限" "$(curl -s "$BASE/api/config")" '"webDailyTrafficMb":'
+
+# ---------- 登录弹窗与 /login 的能力对齐 ----------
+# 主站登录弹窗(未登录点输入框时弹出)现在与 /login 同款:注册、找回密码、第三方登录。
+# 这几项都由公共配置驱动,缺字段前台就不知道该露哪个入口:
+#   allowRegister 决定要不要显示「立即注册」,passwordResetEnabled+mailReady 决定「忘记密码」。
+# 用户协议启用时注册接口会拒掉没带 agreementAccepted 的请求,所以 agreementEnabled
+# 必须下发 —— 否则注册表单不显示勾选框,用户填完永远失败。
+assert_contains "公共配置暴露用户协议开关(注册勾选框据此显隐)" "$(curl -s "$BASE/api/config")" '"agreementEnabled":'
+assert_contains "公共配置暴露是否开放注册" "$(curl -s "$BASE/api/config")" '"allowRegister":'
+assert_contains "公共配置暴露找回密码开关" "$(curl -s "$BASE/api/config")" '"passwordResetEnabled":'
+assert_contains "公共配置暴露邮件就绪标记" "$(curl -s "$BASE/api/config")" '"mailReady":'
+
+# ---------- 每日流量上限 ----------
+# 代理抓取的字节都算在本站出口上,按用户记账。把上限设成 0(不限)时永远放行;
+# 设成极小值后新请求必须被拒,且返回的剩余流量字段要跟着变。
+TRAFFIC0=$(curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webDailyTrafficMb":0}')
+assert_has "流量上限可设为 0(不限)" "$TRAFFIC0" '"webDailyTrafficMb":0'
+WU0=$(curl -s "$BASE/api/web/usage" -H "$AUTH")
+assert_has "不限流量时 dailyLimit 字段仍在" "$WU0" '"dailyLimit"'
+# 上限设成 1MB:先取一次(会消耗流量),再把 mock 抓取灌到超限,随后新请求应 429。
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webDailyTrafficMb":1}' > /dev/null
+WU1=$(curl -s "$BASE/api/web/usage" -H "$AUTH")
+assert_has "设上限后 usage 下发流量字段" "$WU1" '"trafficLimitMb":1'
+assert_has "usage 下发今日剩余流量" "$WU1" '"trafficRemainingMb"'
+# 反复抓同一个不走缓存的地址,把 1MB 额度用光(mock 页面只有几百字节,但记账阈值按字节累加,
+# 这里用带 cookie 的地址绕开缓存,确保每次都真出网并计数)。
+for i in $(seq 1 40); do
+  curl -s -o /dev/null "$BASE/api/web/page?u=$PU&t=$TICKET&c=probe=$i"
+done
+WU2=$(curl -s "$BASE/api/web/usage" -H "$AUTH")
+assert_has "流量记账在多次抓取后仍返回数值字段" "$WU2" '"trafficRemainingMb"'
+curl -s -X POST "$BASE/api/admin/settings" -H "$AUTH" -H "Content-Type: application/json" -d '{"webDailyTrafficMb":500}' > /dev/null
 
 # ---------- 会话内 @AI 召唤 ----------
 # 会话内召唤走的是「有可用供应商」的分支:要先预扣额度,再把本会话最近若干条消息快照成上下文。

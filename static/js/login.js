@@ -109,6 +109,9 @@ function switchAuthForm(showId, hideId, focusId) {
 }
 
 function bindPasswordToggles() {
+  // 主站登录弹窗与登录页共用同一份实现(见 ui.js 的 OCUI.bindPasswordToggles):
+  // 各写一份的结果是「弹窗修了、登录页没修」这类只在一处复现的缺陷。
+  if (window.OCUI && window.OCUI.bindPasswordToggles) return window.OCUI.bindPasswordToggles(document);
   document.querySelectorAll('.pw-toggle').forEach((btn) => {
     btn.addEventListener('click', () => {
       const input = $(btn.dataset.for);
@@ -292,6 +295,10 @@ $('show-login').addEventListener('click', (e) => {
 
 // ============ 第三方一键登录 ============
 function renderOauthIcons(oauth) {
+  // 与主站登录弹窗共用同一份渲染与跳转逻辑(见 ui.js 的 OCUI.renderOauthIcons)
+  if (window.OCUI && window.OCUI.renderOauthIcons) {
+    return window.OCUI.renderOauthIcons($('oauth-login'), $('oauth-icons'), oauth && oauth.providers);
+  }
   const wrap = $('oauth-login');
   const box = $('oauth-icons');
   if (!wrap || !box) return;

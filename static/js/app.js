@@ -8494,26 +8494,103 @@ function autosizeInput() {
 }
 
 // ============ 游客 / 未登录 ============
+// 主站登录弹窗:与 /login 保持同一套能力(登录 / 注册 / 忘记密码 / 第三方一键登录)。
+// 以前这里只有一个登录表单,注册与找回密码都得离开当前页跳去 /login —— 用户正在写的内容
+// 会被整页导航丢掉。现在四个视图在同一弹窗内切换,行为与登录页一致。
 let AUTH_MODAL_BOUND = false;
+let AUTH_MODAL_VIEW = 'login';
+let AUTH_MODAL_CFG = null;
+let AUTH_MODAL_CFG_LOADING = false;
+
+function amError(msg) {
+  const err = $('auth-modal-error');
+  if (!err) return;
+  err.textContent = msg || '';
+  err.classList.toggle('hidden', !msg);
+}
+function amBusy(btn, busy, label) {
+  if (!btn) return;
+  btn.disabled = busy;
+  btn.classList.toggle('is-loading', busy);
+  btn.textContent = busy ? '请稍候…' : label;
+}
+// 切视图:登录 / 注册 / 找回密码。只切显隐与标题,不重建 DOM(重挂会丢用户已填的内容)。
+function amShowView(view, focusId) {
+  AUTH_MODAL_VIEW = view;
+  const forms = { login: 'auth-modal-login', register: 'auth-modal-register', forgot: 'auth-modal-forgot' };
+  Object.keys(forms).forEach((k) => {
+    const el = $(forms[k]);
+    if (el) el.classList.toggle('hidden', k !== view);
+  });
+  const titles = { login: '登录后继续对话', register: '注册新账号', forgot: '找回密码' };
+  const title = $('auth-modal-title');
+  if (title && titles[view]) title.textContent = titles[view];
+  amError('');
+  const focus = focusId ? $(focusId) : null;
+  if (focus) setTimeout(() => focus.focus(), 40);
+  // 按配置决定各入口显隐(内部会渲染第三方图标)
+  amApplyConfig();
+  // 必须在 amApplyConfig 之后收口:它渲染第三方图标时会 remove('hidden'),先隐藏会被它重新显示出来
+  const oauth = $('am-oauth');
+  if (oauth && view === 'forgot') oauth.classList.add('hidden');
+}
+// 按 /api/config 决定各入口显隐。缺字段时按「不展示」处理:注册与找回密码
+// 都可能在后台被关掉,展示出来点进去只会得到一个错误。
+function amApplyConfig() {
+  const cfg = AUTH_MODAL_CFG || state.config || null;
+  if (!cfg) { amLoadConfig(); return; }
+  const allowRegister = cfg.allowRegister !== false;
+  const regHint = $('am-register-hint');
+  if (regHint) regHint.classList.toggle('hidden', !allowRegister);
+  const regForm = $('auth-modal-register');
+  if (!allowRegister && regForm && AUTH_MODAL_VIEW === 'register') amShowView('login', 'am-name');
+  // 找回密码依赖邮件:功能关闭或未配置 SMTP 时不给入口
+  const canReset = cfg.passwordResetEnabled !== false && cfg.mailReady !== false;
+  const forgotHint = $('am-forgot-hint');
+  if (forgotHint) forgotHint.classList.toggle('hidden', !canReset);
+  // 邀请码与用户协议:与 /login 一样按后台设置显隐
+  const inviteRow = $('am-reg-invite-row');
+  if (inviteRow) inviteRow.classList.toggle('hidden', !cfg.registerInviteRequired);
+  const agreeRow = $('am-reg-agree-row');
+  if (agreeRow) agreeRow.classList.toggle('hidden', !cfg.agreementEnabled);
+  // 第三方登录图标
+  if (window.OCUI && window.OCUI.renderOauthIcons) {
+    window.OCUI.renderOauthIcons($('am-oauth'), $('am-oauth-icons'), cfg.oauth && cfg.oauth.providers);
+  }
+}
+function amLoadConfig() {
+  if (AUTH_MODAL_CFG_LOADING) return;   // 没配置时每次切视图都会走到这里,别重复请求
+  AUTH_MODAL_CFG_LOADING = true;
+  fetch(apiUrl('/api/config')).then((r) => r.json()).then((cfg) => {
+    AUTH_MODAL_CFG = cfg || {};
+    AUTH_MODAL_CFG_LOADING = false;
+    if (AUTH_MODAL_BOUND) amApplyConfig();
+  }).catch(() => { AUTH_MODAL_CFG_LOADING = false; /* 读不到配置就用默认:保留入口,由接口报错 */ });
+}
+function amFinishLogin(d) {
+  localStorage.setItem('oc_token', d.token);
+  localStorage.setItem('oc_user', JSON.stringify(d.user || {}));
+  state.token = d.token;
+  location.reload();
+}
 function openAuthModal(message) {
   const modal = $('auth-modal');
   if (!modal) { location.href = apiUrl('/login'); return; }
-  const err = $('auth-modal-error');
-  if (err) {
-    err.textContent = message || '';
-    err.classList.toggle('hidden', !message);
-  }
   if (!AUTH_MODAL_BOUND && window.OCUI) {
     AUTH_MODAL_BOUND = true;
+    AUTH_MODAL_CFG = state.config || null;
     window.OCUI.bindModal(modal, { closeId: 'auth-modal-close' });
-    const form = $('auth-modal-login');
-    if (form) form.addEventListener('submit', async (e) => {
+    window.OCUI.bindPasswordToggles(modal);
+    if (!AUTH_MODAL_CFG) amLoadConfig();
+
+    const loginForm = $('auth-modal-login');
+    if (loginForm) loginForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const name = ($('am-name') && $('am-name').value.trim()) || '';
       const pass = ($('am-pass') && $('am-pass').value) || '';
-      if (!name || !pass) { if (err) { err.textContent = '请输入用户名和密码'; err.classList.remove('hidden'); } return; }
+      if (!name || !pass) return amError('请输入用户名和密码');
       const btn = $('am-login-btn');
-      if (btn) btn.disabled = true;
+      amBusy(btn, true, '登录');
       try {
         const r = await fetch(apiUrl('/api/auth/login'), {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -8521,17 +8598,78 @@ function openAuthModal(message) {
         });
         const d = await readJsonSafe(r);
         if (!r.ok) throw new Error((d.error && d.error.message) || '登录失败');
-        localStorage.setItem('oc_token', d.token);
-        localStorage.setItem('oc_user', JSON.stringify(d.user || {}));
-        location.reload();
+        amFinishLogin(d);
       } catch (ex) {
-        if (err) { err.textContent = ex.message; err.classList.remove('hidden'); }
-        if (btn) btn.disabled = false;
+        amError(ex.message);
+        amBusy(btn, false, '登录');
       }
     });
+
+    const regForm = $('auth-modal-register');
+    if (regForm) regForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = ($('am-reg-name') && $('am-reg-name').value.trim()) || '';
+      const pass = ($('am-reg-pass') && $('am-reg-pass').value) || '';
+      if (!name || !pass) return amError('请输入用户名和密码');
+      const btn = $('am-register-btn');
+      amBusy(btn, true, '注册并登录');
+      try {
+        const r = await fetch(apiUrl('/api/auth/register'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: name,
+            password: pass,
+            email: ($('am-reg-email') && $('am-reg-email').value.trim()) || '',
+            agreementAccepted: !!($('am-reg-agree') && $('am-reg-agree').checked),
+            invite: ($('am-reg-invite') && $('am-reg-invite').value.trim()) || '',
+          }),
+        });
+        const d = await readJsonSafe(r);
+        if (!r.ok) throw new Error((d.error && d.error.message) || '注册失败');
+        // 开启邮箱验证时不发令牌:提示去查收邮件,不要谎报登录成功
+        if (d.pendingVerification) { amBusy(btn, false, '注册并登录'); return amError('注册成功，请查收验证邮件并完成邮箱验证后登录'); }
+        amFinishLogin(d);
+      } catch (ex) {
+        amError(ex.message);
+        amBusy(btn, false, '注册并登录');
+      }
+    });
+
+    const forgotForm = $('auth-modal-forgot');
+    if (forgotForm) forgotForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = $('am-forgot-btn');
+      amBusy(btn, true, '发送重置邮件');
+      try {
+        const r = await fetch(apiUrl('/api/auth/forgot-password'), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: ($('am-forgot-email') && $('am-forgot-email').value.trim()) || '' }),
+        });
+        const d = await readJsonSafe(r);
+        if (!r.ok) throw new Error((d.error && d.error.message) || '发送失败');
+        amError('如果邮箱存在，重置链接已发送。');
+      } catch (ex) {
+        amError(ex.message);
+      } finally {
+        amBusy(btn, false, '发送重置邮件');
+      }
+    });
+
     const goReg = $('am-go-register');
-    if (goReg) goReg.addEventListener('click', (e) => { e.preventDefault(); location.href = apiUrl('/login?register=1'); });
+    if (goReg) goReg.addEventListener('click', (e) => { e.preventDefault(); amShowView('register', 'am-reg-name'); });
+    const goForgot = $('am-go-forgot');
+    if (goForgot) goForgot.addEventListener('click', (e) => { e.preventDefault(); amShowView('forgot', 'am-forgot-email'); });
+    const regBack = $('am-register-back');
+    if (regBack) regBack.addEventListener('click', (e) => { e.preventDefault(); amShowView('login', 'am-name'); });
+    const forgotBack = $('am-forgot-back');
+    if (forgotBack) forgotBack.addEventListener('click', (e) => { e.preventDefault(); amShowView('login', 'am-name'); });
   }
+  // 每次打开都回到「登录」视图并重新按配置刷新入口:绑定块只在首次执行,放它后面才能
+  // 保证「第一次打开弹窗」也渲染第三方图标(放在绑定之前会先跑一遍空配置)。
+  amShowView('login');
+  // 报错必须在 amShowView 之后:它内部会清空错误框,顺序反了会把调用方传来的提示擦掉
+  // (游客额度用尽、登录态失效都靠这条提示说明为什么弹出这个框)。
+  amError(message || '');
   if (window.OCUI && window.OCUI.openModal) window.OCUI.openModal(modal);
   else modal.classList.remove('hidden');
 }

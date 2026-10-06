@@ -3312,6 +3312,9 @@ select,
 }
 .auth-modal .modal-body { padding-top: 28px; }
 .auth-modal .auth-logo { margin-bottom: 18px; }
+/* 登录视图里「忘记密码？」与「立即注册」上下相邻,各带一份 margin-top 会拉开成两块,
+   这里把相邻的那条收紧,视觉上归为一组辅助链接 */
+.auth-modal .auth-switch + .auth-switch { margin-top: 8px; }
 
 /* ---------- 23. 追问:去掉虚线顶栏和位移 ---------- */
 .follow-ups {

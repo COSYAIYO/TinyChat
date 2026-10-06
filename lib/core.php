@@ -6,7 +6,7 @@ if (!defined('TC_ROOT')) {
     define('TC_ROOT', dirname(__DIR__));
 }
 
-define('TC_VERSION', '2.0.137');
+define('TC_VERSION', '2.0.139');
 // 单篇笔记正文上限(字符)。超出时接口明确报错而不是静默截断。
 define('TC_NOTE_MAX_CHARS', 500000);
 define('TC_DB_VERSION', 2);
@@ -233,6 +233,15 @@ $TC_SETTINGS_DEFAULTS = array(
     // 动机:代理出网走的是本站服务器,境外站点的滥用/合规风险与流量都记在本站账上;
     // 限制成国内站后,「看国内资料」这个主要用途不受影响,风险面小很多。
     'webCnOnly' => true,
+    // 开了「仅限中国 IP」时,是否放行「页面主站是国内、但子资源域名解析到境外」的资源。
+    // 必须默认开启:国内大站的静态资源常走海外 CDN(实测百度首页会引用 ir.baidu.com,
+    // 它解析到 Akamai 的 23.206.26.151),按「每个域名各自判归属」会把首页图片/脚本打掉,
+    // 用户看到的就是「百度都打不开」。判定改为:导航请求(整页)按中国 IP 严格判,
+    // 子资源只要它的**来源页**是中国站就放行(见 tc_web_fetch 的 originCn 参数)。
+    'webCnAllowAssets' => true,
+    // 在线浏览器每用户每日出网流量上限(MB,0 = 不限)。代理抓取的字节都算在本站出口,
+    // 这里按用户记账:同一用户当天抓取的字节(含页面与全部子资源)超过上限即拒绝。
+    'webDailyTrafficMb' => 500,
     // 单页面子资源并发抓取上限(1 = 串行)。调大能让重图片的页面更快出来,
     // 但并发出网会同时占用多个连接与内存,虚拟主机上不宜过高。
     'webConcurrency' => 6,
@@ -1101,6 +1110,8 @@ function tc_normalize_settings($raw) {
     $s['webBookmarks'] = $wbOut;
     // 仅限中国 IP 站点:默认开启(旧库缺字段也按开启);并发上限 1~16
     $s['webCnOnly'] = !array_key_exists('webCnOnly', $s) || !empty($s['webCnOnly']);
+    $s['webCnAllowAssets'] = !array_key_exists('webCnAllowAssets', $s) || !empty($s['webCnAllowAssets']);
+    $s['webDailyTrafficMb'] = min(1024000, max(0, (int) (isset($s['webDailyTrafficMb']) ? $s['webDailyTrafficMb'] : 500)));
     $s['webConcurrency'] = min(16, max(1, (int) (isset($s['webConcurrency']) ? $s['webConcurrency'] : 6) ?: 6));
     // 三个拓展功能的访问级别与名单(在线浏览器 / AI 笔记 / 在线聊天)
     foreach (array('notes', 'im', 'web') as $feat) {

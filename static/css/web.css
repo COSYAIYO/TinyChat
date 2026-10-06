@@ -266,6 +266,8 @@
 .web-home-hero { max-width: 680px; margin: 6vh auto 26px; text-align: center; }
 .web-home-hero h1 { margin: 0 0 8px; font-size: 25px; font-weight: 650; color: var(--text); letter-spacing: -0.01em; }
 .web-home-sub { margin: 0 0 20px; color: var(--text-tertiary); font-size: 13px; line-height: 1.6; }
+/* 今日剩余流量:超限后抓取会被服务端拒,提前显示让用户明白为什么打不开网页 */
+.web-home-quota { margin: 12px 0 0; color: var(--text-tertiary); font-size: 12px; }
 
 .web-search {
   display: flex;

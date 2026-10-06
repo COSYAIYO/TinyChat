@@ -807,6 +807,52 @@ UI.toggleTheme = function () {
   // 脚本一加载就刷主题色,避免等 app.init 期间主按钮仍是默认蓝
   UI.applyAppearance();
 
+  // —— 登录相关控件的共享实现 ——
+  // 登录页(/login)与主站登录弹窗(index.html 的 auth-modal)是两套 DOM,但交互契约必须一致:
+  // 密码显隐、第三方图标、切表单的动效。逻辑各写一份的结果是「弹窗里改了、登录页没改」这类
+  // 只在一处复现的缺陷,所以收在这里由两边共同调用。
+  UI.bindPasswordToggles = function (root) {
+    const scope = root || document;
+    scope.querySelectorAll('.pw-toggle').forEach(function (btn) {
+      if (btn.dataset.pwBound === '1') return;   // 重复打开弹窗时不要叠加监听
+      btn.dataset.pwBound = '1';
+      btn.addEventListener('click', function () {
+        const input = document.getElementById(btn.getAttribute('data-for'));
+        if (!input) return;
+        const show = input.type === 'password';
+        input.type = show ? 'text' : 'password';
+        btn.setAttribute('aria-label', show ? '隐藏密码' : '显示密码');
+        btn.title = show ? '隐藏密码' : '显示密码';
+        const off = btn.querySelector('.eye-off');
+        const on = btn.querySelector('.eye-on');
+        if (off) off.classList.toggle('hidden', show);
+        if (on) on.classList.toggle('hidden', !show);
+      });
+    });
+  };
+  // 第三方登录图标:providers 来自 /api/config 的 oauth.providers。
+  // 点击整页跳转到 /auth/<id>(第三方登录必须离开当前页),而不是 fetch —— 授权端点要靠
+  // 顶层导航才能让用户看到登录界面。
+  UI.renderOauthIcons = function (wrap, box, providers) {
+    if (!wrap || !box) return;
+    const list = Array.isArray(providers) ? providers : [];
+    if (!list.length) { wrap.classList.add('hidden'); return; }
+    box.innerHTML = list.map(function (p) {
+      return '<button type="button" class="oauth-icon" data-oauth-go="' + UI.escapeAttr(p.id) + '" title="使用 ' + UI.escapeAttr(p.name) + ' 登录">'
+        + '<img src="' + UI.escapeAttr(p.logo) + '" alt="' + UI.escapeAttr(p.name) + '" loading="lazy"></button>';
+    }).join('');
+    if (box.dataset.oauthBound !== '1') {
+      box.dataset.oauthBound = '1';
+      box.addEventListener('click', function (e) {
+        const btn = e.target.closest('[data-oauth-go]');
+        if (!btn) return;
+        btn.disabled = true;
+        location.href = '/auth/' + encodeURIComponent(btn.getAttribute('data-oauth-go'));
+      });
+    }
+    wrap.classList.remove('hidden');
+  };
+
   window.OCUI = UI;
   window.toast = UI.toast; // 兼容既有调用(messages.js / multimodal.js)
 })();

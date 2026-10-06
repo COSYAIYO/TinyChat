@@ -1423,6 +1423,37 @@ function tc_capture_stream_text(&$target, $chunk, $format, &$carry = null) {
     }
 }
 
+// 进程内(单请求内)DNS 解析缓存。一次页面加载会抓几十上百个子资源,而 SSRF 闸门每个
+// 资源都要解析一次主机名 —— 不缓存就是上百次 gethostbynamel,每次几十毫秒的解析延迟
+// 叠加起来正是「加载网页慢」的主因之一。PHP-FPM 下静态变量只在当前请求内有效,
+// 不会跨请求拿到过期结果,所以不需要 TTL。$force=false 时命中即返回。
+function tc_dns_a($host, $force = false) {
+    static $cache = array();
+    $host = strtolower((string) $host);
+    if ($host === '') return array();
+    if (!$force && array_key_exists($host, $cache)) return $cache[$host];
+    $ips = array();
+    foreach ((array) @gethostbynamel($host) as $ip) {
+        if (!in_array($ip, $ips, true)) $ips[] = $ip;
+    }
+    return $cache[$host] = $ips;
+}
+
+function tc_dns_aaaa($host, $force = false) {
+    static $cache = array();
+    $host = strtolower((string) $host);
+    if ($host === '') return array();
+    if (!$force && array_key_exists($host, $cache)) return $cache[$host];
+    $ips = array();
+    if (function_exists('dns_get_record')) {
+        foreach ((array) @dns_get_record($host, DNS_AAAA) as $rec) {
+            $v6 = isset($rec['ipv6']) ? $rec['ipv6'] : '';
+            if ($v6 !== '' && !in_array($v6, $ips, true)) $ips[] = $v6;
+        }
+    }
+    return $cache[$host] = $ips;
+}
+
 // SSRF 防护:校验 URL 指向公网地址 —— 拒绝内网/保留 IP(含 127.0.0.1、云元数据 169.254.169.254)、
 // localhost 类主机名、非常规端口;域名会做真实 DNS 解析,返回选定 IP 供请求固定解析结果。
 // ips 保留全部解析结果,供「按归属地筛选目标站」这类判定使用(只能看到一个 IP 会漏判)。
@@ -1443,12 +1474,9 @@ function tc_url_public_host($url) {
     if (filter_var($host, FILTER_VALIDATE_IP)) {
         if ($ipOk($host)) $ips[] = $host;
     } else {
-        foreach ((array) @gethostbynamel($host) as $ip) if ($ipOk($ip) && !in_array($ip, $ips, true)) $ips[] = $ip;
-        if (!$ips && function_exists('dns_get_record')) {
-            foreach ((array) @dns_get_record($host, DNS_AAAA) as $rec) {
-                $v6 = isset($rec['ipv6']) ? $rec['ipv6'] : '';
-                if ($ipOk($v6) && !in_array($v6, $ips, true)) $ips[] = $v6;
-            }
+        foreach (tc_dns_a($host) as $ip) if ($ipOk($ip) && !in_array($ip, $ips, true)) $ips[] = $ip;
+        if (!$ips) {
+            foreach (tc_dns_aaaa($host) as $v6) if ($ipOk($v6) && !in_array($v6, $ips, true)) $ips[] = $v6;
         }
     }
     return $ips ? array('ip' => $ips[0], 'ips' => $ips, 'port' => $port, 'host' => $host) : false;
