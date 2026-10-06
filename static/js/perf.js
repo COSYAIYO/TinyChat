@@ -72,4 +72,30 @@
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', refresh);
   else refresh();
+
+  // ---- 拓展开关的按人判定入口 ----
+  // 「仅管理员 / 仅名单」这层判定因人而异,/api/config 是匿名的发不出来,所以由 /api/me
+  // 的结果写进 oc_cfg.features。各功能模块在自己入口处问这里,并在 oc:features 事件里重判 ——
+  // 否则会出现「入口已渲染、权限随后才到」时该隐藏却没隐藏。
+  window.OCFeatures = {
+    allowed: function (name) {
+      try {
+        var cfg = JSON.parse(localStorage.getItem('oc_cfg') || 'null');
+        var f = cfg && cfg.features;
+        if (f && typeof f[name] === 'boolean') return f[name];
+      } catch (e) { /* 忽略 */ }
+      return true;   // 拿不到按人结果时先放行,由服务端兜底(它有权威判定)
+    },
+    // app.js 拿到 /api/me 后调用:写入并广播,让已经渲染过的入口重新对齐
+    set: function (features) {
+      if (!features || typeof features !== 'object') return;
+      try {
+        var cfg = JSON.parse(localStorage.getItem('oc_cfg') || 'null');
+        if (!cfg || typeof cfg !== 'object') cfg = {};
+        cfg.features = features;
+        localStorage.setItem('oc_cfg', JSON.stringify(cfg));
+      } catch (e) { /* 忽略 */ }
+      try { window.dispatchEvent(new CustomEvent('oc:features', { detail: features })); } catch (e) { /* 忽略 */ }
+    },
+  };
 })();

@@ -93,6 +93,14 @@
 RedirectMatch 404 ^/(\.git|\.github|\.zcode|tests|tools|node_modules|gui-test-screenshots)(/|$)
 RedirectMatch 404 /\.(git|htaccess|gitignore|zcodeignore)(/|$)
 
+# 本地测试实例的数据目录与调试产物。README 让用户「整个仓库上传」,而本地起过测试的
+# 目录会一并带上:**这些目录里有 tinychat.sqlite(整库)与 secret(JWT 签名密钥)**。
+#   data-8999/ 等本地实例数据目录  —— 只有 data/ 自带 .htaccess,别的没有,是明文可下载的;
+#   .tmp/                         —— 测试脚本的临时数据(secret、sqlite、dbg 日志);
+#   *.log / *.sqlite              —— 调试日志里可能带令牌,根目录的 tc_dbg.log 就能直接取到。
+RedirectMatch 404 ^/(\.tmp|data-.*)(/|$)
+RedirectMatch 404 \.(sqlite|sqlite3|db|log|ndjson)$
+
 DirectoryIndex index.php index.html
 
 # 流式对话尽量不要被 gzip / 代理缓冲

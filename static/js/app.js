@@ -4037,6 +4037,8 @@ async function refreshMe() {
     if (r.ok) {
       state.user = data.user;
       state.usage = Array.isArray(data.usage) ? data.usage : [];
+      // 拓展功能的按人可用性(仅管理员 / 仅名单):落盘并广播,让已渲染的入口重判
+      if (data.features && window.OCFeatures) window.OCFeatures.set(data.features);
       renderUser();
       loadAccountPackages();
     }

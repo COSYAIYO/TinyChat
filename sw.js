@@ -6,7 +6,7 @@
  *   其余资源(图片/字体/图标)仍用 stale-while-revalidate,省流量、加载快。
  * HTML 页面 / API / SSE 流式 / /v1 出口一律直连,绝不缓存(登录态与流式响应不可缓存)。
  */
-const CACHE = 'tinychat-static-2.0.132';
+const CACHE = 'tinychat-static-2.0.136';
 // 本 SW 拥有的缓存前缀。清理时只删自己这一族,不动同源下别的应用/子站缓存。
 const CACHE_PREFIX = 'tinychat-static-';
 
@@ -42,6 +42,8 @@ self.addEventListener('fetch', (e) => {
     // 笔记页与笔记分享页:都是路由到 HTML 的地址,漏掉它们会把页面 shell 缓存下来,
     // 分享链接失效后仍能打开旧页面(表单里的内容还会泄露给下一个使用者)
     || p === '/ainotes' || p === '/agreement'
+    // 同样路由到 index.html 的两个整屏模块地址:缓存住 shell 会让发版后的新代码拿不到
+    || p === '/im' || p === '/browser'
     || p.indexOf('/s/') === 0 || p.indexOf('/n/') === 0) return;
   // 样式和 sw.js 自身直连。旧的 network-first 仍会把请求放进 Cache Storage,
   // 浏览器刷新时先拿这份缓存,版本号变了也要等下一次才换成新样式。

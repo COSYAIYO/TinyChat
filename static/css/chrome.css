@@ -3477,6 +3477,140 @@ select,
   box-shadow: none !important;
 }
 
+/* ---------- 拓展功能:可见范围选择 + 功能总览磁贴 ---------- */
+/* 一份设置渲染三处(浏览器/笔记/聊天),样式也共用;类名里的 feat 是 feature 的缩写 */
+.feat-access {
+  margin: 4px 0 16px;
+  padding: 14px 16px 4px;
+  border-radius: var(--radius-md, 12px);
+  background: var(--bg-surface-2, var(--bg-hover));
+}
+.feat-access-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-bottom: 10px;
+}
+.feat-access-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-bottom: 12px;
+}
+.feat-access-modes label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.964rem;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.feat-access-modes input[type="radio"] {
+  flex: 0 0 auto;
+  width: 14px;
+  min-width: 14px;
+  max-width: 14px;
+  height: 14px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--brand, var(--accent));
+  cursor: pointer;
+}
+.feat-access-lists { padding-top: 2px; }
+.feat-access-lists .field:last-child { margin-bottom: 10px; }
+.feat-access-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  min-height: 30px;
+  align-items: center;
+}
+.feat-access-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 13px;
+  border-radius: 999px;
+  background: var(--bg-surface, var(--bg-input));
+  font-size: 0.929rem;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background 0.15s ease;
+}
+.feat-access-group:hover { background: var(--bg-hover); }
+/* 组名是用户填的自由文本,长组名要能换行撑开胶囊而不是溢出;但绝不能被压成竖排 */
+.feat-access-group > span { white-space: normal; overflow-wrap: anywhere; line-height: 1.45; }
+/* style.css 的 .field input{width:100%} 会把复选框拉成整行宽,把后面的文字挤成竖排 —— 
+   这里钉回固有尺寸;唯一性由 .feat-access-group 限定,不影响其他表单控件 */
+.feat-access-group input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 14px;
+  min-width: 14px;
+  max-width: 14px;
+  height: 14px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--brand, var(--accent));
+  cursor: pointer;
+}
+
+.ext-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 18px;
+  border-radius: var(--radius-md, 12px);
+  background: var(--bg-surface-2, var(--bg-hover));
+}
+.ext-tile.off { opacity: 0.62; }
+.ext-tile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.ext-tile-name { font-weight: 650; font-size: 1.036rem; }
+.ext-tile-badge {
+  flex: 0 0 auto;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--bg-active);
+  color: var(--text-tertiary);
+  font-size: 0.786rem;
+  font-weight: 600;
+}
+.ext-tile-badge.on {
+  background: color-mix(in srgb, var(--brand, var(--accent)) 14%, transparent);
+  color: var(--brand, var(--accent));
+}
+.ext-tile-desc {
+  margin: 0;
+  font-size: 0.893rem;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+.ext-tile-state {
+  margin: 2px 0 8px;
+  font-size: 0.893rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.ext-tile-state b { color: var(--text); font-weight: 600; }
+.ext-tile .btn.small { align-self: flex-start; }
+
+@media (max-width: 560px) {
+  .feat-access { padding: 12px 13px 2px; }
+  .feat-access-modes { gap: 8px 14px; }
+  .ext-tile { padding: 14px 15px; }
+}
+
 /* ---------- 模型/供应商 logo(模型选择器、供应商筛选、会话列表) ---------- */
 .oc-menu-item .item-logo {
   width: 16px;
@@ -3626,6 +3760,18 @@ a.btn {
   margin-bottom: 14px;
 }
 .pkg-form-grid .field { margin: 0; }
+/* 同一行的两个字段,标签文字长短常不一样(一个一行、另一个两行),默认对齐会让两个
+   输入框落在不同高度上 —— 实测「网页 AI 总结每日次数上限」与「子资源并发预取数」
+   就是错开的,看着像排版没对齐。让单元格等高、标签占住剩余空间,把控件顶到同一条基线。 */
+.pkg-form-grid > .field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.pkg-form-grid > .field > span:first-child { flex: 0 0 auto; }
+.pkg-form-grid > .field > input,
+.pkg-form-grid > .field > textarea,
+.pkg-form-grid > .field > select { margin-top: auto; }
 @media (max-width: 720px) { .pkg-form-grid { grid-template-columns: 1fr; } }
 
 /* 后台:一个套餐一张卡片 */
