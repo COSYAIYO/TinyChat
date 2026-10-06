@@ -325,5 +325,75 @@ tc_web_cache_put($cdUrl, 'image/jpeg', 200, 'NEWBYTES');
 $chit2 = tc_web_cache_get($cdUrl);
 if (is_array($chit2) && $chit2['ctype'] === 'image/jpeg' && $chit2['body'] === 'NEWBYTES') $ok('同 URL 重复写入覆盖旧缓存'); else $bad('旧缓存未被覆盖');
 
+// ---------- 10c) 真机回归:iframe 能渲染 + 表单提交带上字段 ----------
+// 两个都是用户报上来的「在线浏览器不能用」:
+//   1) 渲染被代理页的 iframe 被 X-Frame-Options 拦掉 → 一直空白。真正拦人的是
+//      index.php 开头 tc_send_cors() 给每个响应发的**全局 DENY**(DENY 连本站自己的
+//      页面都嵌不了);tc_web_serve 必须显式覆盖回 SAMEORIGIN。而且要在**函数开头**就写:
+//      曾经只在成功分支写、失败分支(票据过期 / 限流 / 地址非法 / 功能被关 / 上游抓取
+//      失败)没写,于是出错时用户看到的是一片空白而不是原因(实测被 CSP 拦下)。
+//      注意 SAMEORIGIN **不会**因为 sandbox 不带 allow-same-origin 而被拦:嵌它的父页面
+//      本身就是本站同源,实测 sandbox 与否都不影响(一度误判成 sandbox 导致,故留档)。
+//   2) <form action> 只换成代理地址,提交后查询串丢失 → 必应搜索框永远跳到空搜索页。
+$webSrc = (string) file_get_contents(__DIR__ . '/../lib/web.php');
+// 只检查真正 header(...) 出来的那些,注释里提到这个词不算。
+// 注意不能用 [^;]* 来截取参数:CSP 的值里本身带分号('unsafe-eval'; frame-ancestors),
+// 那样会把 frame-ancestors 整段切掉,断言就成了永远失败(踩过一次)。
+$hdrBlock = '';
+if (preg_match_all('/^\s*header\((.*)\);/m', $webSrc, $hm)) $hdrBlock = implode("\n", $hm[1]);
+foreach (array('X-Frame-Options', 'frame-ancestors') as $needle) {
+    if (stripos($hdrBlock, $needle) === false) $bad('代理响应完全不发 ' . $needle . '(会继承全局 DENY / frame-ancestors none)');
+}
+if (preg_match_all('/X-Frame-Options:\s*([A-Za-z]+)/i', $hdrBlock, $xfo)) {
+    $vals = array_map('strtoupper', $xfo[1]);
+    if (in_array('DENY', $vals, true)) $bad('代理响应写了 X-Frame-Options: DENY: 渲染它的 iframe 会被整页拦掉');
+    elseif (!in_array('SAMEORIGIN', $vals, true)) $bad('代理响应只发了 ' . implode(',', $vals) . ',没有 SAMEORIGIN');
+    else $ok('代理响应显式 SAMEORIGIN(覆盖全局 DENY,页面才渲染得出来)');
+}
+// 关键结构:这一对头必须在 tc_web_serve 里**所有 exit 之前**设好,否则失败分支又会回到白屏。
+$bodyStart = strpos($webSrc, 'function tc_web_serve(');
+if ($bodyStart === false) {
+    $bad('找不到 tc_web_serve');
+} else {
+    $head = substr($webSrc, $bodyStart, 2600);
+    $firstExit = strpos($head, 'exit;');
+    $xfoAt = stripos($head, "header('X-Frame-Options: SAMEORIGIN')");
+    $cspAt = stripos($head, 'frame-ancestors');
+    if ($firstExit === false) $bad('tc_web_serve 里没找到 exit,自检失效,请更新断言');
+    elseif ($xfoAt !== false && $cspAt !== false && $xfoAt < $firstExit && $cspAt < $firstExit) {
+        $ok('XFO/CSP 在 tc_web_serve 的第一个 exit 之前就设好了(失败页也能显示)');
+    } else {
+        $bad('XFO/CSP 排在第一个 exit 之后:失败分支会继承全局 DENY,出错时一片空白');
+    }
+}
+
+// 表单改写:action 指向代理,且原始地址与提交方式挂在 data 属性上
+$formHtml = '<form action="/search" method="get"><input name="q" value=""></form>';
+$rewritten = tc_web_rewrite_forms($formHtml, 'https://www.bing.com/', 'TKT');
+if (strpos($rewritten, 'data-ocw-action="https://www.bing.com/search"') !== false) $ok('表单原始 action 写进 data-ocw-action');
+else $bad('表单没记下原始 action: ' . $rewritten);
+if (strpos($rewritten, 'data-ocw-method="get"') !== false) $ok('表单提交方式被记录'); else $bad('表单 method 未记录: ' . $rewritten);
+if (strpos($rewritten, 'action="/api/web/page?u=') !== false) $ok('表单 action 指向代理页端点'); else $bad('表单 action 未指向代理: ' . $rewritten);
+// action 上原本带查询串(很多站点的搜索表单是 <form action="/s?ie=utf-8">)也要保住
+$formQ = tc_web_rewrite_forms('<form action="/s?ie=utf-8"></form>', 'https://example.com/', 'TKT');
+$decodedQ = '';
+if (preg_match('/data-ocw-action="([^"]+)"/', $formQ, $q1)) $decodedQ = html_entity_decode($q1[1], ENT_QUOTES, 'UTF-8');
+if ($decodedQ === 'https://example.com/s?ie=utf-8') $ok('表单 action 自带的查询串被保留'); else $bad('表单 action 的查询串丢了: ' . $decodedQ);
+// POST 表单记录成 post(由 shim 降级成 GET 提交)
+$formP = tc_web_rewrite_forms('<form action="/p" method="POST"></form>', 'https://example.com/', 'TKT');
+if (strpos($formP, 'data-ocw-method="post"') !== false) $ok('POST 表单被标记为 post'); else $bad('POST 表单 method 识别错: ' . $formP);
+// javascript: 之类的 action 不碰
+$formJs = tc_web_rewrite_forms('<form action="javascript:void(0)"></form>', 'https://example.com/', 'TKT');
+if ($formJs === '<form action="javascript:void(0)"></form>') $ok('非 http(s) 的 action 不改写'); else $bad('javascript: action 被改写了: ' . $formJs);
+// 没有 action 的表单:按当前文档地址补一个
+$formNo = tc_web_rewrite_forms('<form id="f"></form>', 'https://example.com/page', 'TKT');
+if (strpos($formNo, 'data-ocw-action="https://example.com/page"') !== false) $ok('缺省 action 按当前文档地址补齐'); else $bad('缺省 action 未补: ' . $formNo);
+
+// shim 侧:必须真的接管 submit 并把字段拼进目标地址
+$shimSrc = (string) file_get_contents(__DIR__ . '/../static/js/web-shim.js');
+if (strpos($shimSrc, "addEventListener('submit'") !== false) $ok('shim 监听了表单 submit'); else $bad('shim 没接管 submit,表单字段会丢');
+if (strpos($shimSrc, 'data-ocw-action') !== false) $ok('shim 读得到原始 action'); else $bad('shim 没读 data-ocw-action');
+if (strpos($shimSrc, 'encodeURIComponent') !== false) $ok('shim 对字段名/值做了 URL 编码'); else $bad('shim 未编码字段,特殊字符会破坏地址');
+
 echo $fail === 0 ? "\n全部通过\n" : "\n失败 {$fail} 项\n";
 exit($fail === 0 ? 0 : 1);

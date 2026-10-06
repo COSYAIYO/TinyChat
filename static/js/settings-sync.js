@@ -50,7 +50,9 @@
   const UI_FIELDS = [
     { f: 'sidebarCollapsed', k: 'oc_sidebar_collapsed', t: 'bool' },
     { f: 'sidebarWidth', k: 'oc_sidebar_width', t: 'int' },
-    { f: 'contentWidth', k: 'oc_content_width', t: 'int' },
+    // 对话列宽度:值是 "61.8%" 这样的百分比(旧版遗留是纯 px 数字)。
+    // 用 pct 而不是 int —— int 会 parseInt 成 61,回写再变成 "61",百分比被吃掉。
+    { f: 'contentWidth', k: 'oc_content_width', t: 'pct' },
     { f: 'composerMode', k: 'oc_composer_mode', t: 'str' },
     { f: 'imageModel', k: 'oc_image_model', t: 'str' },
     { f: 'imageSize', k: 'oc_image_size', t: 'str' },
@@ -83,6 +85,8 @@
     if (raw === null) return undefined;
     if (f.t === 'bool') return raw === '1' || raw === 'true';
     if (f.t === 'int') { const n = parseInt(raw, 10); return Number.isFinite(n) ? n : undefined; }
+    // 百分比:本地存成 "61.8%"(可带小数,也被旧版的纯 px 值兼容)
+    if (f.t === 'pct') { const n = parseFloat(raw); return Number.isFinite(n) ? n : undefined; }
     if (f.t === 'json') {
       try { const v = JSON.parse(raw); return (v && typeof v === 'object') ? v : undefined; }
       catch (e) { return undefined; }
@@ -93,6 +97,15 @@
     if (v === undefined || v === null) { lsDel(fieldKey(f)); return; }
     if (f.t === 'bool') lsSet(fieldKey(f), v ? '1' : '0');
     else if (f.t === 'int') lsSet(fieldKey(f), String(parseInt(v, 10) || 0));
+    else if (f.t === 'pct') {
+      const n = parseFloat(v);
+      if (!Number.isFinite(n)) { lsDel(fieldKey(f)); return; }
+      // <=100 是百分比;>100 是升级前存在云端的 px 值,原样写成数字,
+      // 交给 app.js 首屏那段 px→% 迁移按当前主区宽度换算 —— 这里直接补个 %
+      // 会把它变成「820%」，等于把用户原来的宽度设置弄丢。
+      if (n > 100) { lsSet(fieldKey(f), String(n)); return; }
+      lsSet(fieldKey(f), String(Math.round(n * 10) / 10) + '%');
+    }
     else if (f.t === 'json') lsSet(fieldKey(f), JSON.stringify(v));
     else lsSet(fieldKey(f), String(v));
   }

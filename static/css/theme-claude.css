@@ -176,15 +176,18 @@ html[data-oc-theme="claude"] .msg.user .msg-content {
   box-shadow: none;
   padding: 12px 18px;
   max-width: 76%;
-  font-size: 1.071rem !important;
+  font-size: calc(var(--fs) * var(--msg-scale)) !important;
   line-height: 1.65;
 }
 html[data-oc-theme="claude"] .msg.user .msg-actions { max-width: 76%; }
 
-/* 正文排版:16px / 1.7。字号被 chrome.css 的字号总表用 !important 钉住,
-   普通声明压不过,必须同样带 !important(rem 等于 --fs,字号偏好依然生效)。 */
+/* 正文排版:比默认外观松一档。字号被 chrome.css 的字号总表用 !important 钉住,
+   普通声明压不过,必须同样带 !important。
+   倍数走 --msg-scale(基准是用户的 --fs),不能写死 rem ——
+   写 1.143rem 会让「外观→字号」选 14px 实际渲染 16px,用户看到的和设置对不上。 */
+html[data-oc-theme="claude"] { --msg-scale: 0.98; }
 html[data-oc-theme="claude"] .msg .msg-content {
-  font-size: 1.143rem !important;
+  font-size: calc(var(--fs) * var(--msg-scale)) !important;
   line-height: 1.7;
 }
 html[data-oc-theme="claude"] .msg.assistant p { margin: 0 0 1.1em; }
@@ -245,23 +248,22 @@ html[data-oc-theme="claude"] .msg.assistant code {
 }
 html[data-oc-theme="claude"] .msg .msg-avatar { border: none; box-shadow: none; }
 
-/* ---------- 5. 消息操作:桌面端悬停才出现 ---------- */
-@media (hover: hover) {
-  html[data-oc-theme="claude"] .msg .msg-actions {
-    opacity: 0 !important;
-    transition: opacity 0.12s ease;
-  }
-  html[data-oc-theme="claude"] .msg:hover .msg-actions,
-  html[data-oc-theme="claude"] .msg:focus-within .msg-actions { opacity: 1 !important; }
+/* ---------- 5. 消息操作:常驻 ----------
+   与默认外观保持一致(默认外观的操作条是常驻的)。此前这里改成 opacity:0、
+   悬停才出现,同一排按钮在默认外观看得见、切到本主题就没了 —— 行为不一致。 */
+html[data-oc-theme="claude"] .msg .msg-actions {
+  opacity: 1 !important;
+  transition: opacity 0.12s ease;
 }
 html[data-oc-theme="claude"] .msg-action { color: var(--text-tertiary); border-radius: 7px; }
 html[data-oc-theme="claude"] .msg-action:hover { background: var(--bg-hover); color: var(--text); }
 html[data-oc-theme="claude"] .msg-actions .reply-meta,
 html[data-oc-theme="claude"] .msg-actions .reply-time { color: var(--text-tertiary); }
 
-/* ---------- 6. 内容栏:更窄、留白更多 ---------- */
+/* ---------- 6. 内容栏:内边距更宽、留白更多 ---------- */
+/* 宽度交给 --content-w(默认 61.8%,拖拽条改它);写死 780px 会让拖拽调宽失效 */
 html[data-oc-theme="claude"] .messages {
-  max-width: 780px;
+  max-width: var(--content-w);
   padding: 36px 28px 24px;
 }
 html[data-oc-theme="claude"] .msg { padding: 24px 0; }
@@ -349,7 +351,7 @@ html[data-oc-theme="claude"] .msg.assistant .md-prose .table-wrap table tbody tr
    代价是输入框高了约 54px,而它是绝对定位悬浮在消息区之上的,所以消息区底部留白
    与「回到底部」按钮要同步上移,否则最后一条消息会被压住。 */
 html[data-oc-theme="claude"] .chat-area { padding-bottom: 186px; }
-html[data-oc-theme="claude"] .composer-wrap { max-width: 780px; }
+html[data-oc-theme="claude"] .composer-wrap { max-width: var(--content-w); }
 html[data-oc-theme="claude"] .composer {
   flex-wrap: wrap;
   align-items: center;
@@ -367,13 +369,14 @@ html[data-oc-theme="claude"] .composer:focus-within {
 html[data-oc-theme="claude"] .composer-flow { order: 1; flex: 1 1 100%; align-self: stretch; }
 html[data-oc-theme="claude"] .composer-left { order: 2; }
 html[data-oc-theme="claude"] .composer-right { order: 3; margin-left: auto; }
-/* 输入字号与正文一致(16px)。@ 行与 textarea 首行是「同一行盒」的约定:
-   两边都用 line-height 1.5 且同字号,height:1.5em 才对得上,所以一起改。 */
+/* 输入字号与正文一致。@ 行与 textarea 首行是「同一行盒」的约定:
+   两边都用 line-height 1.5 且同字号,height:1.5em 才对得上,所以一起改。
+   字号同样跟着 --msg-scale,和正文保持同一个倍数。 */
 html[data-oc-theme="claude"] .composer-flow textarea,
 html[data-oc-theme="claude"] .composer-at-row,
 html[data-oc-theme="claude"] .composer-flow .composer-at,
 html[data-oc-theme="claude"] .composer-flow .note-mention-chip {
-  font-size: 1.143rem !important;
+  font-size: calc(var(--fs) * var(--msg-scale)) !important;
   line-height: 1.5;
 }
 html[data-oc-theme="claude"] .composer textarea { padding: 10px 4px 6px; }

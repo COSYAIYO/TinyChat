@@ -151,6 +151,9 @@ html[data-oc-theme="block"] .visual-actions { border-bottom: 0 !important; }
 html[data-oc-theme="block"] .msg.assistant .md-prose hr { display: none; }
 
 /* ---------- 4. 侧栏:一块贴在左缘的圆角面板 ---------- */
+/* 侧栏几何由 chrome.css 的「侧栏左边缘统一」一节统一实现,主题只报数。
+   方块主题的卡片比默认外观略往里收一点,内缩因此给 12px。 */
+html[data-oc-theme="block"] { --sidebar-pad: 12px; }
 html[data-oc-theme="block"] .sidebar {
   background: var(--bg-sidebar);
   backdrop-filter: none;
@@ -158,7 +161,8 @@ html[data-oc-theme="block"] .sidebar {
   padding: 10px 8px 8px;
 }
 html[data-oc-theme="block"] .sidebar-brand { padding: 6px 8px 10px; }
-html[data-oc-theme="block"] .sidebar-header { padding: 2px 6px 8px; }
+/* 左右外边距一律取 --sidebar-pad,卡片、搜索框、会话行共用同一条左边缘 */
+html[data-oc-theme="block"] .sidebar-header { padding: 2px var(--sidebar-pad) 8px; }
 
 /* 新建对话:纯白卡片按钮 */
 html[data-oc-theme="block"] .new-chat-btn {
@@ -186,12 +190,12 @@ html[data-oc-theme="block"] .assistant-lib-btn:hover,
 html[data-oc-theme="block"] .sidebar-model-wrap .model-picker:hover {
   box-shadow: var(--shadow-sm);
 }
-html[data-oc-theme="block"] .sidebar-model-wrap { padding: 0 6px 8px; }
+html[data-oc-theme="block"] .sidebar-model-wrap { padding: 0 var(--sidebar-pad) 8px; }
 
 /* 搜索框:填充式圆角块,不描边 */
 html[data-oc-theme="block"] .chat-search {
   height: 40px;
-  margin: 0 6px 10px;
+  margin: 0 var(--sidebar-pad) 10px;
   border-radius: 12px;
   background: rgba(0, 0, 0, 0.035);
   border: 0;
@@ -199,8 +203,8 @@ html[data-oc-theme="block"] .chat-search {
 html[data-oc-theme="block"][data-theme="dark"] .chat-search { background: rgba(255, 255, 255, 0.05); }
 html[data-oc-theme="block"] .chat-search:focus-within { background: var(--bg-surface); box-shadow: var(--shadow-xs); }
 
-/* 会话列表 */
-html[data-oc-theme="block"] .chat-list { padding: 4px 6px 10px; gap: 3px; }
+/* 会话列表:外边距同样取 --sidebar-pad,与上面的白卡片左右对齐 */
+html[data-oc-theme="block"] .chat-list { padding: 4px var(--sidebar-pad) 10px; gap: 3px; }
 html[data-oc-theme="block"] .chat-item {
   height: 40px;
   border-radius: 12px;
@@ -220,14 +224,17 @@ html[data-oc-theme="block"] .topbar {
   padding: 10px 20px;
 }
 html[data-oc-theme="block"] .topbar::after { display: none; }
-/* 模型选择器做成一颗胶囊卡片 */
-html[data-oc-theme="block"] .model-picker {
+/* 模型选择器做成一颗胶囊卡片。
+   注意:这条只该作用于顶栏那颗(顶栏胶囊比侧栏宽)。本应用目前没有 .topbar,
+   不限定父级的话它会把 14px 左内边距加到**侧栏**的选择器上,
+   于是「选择模型」比上下相邻的「助手库 / 简单对话」向右偏 6px —— 实测过的错位。 */
+html[data-oc-theme="block"] .topbar .model-picker {
   background: var(--bg-surface);
   border-radius: 999px;
   box-shadow: var(--shadow-xs);
   padding: 8px 16px 8px 14px;
 }
-html[data-oc-theme="block"] .model-picker:hover { box-shadow: var(--shadow-sm); }
+html[data-oc-theme="block"] .topbar .model-picker:hover { box-shadow: var(--shadow-sm); }
 
 /* ---------- 6. 消息区:每条消息是一块独立卡片 ---------- */
 /* 默认外观把消息排成一整栏连续文本,只靠间距分隔。本主题把「用户提问」与
@@ -243,7 +250,9 @@ html[data-oc-theme="block"] .chat-area {
   scroll-padding-top: 12px;
 }
 html[data-oc-theme="block"] .messages {
-  max-width: 812px;
+  /* 宽度交给 --content-w(默认 61.8%,拖拽条改它)。这里写死 812px 会让
+     「拖拽调宽」对本主题完全失效 —— 变量改了但规则不读它。 */
+  max-width: var(--content-w);
   padding: 20px 26px 24px;
   display: flex;
   flex-direction: column;
@@ -278,7 +287,7 @@ html[data-oc-theme="block"] .msg.user .msg-content {
   box-shadow: none;
   padding: 14px 20px;
   max-width: 78%;
-  font-size: 1.071rem;
+  font-size: calc(var(--fs) * var(--msg-scale));
 }
 html[data-oc-theme="block"] .msg.user .msg-avatar { display: none; }
 html[data-oc-theme="block"] .msg.user .msg-actions { max-width: 78%; justify-content: flex-end; }
@@ -288,9 +297,12 @@ html[data-oc-theme="block"] .msg-avatar {
 }
 
 /* 正文排版:苹果产品页的呼吸感。字号被 chrome.css 的字号总表用 !important 钉住,
-   必须对着带 !important 才生效(rem 在本项目等于 --fs,字号偏好依然有效)。 */
+   必须对着带 !important 才生效。
+   倍数走 --msg-scale(基准是用户的 --fs),不写死 rem —— 写死会让「外观→字号」
+   的档位和实际渲染的字号对不上。本主题只比默认略紧一点点,靠行距和留白做呼吸感。 */
+html[data-oc-theme="block"] { --msg-scale: 0.96; }
 html[data-oc-theme="block"] .msg .msg-content {
-  font-size: 1.071rem !important;
+  font-size: calc(var(--fs) * var(--msg-scale)) !important;
   line-height: 1.72;
   letter-spacing: -0.005em;
 }
@@ -412,20 +424,25 @@ html[data-oc-theme="block"] .visual-actions .code-copy:hover {
 }
 
 /* ---------- 9. 消息操作:悬停浮现 ---------- */
-@media (hover: hover) {
-  html[data-oc-theme="block"] .msg .msg-actions {
-    opacity: 0 !important;
-    transition: opacity 0.14s ease;
-  }
-  html[data-oc-theme="block"] .msg:hover .msg-actions,
-  html[data-oc-theme="block"] .msg:focus-within .msg-actions { opacity: 1 !important; }
+/* ---------- 9. 消息操作:常驻,悬停时加深 ----------
+   默认外观是常驻的(polish.css 的 hover 隐藏规则在实测里并没有压过它),
+   这里以前把操作条钉成 opacity:0、悬停才出现,结果同一排按钮在默认外观看得见、
+   切到本主题就"消失"了 —— 用户报的就是这个。
+   现在与默认外观对齐:始终可见,靠颜色深浅表达状态,悬停/聚焦时再提亮。 */
+html[data-oc-theme="block"] .msg .msg-actions {
+  opacity: 1 !important;
+  transition: opacity 0.14s ease;
 }
+html[data-oc-theme="block"] .msg .msg-actions:hover,
+html[data-oc-theme="block"] .msg:focus-within .msg-actions { opacity: 1 !important; }
 html[data-oc-theme="block"] .msg-action { border-radius: 9px; color: var(--text-tertiary); }
 html[data-oc-theme="block"] .msg-action:hover { background: var(--bg-hover); color: var(--text); }
 
 /* ---------- 10. 输入区:悬浮的大圆角卡片 ---------- */
-html[data-oc-theme="block"] .composer-area { padding: 10px 20px 16px; }
-html[data-oc-theme="block"] .composer-wrap { max-width: 812px; }
+/* 左右内边距必须为 0:.composer-wrap 的百分比宽度按容器内容盒算,
+   这里留 20px 会让输入栏比消息列窄 40px(实测 block 主题 702 vs 726.8,不同宽)。 */
+html[data-oc-theme="block"] .composer-area { padding: 10px 0 16px; }
+html[data-oc-theme="block"] .composer-wrap { max-width: var(--content-w); }
 html[data-oc-theme="block"] .composer {
   background: var(--bg-surface);
   border: 0;
@@ -441,7 +458,7 @@ html[data-oc-theme="block"] .composer:focus-within {
   box-shadow: var(--shadow-lg);
   background: var(--bg-surface);
 }
-html[data-oc-theme="block"] .composer textarea { font-size: 1.071rem; }
+html[data-oc-theme="block"] .composer textarea { font-size: calc(var(--fs) * var(--msg-scale)); }
 html[data-oc-theme="block"] .composer-hint { margin-top: 10px; }
 /* 底部预留要跟着本主题更高的输入框一起加。默认的 132px 是按 64px 输入框算的,
    而这里输入框 70px、外加比默认多出的内边距,滚动到底时最后一条消息仍会被压住
@@ -626,7 +643,7 @@ html[data-oc-theme="block"] ::-webkit-scrollbar-thumb:hover {
   html[data-oc-theme="block"] .msg.assistant .msg-content { padding: 14px 14px; }
   html[data-oc-theme="block"] .msg.user .msg-content { max-width: 92%; }
   html[data-oc-theme="block"] .msg.user .msg-actions { max-width: 92%; }
-  html[data-oc-theme="block"] .msg .msg-content { font-size: 1.071rem !important; }
+  html[data-oc-theme="block"] .msg .msg-content { font-size: calc(var(--fs) * var(--msg-scale)) !important; }
   html[data-oc-theme="block"] .composer-area { padding: 6px 10px 10px; }
   html[data-oc-theme="block"] .msg.assistant .md-prose .table-wrap table th,
   html[data-oc-theme="block"] .msg.assistant .md-prose .table-wrap table td { padding: 9px 11px !important; }

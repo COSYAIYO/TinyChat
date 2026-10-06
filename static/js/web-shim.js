@@ -302,6 +302,67 @@
     } catch (e) {}
   });
 
+  // ============ 表单提交 ============
+  // 服务端把 <form> 的原始 action 放在 data-ocw-action 上,并把 action 指向代理。
+  // 这里在 submit 时把表单字段拼成查询串追加到代理地址的 u 上 —— 浏览器自己提交表单时
+  // 会丢弃 action 里已有的查询串,不接管就会丢掉用户输入(必应搜索框就是这么坏的)。
+  function formQuery(form) {
+    var parts = [];
+    try {
+      var els = form.elements || [];
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i];
+        if (!el || !el.name || el.disabled) continue;
+        var tag = (el.tagName || '').toLowerCase();
+        var type = (el.type || '').toLowerCase();
+        if (type === 'submit' || type === 'button' || type === 'reset' || type === 'file' || type === 'image') continue;
+        if ((type === 'checkbox' || type === 'radio') && !el.checked) continue;
+        var val = el.value == null ? '' : String(el.value);
+        if (tag === 'select' && el.multiple) {
+          for (var j = 0; j < el.options.length; j++) {
+            if (el.options[j].selected) parts.push([el.name, el.options[j].value]);
+          }
+          continue;
+        }
+        parts.push([el.name, val]);
+      }
+    } catch (e) {}
+    var out = [];
+    for (var k = 0; k < parts.length; k++) {
+      out.push(encodeURIComponent(parts[k][0]) + '=' + encodeURIComponent(parts[k][1]));
+    }
+    return out.join('&');
+  }
+
+  // 把提交目标(原始 action)+ 字段拼回一个「让代理去取」的地址
+  function formTarget(form) {
+    var action = form.getAttribute('data-ocw-action') || remoteUrl();
+    var a;
+    try { a = new URL(action); } catch (e) { return ''; }
+    if (a.protocol !== 'http:' && a.protocol !== 'https:') return '';
+    var q = formQuery(form);
+    if (q) {
+      // 目标地址自己可能已经带查询串,用 & 接上
+      a.search = a.search ? (a.search + '&' + q) : ('?' + q);
+    }
+    return a.href;
+  }
+
+  // 用冒泡阶段监听:站点自己的 submit 处理器(常在捕获/更早的冒泡里改写字段)先跑完,
+  // 我们再按最终字段值算目标地址。
+  document.addEventListener('submit', function (ev) {
+    var form = ev.target;
+    if (!form || (form.tagName || '').toLowerCase() !== 'form') return;
+    if (!form.hasAttribute('data-ocw-action')) return;
+    var target;
+    try { target = formTarget(form); } catch (e) { return; }
+    if (!target) return;
+    // 站点若自己 preventDefault 了,说明它要用 XHR 自己发,交给它
+    if (ev.defaultPrevented) return;
+    ev.preventDefault();
+    try { location.assign(proxied(target, 'page')); } catch (e) {}
+  }, false);
+
   // ============ 导航与历史 ============
 
   ['pushState', 'replaceState'].forEach(function (fn) {

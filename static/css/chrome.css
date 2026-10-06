@@ -313,8 +313,10 @@
   font-weight: 500;
 }
 
-/* 会话行:左右内缩,选中只改字色+浅底,去掉左指示条 */
-.chat-item-wrap { padding: 0 6px; width: auto; }
+/* 会话行:左右内缩由 .chat-item 自己给,wrap 不再额外加内边距。
+   以前 wrap 有 6px 内缩、而同一列的「今天/昨天」分组标题没有,
+   两边文字就差 2px,看着就是没对齐。 */
+.chat-item-wrap { padding: 0; width: auto; }
 .chat-item {
   height: 34px;
   padding: 0 8px;
@@ -385,6 +387,102 @@
 .account-chip .account-chevron { flex: 0 0 auto; }
 .account-chip .avatar { flex: 0 0 auto; }
 
+/* ============================================================
+   侧栏「左方间距」统一:一条竖线规则
+   ------------------------------------------------------------
+   侧栏里每一行(新建对话 / 助手库 / 模型 / 搜索 / 分组标题 / 会话项 /
+   账户行)都必须是同一套几何:图标从同一个 x 开始,文字也从同一个 x 开始。
+   此前每个区块各自写 padding,实测在同一列里排出了 5 种文字左边缘
+   (default 主题 40/42/46/48/50),看上去就是"左边没对齐"。
+   主题包此前也各写各的 padding,于是四个主题都有这个毛病。
+
+   这里把几何收敛成四个变量,主题只改这几个数、不再逐行调 padding:
+     --sidebar-pad      侧栏各区块(header/model/list/footer)的左右内缩
+     --sidebar-row-pad  行内左右内边距,悬浮底色/卡片比内容外扩这么多
+     --sidebar-icon-col 图标(或头像)列宽,所有行的图标都落在这条竖格里
+     --sidebar-gap      图标列与文字之间的间距
+   于是:图标左缘 = --sidebar-pad + --sidebar-row-pad,
+        文字左缘 = 上面再 + --sidebar-icon-col + --sidebar-gap。
+
+   用 html[data-oc-theme] 前缀是为了压过主题包里的同名规则(它们都是
+   html[data-oc-theme="xxx"] .chat-item 这种两段式,比这里少一个类);
+   主题包因此只能通过上面四个变量影响几何,皮肤类属性(底色/圆角/高度)
+   仍然归主题包自己管。
+   ============================================================ */
+:root {
+  --sidebar-pad: 10px;
+  --sidebar-row-pad: 8px;
+  --sidebar-icon-col: 24px;
+  --sidebar-gap: 8px;
+  /* 正文相对「外观→字号」的倍数:默认 1(用户选 14px 就是 14px)。
+     主题想让正文更松,只改这个倍数 —— 字号偏好始终是唯一基准,
+     直接写 font-size:1.143rem 会让 14px 变成 16px,用户看到的字号跟设置对不上。 */
+  --msg-scale: 1;
+}
+
+/* 区块级:左右内缩统一 */
+html[data-oc-theme] .sidebar .sidebar-header,
+html[data-oc-theme] .sidebar .sidebar-model-wrap,
+html[data-oc-theme] .sidebar .sidebar-footer,
+html[data-oc-theme] .sidebar .chat-list {
+  padding-left: var(--sidebar-pad);
+  padding-right: var(--sidebar-pad);
+}
+/* 搜索框在 .chat-list 内,不能再自带左右 margin(否则叠加成双倍内缩) */
+html[data-oc-theme] .sidebar .chat-search {
+  margin-left: 0;
+  margin-right: 0;
+  /* 显式做成 flex:图标列宽 + gap 才一定生效,占位文字才会落在统一的那条竖线上 */
+  display: flex;
+  align-items: center;
+}
+/* 会话项 wrap 不参与内缩,统一交给 .chat-item,免得和分组标题差 2px */
+html[data-oc-theme] .sidebar .chat-item-wrap { padding-left: 0; padding-right: 0; }
+
+/* 行级:左右内边距 + 图标与文字的间距都取同一组值 */
+html[data-oc-theme] .sidebar .new-chat-btn,
+html[data-oc-theme] .sidebar .assistant-lib-btn,
+html[data-oc-theme] .sidebar .model-picker,
+html[data-oc-theme] .sidebar .chat-search,
+html[data-oc-theme] .sidebar .chat-item,
+html[data-oc-theme] .sidebar .chat-group,
+html[data-oc-theme] .sidebar .account-chip {
+  padding-left: var(--sidebar-row-pad);
+  padding-right: var(--sidebar-row-pad);
+  gap: var(--sidebar-gap);
+}
+/* 「新建对话」的文字也要落在同一条竖线上:以前默认外观是居中的,
+   整列里只有它一个不左对齐(主题包又各自左对齐,四个主题还不一致)。 */
+html[data-oc-theme] .sidebar .new-chat-btn { justify-content: flex-start; }
+
+/* 图标列:所有行的图标/头像都占满同一宽度的竖格,并在这格里居中。
+   裸 <svg> 给了 CSS 宽度后会按 viewBox 等比缩放并水平居中,图标本身不会被拉大;
+   包在 span 里的图标用 flex 居中,观感一致。 */
+html[data-oc-theme] .sidebar .new-chat-btn > svg,
+html[data-oc-theme] .sidebar .model-icon,
+html[data-oc-theme] .sidebar .chat-search > svg,
+html[data-oc-theme] .sidebar .chat-icon,
+html[data-oc-theme] .sidebar .chat-group-chev,
+html[data-oc-theme] .sidebar .avatar {
+  flex: 0 0 var(--sidebar-icon-col);
+  width: var(--sidebar-icon-col);
+  min-width: var(--sidebar-icon-col);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* 搜索框的文字从图标列之后开始,输入框自身不能再加左内边距 */
+html[data-oc-theme] .sidebar .chat-search input { padding-left: 0; }
+
+/* 纵向节奏:模型选择区和各入口行之间用统一的 2px,不再有的 2px 有的 0 */
+html[data-oc-theme] .sidebar .sidebar-model-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+html[data-oc-theme] .sidebar .sidebar-model-wrap > * { margin-bottom: 0; }
+
+
 /* ---------- 4. 消息区:用户气泡去描边,头像去框 ---------- */
 .msg.user .msg-content {
   border: none;
@@ -406,7 +504,10 @@
   right: 0;
   bottom: 0;
   z-index: 24;
-  padding: 24px 20px 8px;
+  /* 左右内边距必须是 0:.composer-wrap 的 max-width 是百分比,
+     百分比是按「容器的内容盒」算的 —— 这里留 20px 会让输入栏比消息列窄 40px
+     (消息列的容器 .chat-area 没有左右内边距)。缩进改由 .composer-wrap 自己给。 */
+  padding: 24px 0 8px;
   border-top: none;
   background: linear-gradient(180deg, transparent 0%, color-mix(in srgb, var(--bg-app) 28%, transparent) 36%, color-mix(in srgb, var(--bg-app) 62%, transparent) 100%);
   pointer-events: none;

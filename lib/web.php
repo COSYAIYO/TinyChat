@@ -732,6 +732,54 @@ function tc_web_rewrite_attr($html, $prefixRe, $base, $ticket, $kind = 'res', $t
 }
 
 /**
+ * 表单改写:把 <form> 变成「由 shim 提交」的形式。
+ *
+ * 为什么不能只改 action:
+ *   浏览器提交表单时会丢弃 action 上已有的查询串(改用表单字段重建),而我们把目标地址
+ *   整个 base64 塞进了 ?u=,所以提交后目标地址里就没有用户输入的内容了。
+ *   实测:必应首页搜索框 <form action="/search"> 提交后落在空搜索页,地址栏也不动。
+ *
+ * 做法:
+ *   - 保留 action 指向代理页端点(没有 JS 时至少还是个能点的地址);
+ *   - 额外写两个 data 属性:data-ocw-action=原始 action(绝对地址),data-ocw-method=提交方式;
+ *   - shim 在 submit 事件里把字段拼成查询串追加到 u 上,再放行浏览器提交。
+ *     GET 表单天然就是查询串;POST 表单按 POST 语义无法经我们的 GET 代理转发 body,
+ *     统一降级成 GET(搜索类表单几乎都是 GET;真正的 POST 提交站点由 JS 自己发 XHR)。
+ */
+function tc_web_rewrite_forms($html, $base, $ticket) {
+    return preg_replace_callback('#<form\b[^>]*>#is', function ($m) use ($base, $ticket) {
+        $tag = $m[0];
+        // 取 action(缺省时按当前文档地址,和浏览器行为一致)
+        $action = '';
+        if (preg_match('#\saction\s*=\s*("([^"]*)"|\'([^\']*)\'|([^\s>"\']+))#is', $tag, $a)) {
+            $action = isset($a[4]) ? $a[4] : (isset($a[3]) && $a[3] !== '' ? $a[3] : (isset($a[2]) ? $a[2] : ''));
+        }
+        $action = html_entity_decode(trim($action), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        if ($action === '') $action = $base;
+        $abs = tc_web_abs($action, $base);
+        if (!preg_match('#^https?://#i', (string) $abs)) return $tag;   // javascript: 之类的不碰
+
+        $method = 'get';
+        if (preg_match('#\smethod\s*=\s*("([^"]*)"|\'([^\']*)\'|([^\s>"\']+))#is', $tag, $mm)) {
+            $raw = isset($mm[4]) ? $mm[4] : (isset($mm[3]) && $mm[3] !== '' ? $mm[3] : (isset($mm[2]) ? $mm[2] : ''));
+            if (strtolower(trim($raw)) === 'post') $method = 'post';
+        }
+        // 把原始信息挂到 <form> 上(值转义后写回属性)
+        $extra = ' data-ocw-action="' . htmlspecialchars((string) $abs, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '"'
+            . ' data-ocw-method="' . $method . '"';
+        // action 换成「代理到目标地址」的地址;已经有 action 的替换掉,没有的补一个
+        $proxied = htmlspecialchars(tc_web_proxify($abs, $base, $ticket, 'page'), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        if (preg_match('#\saction\s*=\s*("([^"]*)"|\'([^\']*)\'|([^\s>"\']+))#is', $tag)) {
+            $tag = preg_replace('#\saction\s*=\s*("([^"]*)"|\'([^\']*)\'|([^\s>"\']+))#is', ' action="' . $proxied . '"', $tag, 1);
+        } else {
+            $tag = preg_replace('#^<form\b#i', '<form action="' . $proxied . '"', $tag, 1);
+        }
+        // data 属性插在标签名之后(避免落在另一个属性值里面)
+        return preg_replace('#^<form\b#i', '<form' . $extra, $tag, 1);
+    }, $html);
+}
+
+/**
  * 改写页面:
  *  - 摘掉目标站自己的 CSP meta / integrity(SRI 会因为我们改过内容而拒绝执行)/ base(相对基准由我们掌控)
  *  - href/src/action/srcset/style/... 全部指向代理;CSS 的 url() 同理
@@ -750,12 +798,21 @@ function tc_web_rewrite_html($html, $base, $ticket, $converted) {
         $html = preg_replace('#(<meta[^>]+charset\s*=\s*["\']?)[A-Za-z0-9_\-]+#i', '${1}utf-8', $html);
         $html = preg_replace('#(charset=)[A-Za-z0-9_\-]+#i', '${1}utf-8', $html);
     }
-    // 导航类属性先处理:同一个属性在不同标签上含义不同 —— <a href> / <form action> / <iframe src>
+    // 导航类属性先处理:同一个属性在不同标签上含义不同 —— <a href> / <area href> / <iframe src>
     // 是「换文档」,要走 page 端点(只有它做功能开关与用户校验);其余资源走 res。
     // 先跑针对性替换,后面的通用替换看到已是代理地址会原样跳过(见 tc_web_proxify)。
-    foreach (array('<a\b[^>]*?\shref', '<area\b[^>]*?\shref', '<form\b[^>]*?\saction', '<iframe\b[^>]*?\ssrc') as $navPrefix) {
+    //
+    // <form action> 不在这个列表里,单独处理(见 tc_web_rewrite_forms):
+    // 表单是「提交」而不是「跳转」,光把 action 换成代理地址是不够的 —— 浏览器会把
+    // action 上的查询串丢掉,再把表单字段拼到后面。实测必应搜索框就是这样:
+    // <form action="/search"> 被改写成 .../page?u=<base64 的 /search>&t=...,
+    // 提交后 u 里没有 q,于是每次都跳到必应的空搜索页。
+    foreach (array('<a\b[^>]*?\shref', '<area\b[^>]*?\shref', '<iframe\b[^>]*?\ssrc') as $navPrefix) {
         $html = tc_web_rewrite_attr($html, $navPrefix, $base, $ticket, 'page');
     }
+    // 表单:action 指到代理,并把「原始 action 地址 + 提交方式」放进 data 属性,
+    // 由 shim 在 submit 时把字段拼成查询串追加到 u 上(服务端不知道用户会填什么)。
+    $html = tc_web_rewrite_forms($html, $base, $ticket);
     // 普通属性(资源)
     $html = tc_web_rewrite_attr(
         $html,
@@ -1037,6 +1094,20 @@ function tc_web_fail_page($msg) {
 
 // GET/POST /api/web/page 与 GET /api/web/res 的共同实现
 function tc_web_serve($kind) {
+    // 先把「能不能被本站 iframe 嵌」这两项头钉死在函数开头 —— 本端点的响应是给
+    // 在线浏览器里那个沙箱 iframe 直接导航的,而 index.php 开头 tc_send_cors() 发的是
+    // 全局 `X-Frame-Options: DENY` + CSP `frame-ancestors 'none'`,两者都会让整页被
+    // 浏览器拦掉。成功分支本来各自写了覆盖,但**所有失败分支**(票据过期、被限流、
+    // 地址不合法、权限被关、上游抓取失败)都没写,于是用户看到的不是「抓取失败的
+    // 原因」而是**一片空白**——用户报的「报错不显示」正是这个(实测:失败响应在帧里
+    // 被 CSP 拦下,控制台报 frame-ancestors 'none')。写在这里一次覆盖所有出口。
+    //
+    // 不能用 DENY 之外的写法省略:省略 = 继承全局 DENY。
+    // SAMEORIGIN **不会**因为 iframe 带 sandbox、不带 allow-same-origin 而被拦 ——
+    // 嵌它的父页面本身就是本站同源,实测 sandbox 与否结论一致(故不能靠「省略」解决)。
+    // 真正的隔离由外层 iframe 的 sandbox(不透明源)承担,不靠 XFO。
+    header('X-Frame-Options: SAMEORIGIN');
+    header("Content-Security-Policy: default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; frame-ancestors 'self'");
     $q = tc_query();
     $ticket = isset($q['t']) ? (string) $q['t'] : '';
     $uid = tc_web_ticket_uid($ticket);
@@ -1150,7 +1221,7 @@ function tc_web_serve($kind) {
         http_response_code((int) (isset($res['code']) ? $res['code'] : 502));
         header('Content-Type: text/html; charset=utf-8');
         header('Cache-Control: no-store');
-        header('X-Frame-Options: SAMEORIGIN');
+        // XFO/CSP 已在函数开头统一钉好(那里解释了为什么失败页也必须显式写)。
         echo tc_web_fail_page(isset($res['error']) ? $res['error'] : '抓取失败');
         exit;
     }
@@ -1163,10 +1234,10 @@ function tc_web_serve($kind) {
     header('Cache-Control: no-store, must-revalidate');
     header('X-Robots-Tag: noindex, nofollow');
     header('Referrer-Policy: no-referrer');
-    header('X-Frame-Options: SAMEORIGIN');
-    // 安全由 iframe sandbox(不透明源)承担,页面内部的 CSP 只负责别把自己弄残:
-    // 目标站的资源域名不可枚举,这里放开;frame-ancestors 限定只允许本站页面嵌它。
-    header("Content-Security-Policy: default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; frame-ancestors 'self'");
+    // XFO 与页面 CSP 已在函数开头统一设好(成功/失败两条路径同一份),
+    // 这里只再强调一次 CSP 的取向:安全由 iframe sandbox(不透明源)承担,
+    // 页面内部的 CSP 只负责别把自己弄残 —— 目标站的资源域名不可枚举,所以放开;
+    // frame-ancestors 限定只允许本站页面嵌它。
     if ($isHtml) {
         $charset = tc_web_charset($res['body'], $res['ctype']);
         $converted = ($charset !== '' && $charset !== 'utf-8' && $charset !== 'utf8');
