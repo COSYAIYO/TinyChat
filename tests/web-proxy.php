@@ -233,6 +233,43 @@ $eq($nd, 1, '同名 cookie 覆盖不堆积');
 $snap = tc_web_jar_snapshot($u1, 'https://example.com/');
 $eq(isset($snap['dup']) ? $snap['dup'] : '', '2', 'jar 快照取到最新值(用于注入回页面的 document.cookie)');
 
+// ---------- 10b) 安全回归:Domain 作用域与头值净化 ----------
+// 这两条都是「功能照常、只是不再安全」的类型,读代码极易看漏,所以钉成断言。
+// (1) 被代理的站点不能给自己不拥有的域下 cookie。
+//     真实事故:https://evil.example 回一个 Domain=com,代理就把伪造 cookie 送去
+//     bank.com / gmail.com 等所有 .com 站点 —— 会话固定/挟持。
+$uEvil = 'u_jar_evil';
+tc_web_jar_store($uEvil, 'https://evil.example/x', array(
+    'sso=forged; Domain=com; Path=/',
+    't=forged; Domain=mybank.co.uk; Path=/',
+    's2=forged; Domain=example.org; Path=/',
+));
+foreach (array('https://bank.com/', 'https://gmail.com/', 'https://mybank.co.uk/', 'https://example.org/') as $victim) {
+    $hv = tc_web_jar_header($uEvil, $victim, '');
+    if (strpos($hv, 'forged') === false) $ok('域外 Domain 被拒绝,不发给 ' . $victim); else $bad('伪造 cookie 泄漏到 ' . $victim . ': ' . $hv);
+}
+// 合法作用域必须保留:站点给自己的父域下 cookie,子域要能收到
+tc_web_jar_store($uEvil, 'https://shop.example.com/p', array('sub=1; Domain=example.com; Path=/'));
+if (strpos(tc_web_jar_header($uEvil, 'https://shop.example.com/'), 'sub=1') !== false) $ok('合法的父域 Domain 仍对子域生效'); else $bad('合法父域 cookie 被误拒');
+// 公共后缀本身(com / co.uk)不能作为作用域
+tc_web_jar_store($uEvil, 'https://evil.example/x', array('ps=1; Domain=co.uk; Path=/'));
+if (strpos(tc_web_jar_header($uEvil, 'https://anything.co.uk/'), 'ps=1') === false) $ok('公共后缀不能作为 cookie 作用域'); else $bad('公共后缀被接受为作用域');
+
+// (2) 出网请求头值必须净化:CRLF 能注入任意头乃至整条请求行。
+//     数据来源是用户可控的(Cookie 来自查询串 c=、Referer 来自 base64 解码的地址)。
+foreach (array(
+    "legit=1\r\nX-Injected: yes",
+    "a=1\r\n\r\nGET /internal-admin HTTP/1.1\r\nHost: t",
+    "a=1\nX-Injected: yes",
+    "a=1\rX-Injected: yes",
+) as $badHdr) {
+    if (!preg_match('/[\r\n]/', tc_web_header_value($badHdr))) $ok('头值里的 CRLF 被剥离'); else $bad('CRLF 未被剥离: ' . var_export($badHdr, true));
+}
+// 正常值必须原样保留(别把功能一起净化掉)
+foreach (array('a=1; b=2', 'application/json', 'bytes=0-99') as $goodHdr) {
+    $eq(tc_web_header_value($goodHdr), $goodHdr, '正常头值原样保留 ' . $goodHdr);
+}
+
 // ---------- 11) 收藏夹 ----------
 $db = array('settings' => array());
 $def = tc_web_bookmarks_of($db);

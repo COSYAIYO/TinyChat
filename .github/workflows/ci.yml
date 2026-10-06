@@ -58,6 +58,12 @@ jobs:
         # 与页面路由也返回 403,且发生在 .htaccess 之前 —— 只能靠改名字避开。
         # 这类问题在自建服务器上永远复现不了,用静态扫描挡住回归。
         run: node tests/waf-paths.js
+      - name: 在线浏览器 iframe 沙箱契约自检(不得带 allow-same-origin / escape-sandbox)
+        # 被代理页由本站服务器转发,在浏览器眼里是同源文档;唯一防线是 iframe 的 sandbox
+        # 属性里不带 allow-same-origin。曾误带 allow-popups-to-escape-sandbox:弹窗会完全
+        # 脱离沙箱、且垫片把 window.open 改写成本站同源地址,于是能直读 localStorage 里的
+        # 令牌。功能照常、界面上看不出任何异常,只是属性里多一个词 —— 读代码极易看漏。
+        run: node tests/web-frame-sandbox.js
       - name: AI 整理解析自检(弱模型畸形输出 / 降级格式 / 输入裁剪)
         run: node tests/notes-archive.js
       - name: 弹窗框架契约自检(关闭回调不递归爆栈 / Esc 链路)

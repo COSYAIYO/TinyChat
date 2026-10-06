@@ -662,8 +662,12 @@
       t.el.innerHTML = '<div class="web-page">'
         + '<iframe class="web-frame" title="网页内容"'
         + ' referrerpolicy="no-referrer"'
-        // 关键:不带 allow-same-origin —— 被代理页因此成为不透明源,读不到本站令牌
-        + ' sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-presentation">'
+        // 关键:不带 allow-same-origin —— 被代理页因此成为不透明源,读不到本站令牌。
+        // 更不能带 allow-popups-to-escape-sandbox:它会让弹窗**完全脱离 sandbox**,
+        // 而垫片把 window.open(u) 改写成了本站同源的 /api/web/page?...,于是弹窗就是一个
+        // 同源文档,能直接读 localStorage.oc_token —— 整个隔离模型被这一个标志作废。
+        // 只保留 allow-popups:弹窗会继承 sandbox(仍是不透明源),站内跳转照常可用。
+        + ' sandbox="allow-scripts allow-forms allow-popups allow-modals allow-presentation">'
         + '</iframe></div>';
       const f = t.el.querySelector('.web-frame');
       f.addEventListener('load', () => {

@@ -37,6 +37,10 @@ function cidr_range($cidr)
     $parts = explode('/', $cidr, 2);
     if (count($parts) !== 2) return null;
     $ip = $parts[0];
+    // 前缀长度必须是纯数字:直接 (int) 转换会把 "8abc"、"abc" 都变成 0,
+    // 而 0 是个**合法**值(表示 /0)。于是一行被截断/写坏的 CIDR 会静默扩成
+    // 0.0.0.0..255.255.255.255 —— 整张表变成「全世界都在中国」,限制功能悄悄失效。
+    if (!preg_match('/^\d+$/', trim($parts[1]))) return null;
     $bits = (int) $parts[1];
     $packed = @inet_pton($ip);
     if ($packed === false) return null;

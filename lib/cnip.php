@@ -11,19 +11,28 @@
 
 // 判定结果与文件读取结果分开缓存:同一请求里一个页面几十个子资源各判一次,
 // 不能每次重读文件或重跑二分。
+// 空表也必须是**结构完整**的空表:调用方直接读 $t['v4']/$t['n4'],
+// 之前文件缺失/写坏时这里返回裸 array(),于是每次调用都报
+// 「Undefined array key "v4"/"n4"」—— 判定结果是对的(放行=否,失败关闭),
+// 但会把日志刷满。用同一形状表达「没有数据」,调用方无需特判。
+function tc_cn_ip_empty()
+{
+    return array('v4' => '', 'v6' => '', 'n4' => 0, 'n6' => 0);
+}
+
 function tc_cn_ip_table($reload = false)
 {
     static $table = null;
     if ($table !== null && !$reload) return $table;
     $file = __DIR__ . '/cn-ip.bin';
     $raw = @file_get_contents($file);
-    if (!is_string($raw) || strlen($raw) < 13 || substr($raw, 0, 4) !== 'TCIP') return $table = array();
+    if (!is_string($raw) || strlen($raw) < 13 || substr($raw, 0, 4) !== 'TCIP') return $table = tc_cn_ip_empty();
     $v4 = unpack('N', substr($raw, 5, 4));
     $v6 = unpack('N', substr($raw, 9, 4));
     $n4 = (int) $v4[1];
     $n6 = (int) $v6[1];
     $want = 13 + $n4 * 8 + $n6 * 32;
-    if (strlen($raw) !== $want) return $table = array();   // 截断/写坏的文件按「无数据」处理
+    if (strlen($raw) !== $want) return $table = tc_cn_ip_empty();   // 截断/写坏的文件按「无数据」处理
     return $table = array(
         'v4' => $n4 > 0 ? substr($raw, 13, $n4 * 8) : '',
         'v6' => $n6 > 0 ? substr($raw, 13 + $n4 * 8, $n6 * 32) : '',

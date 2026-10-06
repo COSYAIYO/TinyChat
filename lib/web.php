@@ -162,6 +162,16 @@ function tc_web_jar_put($userId, $jar) {
     @file_put_contents(tc_web_jar_path($userId), tc_json_encode(array_values($jar)), LOCK_EX);
 }
 
+// 头值净化:去掉 CR/LF 及其它控制字符。
+// 出网请求的头值里有相当一部分是用户可控的(Cookie 来自查询串 c=,Referer 来自
+// base64 解码的地址),而 libcurl 会把值里的 CRLF 原样发出 —— 那样就能注入任意头、
+// 乃至整条请求行(实测能插入第二个请求)。所以每个头值都必须过这里。
+function tc_web_header_value($v) {
+    $v = (string) $v;
+    // 逐字节删:CR/LF 是关键,其余控制字符一并清掉避免畸形头
+    return preg_replace('/[\x00-\x1F\x7F]+/', '', $v);
+}
+
 // 域名匹配:Domain 属性存在时按后缀匹配(含子域),否则仅主机名精确匹配。
 function tc_web_host_matches($host, $cookie, $urlHost) {
     $host = strtolower(trim((string) $host, '.'));
@@ -235,7 +245,22 @@ function tc_web_jar_store($userId, $url, $setCookies) {
             elseif ($k === 'expires' && $v !== '') { $ts = @strtotime($v); if ($ts !== false) { $expires = $ts; $hasExpiry = true; } }
             elseif ($k === 'secure') $secure = true;
         }
-        if ($domain === '') $domain = $urlHost;
+        if ($domain === '') {
+            $domain = $urlHost;
+        } else {
+            // RFC 6265 §5.3 第 6 步:Domain 必须与当前主机相同,或是它的后缀。
+            // 之前这里无条件接受站点给的 Domain,于是**任何被代理的站点都能给自己不拥有的
+            // 域下 cookie** —— 实测 https://evil.example 回一个 `Domain=com` 就能让代理
+            // 把伪造 cookie 送去 bank.com、gmail.com 等所有 .com 站点(session 挟持/会话固定)。
+            // 同时拒绝公共后缀本身(不能给 `com` 这个层级下 cookie)。
+            $d = strtolower(ltrim($domain, '.'));
+            $okScope = ($d === $urlHost) || (substr($urlHost, -strlen($d) - 1) === '.' . $d);
+            if (!$okScope || strpos($d, '.') === false) {
+                // 作用域不合法:整条忽略(等同浏览器丢弃该 Set-Cookie)
+                continue;
+            }
+            $domain = $d;
+        }
         $key = strtolower($domain) . '|' . $name . '|' . $path;
         // 没有到期时间的是会话 cookie(会话由服务端维持,这里长期保留);
         // 有到期时间的才判断是否已过期。
@@ -578,16 +603,21 @@ function tc_web_fetch($url, $userId, $opts = array()) {
         // 不要自己写 Accept-Encoding:手工发这个头会让 curl 关闭自动解压,拿回来的是压缩字节,
         // 正文抽取与 HTML 改写会全部落空(实测 example.com 返回 gzip 后正文为空)。
         // 交给 CURLOPT_ENCODING = '' 让它自己声明并自动解码。
-        $cookie = tc_web_jar_header($userId, $cur, $clientCookie);
+        // 所有头值统一过一遍净化:这里的 Cookie 来自查询串 c=、Referer 来自 base64 解码的
+        // 上游地址,都是**用户可控**的。libcurl 会原样透传值里的 CRLF,于是 %0D%0A 能注入
+        // 任意头、甚至整条请求行(实测可插进第二个 GET /internal-admin)。只净 Content-Type
+        // 与 Range 是不够的 —— 必须每个头都过,所以收口到这一个函数。
+        $cookie = tc_web_header_value(tc_web_jar_header($userId, $cur, $clientCookie));
         if ($cookie !== '') $hdrs[] = 'Cookie: ' . $cookie;
+        $from = tc_web_header_value($from);
         if ($from !== '') $hdrs[] = 'Referer: ' . $from;
         // 表单/接口请求的 Origin 要指向目标站,否则站点的 CSRF 校验会拒(浏览器侧发来的 Origin 是 null)
         if ($method !== 'GET' && $method !== 'HEAD') {
             $p = @parse_url($cur);
             if ($p && !empty($p['host'])) $hdrs[] = 'Origin: ' . strtolower((string) $p['scheme']) . '://' . $p['host'] . (isset($p['port']) ? ':' . (int) $p['port'] : '');
         }
-        if ($reqCtype !== '') $hdrs[] = 'Content-Type: ' . preg_replace('/[\r\n]+/', '', $reqCtype);
-        if ($range !== '') $hdrs[] = 'Range: ' . preg_replace('/[\r\n]+/', '', $range);
+        if ($reqCtype !== '') $hdrs[] = 'Content-Type: ' . tc_web_header_value($reqCtype);
+        if ($range !== '') $hdrs[] = 'Range: ' . tc_web_header_value($range);
         $optsCurl = array(
             CURLOPT_CUSTOMREQUEST => $method,
             CURLOPT_HTTPHEADER => $hdrs,
