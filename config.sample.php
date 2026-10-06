@@ -27,7 +27,7 @@ return array(
     'trust_proxy' => false,
 
     // 在线更新（后台「平台配置 → 版本更新」）。Release tag 建议用 vX.Y.Z 形式
-    'github_repo' => 'HCARX/TinyChat',
+    'github_repo' => 'TinyNano/TinyChat',
     // 私有仓库必填；公开仓库留空即可（留空时检查走免 API 方式，不受匿名限流）
     'github_token' => '',
     // 国内主机可换镜像。下载根可填 ghproxy 类加速前缀，

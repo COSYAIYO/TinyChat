@@ -2,6 +2,18 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.137] - 2026-10-06
+
+### 变更
+
+- **仓库改名收尾：`HCARX/TinyChat` → `TinyNano/TinyChat`**。GitHub 上的改名是**账号级**的（旧用户名 `HCARX` 已 404，仓库 id 不变），仓库被重定向到新地址。源码里写死旧地址的地方一并更新：用户菜单里的「开源地址」链接、在线更新的默认仓库（`lib/updater.php`）、配置样例与 README 文档。旧地址仍会 302 到新地址，所以没改到的部署不会立刻坏，但地址栏会显示过时路径。
+
+- **署名完整性守卫接受新仓库名**：`lib/integrity.php` 的认可清单以 SHA-256 摘要硬编码，改名后同步加入 `tinynano/tinychat`，否则「页面已改成新链接、哈希表还是旧的」这一组合会被误判成「署名仓库被改为 tinynano/tinychat」并弹出篡改警告。**改名前的旧摘要一并保留**（`hcarx/tinychat`、`cosyaiyo/tinychat`）：已部署的旧版本页面里写的还是旧链接，保留旧名可让改名前后都正常通过，不会出现「升级后被自己的守卫拦下」。
+
+### 移除
+
+- README 里的「免费主机提示（InfinityFree 等）」整段——包含 WAF 拦截 `chat` 关键词的说明与 2.0.124→2.0.125 的手动清理旧文件步骤。`node tests/waf-paths.js` 自检保留，改名规避仍然有效。
+
 ## [2.0.136] - 2026-10-06
 
 ### 新增

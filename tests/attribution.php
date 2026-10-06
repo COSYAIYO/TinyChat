@@ -2,7 +2,7 @@
 /**
  * 完整性守卫自检: php tests/attribution.php
  * 覆盖: 原始放行 / 改仓库拦截 / 删链接拦截 / 非 GitHub 拦截 / fork 放行 / .git 后缀放行 /
- *       allow_rebrand 放行 / 两层校验点均存在。
+ *       改名前的旧地址放行(仓库由 HCARX 改名为 TinyNano)/ allow_rebrand 放行 / 两层校验点均存在。
  * 退出码非 0 表示失败,供 CI 使用。
  */
 $root = dirname(__DIR__);
@@ -19,7 +19,8 @@ $cases = array(
   '删除链接(应拦截)'             => array('', '署名链接被移除'),
   '改为非 github(应拦截)'        => array('https://example.com/x', '署名链接被改为非 GitHub 地址'),
   'fork 仓库(应放行)'            => array('https://github.com/COSYAIYO/TinyChat', ''),
-  '带 .git 后缀(应放行)'         => array('https://github.com/HCARX/TinyChat.git', ''),
+  '带 .git 后缀(应放行)'         => array('https://github.com/TinyNano/TinyChat.git', ''),
+  '改名前的旧地址(仍应放行)'     => array('https://github.com/HCARX/TinyChat', ''),
 );
 $bad = 0;
 foreach ($cases as $name => $c) {

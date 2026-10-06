@@ -7,7 +7,7 @@
  * 覆盖时固定跳过 data/ 与 config.php，用户数据和本地配置不受影响。
  *
  * config.php / 环境变量可选配置：
- *   github_repo      仓库(owner/name)，默认 HCARX/TinyChat
+ *   github_repo      仓库(owner/name)，默认 TinyNano/TinyChat
  *   github_token     访问令牌：私有仓库必填，公开仓库可留空(可提升 API 限流)
  *   github_api_base  API 根地址，默认 https://api.github.com，可换镜像
  *   github_base      发布包下载根地址，默认 https://github.com，可填 ghproxy 类加速前缀
@@ -20,7 +20,7 @@ function tc_update_cfg($key, $default) {
 }
 
 function tc_update_repo() {
-    $repo = trim((string) tc_update_cfg('github_repo', 'HCARX/TinyChat'));
+    $repo = trim((string) tc_update_cfg('github_repo', 'TinyNano/TinyChat'));
     if (!preg_match('#^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$#', $repo)) {
         throw new RuntimeException('github_repo 配置无效，应为 owner/repo 形式');
     }

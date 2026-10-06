@@ -19,11 +19,16 @@ if (!defined('TC_ROOT')) {
 }
 
 // 认可的署名仓库(小写 owner/repo),以 SHA-256 摘要形式保存,避免明文被直接检索替换
-// 当前包含:上游主仓库、维护者 fork。
+// 当前包含:上游主仓库(现名 + 改名前的两个历史名)、维护者 fork。
+// 旧名必须保留:仓库改过名(HCARX→TinyNano 是**账号**改名,旧用户名已 404),
+// 但已经部署出去的旧版本源码里写着旧地址、且它们跑的是自己那份哈希表 ——
+// 这里删掉旧摘要不会影响旧版本,却会让「用旧版本源码 + 新代码升级后」的站点
+// 因为页面里还是旧链接而误报篡改。保留旧名 = 改名前后都能正常通过。
 function tc_attribution_accepted_hashes() {
     return array(
-        'eb09bd856ed75b09d7a987540627fd14e7def6954efd326b47d4368073a2b257', // 上游主仓库
-        'a39db956a435bacd3d7058f0fcdeb68a9e73858add7439e0428d8719483607c1', // 维护者 fork
+        'd00d62627350e6295cda28870546e6dac657f1aea2ce53b6ff5ac7a7c6b274be', // 上游主仓库(现名 TinyNano/TinyChat)
+        'eb09bd856ed75b09d7a987540627fd14e7def6954efd326b47d4368073a2b257', // 改名前的 HCARX/TinyChat
+        'a39db956a435bacd3d7058f0fcdeb68a9e73858add7439e0428d8719483607c1', // 维护者 fork COSYAIYO/TinyChat
     );
 }
 
