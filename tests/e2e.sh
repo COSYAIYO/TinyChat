@@ -1957,7 +1957,19 @@ assert_has "站内链接改写到代理" "$wp" '/api/web/page?u='
 if printf '%s' "$wp" | grep -qF 'href="/nav0"'; then bad "站内链接仍是原始地址"; else ok "站内链接已改写"; fi
 if printf '%s' "$wp" | grep -qF '&amp;amp;'; then bad "属性被二次转义(t 参数失效)"; else ok "属性只转义一次"; fi
 WEHHDR=$(cat "$TMP/web.h")
-assert_has "代理响应 X-Frame-Options 改为 SAMEORIGIN" "$WEHHDR" 'X-Frame-Options: SAMEORIGIN'
+# 这里断言的**不是**「没有 X-Frame-Options」,而是「不是 DENY」。
+# index.php 开头的 tc_send_cors() 会给每个响应发全局 `X-Frame-Options: DENY`,而 DENY
+# 连本站自己的页面都嵌不了 —— 渲染被代理页的 iframe 正落在 /api/web/page 上,于是整页
+# 被浏览器拦掉、界面一直空白。lib/web.php 显式写 SAMEORIGIN 把它覆盖回来才对。
+# (一度以为 SAMEORIGIN 也会拦:sandbox 不带 allow-same-origin 看似成为非同源文档;
+#  实测否定 —— 嵌它的父页面本身同源,SAMEORIGIN 放行,A/B 里 sandbox 与否结论一致。)
+if printf '%s' "$WEHHDR" | grep -qi '^X-Frame-Options:[[:space:]]*DENY'; then
+  bad "代理响应是 X-Frame-Options: DENY(iframe 里整页被拦,界面一直空白)"
+elif printf '%s' "$WEHHDR" | grep -qi '^X-Frame-Options:[[:space:]]*SAMEORIGIN'; then
+  ok "代理响应显式 SAMEORIGIN(覆盖全局 DENY,页面能渲染)"
+else
+  bad "代理响应没有 X-Frame-Options(会继承全局 DENY,页面渲染不出来)"
+fi
 assert_has "代理响应不缓存(避免跨用户串号)" "$WEHHDR" 'Cache-Control: no-store'
 # 静态子资源短缓存:第一次出网、第二次命中本地。mock 每次请求的尾巴都是新的随机字节,
 # 两次响应逐字节相同就证明第二次没有再出网(仅凭「200 且内容非空」证明不了缓存生效)。

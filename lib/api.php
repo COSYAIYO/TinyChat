@@ -5313,10 +5313,16 @@ function tc_settings_ui($raw) {
     if (!is_array($raw)) return $out;
     $bools = array('sidebarCollapsed', 'notesGuideSeen');
     $ints = array(
-        'sidebarWidth' => array(120, 1200), 'contentWidth' => array(400, 2400),
+        'sidebarWidth' => array(120, 1200),
         'notesSideW' => array(120, 1200), 'announcementSeen' => array(0, 4102444800000),
         'videoSeconds' => array(1, 600),
     );
+    // 对话列宽度:客户端已改成百分比(50~100,可带一位小数)。
+    // 不能再用旧的 px 区间 400~2400 —— 客户端推 100(%)会被夹到 400,
+    // 下次拉取就写回 400%,宽度设置直接失效(实测推 100 回来变 400)。
+    // 上界仍留到 2400:升级前存的是 px,客户端会按当前主区宽度自己换算成百分比。
+    // 用 float 而不是 int:61.8 不能被截成 61。
+    $floats = array('contentWidth' => array(50, 2400));
     $enums = array('composerMode' => array('simple', 'group'));
     $strs = array('imageModel' => 200, 'imageSize' => 64, 'videoModel' => 200, 'videoRatio' => 32);
     foreach ($raw as $k => $v) {
@@ -5325,6 +5331,13 @@ function tc_settings_ui($raw) {
         if (isset($enums[$k])) {
             $v = (string) $v;
             if (in_array($v, $enums[$k], true)) $out[$k] = $v;
+            continue;
+        }
+        if (isset($floats[$k])) {
+            if (!is_numeric($v)) continue;
+            $val = round(min($floats[$k][1], max($floats[$k][0], (float) $v)), 1);
+            // 整数就按整数存(JSON 里是 100 而不是 100.0),小数保留一位(61.8)
+            $out[$k] = ($val == (int) $val) ? (int) $val : $val;
             continue;
         }
         if (isset($ints[$k])) {

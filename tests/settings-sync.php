@@ -60,6 +60,7 @@ $doc = tc_sanitize_user_settings(array(
     ),
     'ui' => array(
         'sidebarWidth' => 5000,             // 收敛到 1200
+        'contentWidth' => 61.8,             // 百分比,必须原样保留(不能被旧的 px 区间夹成 400)
         'composerMode' => 'group',
         'composerModeBad' => 'x',
         'notesAiCfg' => array(
@@ -103,6 +104,14 @@ $eq('控制字符剔除', $doc['prefs']['accent'], '#2563eb');
 $eq('未知非标量键丢弃', array_key_exists('evil', $doc['prefs']), false);
 $eq('未知标量键保留(向前兼容)', $doc['prefs']['futureFlag'], true);
 $eq('UI 数值收敛', $doc['ui']['sidebarWidth'], 1200);
+// 对话列宽度:客户端推的是百分比(50~100,可带一位小数)。
+// 这里曾经沿用旧的 px 区间 400~2400,把 61.8 夹成 400 —— 云端同步一开,
+// 用户拖好的宽度下次拉取就变成 400%,等于设置失效。
+$eq('对话列宽度百分比原样保留', $doc['ui']['contentWidth'], 61.8);
+$eq('对话列宽度不被旧的 px 下限夹到 400', tc_settings_ui(array('contentWidth' => 100))['contentWidth'], 100);
+$eq('对话列宽度保留 upgrade 前的 px 旧值', tc_settings_ui(array('contentWidth' => 820))['contentWidth'], 820);
+$eq('对话列宽度超上限收敛', tc_settings_ui(array('contentWidth' => 99999))['contentWidth'], 2400);
+$eq('对话列宽度低于下限收敛', tc_settings_ui(array('contentWidth' => 10))['contentWidth'], 50);
 $eq('枚举值保留', $doc['ui']['composerMode'], 'group');
 $eq('未在白名单的 UI 键丢弃', array_key_exists('composerModeBad', $doc['ui']), false);
 $eq('笔记动作配置保留', $doc['ui']['notesAiCfg']['custom'][0]['key'], 'k1');

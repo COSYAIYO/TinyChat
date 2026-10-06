@@ -235,7 +235,10 @@ check('助手卡片是纯白', (await css('.msg.assistant .msg-content', 'backgr
 check('用户气泡是 #e8e8ed', (await css('.msg.user .msg-content', 'background-color')) === 'rgb(232, 232, 237)',
   await css('.msg.user .msg-content', 'background-color'));
 const blockBodyFs = await css('.msg.assistant .msg-content', 'font-size');
-check('正文字号 15px(chrome.css 字号总表是 !important,普通声明压不过)', near(blockBodyFs, 15), blockBodyFs);
+// 正文字号 = 用户设的 --fs × 本主题的 --msg-scale(方块主题 0.96)。
+// 以前这里断言「15px」,那是把主题里写死的 1.071rem 当成期望值 ——
+// 结果就是「外观→字号」选 14px,正文却是 15px。字号必须以设置为准。
+check('正文按「字号」设置缩放(14px × 0.96 ≈ 13.4px,不再写死 15px)', near(blockBodyFs, 14 * 0.96, 0.4), blockBodyFs);
 
 console.log('== 2. 方块主题:一条分割线都不画 ==');
 // 这是本主题的核心承诺。逐条量可能被上游规则画线的地方。
@@ -333,7 +336,9 @@ check('用户气泡是 #f0eee6', (await css('.msg.user .msg-content', 'backgroun
 check('正文是暖黑 #1f1e1d', (await css('.msg.assistant .msg-content', 'color')) === 'rgb(31, 30, 29)',
   await css('.msg.assistant .msg-content', 'color'));
 const claudeBodyFs = await css('.msg.assistant .msg-content', 'font-size');
-check('正文字号 16px', near(claudeBodyFs, 16), claudeBodyFs);
+// 同方块主题:字号跟着「外观→字号」走,主题只给一个相对倍数(0.98)。
+// 以前写死 1.143rem,用户选 14px 实际渲染 16px,设置和看到的不一致。
+check('正文按「字号」设置缩放(14px × 0.98 ≈ 13.7px,不再写死 16px)', near(claudeBodyFs, 14 * 0.98, 0.4), claudeBodyFs);
 
 console.log('== 7. Claude 主题:助手整栏通排 + 陶土橙主操作 ==');
 check('助手不带头像', (await css('.msg.assistant .msg-avatar', 'display')) === 'none');
@@ -367,9 +372,12 @@ const cFlow = await box('.composer-flow');
 const cLeft = await box('.composer-left');
 const cRight = await box('.composer-right');
 const cWrap = await box('.composer-wrap');
+const cCard = await box('.composer');
 check('输入行在上、工具行在下(两行式)', cLeft.y >= cFlow.bottom - 2, cLeft.y + ' vs ' + cFlow.bottom);
-check('发送键在输入框右下角', cRight.y >= cFlow.bottom - 2 && Math.abs(cRight.right - (cWrap.x + cWrap.w)) <= 24,
-  JSON.stringify(cRight));
+// 发送键贴着的是「输入框卡片」的右下角,所以基准取 .composer。
+// (.composer-wrap 还含 12px 的左右留白,拿它当基准会把这 12px 算成偏差)
+check('发送键在输入框右下角', cRight.y >= cFlow.bottom - 2 && Math.abs(cRight.right - (cCard.x + cCard.w)) <= 20,
+  JSON.stringify(cRight) + ' vs composer.right=' + (cCard.x + cCard.w));
 check('输入框与消息列同宽', cWrap.w && (await box('.messages')).w && Math.abs(cWrap.w - (await box('.messages')).w) <= 1,
   cWrap.w + ' vs ' + (await box('.messages')).w);
 check('输入框是中等圆角 16px(不是胶囊)', (await css('.composer', 'border-radius')) === '16px',
@@ -527,8 +535,111 @@ check('Claude 主题:回到底部按钮停在输入框上方且有余量', cClea
 const thPad = num(await css('.msg.assistant .md-prose .table-wrap table th', 'padding-top'));
 check('Claude 主题:表头有上边距(与表体的竖向节奏对齐)', thPad > 0, String(thPad));
 
+/* ================= 侧栏「左方间距」与对话列宽度 =================
+ * 这两条都是用户实测报上来的:
+ *   1) 侧栏每行各自写 padding,同一列里排出好几种文字左边缘,看着就是没对齐;
+ *      而且四个主题都各写各的 —— 主题越多越乱。
+ *   2) 「调整对话页宽度」对默认之外的主题不生效:它们把 max-width 写死成 px,
+ *      拖拽改的 --content-w 没人读。
+ * 这里按「同一主题内所有行只能有一个文字左边缘」和「--content-w 改了宽度就得跟着变」
+ * 两条不变量来断言,而不是照抄某几个 padding 数值 —— 以后调数值不会误报。 */
+console.log('== 13. 侧栏左边缘统一 + 对话列宽度对四套主题都生效 ==');
+
+const SIDEBAR_ROWS = [
+  '.new-chat-btn', '.sidebar-model-wrap .assistant-lib-btn', '.sidebar-model-wrap .model-picker',
+  '.chat-search', '.chat-group', '.chat-item', '.account-chip',
+];
+// 取每行「第一个有文字的节点」的真实左边缘(盒子的左边缘不含内边距,量不出错位)
+const textLefts = () => page.evaluate((sels) => {
+  const out = [];
+  for (const s of sels) {
+    const n = document.querySelector(s);
+    if (!n || n.offsetParent === null) continue;
+    const w = document.createTreeWalker(n, NodeFilter.SHOW_TEXT);
+    let left = null;
+    while (w.nextNode()) {
+      const t = w.currentNode;
+      if (!t.nodeValue || !t.nodeValue.trim()) continue;
+      const r = document.createRange(); r.selectNodeContents(t);
+      const rects = r.getClientRects();
+      if (rects.length) { left = Math.round(rects[0].left * 10) / 10; break; }
+    }
+    if (left !== null) out.push({ sel: s, left });
+  }
+  return out;
+}, SIDEBAR_ROWS);
+
+async function measureWidths() {
+  return page.evaluate(() => {
+    const msgs = document.querySelector('.messages');
+    const wrap = document.querySelector('.composer-wrap');
+    const area = document.querySelector('.chat-area');
+    const r = (el) => (el ? Math.round(el.getBoundingClientRect().width * 10) / 10 : NaN);
+    return {
+      cw: getComputedStyle(document.documentElement).getPropertyValue('--content-w').trim(),
+      mainW: r(area), msgW: r(msgs), wrapW: r(wrap),
+      msgPct: area ? Math.round((msgs.getBoundingClientRect().width / area.getBoundingClientRect().width) * 1000) / 10 : NaN,
+    };
+  });
+}
+
+for (const theme of ['default', 'chatgpt', 'block', 'claude']) {
+  if (theme !== 'default') check('切到 ' + theme, await pickTheme(page, theme));
+  await injectDemo(page);
+  // 侧栏要有会话项/分组标题才量得到那两行
+  const rows = await textLefts();
+  check(theme + ': 侧栏各行都量到了文字', rows.length >= 5, '量到 ' + rows.length + ' 行');
+  const uniq = [...new Set(rows.map((r) => r.left))];
+  check(theme + ': 侧栏只有一条文字左边缘',
+    uniq.length === 1, JSON.stringify(rows));
+
+  // 对话列宽度:默认 61.8%,且消息列与输入栏同宽(两者容器基准必须一致)
+  const a = await measureWidths();
+  check(theme + ': 对话列默认 61.8%', a.msgPct > 58 && a.msgPct < 66, 'msgPct=' + a.msgPct);
+  check(theme + ': 输入栏与消息列同宽', Math.abs(a.msgW - a.wrapW) < 1.5, a.msgW + ' vs ' + a.wrapW);
+
+  // 改 --content-w 宽度必须跟着变(写死 px 的主题在这里会露馅)
+  const narrowed = await page.evaluate(async () => {
+    document.documentElement.style.setProperty('--content-w', '50%');
+    await new Promise((r) => requestAnimationFrame(r));
+    const msgs = document.querySelector('.messages');
+    const area = document.querySelector('.chat-area');
+    return Math.round((msgs.getBoundingClientRect().width / area.getBoundingClientRect().width) * 1000) / 10;
+  });
+  check(theme + ': 改 --content-w 宽度真的跟着变', narrowed > 48 && narrowed < 53, '50% -> ' + narrowed + '%');
+  await page.evaluate(() => document.documentElement.style.removeProperty('--content-w'));
+
+  // 「外观→字号」必须是正文的唯一基准:改成 22px 正文就得跟着变,
+  // 主题只允许用一个固定倍数微调。此前主题写死 font-size:1.143rem,
+  // 用户选 14px 实际渲染 16px —— 设置和看到的不一致(用户报过)。
+  const fsProbe = await page.evaluate(async () => {
+    const before = parseFloat(getComputedStyle(document.querySelector('.msg.assistant .msg-content')).fontSize);
+    document.documentElement.style.setProperty('--fs', '22px');
+    await new Promise((r) => requestAnimationFrame(r));
+    const after = parseFloat(getComputedStyle(document.querySelector('.msg.assistant .msg-content')).fontSize);
+    document.documentElement.style.removeProperty('--fs');
+    return { before, after };
+  });
+  check(theme + ': 正文随「字号」设置变化', fsProbe.after > fsProbe.before * 1.3,
+    fsProbe.before + 'px -> ' + fsProbe.after + 'px');
+  // 默认 14px 下,正文不应偏离 14px 太多(主题只做小幅相对调整,而不是换一个绝对字号)
+  const fsBase = await page.evaluate(() => parseFloat(getComputedStyle(document.querySelector('.msg.assistant .msg-content')).fontSize));
+  check(theme + ': 字号设置 14px 时正文接近 14px(不是写死的 16px)', fsBase > 12.5 && fsBase < 15.5, fsBase + 'px');
+
+  // 操作条必须常驻:默认外观是常驻的,主题不能把它改成悬停才出现(用户报过方块主题"按钮没了")
+  await page.mouse.move(1100, 40);   // 先把鼠标移开,排除 hover 影响
+  await sleep(350);
+  const actOpacity = await page.evaluate(() => {
+    const n = document.querySelector('.msg.assistant .msg-actions');
+    return n ? getComputedStyle(n).opacity : 'MISSING';
+  });
+  check(theme + ': 消息操作条常驻(不悬停也可见)', actOpacity === '1', 'opacity=' + actOpacity);
+}
+
+check('切回默认主题', await pickTheme(page, 'default'));
+
 /* ================= 收尾 ================= */
-console.log('== 13. 切回默认主题:一切原样还原 ==');
+console.log('== 14. 切回默认主题:一切原样还原 ==');
 check('能切回默认主题', await pickTheme(page, 'default'));
 check('data-oc-theme 回到 default', (await page.evaluate(() => document.documentElement.getAttribute('data-oc-theme'))) === 'default');
 check('主题样式表已移除', !(await page.evaluate(() => !!document.getElementById('oc-theme-pack-css'))));
